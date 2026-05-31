@@ -1,0 +1,20 @@
+llm:
+  default: openai_compatible
+  providers:
+    openai_compatible:
+      baseUrl: ${OPENAI_BASE_URL}
+      apiKey: ${OPENAI_API_KEY}
+      model: ${OPENAI_MODEL}
+      streaming: true
+
+tts:
+  default: disabled
+  providers:
+    disabled:
+      type: none
+
+asr:
+  default: disabled
+  providers:
+    disabled:
+      type: none

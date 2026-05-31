@@ -1,0 +1,30 @@
+tools:
+  time:
+    enabled: true
+    permission: allow
+
+  roll_dice:
+    enabled: true
+    permission: ask
+
+  local_file_search:
+    enabled: false
+    permission: ask
+    roots: []
+
+  web_search:
+    enabled: false
+    permission: ask
+
+  open_url:
+    enabled: false
+    permission: ask
+
+  reminders:
+    enabled: false
+    permission: ask
+
+  mcp:
+    enabled: false
+    permission: ask
+    servers: []

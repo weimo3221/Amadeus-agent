@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Amadeus Agent</title>
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+  </head>
+  <body>
+    <main id="app">
+      <section class="titlebar">
+        <div class="drag-region">
+          <span class="status-dot" id="status-dot"></span>
+          <span>Amadeus</span>
+        </div>
+        <button id="pin-button" title="Toggle always on top">Unpin</button>
+        <button id="minimize-button" title="Minimize">Minimize</button>
+        <button id="voice-button" title="Toggle voice output">Voice On</button>
+        <button id="close-button" title="Close">Close</button>
+      </section>
+
+      <section class="stage-shell">
+        <div id="live2d-stage"></div>
+        <div id="stage-status" class="stage-status">Loading Live2D model...</div>
+        <section class="debug-panel" aria-label="Live2D debug controls">
+          <select id="debug-state" title="Assistant state">
+            <option value="idle">idle</option>
+            <option value="thinking">thinking</option>
+            <option value="speaking">speaking</option>
+            <option value="error">error</option>
+          </select>
+          <select id="debug-expression" title="Expression">
+            <option value="neutral">loading expressions</option>
+          </select>
+          <select id="debug-motion" title="Motion">
+            <option value="idle">loading motions</option>
+          </select>
+          <button id="debug-apply" type="button">Apply</button>
+          <div id="debug-capabilities" class="debug-capabilities">Loading model capabilities</div>
+        </section>
+      </section>
+
+      <section class="chat-panel">
+        <div class="provider">
+          <span id="connection-label">Connecting</span>
+          <strong id="provider-label">DeepSeek</strong>
+        </div>
+        <div class="runtime-row">
+          <span id="memory-status">Memory unknown</span>
+          <button id="reset-session-button" type="button" title="Clear this session memory">Reset</button>
+        </div>
+        <div id="tool-status" class="tool-status">Tools idle</div>
+        <div id="tool-permission" class="tool-permission" hidden>
+          <span id="tool-permission-text"></span>
+          <button id="tool-allow-button" type="button">Allow</button>
+          <button id="tool-deny-button" type="button">Deny</button>
+        </div>
+        <div id="voice-status" class="voice-status">Voice idle</div>
+        <form id="chat-form">
+          <input id="chat-input" name="message" autocomplete="off" placeholder="Type to Amadeus..." />
+          <button type="submit">Send</button>
+        </form>
+        <div id="chat-log" class="chat-log"></div>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

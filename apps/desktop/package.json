@@ -1,0 +1,41 @@
+{
+  "name": "@amadeus-agent/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@amadeus-agent/shared": "file:../../packages/shared",
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@pixi/app": "^6.5.10",
+    "@pixi/constants": "^6.5.10",
+    "@pixi/core": "^6.5.10",
+    "@pixi/display": "^6.5.10",
+    "@pixi/extensions": "^6.5.10",
+    "@pixi/interaction": "^6.5.10",
+    "@pixi/loaders": "^6.5.10",
+    "@pixi/math": "^6.5.10",
+    "@pixi/runner": "^6.5.10",
+    "@pixi/settings": "^6.5.10",
+    "@pixi/sprite": "^6.5.10",
+    "@pixi/ticker": "^6.5.10",
+    "@pixi/utils": "^6.5.10",
+    "electron-updater": "^6.8.3",
+    "pixi.js": "^6.5.10",
+    "pixi-live2d-display": "^0.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "electron": "^39.2.7",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7"
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+build/
+.turbo/
+.vite/
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite3
+coverage/
