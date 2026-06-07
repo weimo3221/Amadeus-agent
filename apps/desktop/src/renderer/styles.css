@@ -25,7 +25,7 @@ body {
 
 #app {
   display: grid;
-  grid-template-rows: 38px minmax(0, 1fr) 268px;
+  grid-template-rows: 38px minmax(0, 1fr) 286px;
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 16px;
   background:
@@ -158,9 +158,10 @@ button:hover {
 
 .chat-panel {
   display: grid;
-  grid-template-rows: 22px 26px 18px 30px 18px 34px minmax(0, 1fr);
-  gap: 6px;
-  padding: 0 10px 10px;
+  grid-template-rows: 20px 24px 34px auto minmax(0, 1fr) 34px;
+  gap: 4px;
+  min-height: 0;
+  padding: 0 10px 8px;
 }
 
 .provider {
@@ -190,12 +191,13 @@ button:hover {
 
 .runtime-row span,
 .tool-status,
+.tool-config-status,
 .voice-status {
   min-width: 0;
   overflow: hidden;
   color: rgba(226, 232, 240, 0.62);
   font-size: 11px;
-  line-height: 18px;
+  line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -204,13 +206,25 @@ button:hover {
   min-width: 52px;
 }
 
+.diagnostics {
+  display: grid;
+  grid-template-rows: 16px 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.tool-status {
+  grid-column: 1 / -1;
+}
+
 .tool-permission {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 3px 5px;
+  padding: 2px 5px;
   border: 1px solid rgba(245, 158, 11, 0.36);
   border-radius: 7px;
   background: rgba(120, 53, 15, 0.42);
@@ -225,20 +239,21 @@ button:hover {
   overflow: hidden;
   color: #fed7aa;
   font-size: 11px;
-  line-height: 18px;
+  line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .tool-permission button {
   min-width: 44px;
-  height: 22px;
+  height: 20px;
 }
 
 #chat-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+  min-height: 0;
 }
 
 #chat-input {
@@ -262,7 +277,7 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-right: 2px;
+  padding: 4px 2px 4px 0;
 }
 
 .message {

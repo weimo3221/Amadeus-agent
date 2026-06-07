@@ -29,7 +29,7 @@ Before making changes, read:
 
 - Desktop app: `apps/desktop`.
 - Server runtime: `apps/server`.
-- Shared events: `packages/shared/events.ts`.
+- Shared events: `packages/amadeus/events.ts`.
 - Tool registry currently lives in `apps/server/src/index.ts`.
 - SQLite database path: `data/amadeus.sqlite`.
 - Current session id is stable: `default`.
@@ -84,7 +84,7 @@ ws://127.0.0.1:8788/ws
 - Desktop renders and interacts; server thinks, remembers, and executes tools.
 - Do not put provider-specific LLM logic in `apps/desktop`.
 - Do not execute tools from `apps/desktop`; desktop only asks the user for permission and sends responses.
-- Keep all shared event type changes in `packages/shared/events.ts`.
+- Keep all shared event type changes in `packages/amadeus/events.ts`.
 - Keep tool permission checks on the server even if the desktop also shows UI.
 - Use explicit WebSocket events instead of ad hoc JSON shapes.
 

@@ -5,10 +5,12 @@
   "type": "module",
   "description": "Desktop Live2D interactive agent",
   "scripts": {
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:desktop\"",
+    "dev": "concurrently \"npm run dev:amadeus\" \"npm run dev:server\" \"npm run dev:desktop\"",
+    "dev:amadeus": "python packages/amadeus/server.py",
     "dev:desktop": "npm --workspace apps/desktop run dev",
+    "dev:python-runtime": "python packages/amadeus/server.py",
     "dev:server": "npm --workspace apps/server run dev",
-    "typecheck": "npm --workspace packages/shared run typecheck && npm --workspace apps/server run typecheck && npm --workspace apps/desktop run typecheck",
+    "typecheck": "npm --workspace packages/amadeus run typecheck && npm --workspace apps/server run typecheck && npm --workspace apps/desktop run typecheck",
     "test": "echo \"TODO: run tests\""
   },
   "workspaces": [

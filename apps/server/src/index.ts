@@ -3,7 +3,15 @@
   ClientRuntimeEvent,
   RuntimeEvent,
   ServerRuntimeEvent,
-} from '@amadeus-agent/shared'
+} from '@amadeus-agent/amadeus/events'
+import {
+  applyToolConfig,
+  createDefaultToolRegistry,
+  getEnabledToolSchemas,
+  getToolPermissionState,
+  type RegisteredTool,
+  type ToolCall,
+} from '@amadeus-agent/amadeus/tools'
 
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -25,24 +33,17 @@ const port = Number(process.env.AMADEUS_SERVER_PORT || 8788)
 const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.deepseek.com'
 const apiKey = process.env.OPENAI_API_KEY || ''
 const model = process.env.OPENAI_MODEL || 'deepseek-v4-flash'
+const pythonRuntimeUrl = process.env.AMADEUS_PYTHON_RUNTIME_URL || process.env.AMADEUS_PYTHON_TOOLS_URL || 'http://127.0.0.1:8790'
 const defaultSessionId = 'default'
 const dataDir = resolve(rootDir, 'data')
 const databasePath = resolve(dataDir, 'amadeus.sqlite')
+const toolsConfigPath = resolve(rootDir, 'configs/tools.yaml')
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   tool_call_id?: string
   tool_calls?: ToolCall[]
-}
-
-interface ToolCall {
-  id: string
-  type: 'function'
-  function: {
-    name: string
-    arguments: string
-  }
 }
 
 interface ChatChoiceMessage {
@@ -60,43 +61,15 @@ interface ChatCompletionResponse {
   }>
 }
 
-interface ToolSchema {
-  type: 'function'
-  function: {
-    name: string
-    description: string
-    parameters: Record<string, unknown>
-  }
-}
-
-interface ToolContext {
-  socket: WebSocket
-  sessionId: string
-}
-
-type ToolPermission = 'allow' | 'ask' | 'deny'
-
-interface RegisteredTool {
-  name: string
-  displayName: string
-  permission: ToolPermission
-  enabled: boolean
-  schema: ToolSchema
-  describeRequest?: (args: Record<string, unknown>) => string
-  execute: (args: Record<string, unknown>, context: ToolContext) => string | Promise<string>
+interface AudioSpeakResponse {
+  ok?: boolean
+  audioUrl?: string | null
+  durationMs?: number | null
 }
 
 const sessions = new Map<string, ChatMessage[]>()
 const pendingToolPermissions = new Map<string, (approved: boolean) => void>()
 
-function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(number)) {
-    return fallback
-  }
-
-  return Math.max(min, Math.min(max, Math.floor(number)))
-}
 const systemPrompt: ChatMessage = {
   role: 'system',
   content: [
@@ -110,92 +83,11 @@ const systemPrompt: ChatMessage = {
   ].join('\n'),
 }
 
-const toolRegistry: Record<string, RegisteredTool> = {
-  get_current_time: {
-    name: 'get_current_time',
-    displayName: 'Reading current time',
-    permission: 'allow',
-    enabled: true,
-    schema: {
-      type: 'function',
-      function: {
-        name: 'get_current_time',
-        description: 'Get the current local date and time. Use this when the user asks about current time, date, today, now, or scheduling context.',
-        parameters: {
-          type: 'object',
-          properties: {
-            timeZone: {
-              type: 'string',
-              description: 'IANA timezone. Defaults to Asia/Shanghai.',
-            },
-          },
-          additionalProperties: false,
-        },
-      },
-    },
-    execute: (args) => {
-      const timeZone = typeof args.timeZone === 'string' && args.timeZone ? args.timeZone : 'Asia/Shanghai'
-      const now = new Date()
-      const formatter = new Intl.DateTimeFormat('zh-CN', {
-        timeZone,
-        dateStyle: 'full',
-        timeStyle: 'medium',
-      })
-      return JSON.stringify({
-        iso: now.toISOString(),
-        timeZone,
-        formatted: formatter.format(now),
-      })
-    },
-  },
-  roll_dice: {
-    name: 'roll_dice',
-    displayName: 'Rolling dice',
-    permission: 'ask',
-    enabled: true,
-    schema: {
-      type: 'function',
-      function: {
-        name: 'roll_dice',
-        description: 'Roll dice and return the random results. Use this when the user asks to roll dice.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sides: {
-              type: 'number',
-              description: 'Number of sides per die. Defaults to 6.',
-            },
-            count: {
-              type: 'number',
-              description: 'Number of dice to roll. Defaults to 1 and is capped at 20.',
-            },
-          },
-          additionalProperties: false,
-        },
-      },
-    },
-    describeRequest: (args) => {
-      const sides = normalizePositiveInteger(args.sides, 6, 2, 1000)
-      const count = normalizePositiveInteger(args.count, 1, 1, 20)
-      return `Allow Amadeus to roll ${count} d${sides}?`
-    },
-    execute: (args) => {
-      const sides = normalizePositiveInteger(args.sides, 6, 2, 1000)
-      const count = normalizePositiveInteger(args.count, 1, 1, 20)
-      const rolls = Array.from({ length: count }, () => Math.floor(Math.random() * sides) + 1)
-      return JSON.stringify({
-        sides,
-        count,
-        rolls,
-        total: rolls.reduce((sum, value) => sum + value, 0),
-      })
-    },
-  },
-}
-
-const tools = Object.values(toolRegistry)
-  .filter((tool) => tool.enabled && tool.permission !== 'deny')
-  .map((tool) => tool.schema)
+const toolRegistry = createDefaultToolRegistry({
+  pythonBackend: pythonRuntimeUrl ? { baseUrl: pythonRuntimeUrl } : undefined,
+})
+applyToolConfig(toolRegistry, toolsConfigPath)
+const tools = getEnabledToolSchemas(toolRegistry)
 
 if (!existsSync(dataDir)) {
   mkdirSync(dataDir, { recursive: true })
@@ -395,7 +287,7 @@ async function executeToolCall(socket: WebSocket, sessionId: string, toolCall: T
       }
     }
 
-    const result = await tool.execute(args, { socket, sessionId })
+    const result = await tool.execute(args, { sessionId })
     send(socket, 'tool.finished', sessionId, {
       toolName,
       ok: true,
@@ -442,6 +334,35 @@ async function requestToolDecision(messages: ChatMessage[]): Promise<ChatChoiceM
 
   const data = await response.json() as ChatCompletionResponse
   return data.choices?.[0]?.message ?? { role: 'assistant', content: '' }
+}
+
+async function requestAudioOutput(text: string): Promise<AudioSpeakResponse | undefined> {
+  const normalizedText = text.trim()
+  if (!normalizedText) {
+    return undefined
+  }
+
+  try {
+    const response = await fetch(`${pythonRuntimeUrl.replace(/\/$/, '')}/audio/speak`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text: normalizedText,
+        format: 'wav',
+      }),
+    })
+
+    if (!response.ok) {
+      return undefined
+    }
+
+    return await response.json() as AudioSpeakResponse
+  }
+  catch {
+    return undefined
+  }
 }
 
 async function streamChat(socket: WebSocket, sessionId: string, userText: string): Promise<void> {
@@ -555,6 +476,13 @@ async function streamChat(socket: WebSocket, sessionId: string, userText: string
   saveMessage(sessionId, 'assistant', assistantText)
   sendMemoryUpdated(socket, sessionId)
   send(socket, 'assistant.message', sessionId, { text: assistantText })
+  const audio = await requestAudioOutput(assistantText)
+  if (audio?.ok && audio.audioUrl) {
+    send(socket, 'audio.tts-ready', sessionId, {
+      audioUrl: audio.audioUrl,
+      durationMs: audio.durationMs ?? null,
+    })
+  }
   sendState(socket, sessionId, 'idle')
   send(socket, 'character.behavior', sessionId, {
     emotion: 'neutral',
@@ -583,6 +511,7 @@ wss.on('connection', (socket) => {
     name: 'amadeus-agent-server',
     model,
     memoryMessages: countPersistedMessages(sessionId),
+    toolPermissions: getToolPermissionState(toolRegistry),
   })
   sendState(socket, sessionId, 'idle')
 
@@ -603,6 +532,7 @@ wss.on('connection', (socket) => {
         name: 'amadeus-agent-server',
         model,
         memoryMessages: 0,
+        toolPermissions: getToolPermissionState(toolRegistry),
       })
       sendState(socket, event.sessionId, 'idle')
       return

@@ -159,11 +159,13 @@ Allowed states:
 {
   "type": "audio.tts-ready",
   "payload": {
-    "audioUrl": "local://tts/session-1/message-3.wav",
+    "audioUrl": "http://127.0.0.1:8790/audio/files/cache/session-1-message-3.wav",
     "durationMs": 3200
   }
 }
 ```
+
+If the Python audio runtime cannot provide an audio URL, the desktop may fall back to system `speechSynthesis`.
 
 ### error
 

@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@amadeus-agent/shared": "file:../../packages/shared",
+    "@amadeus-agent/amadeus": "file:../../packages/amadeus",
     "dotenv": "^17.2.3",
     "ws": "^8.18.3"
   },

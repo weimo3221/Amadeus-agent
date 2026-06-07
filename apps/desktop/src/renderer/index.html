@@ -3,8 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval' https://cubism.live2d.com; connect-src 'self' ws://127.0.0.1:8788 http://localhost:5173 ws://localhost:5173 https://cdn.jsdelivr.net https://cubism.live2d.com; img-src 'self' data: blob: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline';"
+    />
     <title>Amadeus Agent</title>
-    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
   </head>
   <body>
     <main id="app">
@@ -49,18 +52,21 @@
           <span id="memory-status">Memory unknown</span>
           <button id="reset-session-button" type="button" title="Clear this session memory">Reset</button>
         </div>
-        <div id="tool-status" class="tool-status">Tools idle</div>
+        <div class="diagnostics">
+          <div id="tool-status" class="tool-status">Tools idle</div>
+          <div id="tool-config-status" class="tool-config-status">Tool config unknown</div>
+          <div id="voice-status" class="voice-status">Voice idle</div>
+        </div>
         <div id="tool-permission" class="tool-permission" hidden>
           <span id="tool-permission-text"></span>
           <button id="tool-allow-button" type="button">Allow</button>
           <button id="tool-deny-button" type="button">Deny</button>
         </div>
-        <div id="voice-status" class="voice-status">Voice idle</div>
+        <div id="chat-log" class="chat-log"></div>
         <form id="chat-form">
           <input id="chat-input" name="message" autocomplete="off" placeholder="Type to Amadeus..." />
           <button type="submit">Send</button>
         </form>
-        <div id="chat-log" class="chat-log"></div>
       </section>
     </main>
     <script type="module" src="./main.ts"></script>

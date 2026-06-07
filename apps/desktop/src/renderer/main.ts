@@ -2,10 +2,11 @@ import { Application } from '@pixi/app'
 import type {
   AssistantState,
   CharacterBehaviorPayload,
+  HelloPayload,
   RuntimeEvent,
   ServerRuntimeEvent,
-} from '@amadeus-agent/shared'
-import { Live2DModel } from 'pixi-live2d-display/cubism4'
+} from '@amadeus-agent/amadeus/events'
+import type { Live2DModel as Live2DModelClass } from 'pixi-live2d-display/cubism4'
 import * as PIXI from 'pixi.js'
 
 import './styles.css'
@@ -13,6 +14,8 @@ import './styles.css'
 window.PIXI = PIXI
 
 const DEFAULT_MODEL_URL = 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json'
+const CUBISM_CORE_URL = 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js'
+const CUBISM_CORE_TIMEOUT_MS = 8000
 const MOTION_PRIORITY_FORCE = 3
 const LIVE2D_LOAD_TIMEOUT_MS = 15000
 
@@ -29,6 +32,7 @@ const providerLabel = document.querySelector<HTMLElement>('#provider-label')
 const connectionLabel = document.querySelector<HTMLElement>('#connection-label')
 const memoryStatus = document.querySelector<HTMLSpanElement>('#memory-status')
 const toolStatus = document.querySelector<HTMLDivElement>('#tool-status')
+const toolConfigStatus = document.querySelector<HTMLDivElement>('#tool-config-status')
 const toolPermission = document.querySelector<HTMLDivElement>('#tool-permission')
 const toolPermissionText = document.querySelector<HTMLSpanElement>('#tool-permission-text')
 const toolAllowButton = document.querySelector<HTMLButtonElement>('#tool-allow-button')
@@ -47,16 +51,20 @@ let socket: WebSocket | undefined
 let sessionId: string = crypto.randomUUID()
 let activeAssistantMessage: HTMLDivElement | undefined
 let pendingAssistantText = ''
+let lastAssistantSpeechText = ''
 let pendingToolPermissionRequestId: string | undefined
 let live2dController: Live2DController | undefined
 let currentUtterance: SpeechSynthesisUtterance | undefined
 let availableVoices: SpeechSynthesisVoice[] = []
+let currentAudio: HTMLAudioElement | undefined
+let pendingSpeechFallbackTimer: number | undefined
 
 interface Live2DCoreModel {
   setParameterValueById: (id: string, value: number) => void
 }
 
-type Live2DModelInstance = Awaited<ReturnType<typeof Live2DModel.from>>
+type Live2DModelConstructor = typeof Live2DModelClass
+type Live2DModelInstance = Awaited<ReturnType<Live2DModelConstructor['from']>>
 
 interface Live2DModelCapabilities {
   expressions: string[]
@@ -347,6 +355,20 @@ function setToolStatus(message: string): void {
   }
 }
 
+function setToolConfigStatus(message: string): void {
+  if (toolConfigStatus) {
+    toolConfigStatus.textContent = message
+  }
+}
+
+function formatToolConfigStatus(payload: HelloPayload): string {
+  const summary = payload.toolPermissions
+    .map((tool) => `${tool.name} ${tool.enabled ? tool.permission : 'off'}`)
+    .join(', ')
+
+  return `Tools: ${summary || 'none'}`
+}
+
 function setToolPermissionPrompt(requestId: string, message: string): void {
   pendingToolPermissionRequestId = requestId
   if (toolPermissionText) {
@@ -464,6 +486,75 @@ function speak(text: string): void {
   }, 250)
 }
 
+function cancelSpeechFallback(): void {
+  if (pendingSpeechFallbackTimer !== undefined) {
+    window.clearTimeout(pendingSpeechFallbackTimer)
+    pendingSpeechFallbackTimer = undefined
+  }
+}
+
+function scheduleSpeechFallback(text: string): void {
+  cancelSpeechFallback()
+  pendingSpeechFallbackTimer = window.setTimeout(() => {
+    pendingSpeechFallbackTimer = undefined
+    speak(text)
+  }, 300)
+}
+
+function stopRuntimeAudio(): void {
+  currentAudio?.pause()
+  currentAudio = undefined
+}
+
+function stopAllVoiceOutput(): void {
+  cancelSpeechFallback()
+  stopRuntimeAudio()
+  window.speechSynthesis?.cancel()
+  currentUtterance = undefined
+  live2dController?.stopMouthLoop()
+}
+
+function playRuntimeAudio(audioUrl: string): void {
+  if (!voiceEnabled) {
+    setVoiceStatus('Voice off')
+    return
+  }
+
+  cancelSpeechFallback()
+  stopRuntimeAudio()
+  window.speechSynthesis?.cancel()
+  live2dController?.stopMouthLoop()
+
+  const audio = new Audio(audioUrl)
+  currentAudio = audio
+
+  audio.addEventListener('play', () => {
+    setVoiceStatus('Playing runtime audio')
+    void live2dController?.applyState('speaking')
+    live2dController?.startMouthLoop()
+  })
+
+  audio.addEventListener('ended', () => {
+    setVoiceStatus('Voice idle')
+    live2dController?.stopMouthLoop()
+    void live2dController?.applyState('idle')
+    currentAudio = undefined
+  })
+
+  audio.addEventListener('error', () => {
+    setVoiceStatus('Runtime audio failed; using system voice')
+    live2dController?.stopMouthLoop()
+    currentAudio = undefined
+    speak(lastAssistantSpeechText)
+  })
+
+  void audio.play().catch(() => {
+    setVoiceStatus('Runtime audio blocked; using system voice')
+    currentAudio = undefined
+    speak(lastAssistantSpeechText)
+  })
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: number | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -480,6 +571,45 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
       window.clearTimeout(timeoutId)
     }
   }
+}
+
+function loadScript(src: string): Promise<void> {
+  const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`)
+  if (existing?.dataset.loaded === 'true') {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = existing ?? document.createElement('script')
+    script.src = src
+    script.async = true
+
+    script.addEventListener('load', () => {
+      script.dataset.loaded = 'true'
+      resolve()
+    }, { once: true })
+
+    script.addEventListener('error', () => {
+      reject(new Error(`Could not load script: ${src}`))
+    }, { once: true })
+
+    if (!existing) {
+      document.head.append(script)
+    }
+  })
+}
+
+async function loadCubismCore(): Promise<void> {
+  if ('Live2DCubismCore' in window) {
+    return
+  }
+
+  setStatus('Loading Cubism runtime...')
+  await withTimeout(
+    loadScript(CUBISM_CORE_URL),
+    CUBISM_CORE_TIMEOUT_MS,
+    'Cubism runtime loading',
+  )
 }
 
 function setStatus(message: string, visible = true): void {
@@ -545,6 +675,7 @@ function handleServerEvent(event: ServerRuntimeEvent): void {
       sessionId = event.sessionId
       providerLabel!.textContent = event.payload.model
       setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
+      setToolConfigStatus(formatToolConfigStatus(event.payload))
       setConnection('Connected', true)
       break
     case 'memory.updated':
@@ -556,7 +687,8 @@ function handleServerEvent(event: ServerRuntimeEvent): void {
       break
     case 'assistant.message':
       activeAssistantMessage = undefined
-      speak(event.payload.text || pendingAssistantText)
+      lastAssistantSpeechText = event.payload.text || pendingAssistantText
+      scheduleSpeechFallback(lastAssistantSpeechText)
       pendingAssistantText = ''
       break
     case 'assistant.state':
@@ -565,6 +697,9 @@ function handleServerEvent(event: ServerRuntimeEvent): void {
       break
     case 'character.behavior':
       void live2dController?.applyBehavior(event.payload)
+      break
+    case 'audio.tts-ready':
+      playRuntimeAudio(event.payload.audioUrl)
       break
     case 'tool.started':
       setToolStatus(`Tool running: ${event.payload.displayName}`)
@@ -625,7 +760,6 @@ async function bootLive2D(): Promise<void> {
     resizeTo: stageElement,
     autoStart: true,
     antialias: true,
-    transparent: true,
     backgroundAlpha: 0,
   })
 
@@ -634,6 +768,9 @@ async function bootLive2D(): Promise<void> {
   const modelUrl = import.meta.env.VITE_LIVE2D_MODEL_URL || DEFAULT_MODEL_URL
 
   try {
+    await loadCubismCore()
+    const { Live2DModel } = await import('pixi-live2d-display/cubism4')
+    setStatus('Loading Live2D model...')
     const model = await withTimeout(
       Live2DModel.from(modelUrl),
       LIVE2D_LOAD_TIMEOUT_MS,
@@ -674,7 +811,8 @@ async function bootLive2D(): Promise<void> {
   }
   catch (error) {
     console.error(error)
-    setStatus('Live2D model failed to load. Set VITE_LIVE2D_MODEL_URL or place a model under models/live2d.')
+    const message = error instanceof Error ? error.message : 'Unknown Live2D loading error'
+    setStatus(`Live2D failed: ${message}`)
   }
 }
 
@@ -721,9 +859,7 @@ function bootControls(): void {
     voiceButton.textContent = voiceEnabled ? 'Voice On' : 'Voice Off'
     voiceButton.title = voiceEnabled ? 'Disable voice output' : 'Enable voice output'
     if (!voiceEnabled) {
-      window.speechSynthesis?.cancel()
-      currentUtterance = undefined
-      live2dController?.stopMouthLoop()
+      stopAllVoiceOutput()
       setVoiceStatus('Voice off')
     }
     else {
@@ -741,9 +877,8 @@ function bootControls(): void {
     chatLog?.replaceChildren()
     activeAssistantMessage = undefined
     pendingAssistantText = ''
-    window.speechSynthesis?.cancel()
-    currentUtterance = undefined
-    live2dController?.stopMouthLoop()
+    lastAssistantSpeechText = ''
+    stopAllVoiceOutput()
     setToolStatus('Tools idle')
     clearToolPermissionPrompt()
     setMemoryStatus('Memory: resetting...')
@@ -768,9 +903,8 @@ function bootControls(): void {
     appendMessage('user', text)
     activeAssistantMessage = undefined
     pendingAssistantText = ''
-    window.speechSynthesis?.cancel()
-    currentUtterance = undefined
-    live2dController?.stopMouthLoop()
+    lastAssistantSpeechText = ''
+    stopAllVoiceOutput()
 
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       appendMessage('assistant', 'Agent runtime is not connected. Start apps/server and try again.')

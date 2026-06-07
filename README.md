@@ -5,14 +5,9 @@ Amadeus Agent is a desktop virtual character agent designed around a Live2D pres
 The first goal is not to build a full AIRI clone. The goal is to create a smaller project with clear boundaries:
 
 - `apps/desktop`: desktop Live2D shell and user interaction surface
-- `apps/server`: local agent runtime and API process
-- `packages/live2d-stage`: Live2D rendering, expressions, motions, and stage state
-- `packages/character`: persona, emotion policy, and behavior mapping
-- `packages/agent-core`: LLM loop, streaming response, and tool calling
-- `packages/memory`: conversation history, user profile, and long-term memory
-- `packages/tools`: local tools, MCP bridge, and tool registry
-- `packages/audio`: ASR, TTS, and lipsync pipeline
-- `packages/shared`: shared types, config schemas, and event protocol
+- `apps/server`: TypeScript bridge between the desktop and Python runtime
+- `packages/amadeus`: Python agent loop, model adapters, memory, tools, skills, Live2D/audio command interfaces
+- `packages/live2d-stage`: desktop Live2D rendering adapter
 
 ## Design References
 

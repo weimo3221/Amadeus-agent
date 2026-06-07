@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@amadeus-agent/shared": "file:../../packages/shared",
+    "@amadeus-agent/amadeus": "file:../../packages/amadeus",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@pixi/app": "^6.5.10",

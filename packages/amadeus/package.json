@@ -1,15 +1,17 @@
 {
-  "name": "@amadeus-agent/shared",
+  "name": "@amadeus-agent/amadeus",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./events.ts"
+    "./events": "./events.ts",
+    "./tools": "./tools.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/node": "^24.12.2",
     "typescript": "^5.9.3"
   }
 }

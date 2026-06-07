@@ -23,6 +23,14 @@ export interface HelloPayload {
   name: string
   model: string
   memoryMessages: number
+  toolPermissions: ToolPermissionState[]
+}
+
+export interface ToolPermissionState {
+  name: string
+  displayName: string
+  enabled: boolean
+  permission: 'allow' | 'ask' | 'deny'
 }
 
 export type ClientRuntimeEvent =
@@ -37,6 +45,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'assistant.message', AssistantMessagePayload>
   | RuntimeEvent<'assistant.state', AssistantStatePayload>
   | RuntimeEvent<'character.behavior', CharacterBehaviorPayload>
+  | RuntimeEvent<'audio.tts-ready', AudioTtsReadyPayload>
   | RuntimeEvent<'tool.started', ToolStartedPayload>
   | RuntimeEvent<'tool.finished', ToolFinishedPayload>
   | RuntimeEvent<'tool.permission.request', ToolPermissionRequestPayload>
@@ -64,6 +73,11 @@ export interface CharacterBehaviorPayload {
   expression: string
   motion: string
   intensity?: number
+}
+
+export interface AudioTtsReadyPayload {
+  audioUrl: string
+  durationMs?: number | null
 }
 
 export interface ToolStartedPayload {

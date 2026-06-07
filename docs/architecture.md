@@ -2,14 +2,15 @@
 
 ## Product Shape
 
-Amadeus Agent is a desktop companion agent with a Live2D body. The character is not just a chat UI; it should react through facial expression, motion, speaking state, idle state, and contextual behavior.
+Amadeus Agent is a desktop companion agent with a Live2D body. The character is not just a chat UI; it should react through facial expression, motion, speaking state, idle state, contextual behavior, tools, memory, and audio.
 
-The system is split into two runtime layers:
+The target architecture is a Python-owned agent runtime with TypeScript/Electron adapters around it:
 
 - Desktop layer: renders the character and handles direct user interaction.
-- Agent runtime layer: handles language model calls, memory, tools, and behavior decisions.
+- TypeScript bridge layer: exposes WebSocket/HTTP transport to the desktop and forwards runtime work.
+- Python runtime layer: owns the agent loop, model calls, memory, tools, skills, and device-interface planning.
 
-The desktop layer should stay thin. It should not own long-term memory, tool execution, or provider-specific LLM logic.
+The desktop layer should stay thin. It should not own long-term memory, tool execution, provider-specific LLM logic, or agent planning.
 
 ## Runtime Diagram
 
@@ -22,41 +23,82 @@ apps/desktop
   |
   | WebSocket / local IPC events
   v
-apps/server
+apps/server (TypeScript bridge)
   |
-  +--> packages/agent-core
-  |      +--> LLM provider
-  |      +--> tool calling
-  |      +--> response streaming
+  | HTTP / JSON runtime calls
+  v
+packages/amadeus
   |
-  +--> packages/character
-  |      +--> persona
-  |      +--> emotion policy
-  |      +--> behavior mapping
+  +--> agent
+  |      +--> conversation loop
+  |      +--> planning
+  |      +--> response/event streaming
   |
-  +--> packages/memory
-  |      +--> session memory
-  |      +--> profile memory
-  |      +--> episodic memory
+  +--> memory
+  |      +--> raw conversation history
+  |      +--> session summaries
+  |      +--> user profile facts
+  |      +--> retrieval
   |
-  +--> packages/tools
-  |      +--> local tools
+  +--> model
+  |      +--> hosted model adapters
+  |      +--> local model adapters
+  |
+  +--> tools
+  |      +--> concrete local tools
   |      +--> MCP bridge
   |      +--> scheduled tasks
   |
-  +--> packages/audio
-         +--> ASR
-         +--> TTS
-         +--> lipsync cues
+  +--> skills
+  |      +--> reusable behaviors
+  |      +--> composed workflows
+  |
+  +--> live2d
+  |      +--> character command interface
+  |      +--> expression/motion/lipsync cues
+  |
+  +--> audio
+         +--> ASR/TTS command interface
+         +--> local audio asset selection
+         +--> generated TTS cache
+         +--> audio playback metadata
 
 apps/desktop
   |
   +--> packages/live2d-stage
-         +--> model loading
+         +--> actual Live2D model loading/rendering
          +--> expression control
          +--> motion control
-         +--> idle/speaking/listening states
+         +--> pointer-following and click reaction
 ```
+
+`packages/amadeus` also exposes small TypeScript bridge modules while the Python runtime takes ownership of behavior:
+
+```text
+apps/server
+  |
+  +--> packages/amadeus/events.ts
+  |      +--> event protocol types
+  |
+  +--> packages/amadeus/tools.ts
+         +--> tool schema metadata
+         +--> permission metadata
+         +--> Python runtime bridge
+```
+
+## Python Runtime
+
+`packages/amadeus` is the long-term agent brain. Its internal modules are peers:
+
+- `agent`: conversation loop, planning, tool-use policy, response/event streaming.
+- `memory`: raw history, summaries, user profile facts, retrieval.
+- `model`: OpenAI-compatible, local model, and future provider adapters.
+- `tools`: concrete tool implementations.
+- `skills`: reusable behaviors built from model, memory, and tools.
+- `live2d`: interface contract for character state, expressions, motions, and lipsync cues.
+- `audio`: interface contract for TTS, ASR, and audio output.
+
+Live2D and audio are not the agent brain. They are device interfaces that the Python runtime can command, while the actual rendering/playback remains in desktop-side adapters.
 
 ## Main Modules
 
@@ -69,23 +111,33 @@ Desktop app responsibilities:
 - Provide chat input, compact settings, and status indicators.
 - Capture user events: text, voice, mouse hover, click, drag, and hotkeys.
 - Display streaming replies.
-- Play TTS audio and drive lipsync.
+- Play audio and drive lipsync until audio is fully behind the Python audio interface.
 - Receive behavior commands from the agent runtime.
 
-The desktop app should communicate through a small event protocol instead of importing server internals.
+The desktop app communicates through the event protocol instead of importing runtime internals.
 
 ### apps/server
 
-Local runtime responsibilities:
+TypeScript bridge responsibilities:
 
 - Expose WebSocket and HTTP endpoints to the desktop app.
-- Manage sessions.
-- Run the agent loop.
-- Persist memory.
-- Execute tools with permission checks.
-- Normalize model providers behind one interface.
+- Translate desktop events into Python runtime requests.
+- Forward Python runtime events back to the desktop.
+- Own user-facing permission prompts while migration is in progress.
+- Keep compatibility with the current OpenAI/tool loop until the Python agent loop replaces it.
 
-In early versions this can be a Node.js process. If Python agent frameworks become necessary later, Python can be added as a worker process instead of replacing the desktop stack.
+This layer should shrink over time.
+
+### packages/amadeus
+
+Python runtime responsibilities:
+
+- Own the agent loop.
+- Own memory persistence and retrieval.
+- Own concrete tool execution.
+- Own model provider adapters.
+- Own skills/workflows.
+- Emit structured commands for Live2D/audio interfaces.
 
 ### packages/live2d-stage
 
@@ -97,89 +149,43 @@ Live2D responsibilities:
 - Provide lipsync parameter updates.
 - Provide pointer-following and click reaction helpers.
 
-This package should borrow ideas from AIRI's `packages/stage-ui-live2d`, but keep the public API smaller at first.
+This package is an adapter for the `amadeus/live2d` command interface. The Python runtime decides what should happen; the desktop adapter knows how to make the rendered model do it.
 
-### packages/character
-
-Character responsibilities:
-
-- Load persona config from `configs/character.yaml`.
-- Convert assistant state into character behavior.
-- Map semantic emotion to Live2D expressions and motions.
-- Keep style rules separate from model provider code.
-
-Example output:
-
-```json
-{
-  "emotion": "curious",
-  "expression": "smile",
-  "motion": "tilt_head",
-  "speakingStyle": "soft"
-}
-```
-
-### packages/agent-core
-
-Agent responsibilities:
-
-- Build prompts from persona, memory, user input, and tool state.
-- Stream LLM responses.
-- Decide and execute tool calls.
-- Emit structured side-channel events for emotion, action, and UI state.
-- Keep provider-specific code behind adapters.
-
-The first implementation should support OpenAI-compatible chat APIs. This covers OpenAI, OpenRouter, LM Studio, Ollama-compatible gateways, and many local servers.
-
-### packages/memory
-
-Memory responsibilities:
-
-- Store raw conversation history.
-- Summarize old sessions.
-- Maintain user profile facts.
-- Retrieve relevant memories for new conversations.
-
-Start with SQLite. Add vector search only after simple retrieval is insufficient.
-
-### packages/tools
-
-Tool responsibilities:
-
-- Define a typed tool registry.
-- Support permission levels.
-- Provide first-party tools:
-  - current time
-  - web search placeholder
-  - local file search
-  - open URL or app
-  - screenshot placeholder
-  - reminder placeholder
-- Add MCP bridge after the local tool API stabilizes.
-
-### packages/audio
+### amadeus/audio
 
 Audio responsibilities:
 
 - Voice activity state.
 - Speech-to-text integration.
 - Text-to-speech integration.
-- Lipsync cue generation.
+- Local audio asset lookup under `packages/amadeus/assets/audio`.
+- Generated TTS cache management.
+- Lipsync cue playback.
 
-TTS can initially return audio plus rough amplitude-based mouth movement. Phoneme-level lipsync can come later.
+This module defines the audio command interface. Desktop-side playback remains an adapter concern: it plays runtime-provided `audioUrl` values and drives lipsync while playback is active. If Python audio cannot generate audio for a text request yet, the desktop may fall back to system `speechSynthesis`.
 
-### packages/shared
+Local files under `voices/` and `sfx/` are fixed clips. They should not be treated as a complete voice. Arbitrary assistant replies require a TTS provider that generates files into `cache/` or returns a playable URL.
+
+### packages/amadeus/tools.ts
+
+Tool responsibilities:
+
+- Define OpenAI-compatible tool schema metadata.
+- Support permission metadata.
+- Bridge tool execution to the Python runtime in `packages/amadeus`.
+- Keep TypeScript fallback tools only as temporary development scaffolding.
+
+### packages/amadeus/events.ts
 
 Shared responsibilities:
 
 - Runtime event types.
 - Config schemas.
 - Common IDs and error shapes.
-- Provider and tool type definitions.
 
 ## Event Protocol
 
-Use events between desktop and server. Keep them explicit and serializable.
+Use events between desktop, bridge, and Python runtime. Keep them explicit and serializable.
 
 Desktop to server:
 
@@ -190,30 +196,49 @@ user.voice-end
 desktop.pointer
 desktop.hotkey
 session.reset
+tool.permission.response
 ```
 
 Server to desktop:
 
 ```text
+server.hello
+memory.updated
 assistant.delta
 assistant.message
 assistant.state
 character.behavior
 tool.started
 tool.finished
+tool.permission.request
 audio.tts-ready
 error
 ```
 
+Bridge to Python runtime:
+
+```text
+GET /health
+POST /agent/message
+POST /tools/execute
+GET /memory/count
+GET /memory/messages
+POST /memory/messages
+POST /memory/reset
+POST /audio/speak
+GET /audio/files/{relativePath}
+```
+
+Python runtime to bridge responses should be serializable event batches or streams using the same semantic event names where possible.
+
 ## Implementation Principle
 
-Keep the first version boring:
+Migrate toward the Python runtime without breaking the desktop loop:
 
-- One desktop app.
-- One local runtime.
-- One Live2D model.
-- One OpenAI-compatible provider.
-- A small tool registry.
-- SQLite persistence.
+- Keep Live2D model loading/rendering in the desktop adapter.
+- Move agent, memory, model adapters, tool execution, skills, and audio planning into Python.
+- Keep TypeScript packages as transport/schema/adapter surfaces only where they earn their keep.
+- Prefer small vertical migrations: move one capability fully across the boundary before moving the next.
+- The current migration target is audio output, because it has a clean device-adapter boundary: Python chooses or generates audio; desktop plays it.
 
 More complex systems such as sub-agents, vector memory, MCP, and active scheduling should be added only after the basic desktop experience feels stable.

@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-05-31
+Last updated: 2026-06-08
 
 This document is the live progress tracker for Amadeus Agent. Update it whenever a project phase is completed or the immediate next step changes.
 
@@ -25,17 +25,21 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 - Tool permissions now support `allow`, `ask`, and `deny` metadata.
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as the first low-risk `ask` tool.
+- Server loads effective tool enabled/permission settings from `configs/tools.yaml` at startup.
+- Desktop diagnostics show the loaded tool permission state from the server.
+- Tool definitions, schemas, registry creation, and config loading now live in `packages/amadeus/tools.ts`.
+- Python runtime sidecar scaffolding exists under `packages/amadeus`.
+- Python audio interface is now wired for the first pass. Current playback still falls back to Electron/browser `speechSynthesis` until a real TTS provider is configured.
+- Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
 - Typecheck, desktop build, allow-path WebSocket test, and deny-path WebSocket test have passed.
 
 ### Still Needed
 
-- Load effective tool enabled/permission settings from `configs/tools.yaml` at server startup.
-- Validate invalid or unknown tool config entries and report them clearly.
-- Show loaded tool permission state in the desktop diagnostics area.
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
-- Replace browser `speechSynthesis` MVP with a stronger TTS option if better voice quality is needed.
+- Replace browser `speechSynthesis` MVP with Python-owned audio output and a stronger TTS option if better voice quality is needed.
+- Install GPT-SoVITS pretrained base models before testing Vivian TTS; the local `GPT_SoVITS/pretrained_models` directory is currently missing required base assets.
 - Improve lipsync from timed mouth movement to audio-driven or phoneme-aware movement.
 - Add practical `ask` tools after config loading is verified, such as local file search or opening URLs.
 - Add long-term memory beyond raw message history, such as user facts, preferences, and summaries.
@@ -52,13 +56,8 @@ Status: complete.
 - Created monorepo-style structure:
   - `apps/desktop`
   - `apps/server`
-  - `packages/shared`
+  - `packages/amadeus`
   - `packages/live2d-stage`
-  - `packages/character`
-  - `packages/agent-core`
-  - `packages/memory`
-  - `packages/tools`
-  - `packages/audio`
   - `configs`
   - `docs`
   - `models/live2d`
@@ -112,7 +111,7 @@ Status: complete for MVP.
   - `assistant.message`
   - `character.behavior`
   - `error`
-- Added `packages/shared` package for shared event types.
+- Added shared event types, now located at `packages/amadeus/events.ts`.
 - Connected desktop chat UI to local WebSocket server.
 - Desktop now sends `user.message`.
 - Desktop now streams `assistant.delta` into the chat panel.
@@ -201,7 +200,7 @@ Status: MVP memory, model-triggered tools, registry, and permission prompts comp
 
 ## In Progress
 
-Nothing is currently in progress. The next recommended implementation step is `Tool Config Loader`.
+Nothing is currently in progress. The next recommended implementation step is `Practical Ask Tools`.
 
 ## Completed Subphase
 
@@ -299,18 +298,117 @@ Status: complete for MVP.
   - `npm run typecheck`
   - `npm --workspace apps/desktop run build`
 
-## Next Recommended Phase
+## Completed Subphase
 
 ### Phase 5 Continued: Tool Config Loader
 
-Goal: make the registry read effective enabled/permission settings from `configs/tools.yaml` instead of only mirroring the file.
+Status: complete for MVP.
+
+- Added a small server-side config loader for `configs/tools.yaml`.
+- Applies configured `enabled` and `permission` values before exposing tools to the model.
+- Supports the legacy `time` config key as an alias for the registered `get_current_time` tool.
+- Validates unknown tool names, invalid boolean values, invalid permission values, and duplicate aliases with startup warnings.
+- Adds loaded tool permission state to `server.hello`.
+- Desktop shows loaded tool state in the diagnostics area, for example `Tools: get_current_time allow, roll_dice ask`.
+- Verified:
+  - `npm run typecheck`
+  - `npm --workspace apps/desktop run build`
+
+## Completed Subphase
+
+### Phase 5 Continued: Tools Package Extraction
+
+Status: complete for first pass.
+
+- Added TypeScript bridge exports inside `@amadeus-agent/amadeus`.
+- Moved tool types, default registry creation, `get_current_time`, `roll_dice`, config loading, enabled schema selection, and permission-state projection into `packages/amadeus/tools.ts`.
+- Updated `apps/server` to consume `@amadeus-agent/amadeus/tools` while keeping WebSocket permission prompts and runtime execution flow in the server app.
+- Updated root typecheck to include `packages/amadeus`.
+- Verified:
+  - `npm install`
+  - `npm run typecheck`
+  - server restart and `/health`
+
+## Completed Subphase
+
+### Phase 5 Continued: Python Runtime Foundation
+
+Status: scaffolded.
+
+- Added `packages/amadeus` as the local Python runtime sidecar.
+- Added peer runtime modules for `agent`, `memory`, `model`, `tools`, `skills`, `live2d`, and `audio`.
+- Added `GET /health`, `POST /tools/execute`, and memory endpoints.
+- Implemented Python versions of `get_current_time` and `roll_dice`.
+- Added SQLite-backed Python memory store matching the existing `messages` table.
+- Added optional Python backend execution in `packages/amadeus/tools.ts`.
+- Server now defaults tool execution to `AMADEUS_PYTHON_RUNTIME_URL`, with `http://127.0.0.1:8790` as the default local sidecar URL.
+- Root `npm run dev` now starts Python runtime, server, and desktop together.
+- Verified:
+  - `npm run typecheck`
+- Not yet verified in this shell:
+  - Python process execution was blocked by a local sandbox spawn refresh during this session.
+
+## Completed Subphase
+
+### Phase 5 Continued: GPT-SoVITS Provider Discovery
+
+Status: environment checked, provider not wired yet.
+
+- Located the local GPT-SoVITS project at `D:\OtherProject\LearningLLM\GPT-SoVITS`.
+- Confirmed the API entrypoint exists at `api_v2.py`.
+- Confirmed the Vivian fine-tuned GPT/SoVITS weights exist:
+  - Chinese GPT: `D:\OtherProject\LearningLLM\dataset\薇薇安_zh\薇薇安-e10.ckpt`
+  - Chinese SoVITS: `D:\OtherProject\LearningLLM\dataset\薇薇安_zh\薇薇安_e10_s1040_l32.pth`
+  - English GPT: `D:\OtherProject\LearningLLM\dataset\薇薇安_en\薇薇安-e10.ckpt`
+  - English SoVITS: `D:\OtherProject\LearningLLM\dataset\薇薇安_en\薇薇安_e10_s1010_l32.pth`
+- Confirmed each language has one reference wav under `reference_audios`.
+- Checked GPT-SoVITS startup log: current output only shows CUDA fallback warnings, not a complete traceback.
+- Found the real setup blocker: `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models` is missing required base assets such as BERT, HuBERT, and v2 base weights.
+- Recommended install command on this machine, where `pwsh` is unavailable and Windows PowerShell should be used:
+  - `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Device CU126 -Source ModelScope`
+- Next integration work should start only after GPT-SoVITS API can generate `vivian_zh_test.wav` and `vivian_en_test.wav` successfully.
+
+## Completed Subphase
+
+### Phase 5 Continued: Audio Runtime Interface
+
+Status: complete for first pass.
+
+- Documented the Python-first audio direction.
+- Standardized the local audio asset layout:
+  - `packages/amadeus/assets/audio/voices`
+  - `packages/amadeus/assets/audio/sfx`
+  - `packages/amadeus/assets/audio/cache`
+- Documented `audio.tts-ready` as the runtime-to-desktop event used for Python-provided audio playback.
+- Added the local audio asset directories.
+- Added a Python `AudioRuntime` and `TtsProvider` abstraction.
+- Added `POST /audio/speak` to the Python runtime.
+- Added `GET /audio/files/{relativePath}` to serve local audio files safely from `packages/amadeus/assets/audio`.
+- Clarified that `voices/` stores fixed clips only; arbitrary assistant speech needs a real TTS provider.
+- Updated server event types with `audio.tts-ready`.
+- Updated the server bridge to call Python `/audio/speak` after assistant replies and emit `audio.tts-ready` only when Python returns a real `audioUrl`.
+- Updated the desktop renderer to play runtime-provided audio URLs and cancel the system voice fallback when runtime audio arrives.
+- Kept Electron/browser `speechSynthesis` as the fallback path until Python audio can generate an `audioUrl`.
+- Verified:
+  - `npm --workspace packages/amadeus run typecheck`
+  - `npm --workspace apps/server run typecheck`
+  - `npm --workspace apps/desktop run typecheck`
+  - `npm --workspace apps/desktop run build`
+  - Python source compile check without writing pyc files
+
+## Next Recommended Phase
+
+### Phase 5 Continued: TTS Provider Integration
+
+Goal: add a concrete TTS provider behind `packages/amadeus/audio.py`.
 
 Planned tasks:
 
-- Add a small config loader or YAML dependency for server-side tool settings.
-- Validate unknown tool names and invalid permission values at startup.
-- Show the loaded tool permission state in the desktop diagnostics row.
-- Add the next practical `ask` tool only after config loading is verified.
+- Finish GPT-SoVITS environment setup and verify the Vivian Chinese/English models through `api_v2.py`.
+- Implement a GPT-SoVITS provider behind `packages/amadeus/audio.py`.
+- Write generated audio into `packages/amadeus/assets/audio/cache`.
+- Add provider config under `configs` or environment variables.
+- Add focused tests for fallback, generated audio URL, and playback handoff.
 
 ## Later Phases
 
@@ -339,11 +437,11 @@ Not started.
 - Live2D behavior mapping is currently alias-based and depends on the available motions/expressions in the loaded model.
 - The debug panel now shows model-declared motions and expressions, but some models may still omit metadata or expose very short motions that are hard to notice.
 - The current Live2D model and Cubism runtime are loaded from remote URLs, so network failures can still prevent the model from appearing. A local model bundle should be added next.
-- TTS currently uses browser/Electron `speechSynthesis`, so voice quality and available voices depend on the OS.
+- TTS currently falls back to browser/Electron `speechSynthesis`, so voice quality and available voices depend on the OS until Python audio output is fully wired.
+- GPT-SoVITS integration is blocked until required pretrained base models are downloaded into `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models`.
 - Lipsync is currently a simple timed mouth loop, not phoneme-accurate.
 - SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
-- Only two local tools exist right now: `get_current_time` and `roll_dice`. More useful tools should be added after config loading is complete.
-- `configs/tools.yaml` currently mirrors intended settings, but the server registry does not load it yet.
+- Only two local tools exist right now: `get_current_time` and `roll_dice`. More useful tools should be added next.
 - `.npmrc` uses `electron_mirror` for Electron downloads. npm prints a warning that this custom config may stop working in a future npm major version.
 
 ## Useful Commands

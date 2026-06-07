@@ -16,6 +16,9 @@ The MVP is already working:
 - Tool calling is model-triggered through OpenAI-compatible `tools` and `tool_calls`.
 - Tool execution goes through a formal server-side `toolRegistry`.
 - Tool permissions support `allow`, `ask`, and `deny`.
+- Tool enabled/permission settings are loaded from `configs/tools.yaml` at server startup.
+- Tool execution is moving toward the Python runtime under `packages/amadeus`.
+- Desktop diagnostics show the loaded tool permission state from the server.
 - Current tools:
   - `get_current_time`: allowed automatically.
   - `roll_dice`: asks for desktop permission before execution.
@@ -25,14 +28,9 @@ For the latest detailed progress, read `docs/project-status.md`.
 ## Repository Map
 
 - `apps/desktop`: Electron shell, renderer UI, Live2D stage, speech synthesis, lipsync MVP, runtime WebSocket client.
-- `apps/server`: Local agent runtime, provider calls, session memory, SQLite persistence, tool registry, permission checks.
-- `packages/shared`: Shared runtime event types used by desktop and server.
-- `packages/agent-core`: Placeholder package for future agent orchestration extraction.
-- `packages/character`: Placeholder package for persona and behavior policy extraction.
-- `packages/live2d-stage`: Placeholder package for future Live2D stage extraction.
-- `packages/memory`: Placeholder package for future memory extraction.
-- `packages/tools`: Placeholder package for future reusable tools.
-- `packages/audio`: Placeholder package for future ASR/TTS/lipsync extraction.
+- `apps/server`: Local agent runtime, provider calls, session memory, SQLite persistence, and permission checks.
+- `packages/amadeus`: Python-owned agent brain plus TypeScript bridge exports for event protocol and tool schema/permission metadata.
+- `packages/live2d-stage`: Desktop-side Live2D rendering adapter.
 - `configs`: Character, provider, and tool config drafts.
 - `docs`: Architecture, event protocol, roadmap, implementation notes, and live project status.
 - `models/live2d`: Intended location for local Live2D model bundles.
@@ -75,9 +73,9 @@ Do not commit `.env` or API keys.
 
 - Keep `apps/desktop` thin. It should render UI, Live2D, voice, and user interaction, but it should not own long-term memory, provider-specific LLM logic, or tool execution.
 - Keep `apps/server` as the local runtime owner for sessions, memory, LLM calls, tool execution, and permission enforcement.
-- Communicate between desktop and server through the shared event protocol in `packages/shared/events.ts`.
-- Add new runtime events to `packages/shared/events.ts` first, then update both server and desktop handlers.
-- Keep tools registered through `toolRegistry` in `apps/server/src/index.ts` until the registry is extracted to `packages/tools`.
+- Communicate between desktop and server through the shared event protocol in `packages/amadeus/events.ts`.
+- Add new runtime events to `packages/amadeus/events.ts` first, then update both server and desktop handlers.
+- Keep tool schema/permission bridge code in `packages/amadeus/tools.ts`; keep concrete Python implementations in `packages/amadeus`; `apps/server` should own runtime permission prompts and transport wiring.
 - New tools must define:
   - OpenAI-compatible schema.
   - `displayName`.
@@ -112,14 +110,15 @@ Keep event payloads serializable and small.
 
 ## How To Add A Tool
 
-1. Add the tool entry to `toolRegistry` in `apps/server/src/index.ts`.
-2. Add or update its intended config in `configs/tools.yaml`.
-3. If the tool uses `ask`, ensure the desktop prompt text is understandable.
-4. Run `npm run typecheck`.
-5. Test over WebSocket or through the desktop UI.
-6. Update `docs/project-status.md`.
+1. Add the tool schema and permission metadata to `createDefaultToolRegistry()` in `packages/amadeus/tools.ts`.
+2. Add the Python implementation to `packages/amadeus`.
+3. Add or update its effective config in `configs/tools.yaml`.
+4. If the tool uses `ask`, ensure the desktop prompt text is understandable.
+5. Run `npm run typecheck`.
+6. Test the Python sidecar and then test over WebSocket or through the desktop UI.
+7. Update `docs/project-status.md`.
 
-The current next step is to make the server actually load effective tool settings from `configs/tools.yaml`; right now the file mirrors intended settings but the registry still owns the runtime values.
+The current next step is to add the next practical permission-aware tool now that config loading is wired.
 
 ## Known Gaps
 
@@ -128,22 +127,20 @@ The current next step is to make the server actually load effective tool setting
 - Lipsync is a timed mouth loop, not audio-driven or phoneme-aware.
 - SQLite uses Node 24 `node:sqlite`, which is still experimental and prints a warning.
 - Memory is raw message history only. Long-term facts, profile memory, summaries, and retrieval are not implemented yet.
-- Most package directories are placeholders; avoid prematurely extracting code until the interfaces stabilize.
+- `packages` has been trimmed to the active Python-runtime architecture; avoid reintroducing placeholder TS packages unless they have concrete adapter code.
 
 ## Next Recommended Work
 
-Start with `Phase 5 Continued: Tool Config Loader` from `docs/project-status.md`:
+Start with `Phase 5 Continued: Practical Ask Tools` from `docs/project-status.md`:
 
-- Load `configs/tools.yaml` at server startup.
-- Validate unknown tool names and invalid permission values.
-- Apply loaded `enabled` and `permission` values to registry entries.
-- Show loaded tool permission state in the desktop diagnostics area.
-- Add the next practical `ask` tool only after config loading is verified.
+- Add a local file search tool with `ask` permission.
+- Add an `open_url` tool that asks before opening external URLs.
+- Keep newly added tools disabled in `configs/tools.yaml` until verified.
+- Add focused checks for allow, ask, deny, disabled, and unknown-tool behavior.
 
 After that, good follow-up work is:
 
 - Add a local Live2D model bundle.
-- Add practical permission-aware tools such as local file search or opening URLs.
 - Improve memory beyond raw message storage.
 - Improve TTS and lipsync.
 - Add proactive reminders and daily brief.

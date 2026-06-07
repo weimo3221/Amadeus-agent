@@ -11,3 +11,5 @@ build/
 *.sqlite
 *.sqlite3
 coverage/
+__pycache__/
+*.py[cod]
