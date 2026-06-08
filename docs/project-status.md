@@ -33,6 +33,7 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
+- `local_file_search` is implemented as a practical `ask` tool in both the TypeScript fallback and Python runtime.
 - Typecheck, desktop build, allow-path WebSocket test, and deny-path WebSocket test have passed.
 
 ### Still Needed
@@ -41,7 +42,7 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 - Replace browser `speechSynthesis` MVP with Python-owned audio output and a stronger TTS option if better voice quality is needed.
 - Install GPT-SoVITS pretrained base models before testing Vivian TTS; the local `GPT_SoVITS/pretrained_models` directory is currently missing required base assets.
 - Improve lipsync from timed mouth movement to audio-driven or phoneme-aware movement.
-- Add practical `ask` tools after config loading is verified, such as local file search or opening URLs.
+- Add more practical `ask` tools after local file search, such as opening URLs or reminders.
 - Add long-term memory beyond raw message history, such as user facts, preferences, and summaries.
 - Add proactive features later: reminders, daily brief, idle check-ins, and background task state.
 - Add advanced agent capabilities later: MCP bridge, long-task planning, context compression, and human approval checkpoints.
@@ -200,7 +201,7 @@ Status: MVP memory, model-triggered tools, registry, and permission prompts comp
 
 ## In Progress
 
-Nothing is currently in progress. The next recommended implementation step is `Practical Ask Tools`.
+Nothing is currently in progress. The next recommended implementation step is `Agent Memory Optimization`.
 
 ## Completed Subphase
 
@@ -370,6 +371,23 @@ Status: environment checked, provider not wired yet.
 
 ## Completed Subphase
 
+### Phase 5 Continued: Practical Ask Tools
+
+Status: local file search complete.
+
+- Added `local_file_search` as a model-triggered `ask` tool.
+- The tool searches filenames and small text files inside the project workspace.
+- Search results include workspace-relative paths, optional line numbers, previews, and match type.
+- The implementation exists in both the TypeScript fallback and Python runtime.
+- Enabled `local_file_search` in `configs/tools.yaml`.
+- Updated the server system prompt so project file, docs, code, configuration, and notes search requests call `local_file_search`.
+- Verified:
+  - `npm run typecheck`
+  - Python compile check for `packages/amadeus/tools.py` and `packages/amadeus/server.py`
+  - Python tool smoke test for `local_file_search`
+
+## Completed Subphase
+
 ### Phase 5 Continued: Audio Runtime Interface
 
 Status: complete for first pass.
@@ -398,17 +416,17 @@ Status: complete for first pass.
 
 ## Next Recommended Phase
 
-### Phase 5 Continued: TTS Provider Integration
+### Phase 5 Continued: Agent Memory Optimization
 
-Goal: add a concrete TTS provider behind `packages/amadeus/audio.py`.
+Goal: improve the agent side beyond raw message replay while GPT-SoVITS remains blocked.
 
 Planned tasks:
 
-- Finish GPT-SoVITS environment setup and verify the Vivian Chinese/English models through `api_v2.py`.
-- Implement a GPT-SoVITS provider behind `packages/amadeus/audio.py`.
-- Write generated audio into `packages/amadeus/assets/audio/cache`.
-- Add provider config under `configs` or environment variables.
-- Add focused tests for fallback, generated audio URL, and playback handoff.
+- Add conversation summary storage.
+- Add simple user profile facts and preferences.
+- Feed summaries and profile facts into the model context.
+- Add focused tests for memory persistence, reset behavior, and context assembly.
+- Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
 ## Later Phases
 
@@ -441,7 +459,7 @@ Not started.
 - GPT-SoVITS integration is blocked until required pretrained base models are downloaded into `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models`.
 - Lipsync is currently a simple timed mouth loop, not phoneme-accurate.
 - SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
-- Only two local tools exist right now: `get_current_time` and `roll_dice`. More useful tools should be added next.
+- Three local tools exist right now: `get_current_time`, `roll_dice`, and `local_file_search`. More useful tools should be added next.
 - `.npmrc` uses `electron_mirror` for Electron downloads. npm prints a warning that this custom config may stop working in a future npm major version.
 
 ## Useful Commands

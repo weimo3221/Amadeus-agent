@@ -1,4 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export interface ToolCall {
   id: string
@@ -58,11 +60,27 @@ interface ToolConfigEntry {
 }
 
 const plannedToolConfigNames = new Set([
-  'local_file_search',
   'web_search',
   'open_url',
   'reminders',
   'mcp',
+])
+
+const packageDir = dirname(fileURLToPath(import.meta.url))
+const repoRoot = resolve(packageDir, '../..')
+const skippedSearchDirs = new Set(['.git', 'node_modules', 'dist', 'out', 'build', '.vite', '__pycache__'])
+const searchableExtensions = new Set([
+  '.css',
+  '.html',
+  '.js',
+  '.json',
+  '.md',
+  '.py',
+  '.ts',
+  '.tsx',
+  '.txt',
+  '.yaml',
+  '.yml',
 ])
 
 export function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
@@ -72,6 +90,99 @@ export function normalizePositiveInteger(value: unknown, fallback: number, min: 
   }
 
   return Math.max(min, Math.min(max, Math.floor(number)))
+}
+
+function isInside(path: string, parent: string): boolean {
+  const relativePath = relative(parent, path)
+  return relativePath === '' || (!!relativePath && !relativePath.startsWith('..') && !isAbsolute(relativePath))
+}
+
+function searchLocalFiles(args: Record<string, unknown>): string {
+  const query = typeof args.query === 'string' ? args.query.trim() : ''
+  if (!query) {
+    return JSON.stringify({ error: 'query is required' })
+  }
+
+  const maxResults = normalizePositiveInteger(args.maxResults, 10, 1, 30)
+  const requestedRoot = typeof args.root === 'string' && args.root.trim() ? args.root.trim() : '.'
+  const searchRoot = resolve(repoRoot, requestedRoot)
+  if (!isInside(searchRoot, repoRoot) || !existsSync(searchRoot)) {
+    return JSON.stringify({ error: 'root must be inside the project workspace' })
+  }
+
+  const normalizedQuery = query.toLowerCase()
+  const results: Array<{ path: string; line?: number; preview: string; match: 'path' | 'content' }> = []
+  const pending = [searchRoot]
+  let scannedFiles = 0
+
+  while (pending.length > 0 && results.length < maxResults && scannedFiles < 1000) {
+    const current = pending.pop()!
+    let stats
+    try {
+      stats = statSync(current)
+    }
+    catch {
+      continue
+    }
+
+    if (stats.isDirectory()) {
+      if (skippedSearchDirs.has(basename(current))) {
+        continue
+      }
+
+      try {
+        for (const entry of readdirSync(current)) {
+          pending.push(resolve(current, entry))
+        }
+      }
+      catch {
+        continue
+      }
+      continue
+    }
+
+    if (!stats.isFile()) {
+      continue
+    }
+
+    scannedFiles += 1
+    const relativePath = relative(repoRoot, current).replace(/\\/g, '/')
+    if (relativePath.toLowerCase().includes(normalizedQuery)) {
+      results.push({ path: relativePath, preview: relativePath, match: 'path' })
+      continue
+    }
+
+    if (stats.size > 256 * 1024 || !searchableExtensions.has(extname(current).toLowerCase())) {
+      continue
+    }
+
+    let text = ''
+    try {
+      text = readFileSync(current, 'utf8')
+    }
+    catch {
+      continue
+    }
+
+    const lines = text.split(/\r?\n/)
+    const lineIndex = lines.findIndex((line) => line.toLowerCase().includes(normalizedQuery))
+    if (lineIndex >= 0) {
+      results.push({
+        path: relativePath,
+        line: lineIndex + 1,
+        preview: lines[lineIndex].trim().slice(0, 240),
+        match: 'content',
+      })
+    }
+  }
+
+  return JSON.stringify({
+    query,
+    root: relative(repoRoot, searchRoot).replace(/\\/g, '/') || '.',
+    maxResults,
+    results,
+    scannedFiles,
+  })
 }
 
 async function executePythonTool(
@@ -335,6 +446,44 @@ export function createDefaultToolRegistry(options: {
           total: rolls.reduce((sum, value) => sum + value, 0),
         })
       }),
+    },
+    local_file_search: {
+      name: 'local_file_search',
+      displayName: 'Searching local files',
+      permission: 'ask',
+      enabled: true,
+      schema: {
+        type: 'function',
+        function: {
+          name: 'local_file_search',
+          description: 'Search filenames and small text files inside the project workspace. Use this when the user asks to find local project files, docs, code, configuration, or notes.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'Search text to match in paths or file contents.',
+              },
+              root: {
+                type: 'string',
+                description: 'Optional workspace-relative directory to search. Defaults to the project root.',
+              },
+              maxResults: {
+                type: 'number',
+                description: 'Maximum results to return. Defaults to 10 and is capped at 30.',
+              },
+            },
+            required: ['query'],
+            additionalProperties: false,
+          },
+        },
+      },
+      describeRequest: (args) => {
+        const query = typeof args.query === 'string' && args.query.trim() ? args.query.trim() : '(empty query)'
+        const root = typeof args.root === 'string' && args.root.trim() ? args.root.trim() : '.'
+        return `Allow Amadeus to search local project files under ${root} for "${query}"?`
+      },
+      execute: executeTool('local_file_search', searchLocalFiles),
     },
   }
 }

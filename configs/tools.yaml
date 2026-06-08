@@ -8,7 +8,7 @@ tools:
     permission: ask
 
   local_file_search:
-    enabled: false
+    enabled: true
     permission: ask
     roots: []
 
