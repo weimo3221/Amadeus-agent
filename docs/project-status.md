@@ -201,7 +201,7 @@ Status: MVP memory, model-triggered tools, registry, and permission prompts comp
 
 ## In Progress
 
-Nothing is currently in progress. The next recommended implementation step is `Agent Memory Optimization`.
+Nothing is currently in progress. The next recommended implementation step is `Python Runtime Ownership`.
 
 ## Completed Subphase
 
@@ -416,21 +416,35 @@ Status: complete for first pass.
 
 ## Next Recommended Phase
 
-### Phase 5 Continued: Agent Memory Optimization
+### Phase 6: Python Runtime Ownership
 
-Goal: improve the agent side beyond raw message replay while GPT-SoVITS remains blocked.
+Goal: move the real agent loop out of `apps/server/src/index.ts` and into `packages/amadeus`, while preserving the existing desktop behavior.
 
 Planned tasks:
+
+- Add `packages/amadeus/agent/runtime.py`.
+- Add a Python `/agent/turn` endpoint that returns current runtime events.
+- Move OpenAI-compatible model calls from the TypeScript server to Python.
+- Move tool decision, tool execution, memory writes, and behavior event generation to Python.
+- Keep `apps/server` as a WebSocket/HTTP relay to avoid breaking the desktop app.
+- Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling.
+- Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
+
+The broader upgrade plan is documented in `docs/agent-maturity-upgrade-plan.md`.
+
+## Later Phases
+
+### Phase 8: Agent Memory Optimization
+
+Not started.
 
 - Add conversation summary storage.
 - Add simple user profile facts and preferences.
 - Feed summaries and profile facts into the model context.
+- Add SQLite FTS session search.
 - Add focused tests for memory persistence, reset behavior, and context assembly.
-- Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
-## Later Phases
-
-### Phase 6: Proactive Agent
+### Phase 11: Proactive Agent
 
 Not started.
 
@@ -439,7 +453,7 @@ Not started.
 - Add idle-time check-ins.
 - Add background task state display.
 
-### Phase 7: Advanced Agent Features
+### Phase 12: Advanced Agent Features
 
 Not started.
 

@@ -11,6 +11,10 @@ The project started as a TypeScript monorepo for fast Electron iteration, but th
 
 `apps/desktop` should remain a UI/device adapter. `apps/server` should remain a transport bridge. Agent, memory, model adapters, tools, skills, and audio planning should move into `packages/amadeus` behind narrow HTTP/event APIs.
 
+The next architecture milestone is Python ownership of `/agent/turn`. The TypeScript server currently still owns the LLM call, tool loop, SQLite writes, and first-pass character behavior dispatch. Move those responsibilities into Python before adding heavier features such as MCP, subagents, or proactive scheduling.
+
+Live2D and audio should be treated as installable harnesses. They can contribute prompt fragments and observe runtime events, but the actual rendering and playback stay in the desktop adapter.
+
 ## AIRI Code to Study First
 
 When implementation starts, inspect these paths:
@@ -32,6 +36,31 @@ Do not copy the whole project. Pull over only the specific patterns needed for t
 - Use SQLite for memory.
 - Keep tool execution disabled by default except safe tools such as current time.
 - Keep current desktop voice playback as a fallback, but move the audio interface into Python.
+- Keep Python as the runtime owner and TypeScript as the bridge owner.
+- Add new Live2D/audio behavior through harnesses, not through ad hoc server conditionals.
+
+## Harness Config Direction
+
+Add a `configs/harnesses.yaml` file when the first harness implementation lands:
+
+```yaml
+harnesses:
+  live2d:
+    enabled: true
+    adapter: desktop-live2d
+    model:
+      id: default
+      path: models/live2d/default/default.model3.json
+  audio:
+    enabled: true
+    tts:
+      provider: none
+      fallback: speechSynthesis
+    lipsync:
+      mode: timed
+```
+
+The runtime should load harnesses from this config and expose their effective state in `server.hello` or a later diagnostics event. Desktop-side code should report actual capabilities after model/audio initialization so the runtime can choose behavior that the adapter can execute.
 
 ## Audio Layout
 
@@ -51,6 +80,16 @@ packages/amadeus/assets/audio/
 - `cache/`: generated TTS output when a real TTS engine is added.
 
 The desktop app should only play the `audioUrl` emitted by the runtime. If no Python TTS provider can generate audio for the requested text, the desktop falls back to `speechSynthesis`.
+
+When runtime audio is played, the desktop should report playback feedback:
+
+```text
+audio.playback-started
+audio.playback-ended
+audio.playback-error
+```
+
+This lets the audio and Live2D harnesses coordinate real speaking state and lipsync instead of relying only on a timed mouth loop.
 
 Fixed wav/mp3 files are useful for sound effects and canned reactions, but they are not a replacement for TTS. Arbitrary assistant replies require a provider such as GPT-SoVITS, Bert-VITS2, ChatTTS, Piper, OpenAI TTS, Azure Speech, or another engine behind `amadeus/audio.py`.
 

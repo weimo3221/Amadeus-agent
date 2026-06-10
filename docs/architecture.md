@@ -9,8 +9,11 @@ The target architecture is a Python-owned agent runtime with TypeScript/Electron
 - Desktop layer: renders the character and handles direct user interaction.
 - TypeScript bridge layer: exposes WebSocket/HTTP transport to the desktop and forwards runtime work.
 - Python runtime layer: owns the agent loop, model calls, memory, tools, skills, and device-interface planning.
+- Harness layer: installable runtime extensions for Live2D, audio, desktop presence, and future device interfaces.
 
 The desktop layer should stay thin. It should not own long-term memory, tool execution, provider-specific LLM logic, or agent planning.
+
+The detailed maturity plan is tracked in [agent-maturity-upgrade-plan.md](agent-maturity-upgrade-plan.md). This architecture file is the compact target shape; the maturity plan is the implementation sequence.
 
 ## Runtime Diagram
 
@@ -52,6 +55,12 @@ packages/amadeus
   +--> skills
   |      +--> reusable behaviors
   |      +--> composed workflows
+  |
+  +--> harness
+  |      +--> Live2D harness
+  |      +--> audio harness
+  |      +--> desktop harness
+  |      +--> future device/runtime adapters
   |
   +--> live2d
   |      +--> character command interface
@@ -100,6 +109,8 @@ apps/server
 
 Live2D and audio are not the agent brain. They are device interfaces that the Python runtime can command, while the actual rendering/playback remains in desktop-side adapters.
 
+In the mature architecture, Live2D and audio are first-class harnesses. A harness is not a normal model-called tool. It is a runtime extension that can contribute prompt fragments, observe runtime events, emit device commands, expose capabilities, and register optional tools. This keeps Amadeus' differentiating character and voice features modular while preserving a generic agent core.
+
 ## Main Modules
 
 ### apps/desktop
@@ -138,6 +149,27 @@ Python runtime responsibilities:
 - Own model provider adapters.
 - Own skills/workflows.
 - Emit structured commands for Live2D/audio interfaces.
+- Load and coordinate harnesses.
+- Enforce tool permissions, tool timeouts, tool guardrails, and audit logging.
+- Assemble context from persona, summaries, profile memory, retrieved memory, recent messages, task state, and harness prompt fragments.
+
+The immediate migration target is to move `/agent/turn` into Python. After that, `apps/server` should only relay desktop events and Python runtime events.
+
+### packages/amadeus/harness
+
+Harness responsibilities:
+
+- Define installable runtime extensions.
+- Advertise capabilities such as supported event types, tools, prompts, and device outputs.
+- Observe agent events such as `assistant.state`, `tool.started`, `assistant.message`, and `error`.
+- Emit device-facing events such as `character.behavior`, `audio.tts-ready`, and `audio.lipsync-cues`.
+- Keep Live2D/audio policy in Python while leaving rendering/playback in desktop adapters.
+
+Initial harnesses:
+
+- `live2d`: maps agent state, tool state, pointer/click input, and playback feedback into character behavior.
+- `audio`: owns TTS provider selection, fallback policy, generated audio cache, ASR event contracts, and lipsync cue generation.
+- `desktop`: future bridge for notifications, proactive prompts, and desktop presence.
 
 ### packages/live2d-stage
 
@@ -163,6 +195,14 @@ Audio responsibilities:
 - Lipsync cue playback.
 
 This module defines the audio command interface. Desktop-side playback remains an adapter concern: it plays runtime-provided `audioUrl` values and drives lipsync while playback is active. If Python audio cannot generate audio for a text request yet, the desktop may fall back to system `speechSynthesis`.
+
+As the audio harness matures, desktop playback should send feedback events back to the runtime:
+
+- `audio.playback-started`
+- `audio.playback-ended`
+- `audio.playback-error`
+
+Those events let the Live2D harness coordinate speaking state and lipsync with real playback instead of relying on fixed timers.
 
 Local files under `voices/` and `sfx/` are fixed clips. They should not be treated as a complete voice. Arbitrary assistant replies require a TTS provider that generates files into `cache/` or returns a playable URL.
 
@@ -192,11 +232,19 @@ Desktop to server:
 ```text
 user.message
 user.voice-start
+user.voice-chunk
 user.voice-end
+desktop.capabilities
+character.capabilities
+audio.capabilities
 desktop.pointer
+desktop.character.click
 desktop.hotkey
 session.reset
 tool.permission.response
+audio.playback-started
+audio.playback-ended
+audio.playback-error
 ```
 
 Server to desktop:
@@ -208,10 +256,13 @@ assistant.delta
 assistant.message
 assistant.state
 character.behavior
+character.lipsync
 tool.started
 tool.finished
 tool.permission.request
 audio.tts-ready
+audio.tts-fallback
+audio.lipsync-cues
 error
 ```
 
@@ -219,8 +270,12 @@ Bridge to Python runtime:
 
 ```text
 GET /health
+POST /agent/turn
+POST /agent/cancel
 POST /agent/message
 POST /tools/execute
+GET /tools/list
+POST /tools/permission
 GET /memory/count
 GET /memory/messages
 POST /memory/messages
@@ -239,6 +294,6 @@ Migrate toward the Python runtime without breaking the desktop loop:
 - Move agent, memory, model adapters, tool execution, skills, and audio planning into Python.
 - Keep TypeScript packages as transport/schema/adapter surfaces only where they earn their keep.
 - Prefer small vertical migrations: move one capability fully across the boundary before moving the next.
-- The current migration target is audio output, because it has a clean device-adapter boundary: Python chooses or generates audio; desktop plays it.
+- The current migration target is Python runtime ownership of `/agent/turn`, because the main architecture debt is that the TypeScript bridge still owns LLM calls, tool loop, memory writes, and behavior dispatch.
 
 More complex systems such as sub-agents, vector memory, MCP, and active scheduling should be added only after the basic desktop experience feels stable.

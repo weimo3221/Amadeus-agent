@@ -1,6 +1,6 @@
 # Roadmap
 
-For live implementation status, see `docs/project-status.md`.
+For live implementation status, see `docs/project-status.md`. For the detailed maturity blueprint, see `docs/agent-maturity-upgrade-plan.md`.
 
 ## Phase 0: Project Skeleton
 
@@ -88,7 +88,69 @@ Deliverables:
   - reminders
 - Permission prompts for sensitive actions.
 
-## Phase 6: Proactive Agent
+## Phase 6: Python Runtime Ownership
+
+Goal: move the real agent loop out of the TypeScript bridge and into `packages/amadeus`.
+
+Deliverables:
+
+- Python `/agent/turn` endpoint.
+- Python-owned model adapter and streaming event generation.
+- Python-owned tool loop and memory writes.
+- TypeScript server reduced to WebSocket/HTTP transport relay.
+- Compatibility with current desktop events and permission prompts.
+
+## Phase 7: ToolRuntime and Guardrails
+
+Goal: make tools reliable, auditable, and permission-enforced at runtime.
+
+Deliverables:
+
+- Python `ToolSpec`, `ToolContext`, `ToolResult`, and registry.
+- Python-owned loading for `configs/tools.yaml`.
+- Tool timeout, cancellation, duration, preview, and audit records.
+- Guardrails for repeated failures and no-progress tool loops.
+- `/tools/list` bridge for desktop/server diagnostics.
+
+## Phase 8: Memory v2
+
+Goal: move beyond raw message replay.
+
+Deliverables:
+
+- Conversation summaries.
+- User profile facts and preferences.
+- SQLite FTS session search.
+- Memory write/search/forget tools.
+- Background memory review after turns.
+- Context assembler that combines persona, summaries, profile, retrieved memory, recent messages, task state, and harness prompt fragments.
+
+## Phase 9: Live2D and Audio Harnesses
+
+Goal: make Amadeus' Live2D/audio strengths installable runtime harnesses.
+
+Deliverables:
+
+- `packages/amadeus/harness` base contract and registry.
+- `configs/harnesses.yaml`.
+- Live2D harness for state-to-expression/motion/lipsync behavior.
+- Audio harness for TTS provider selection, fallback, cache, ASR contracts, and lipsync cues.
+- Desktop capability events for Live2D/audio.
+- Playback feedback events from desktop to runtime.
+
+## Phase 10: Skills
+
+Goal: add procedural memory and reusable workflows.
+
+Deliverables:
+
+- `skills/<category>/<skill-name>/SKILL.md` layout.
+- `skills_list`, `skill_view`, `skill_run`.
+- Skill frontmatter for tools, platforms, harness dependencies, and env requirements.
+- `skill_manage` with permission prompts and path safety.
+- Initial Live2D/audio-aware companion skills.
+
+## Phase 11: Proactive Agent
 
 Goal: the character can help without waiting for every instruction.
 
@@ -100,7 +162,7 @@ Deliverables:
 - Idle-time check-ins.
 - Background task state display.
 
-## Phase 7: Advanced Agent Features
+## Phase 12: Advanced Agent Features
 
 Goal: support complex long-running tasks.
 
@@ -111,6 +173,8 @@ Deliverables:
 - Context compression.
 - Long task plans.
 - Human approval checkpoints.
+- Provider and harness profiles.
+- Eval harness for tool choice, permission, memory, Live2D, audio, and guardrail behavior.
 
 Reference:
 
