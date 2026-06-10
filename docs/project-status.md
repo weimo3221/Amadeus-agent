@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-08
+Last updated: 2026-06-11
 
 This document is the live progress tracker for Amadeus Agent. Update it whenever a project phase is completed or the immediate next step changes.
 
@@ -30,6 +30,16 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 - Tool definitions, schemas, registry creation, and config loading now live in `packages/amadeus/tools.ts`.
 - Python runtime sidecar scaffolding exists under `packages/amadeus`.
 - Python audio interface is now wired for the first pass. Current playback still falls back to Electron/browser `speechSynthesis` until a real TTS provider is configured.
+- Python `/agent/turn` is now wired for the first pass. The TypeScript server prefers the Python runtime for user turns and keeps the previous TypeScript loop as a fallback when the Python runtime is unavailable.
+- Python now owns the preferred model/tool/memory/behavior path for a turn:
+  - loads OpenAI-compatible provider config from environment or `.env`
+  - assembles recent SQLite message history
+  - makes the tool-decision call
+  - executes Python tools
+  - writes user/assistant messages to SQLite
+  - emits desktop-compatible runtime events
+  - requests Python audio output after the assistant message
+- Ask-tool permission requests can now cross the Python runtime boundary: Python emits `tool.permission.request`, the TypeScript bridge relays it to desktop, and desktop responses are forwarded back to Python `/tools/permission`.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -201,7 +211,7 @@ Status: MVP memory, model-triggered tools, registry, and permission prompts comp
 
 ## In Progress
 
-Nothing is currently in progress. The next recommended implementation step is `Python Runtime Ownership`.
+Phase 6 is in progress. The first vertical slice is complete: Python `/agent/turn` is wired as the preferred path, while the legacy TypeScript agent loop remains as a fallback.
 
 ## Completed Subphase
 
@@ -422,12 +432,13 @@ Goal: move the real agent loop out of `apps/server/src/index.ts` and into `packa
 
 Planned tasks:
 
-- Add `packages/amadeus/agent/runtime.py`.
-- Add a Python `/agent/turn` endpoint that returns current runtime events.
-- Move OpenAI-compatible model calls from the TypeScript server to Python.
-- Move tool decision, tool execution, memory writes, and behavior event generation to Python.
-- Keep `apps/server` as a WebSocket/HTTP relay to avoid breaking the desktop app.
+- Add `packages/amadeus/agent/runtime.py` or equivalent Python runtime module. Done for the first pass in `packages/amadeus/agent.py`.
+- Add a Python `/agent/turn` endpoint that returns current runtime events. Done for the first pass as NDJSON event streaming.
+- Move OpenAI-compatible model calls from the TypeScript server to Python. Done for the preferred path; TypeScript fallback remains temporarily.
+- Move tool decision, tool execution, memory writes, and behavior event generation to Python. Done for the preferred path.
+- Keep `apps/server` as a WebSocket/HTTP relay to avoid breaking the desktop app. Done for `user.message` when Python runtime is available.
 - Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling.
+- Remove the legacy TypeScript tool/model loop after parity tests cover the Python path.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
 The broader upgrade plan is documented in `docs/agent-maturity-upgrade-plan.md`.

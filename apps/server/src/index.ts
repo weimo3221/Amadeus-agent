@@ -366,7 +366,95 @@ async function requestAudioOutput(text: string): Promise<AudioSpeakResponse | un
   }
 }
 
+async function relayPythonTurn(socket: WebSocket, sessionId: string, userText: string): Promise<boolean> {
+  let response: Response
+  try {
+    response = await fetch(`${pythonRuntimeUrl.replace(/\/$/, '')}/agent/turn`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId,
+        text: userText,
+        inputMode: 'text',
+      }),
+    })
+  }
+  catch {
+    return false
+  }
+
+  if (!response.ok || !response.body) {
+    return false
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) {
+        continue
+      }
+
+      try {
+        const event = JSON.parse(trimmed) as RuntimeEvent<string, unknown>
+        socket.send(JSON.stringify(event))
+      }
+      catch {
+        send(socket, 'error', sessionId, {
+          code: 'bad_python_event',
+          message: 'Python runtime emitted an invalid event.',
+        })
+      }
+    }
+  }
+
+  const tail = buffer.trim()
+  if (tail) {
+    try {
+      const event = JSON.parse(tail) as RuntimeEvent<string, unknown>
+      socket.send(JSON.stringify(event))
+    }
+    catch {
+      send(socket, 'error', sessionId, {
+        code: 'bad_python_event',
+        message: 'Python runtime emitted an invalid trailing event.',
+      })
+    }
+  }
+
+  return true
+}
+
+async function forwardToolPermissionToPython(requestId: string, approved: boolean): Promise<void> {
+  try {
+    await fetch(`${pythonRuntimeUrl.replace(/\/$/, '')}/tools/permission`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ requestId, approved }),
+    })
+  }
+  catch {
+    // The legacy TypeScript tool loop may own this request, or the Python turn
+    // may have already timed out. Either way, there is nothing else to do here.
+  }
+}
+
 async function streamChat(socket: WebSocket, sessionId: string, userText: string): Promise<void> {
+  const handledByPython = await relayPythonTurn(socket, sessionId, userText)
+  if (handledByPython) {
+    return
+  }
+
   if (!apiKey) {
     send(socket, 'error', sessionId, {
       code: 'missing_api_key',
@@ -540,7 +628,13 @@ wss.on('connection', (socket) => {
     }
 
     if (event.type === 'tool.permission.response') {
-      pendingToolPermissions.get(event.payload.requestId)?.(event.payload.approved)
+      const pending = pendingToolPermissions.get(event.payload.requestId)
+      if (pending) {
+        pending(event.payload.approved)
+        return
+      }
+
+      void forwardToolPermissionToPython(event.payload.requestId, event.payload.approved)
       return
     }
 

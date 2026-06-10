@@ -15,6 +15,8 @@ The next architecture milestone is Python ownership of `/agent/turn`. The TypeSc
 
 Live2D and audio should be treated as installable harnesses. They can contribute prompt fragments and observe runtime events, but the actual rendering and playback stay in the desktop adapter.
 
+Current migration state: `/agent/turn` is implemented as an NDJSON event stream from Python to the TypeScript bridge. The bridge relays each runtime event to desktop and forwards `tool.permission.response` back to Python through `/tools/permission`. The older TypeScript model/tool loop remains as a fallback until parity tests cover the Python path.
+
 ## AIRI Code to Study First
 
 When implementation starts, inspect these paths:

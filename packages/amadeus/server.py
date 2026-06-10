@@ -4,10 +4,12 @@ import json
 import mimetypes
 import os
 import sys
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from uuid import uuid4
 
 
 RUNTIME_DIR = Path(__file__).resolve().parent
@@ -16,6 +18,7 @@ REPO_ROOT = PACKAGES_DIR.parent
 sys.path.insert(0, str(PACKAGES_DIR))
 
 from amadeus.memory import MessageMemoryStore
+from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary
 from amadeus.tools import execute_tool, list_tools
 
@@ -29,6 +32,8 @@ PUBLIC_BASE_URL = os.environ.get("AMADEUS_PYTHON_RUNTIME_URL", f"http://{HOST}:{
 memory_store = MessageMemoryStore(DATABASE_PATH)
 audio_library = LocalAudioLibrary(AUDIO_ROOT, PUBLIC_BASE_URL)
 audio_runtime = AudioRuntime(audio_library)
+permission_broker = PermissionBroker()
+agent_runtime = AgentRuntime(memory_store, audio_runtime)
 
 
 class RuntimeRequestHandler(BaseHTTPRequestHandler):
@@ -43,6 +48,15 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "runtime": "python",
                 "modules": ["agent", "memory", "model", "tools", "skills", "live2d", "audio"],
                 "tools": list_tools(),
+                "model": agent_runtime.model,
+            })
+            return
+
+        if parsed.path == "/tools/list":
+            self.write_json(200, {
+                "ok": True,
+                "tools": agent_runtime.tool_permission_state(),
+                "schemas": agent_runtime.enabled_tool_schemas(),
             })
             return
 
@@ -66,8 +80,16 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         self.write_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:
+        if self.path == "/agent/turn":
+            self.handle_agent_turn()
+            return
+
         if self.path == "/tools/execute":
             self.handle_tool_execute()
+            return
+
+        if self.path == "/tools/permission":
+            self.handle_tool_permission()
             return
 
         if self.path == "/memory/messages":
@@ -84,6 +106,48 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         self.write_json(404, {"ok": False, "error": "not_found"})
 
+    def handle_agent_turn(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId", "default")
+            text = body.get("text")
+
+            if not isinstance(session_id, str) or not isinstance(text, str):
+                self.write_json(400, {"ok": False, "error": "sessionId and text must be strings"})
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            def request_permission(request: PermissionRequest) -> bool:
+                permission_broker.register(request.request_id)
+                self.write_event(session_id, "tool.permission.request", {
+                    "requestId": request.request_id,
+                    "toolName": request.tool_name,
+                    "displayName": request.display_name,
+                    "reason": request.reason,
+                })
+                return permission_broker.wait(request.request_id)
+
+            for event in agent_runtime.run_turn(session_id, text, request_permission):
+                self.write_json_line(event.to_runtime_event(session_id))
+        except BrokenPipeError:
+            return
+        except Exception as error:
+            try:
+                self.write_json_line({
+                    "id": "",
+                    "type": "error",
+                    "sessionId": "default",
+                    "timestamp": "",
+                    "payload": {"code": "runtime_error", "message": str(error)},
+                })
+            except Exception:
+                return
+
     def handle_tool_execute(self) -> None:
         try:
             body = self.read_json_body()
@@ -98,6 +162,21 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, "result": result})
         except KeyError as error:
             self.write_json(404, {"ok": False, "error": str(error)})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_tool_permission(self) -> None:
+        try:
+            body = self.read_json_body()
+            request_id = body.get("requestId")
+            approved = body.get("approved")
+
+            if not isinstance(request_id, str) or not isinstance(approved, bool):
+                self.write_json(400, {"ok": False, "error": "requestId must be a string and approved must be a boolean"})
+                return
+
+            resolved = permission_broker.resolve(request_id, approved)
+            self.write_json(200, {"ok": True, "resolved": resolved})
         except Exception as error:
             self.write_json(500, {"ok": False, "error": str(error)})
 
@@ -201,6 +280,20 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def write_event(self, session_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        self.write_json_line({
+            "id": str(uuid4()),
+            "type": event_type,
+            "sessionId": session_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        })
+
+    def write_json_line(self, payload: dict[str, Any]) -> None:
+        line = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+        self.wfile.write(line)
+        self.wfile.flush()
 
     def log_message(self, format: str, *args: Any) -> None:
         return
