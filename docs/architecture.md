@@ -52,6 +52,11 @@ packages/amadeus
   |      +--> MCP bridge
   |      +--> scheduled tasks
   |
+  +--> tool_runtime
+  |      +--> effective tool registry
+  |      +--> permission/config overlays
+  |      +--> guardrails and audit records
+  |
   +--> skills
   |      +--> reusable behaviors
   |      +--> composed workflows
@@ -103,6 +108,7 @@ apps/server
 - `memory`: raw history, summaries, user profile facts, retrieval.
 - `model`: OpenAI-compatible, local model, and future provider adapters.
 - `tools`: concrete tool implementations.
+- `tool_runtime`: tool registry construction, permission/config overlays, execution dispatch, guardrails, and future audit/timeout handling.
 - `skills`: reusable behaviors built from model, memory, and tools.
 - `live2d`: interface contract for character state, expressions, motions, and lipsync cues.
 - `audio`: interface contract for TTS, ASR, and audio output.

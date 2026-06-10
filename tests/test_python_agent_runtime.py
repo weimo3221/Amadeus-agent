@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -136,6 +137,40 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertFalse(tool_state["roll_dice"]["enabled"])
         self.assertEqual(tool_state["roll_dice"]["permission"], "deny")
+
+    def test_repeated_failing_tool_call_is_blocked_by_guardrail(self) -> None:
+        repeated_tool_calls = [
+            {
+                "id": f"call_missing_{index}",
+                "type": "function",
+                "function": {"name": "missing_tool", "arguments": "{\"query\":\"same\"}"},
+            }
+            for index in range(3)
+        ]
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={"role": "assistant", "content": "", "tool_calls": repeated_tool_calls},
+        )
+
+        events = list(runtime.run_turn("default", "try the bad tool", lambda _request: False))
+
+        self.assertEqual(
+            [event.payload for event in events if event.type == "tool.finished"],
+            [
+                {"toolName": "missing_tool", "ok": False},
+                {"toolName": "missing_tool", "ok": False},
+                {"toolName": "missing_tool", "ok": False},
+            ],
+        )
+        final_history = runtime.final_messages[-1]
+        tool_results = [
+            json.loads(message["content"])
+            for message in final_history
+            if message["role"] == "tool"
+        ]
+        self.assertIn("Unknown tool", tool_results[0]["error"])
+        self.assertIn("Unknown tool", tool_results[1]["error"])
+        self.assertIn("Blocked repeated failing tool call", tool_results[2]["error"])
 
 
 class PermissionBrokerTests(unittest.TestCase):

@@ -19,6 +19,17 @@ Current migration state: `/agent/turn` is implemented as an NDJSON event stream 
 
 `npm test` now runs Python `unittest` coverage for the Python runtime path and HTTP sidecar handlers. Keep these tests focused on deterministic behavior that does not require a live model provider.
 
+## Tool Runtime Boundary
+
+The Python runtime now separates concrete tool implementations from runtime tool policy:
+
+- `amadeus.tools`: concrete local tool handlers and their default `ToolSpec` metadata.
+- `amadeus.tool_runtime.registry`: effective registry construction, `configs/tools.yaml` overlays, enabled schema selection, permission-state projection, and handler dispatch.
+- `amadeus.tool_runtime.guardrails`: per-turn guardrails for tool execution loops.
+- `amadeus.agent`: conversation loop, permission requests, event streaming, memory writes, and coordination with the tool runtime.
+
+Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be structured `ToolContext` / `ToolResult`, timeout and cancellation support, audit records, and stronger no-progress detection. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
+
 ## AIRI Code to Study First
 
 When implementation starts, inspect these paths:

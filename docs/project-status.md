@@ -51,6 +51,11 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
   - `/tools/list` exposes effective permission state and enabled schemas
   - `/tools/permission` returns unresolved for unknown request IDs
   - `/agent/turn` streams missing API key failures as desktop-compatible NDJSON events
+- Phase 7 ToolRuntime first slice is in place.
+  - Python tool registry/config loading now lives under `packages/amadeus/tool_runtime`.
+  - Agent tool execution dispatches through `ToolRegistry` instead of direct helpers.
+  - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls.
+  - Unit tests cover registry config aliases, guardrail threshold behavior, and agent-level repeated failure blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -225,6 +230,34 @@ Status: MVP memory, model-triggered tools, registry, and permission prompts comp
 Phase 6 is in progress. The first vertical slice is complete: Python `/agent/turn` is wired as the preferred path, while the legacy TypeScript agent loop remains as a fallback.
 
 The second vertical slice is complete: Python runtime parity tests and Python HTTP handler tests are in place, and `npm test` now runs them.
+
+Phase 7 is in progress. The first vertical slice is complete: Python tool registry/config loading has been extracted into `packages/amadeus/tool_runtime`, and the Python agent loop now applies a simple repeated-failure guardrail during tool execution.
+
+## Completed Subphase
+
+### Phase 7: ToolRuntime and Guardrails Foundation
+
+Status: first slice complete.
+
+- Added `packages/amadeus/tool_runtime`.
+- Added `ToolRegistry` for:
+  - loading default Python tool specs
+  - applying `configs/tools.yaml`
+  - preserving the legacy `time` alias for `get_current_time`
+  - exposing permission state and enabled OpenAI-compatible schemas
+  - dispatching tool execution through the selected `ToolSpec`
+- Moved Python tool config parsing out of `agent.py`.
+- Updated `AgentRuntime` to depend on `ToolRegistry` instead of owning tool spec loading.
+- Added `ToolLoopGuardrail` for repeated exact failed tool calls inside a single turn.
+- Wired the guardrail into Python tool execution before running each tool call.
+- Added focused tests for:
+  - registry config alias behavior
+  - guardrail threshold blocking
+  - agent-level repeated failing tool call blocking
+- Verified:
+  - `npm test`
+  - Python source compile check
+  - `npm run typecheck`
 
 ## Completed Subphase
 
@@ -439,19 +472,17 @@ Status: complete for first pass.
 
 ## Next Recommended Phase
 
-### Phase 6: Python Runtime Ownership
+### Phase 7 Continued: ToolRuntime Hardening
 
-Goal: move the real agent loop out of `apps/server/src/index.ts` and into `packages/amadeus`, while preserving the existing desktop behavior.
+Goal: turn the first ToolRuntime slice into a production-grade tool execution layer.
 
 Planned tasks:
 
-- Add `packages/amadeus/agent/runtime.py` or equivalent Python runtime module. Done for the first pass in `packages/amadeus/agent.py`.
-- Add a Python `/agent/turn` endpoint that returns current runtime events. Done for the first pass as NDJSON event streaming.
-- Move OpenAI-compatible model calls from the TypeScript server to Python. Done for the preferred path; TypeScript fallback remains temporarily.
-- Move tool decision, tool execution, memory writes, and behavior event generation to Python. Done for the preferred path.
-- Keep `apps/server` as a WebSocket/HTTP relay to avoid breaking the desktop app. Done for `user.message` when Python runtime is available.
-- Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling. Initial Python runtime tests and HTTP handler tests are done; desktop WebSocket integration tests are still needed.
-- Remove the legacy TypeScript tool/model loop after parity tests cover the Python path.
+- Add `ToolContext` and `ToolResult` objects so tools receive session, cwd, cancellation, and audit metadata explicitly.
+- Add tool duration, timeout, cancellation, and structured failure codes.
+- Emit or persist audit records for tool started/finished/denied/blocked decisions.
+- Add no-progress loop detection beyond exact repeated failures.
+- Keep desktop WebSocket integration tests on the Python path before deleting the TypeScript fallback model/tool loop.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
 The broader upgrade plan is documented in `docs/agent-maturity-upgrade-plan.md`.

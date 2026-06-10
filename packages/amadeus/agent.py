@@ -5,7 +5,6 @@ import os
 import threading
 import urllib.error
 import urllib.request
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,11 +13,17 @@ from uuid import uuid4
 
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
 from amadeus.memory import MessageMemoryStore
-from amadeus.tools import ToolSpec, execute_tool, list_tool_specs
+from amadeus.tool_runtime import (
+    DEFAULT_TOOLS_CONFIG_PATH,
+    ToolLoopGuardrail,
+    ToolRegistry,
+    parse_bool,
+    parse_tools_config,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOLS_CONFIG_PATH = REPO_ROOT / "configs" / "tools.yaml"
+TOOLS_CONFIG_PATH = DEFAULT_TOOLS_CONFIG_PATH
 
 
 @dataclass(frozen=True)
@@ -122,7 +127,7 @@ class AgentRuntime:
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com").rstrip("/")
         self.api_key = os.environ.get("OPENAI_API_KEY", "")
         self.model = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
-        self.tool_specs = self._load_tool_specs(tools_config_path)
+        self.tool_registry = ToolRegistry(config_path=tools_config_path)
         self.system_prompt = self._build_system_prompt()
 
     def run_turn(
@@ -168,8 +173,9 @@ class AgentRuntime:
                 "tool_calls": tool_calls,
             })
 
+            guardrail = ToolLoopGuardrail()
             for tool_call in tool_calls:
-                for event in self._execute_tool_call(session_id, tool_call, request_permission, history):
+                for event in self._execute_tool_call(session_id, tool_call, request_permission, history, guardrail):
                     yield event
 
         try:
@@ -211,22 +217,10 @@ class AgentRuntime:
         })
 
     def tool_permission_state(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": spec.name,
-                "displayName": spec.display_name,
-                "enabled": spec.enabled,
-                "permission": spec.permission,
-            }
-            for spec in self.tool_specs.values()
-        ]
+        return self.tool_registry.permission_state()
 
     def enabled_tool_schemas(self) -> list[dict[str, Any]]:
-        return [
-            spec.schema
-            for spec in self.tool_specs.values()
-            if spec.enabled and spec.permission != "deny"
-        ]
+        return self.tool_registry.enabled_schemas()
 
     def _load_history(self, session_id: str, limit: int = 40) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
@@ -239,11 +233,13 @@ class AgentRuntime:
         tool_call: dict[str, Any],
         request_permission: PermissionRequester,
         history: list[dict[str, Any]],
+        guardrail: ToolLoopGuardrail,
     ) -> Iterable[AgentEvent]:
         function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
         tool_name = function.get("name") if isinstance(function.get("name"), str) else ""
         tool_call_id = tool_call.get("id") if isinstance(tool_call.get("id"), str) else str(uuid4())
-        spec = self.tool_specs.get(tool_name)
+        spec = self.tool_registry.get(tool_name)
+        args = self._parse_tool_args(function.get("arguments"))
 
         yield AgentEvent("assistant.state", {"state": "tool-running"})
         yield AgentEvent("tool.started", {
@@ -251,22 +247,31 @@ class AgentRuntime:
             "displayName": spec.display_name if spec else f"Running {tool_name}",
         })
 
-        if not spec:
-            result = {"error": f"Unknown tool: {tool_name}"}
-            history.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(result)})
+        guardrail_decision = guardrail.before_call(tool_name, args)
+        if not guardrail_decision.allowed:
+            result = {"error": guardrail_decision.reason or "Tool call blocked by guardrail"}
+            self._record_tool_result(history, tool_call_id, result)
             yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
             return
 
-        args = self._parse_tool_args(function.get("arguments"))
+        if not spec:
+            result = {"error": f"Unknown tool: {tool_name}"}
+            guardrail.after_call(tool_name, args, result, False)
+            self._record_tool_result(history, tool_call_id, result)
+            yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
+            return
+
         if not spec.enabled:
             result = {"error": f"Tool is disabled: {tool_name}"}
-            history.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(result)})
+            guardrail.after_call(tool_name, args, result, False)
+            self._record_tool_result(history, tool_call_id, result)
             yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
             return
 
         if spec.permission == "deny":
             result = {"error": f"Permission denied for tool: {tool_name}"}
-            history.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(result)})
+            guardrail.after_call(tool_name, args, result, False)
+            self._record_tool_result(history, tool_call_id, result)
             yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
             return
 
@@ -280,22 +285,20 @@ class AgentRuntime:
             approved = request_permission(request)
             if not approved:
                 result = {"error": f"Permission denied for tool: {tool_name}"}
-                history.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(result)})
+                guardrail.after_call(tool_name, args, result, False)
+                self._record_tool_result(history, tool_call_id, result)
                 yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
                 return
 
         try:
-            result = execute_tool(tool_name, args)
+            result = self.tool_registry.execute(tool_name, args)
             ok = "error" not in result
         except Exception as error:
             result = {"error": str(error)}
             ok = False
 
-        history.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": json.dumps(result, ensure_ascii=False),
-        })
+        guardrail.after_call(tool_name, args, result, ok)
+        self._record_tool_result(history, tool_call_id, result)
         yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": ok})
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -379,25 +382,6 @@ class AgentRuntime:
             "Content-Type": "application/json",
         }
 
-    def _load_tool_specs(self, config_path: Path) -> dict[str, ToolSpec]:
-        specs = {spec.name: deepcopy(spec) for spec in list_tool_specs()}
-        config = parse_tools_config(config_path)
-        for configured_name, entry in config.items():
-            tool_name = "get_current_time" if configured_name == "time" else configured_name
-            spec = specs.get(tool_name)
-            if not spec:
-                continue
-
-            enabled = entry.get("enabled")
-            if isinstance(enabled, bool):
-                spec.enabled = enabled
-
-            permission = entry.get("permission")
-            if permission in {"allow", "ask", "deny"}:
-                spec.permission = str(permission)
-
-        return specs
-
     def _build_system_prompt(self) -> str:
         return "\n".join([
             "You are Amadeus, a desktop Live2D companion agent.",
@@ -422,58 +406,10 @@ class AgentRuntime:
 
         return parsed if isinstance(parsed, dict) else {}
 
-
-def parse_tools_config(path: Path) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        return {}
-
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {}
-
-    entries: dict[str, dict[str, Any]] = {}
-    in_tools = False
-    current_tool: str | None = None
-
-    for raw_line in lines:
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-
-        indent = len(line) - len(line.lstrip(" "))
-        trimmed = line.strip()
-
-        if indent == 0:
-            in_tools = trimmed == "tools:"
-            current_tool = None
-            continue
-
-        if not in_tools:
-            continue
-
-        if indent == 2 and trimmed.endswith(":"):
-            current_tool = trimmed[:-1]
-            entries[current_tool] = {}
-            continue
-
-        if indent != 4 or not current_tool or ":" not in trimmed:
-            continue
-
-        key, value = trimmed.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        if key == "enabled":
-            entries[current_tool][key] = parse_bool(value)
-        elif key == "permission":
-            entries[current_tool][key] = value
-
-    return entries
-
-
-def parse_bool(value: str) -> bool | None:
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    return None
+    @staticmethod
+    def _record_tool_result(history: list[dict[str, Any]], tool_call_id: str, result: dict[str, Any]) -> None:
+        history.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": json.dumps(result, ensure_ascii=False),
+        })
