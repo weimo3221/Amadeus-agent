@@ -47,6 +47,10 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
   - denied `ask` tools return a tool error to the model
   - tool config overrides apply to Python tool metadata
   - permission broker resolution behavior is covered
+- Python runtime HTTP handler tests now cover the local sidecar boundary.
+  - `/tools/list` exposes effective permission state and enabled schemas
+  - `/tools/permission` returns unresolved for unknown request IDs
+  - `/agent/turn` streams missing API key failures as desktop-compatible NDJSON events
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -220,7 +224,7 @@ Status: MVP memory, model-triggered tools, registry, and permission prompts comp
 
 Phase 6 is in progress. The first vertical slice is complete: Python `/agent/turn` is wired as the preferred path, while the legacy TypeScript agent loop remains as a fallback.
 
-The second vertical slice is complete: Python runtime parity tests are in place and `npm test` now runs them.
+The second vertical slice is complete: Python runtime parity tests and Python HTTP handler tests are in place, and `npm test` now runs them.
 
 ## Completed Subphase
 
@@ -446,8 +450,7 @@ Planned tasks:
 - Move OpenAI-compatible model calls from the TypeScript server to Python. Done for the preferred path; TypeScript fallback remains temporarily.
 - Move tool decision, tool execution, memory writes, and behavior event generation to Python. Done for the preferred path.
 - Keep `apps/server` as a WebSocket/HTTP relay to avoid breaking the desktop app. Done for `user.message` when Python runtime is available.
-- Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling.
-- Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling. Initial Python runtime tests are done; HTTP relay and desktop WebSocket integration tests are still needed.
+- Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling. Initial Python runtime tests and HTTP handler tests are done; desktop WebSocket integration tests are still needed.
 - Remove the legacy TypeScript tool/model loop after parity tests cover the Python path.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
