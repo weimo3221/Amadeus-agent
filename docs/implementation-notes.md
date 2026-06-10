@@ -17,6 +17,8 @@ Live2D and audio should be treated as installable harnesses. They can contribute
 
 Current migration state: `/agent/turn` is implemented as an NDJSON event stream from Python to the TypeScript bridge. The bridge relays each runtime event to desktop and forwards `tool.permission.response` back to Python through `/tools/permission`. The older TypeScript model/tool loop remains as a fallback until parity tests cover the Python path.
 
+`npm test` now runs Python `unittest` coverage for the Python runtime path. Keep these tests focused on deterministic behavior that does not require a live model provider.
+
 ## AIRI Code to Study First
 
 When implementation starts, inspect these paths:

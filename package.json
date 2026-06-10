@@ -11,7 +11,7 @@
     "dev:python-runtime": "python packages/amadeus/server.py",
     "dev:server": "npm --workspace apps/server run dev",
     "typecheck": "npm --workspace packages/amadeus run typecheck && npm --workspace apps/server run typecheck && npm --workspace apps/desktop run typecheck",
-    "test": "echo \"TODO: run tests\""
+    "test": "python -m unittest discover -s tests -p \"test_*.py\""
   },
   "workspaces": [
     "apps/*",
