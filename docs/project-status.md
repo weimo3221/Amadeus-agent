@@ -2,13 +2,37 @@
 
 Last updated: 2026-06-11
 
-This document is the live progress tracker for Amadeus Agent. Update it whenever a project phase is completed or the immediate next step changes.
+This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
 ## Current Goal
 
-Build a desktop Live2D interactive agent with a local runtime, starting from a small working MVP and expanding toward character behavior, voice, memory, and tools.
+Build a desktop Live2D interactive agent with a local runtime, starting from a small working MVP and expanding toward character behavior, voice, memory, tools, and later long-running agent features.
 
 ## Current Snapshot
+
+Amadeus is now a working desktop MVP with a Python-first turn path.
+
+### Current Runtime Flow
+
+Preferred path today:
+
+1. Desktop renderer in `apps/desktop` sends `user.message` over WebSocket.
+2. `apps/server` receives the event and first tries Python `POST /agent/turn`.
+3. `packages/amadeus/agent.py` runs the turn in Python:
+   - loads recent SQLite history
+   - saves the user message
+   - makes the tool-decision call
+   - executes Python tools
+   - emits runtime events
+   - streams the final assistant reply
+   - saves the assistant message
+   - optionally emits `audio.tts-ready`
+4. `apps/server` relays the NDJSON runtime events back to the desktop.
+5. Desktop updates chat, tool state, permission UI, runtime audio playback, and Live2D behavior.
+
+Fallback path today:
+
+- If Python `/agent/turn` is unavailable, `apps/server/src/index.ts` still contains the older TypeScript turn loop for provider calls, SQLite writes, tool execution, permission prompts, behavior events, and Python `/audio/speak` integration.
 
 ### Done Now
 
@@ -18,51 +42,40 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 - DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies.
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
-- Desktop shows memory count, tool status, voice status, visible chat messages, and has a Reset Session button.
+- Desktop shows memory count, tool status, tool config status, voice status, visible chat messages, and has a Reset Session button.
 - Tool calling is model-triggered through OpenAI-compatible `tools` / `tool_calls`, not keyword matching.
-- Server tool execution now goes through a formal `toolRegistry`.
-- Old keyword-triggered time helper and direct-answer helper path have been removed.
-- Tool permissions now support `allow`, `ask`, and `deny` metadata.
+- Tool execution now goes through a formal registry with `allow`, `ask`, and `deny` metadata.
 - `get_current_time` is registered as an `allow` tool.
-- `roll_dice` is registered as the first low-risk `ask` tool.
-- Server loads effective tool enabled/permission settings from `configs/tools.yaml` at startup.
+- `roll_dice` is registered as an `ask` tool.
+- `local_file_search` is implemented as an `ask` tool in both the Python runtime and the TypeScript fallback.
+- `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
 - Desktop diagnostics show the loaded tool permission state from the server.
-- Tool definitions, schemas, registry creation, and config loading now live in `packages/amadeus/tools.ts`.
-- Python runtime sidecar scaffolding exists under `packages/amadeus`.
-- Python audio interface is now wired for the first pass. Current playback still falls back to Electron/browser `speechSynthesis` until a real TTS provider is configured.
-- Python `/agent/turn` is now wired for the first pass. The TypeScript server prefers the Python runtime for user turns and keeps the previous TypeScript loop as a fallback when the Python runtime is unavailable.
-- Python now owns the preferred model/tool/memory/behavior path for a turn:
-  - loads OpenAI-compatible provider config from environment or `.env`
-  - assembles recent SQLite message history
-  - makes the tool-decision call
-  - executes Python tools
-  - writes user/assistant messages to SQLite
-  - emits desktop-compatible runtime events
-  - requests Python audio output after the assistant message
-- Ask-tool permission requests can now cross the Python runtime boundary: Python emits `tool.permission.request`, the TypeScript bridge relays it to desktop, and desktop responses are forwarded back to Python `/tools/permission`.
-- Python runtime parity tests are now wired through `npm test`.
-  - missing API key returns a structured runtime error
-  - simple turns persist user and assistant messages
-  - `allow` tools execute without permission prompts
-  - denied `ask` tools return a tool error to the model
-  - tool config overrides apply to Python tool metadata
-  - permission broker resolution behavior is covered
-- Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
-- Desktop shows inline Allow / Deny prompts for `ask` tools.
-- `configs/tools.yaml` mirrors the current intended tool permissions.
-- `local_file_search` is implemented as a practical `ask` tool in both the TypeScript fallback and Python runtime.
-- Typecheck, desktop build, allow-path WebSocket test, and deny-path WebSocket test have passed.
+- Python `/agent/turn` is wired as the preferred turn path.
+- Python now owns the preferred model/tool/memory/behavior path for a turn.
+- Ask-tool permission requests now cross the Python runtime boundary:
+  - Python emits `tool.permission.request`
+  - the TypeScript bridge relays it to desktop
+  - desktop sends `tool.permission.response`
+  - the bridge forwards it back to Python `/tools/permission`
+- Python runtime parity tests are wired through `npm test`.
+- Python audio interface is wired for the first pass, and desktop prefers runtime-provided audio when it receives `audio.tts-ready`.
+- Desktop still has Electron/browser `speechSynthesis` fallback and currently uses it most of the time because the Python audio runtime still defaults to `NoopTtsProvider` until a real TTS provider is configured.
 
 ### Still Needed
 
+- Add HTTP relay and desktop WebSocket integration tests for the Python-first path.
+- Remove the legacy TypeScript turn loop after parity confidence is high enough.
+- Add a real Python TTS provider so runtime audio becomes the practical default, not only the interface contract.
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
-- Replace browser `speechSynthesis` MVP with Python-owned audio output and a stronger TTS option if better voice quality is needed.
-- Install GPT-SoVITS pretrained base models before testing Vivian TTS; the local `GPT_SoVITS/pretrained_models` directory is currently missing required base assets.
-- Improve lipsync from timed mouth movement to audio-driven or phoneme-aware movement.
-- Add more practical `ask` tools after local file search, such as opening URLs or reminders.
-- Add long-term memory beyond raw message history, such as user facts, preferences, and summaries.
-- Add proactive features later: reminders, daily brief, idle check-ins, and background task state.
-- Add advanced agent capabilities later: MCP bridge, long-task planning, context compression, and human approval checkpoints.
+- Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
+- Add more practical `ask` tools such as opening URLs or reminders.
+- Add long-term memory beyond raw message history, such as user facts, preferences, summaries, and retrieval.
+- Formalize a Python-owned ToolRuntime with guardrails, audits, and timeout/cancellation handling.
+- Turn placeholder runtime boundaries into real modules where needed:
+  - `packages/amadeus/model.py`
+  - `packages/amadeus/skills.py`
+  - `packages/amadeus/live2d.py`
+  - `packages/live2d-stage`
 
 ## Completed
 
@@ -70,384 +83,92 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 
 Status: complete.
 
-- Created `amadeus-agent` project directory.
-- Created monorepo-style structure:
-  - `apps/desktop`
-  - `apps/server`
-  - `packages/amadeus`
-  - `packages/live2d-stage`
-  - `configs`
-  - `docs`
-  - `models/live2d`
-- Added root `package.json`.
-- Added `.gitignore`.
-- Added `.env.example`.
-- Added initial design docs:
-  - `docs/architecture.md`
-  - `docs/roadmap.md`
-  - `docs/event-protocol.md`
-  - `docs/implementation-notes.md`
-- Added config drafts:
-  - `configs/character.yaml`
-  - `configs/providers.yaml`
-  - `configs/tools.yaml`
+- Created the monorepo-style structure.
+- Added root package/config files and initial docs.
+- Added draft config files in `configs`.
 
 ### Phase 1: Desktop Live2D Shell
 
 Status: complete for MVP.
 
 - Added Electron + Vite desktop app in `apps/desktop`.
-- Implemented transparent frameless desktop window.
-- Implemented always-on-top behavior.
-- Added Pin and Close controls.
-- Added Live2D stage container.
-- Added default remote Live2D test model URL through `VITE_LIVE2D_MODEL_URL`.
-- Added fallback status message when Live2D loading fails.
-- Added pointer-following head movement.
-- Added click motion trigger.
-- Added basic chat panel UI.
-- Verified:
-  - `npm install`
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
-  - Electron dev window launch
+- Implemented transparent frameless window, always-on-top behavior, minimize support, and pin/unpin controls.
+- Added Live2D stage, debug controls, pointer-following, click reaction, and loading timeout.
+- The current model is still loaded from a remote test URL.
 
 ### Phase 2: Local Agent Runtime
 
 Status: complete for MVP.
 
-- Added `apps/server`.
-- Added local HTTP health endpoint at `/health`.
-- Added WebSocket endpoint at `/ws`.
-- Added DeepSeek/OpenAI-compatible streaming chat.
-- Added server-side session history in memory.
-- Added basic system prompt for Amadeus.
-- Added runtime events:
-  - `server.hello`
-  - `assistant.state`
-  - `assistant.delta`
-  - `assistant.message`
-  - `character.behavior`
-  - `error`
-- Added shared event types, now located at `packages/amadeus/events.ts`.
-- Connected desktop chat UI to local WebSocket server.
-- Desktop now sends `user.message`.
-- Desktop now streams `assistant.delta` into the chat panel.
-- Verified WebSocket to DeepSeek path with test prompt:
-  - Prompt: `用一句中文介绍你自己`
-  - Response: `我是Amadeus，您的桌面Live2D伴侣，随时准备为您提供简洁实用的帮助。`
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
+- Added `apps/server` with `/health` and `/ws`.
+- Added OpenAI-compatible streaming chat.
+- Connected desktop chat UI to the local server.
+- Added shared runtime event types in `packages/amadeus/events.ts`.
 
 ### Phase 3: Character Behavior Link
 
 Status: complete for MVP.
 
-- Added a renderer-side Live2D behavior controller.
-- Stored the loaded Live2D model in a controller instead of keeping it as a local-only variable.
-- Connected `assistant.state` events to Live2D behavior:
-  - `idle`: neutral expression and idle motion
-  - `thinking`: focused/serious behavior
-  - `speaking`: smile/talk behavior
-  - `error`: confused/error behavior
-- Connected `character.behavior` events from the server to the Live2D controller.
-- Added motion aliases so behavior names such as `think`, `talk`, `nod`, and `shake_head` can fall back to model-specific groups such as `TapBody`, `FlickHead`, and `Idle`.
-- Added expression aliases so behavior names such as `smile`, `serious`, `confused`, and `curious` can fall back safely when a model does not define that exact expression.
-- Added safe fallbacks: missing motions or expressions are ignored instead of crashing the UI.
-- Updated pointer-following to go through the controller.
-- Updated click reaction to go through the controller.
-- Added a small debug panel on the Live2D stage for manually testing:
-  - assistant state
-  - expression
-  - motion
-- Improved the debug panel so expression and motion dropdowns are populated from the loaded Live2D model's declared capabilities instead of hard-coded guesses.
-- Added a capability summary in the debug panel, for example `N expressions, M motion groups`.
-- Kept behavior alias fallback for runtime events while making manual debug selections use real model names directly.
-- Fixed a renderer startup risk caused by importing `MotionPriority` from the package root; the desktop app now uses the numeric force priority to avoid pulling an extra runtime entry.
-- Added a 15 second Live2D model loading timeout so the UI no longer stays on `Loading Live2D model...` forever when the model or Cubism runtime cannot load.
-- Fixed the Electron preload path from `out/preload/index.js` to `out/preload/index.mjs`, which restores renderer access to `window.amadeus` and makes window controls work.
-- Clarified the top-right window control:
-  - `Unpin`: stop keeping the window always on top
-  - `Pin`: keep the window always on top again
-- Added a `Minimize` titlebar button backed by Electron IPC.
-- Updated minimize behavior to cancel always-on-top before minimizing, and explicitly enabled `minimizable` plus taskbar visibility for the frameless desktop window.
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
+- Connected assistant state and behavior events to Live2D expression and motion handling.
+- Added expression and motion alias fallback behavior.
+- Added debug controls that read available model capabilities.
 
 ### Phase 4: Voice and Lipsync
 
 Status: complete for MVP.
 
-- Added a `Voice On` / `Voice Off` titlebar toggle.
-- Added browser/Electron `speechSynthesis` based TTS playback for completed assistant replies.
-- Auto-detects Chinese text and uses `zh-CN`; otherwise uses `en-US`.
-- Cancels current speech when a new user message is sent.
-- Added a simple mouth loop that drives Live2D `ParamMouthOpenY` while speech is active.
-- Stops mouth movement when speech ends or errors.
-- Added a voice status line in the chat panel for diagnosing local speech state.
-- Keeps the active `SpeechSynthesisUtterance` referenced while speaking to avoid premature cleanup.
-- Waits for system voices through `voiceschanged`, selects a matching voice when available, and calls `speechSynthesis.resume()` after queueing speech.
-- Keeps this as a local MVP without introducing a paid/cloud TTS provider yet.
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
+- Added voice toggle and browser/Electron `speechSynthesis` playback.
+- Added a simple timed mouth loop for speaking.
+- Added desktop voice status diagnostics.
 
 ### Phase 5: Memory and Tools
 
-Status: MVP memory, model-triggered tools, registry, and permission prompts complete.
+Status: MVP memory, model-triggered tools, registry, config loading, and permission prompts complete.
 
-- Added SQLite-backed message persistence using Node 24's built-in `node:sqlite`.
-- Database path: `data/amadeus.sqlite`.
-- Added `messages` table for persisted user and assistant messages.
-- Switched the WebSocket session to a stable `default` session so conversation history can be loaded after server restarts.
-- Server now loads the most recent persisted messages into LLM context.
-- `session.reset` now clears persisted messages for the session.
-- Added the first safe local current-time tool, which was later moved into model-triggered tool calling:
-  - exposes current date/time through the server runtime
-  - now answers through the LLM after a tool result is returned
-  - emits `tool.started` and `tool.finished`
-  - persists the user question and final assistant answer
-- Verified WebSocket time tool path:
-  - Prompt: `现在几点？`
-  - Response: `现在是 2026年5月31日星期日 12:39:51。`
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
+- Added SQLite-backed message persistence using `node:sqlite`.
+- Desktop now shows memory and tool feedback.
+- Added model-triggered tool calling.
+- Added the first formal tool registry and tool config loader.
+- Added `allow` / `ask` / `deny` tool permissions.
+- Added inline desktop Allow / Deny prompts.
+- Extracted TypeScript tool metadata and config loading into `packages/amadeus/tools.ts`.
+- Added `local_file_search` as the first practical project-search tool.
 
 ## In Progress
 
-Phase 6 is in progress. The first vertical slice is complete: Python `/agent/turn` is wired as the preferred path, while the legacy TypeScript agent loop remains as a fallback.
+### Phase 6: Python Runtime Ownership
 
-The second vertical slice is complete: Python runtime parity tests are in place and `npm test` now runs them.
+Status: in progress.
 
-## Completed Subphase
+What is already done:
 
-### Phase 5 Continued: Memory UI and Tool Feedback
+- Python `packages/amadeus/agent.py` is the preferred owner of the turn path.
+- Python `POST /agent/turn` streams NDJSON runtime events.
+- Python reads/writes SQLite message memory for the preferred path.
+- Python owns tool decision and Python tool execution for the preferred path.
+- Python permission brokering is wired through `tool.permission.request` and `/tools/permission`.
+- `npm test` covers deterministic Python runtime behavior.
 
-Status: complete for MVP.
+What is not done yet:
 
-- Added `memoryMessages` to `server.hello`.
-- Desktop shows memory status, for example `Memory: 8 messages`.
-- Added `memory.updated` server event so the desktop memory count updates after messages are persisted, not only on connect/reset.
-- Desktop shows tool activity:
-  - `Tool running: ...`
-  - `Tool finished: ...`
-- Added `Reset` button in the chat panel.
-- Reset clears the visible chat, stops speech/lipsync, resets tool status, sends `session.reset`, and updates memory status after server confirmation.
-- Server responds to reset with a fresh `server.hello` containing `memoryMessages: 0`.
-- Increased the desktop chat panel height so user and assistant messages remain visible after adding Memory/Tool/Voice status rows.
-- Verified memory update flow over WebSocket:
-  - before message: `server.hello:10`
-  - after message persistence: `memory.updated:12`
-- Verified reset flow over WebSocket:
-  - before reset: `server.hello:8`
-  - after reset: `server.hello:0`
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
-
-## Completed Subphase
-
-### Phase 5 Continued: Tool Calling Refactor
-
-Status: complete for MVP.
-
-- Defined an OpenAI-compatible `get_current_time` tool schema.
-- Added a non-streaming model decision call with `tools` and `tool_choice: auto`.
-- Parses `tool_calls` from the model response.
-- Executes `get_current_time` locally on the server.
-- Emits existing desktop-visible `tool.started` and `tool.finished` events.
-- Sends tool result back into the chat context as a `role: tool` message.
-- Streams the model's final natural-language answer to the desktop.
-- Removed the active keyword-trigger branch from user-message handling.
-- Strengthened the system prompt so current time/date questions must use `get_current_time`.
-- Verified model-triggered tool call over WebSocket:
-  - Prompt: `请用工具告诉我现在几点？`
-  - Event flow includes `tool.started` and `tool.finished`
-  - Response: `工具查询完毕，当前时间是：**2026年5月31日星期日 13:02:46**。`
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
-
-## Completed Subphase
-
-### Phase 5 Continued: Tool Registry Cleanup
-
-Status: complete for MVP.
-
-- Added a `toolRegistry` object in the server runtime.
-- Registered `get_current_time` with:
-  - OpenAI-compatible schema
-  - display name
-  - execution handler
-- `tools` sent to the model are now derived from the registry.
-- `executeToolCall` now dispatches by `toolRegistry[toolName]`.
-- Removed the old keyword-trigger helper and old direct-answer time helper path.
-- Verified registry-dispatched tool call over WebSocket:
-  - Event flow includes `tool.started` and `tool.finished`
-  - Response: `工具查询结果：当前时间是 **2026年5月31日星期日 13:14:43**。`
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
-
-## Completed Subphase
-
-### Phase 5 Continued: Permission-Aware Tools
-
-Status: complete for MVP.
-
-- Added `allow`, `ask`, and `deny` permission metadata to tool registry entries.
-- `get_current_time` remains `allow`, so current-time questions can run without interrupting the user.
-- Added `roll_dice` as the first low-risk `ask` tool.
-- Updated `configs/tools.yaml` to mirror the current enabled tools and permission levels.
-- Server now blocks disabled or denied tools before execution.
-- Server now emits `tool.permission.request` before running an `ask` tool.
-- Desktop now displays an inline permission prompt with `Allow` and `Deny` buttons.
-- Desktop sends `tool.permission.response` back to the runtime.
-- Denied or timed-out permission requests return a tool error to the model instead of executing.
-- Permission requests time out after 30 seconds.
-- Verified allow flow over WebSocket:
-  - Prompt: `请用工具帮我掷2个6面骰子，然后告诉我结果。`
-  - Event flow includes `tool.started`, `tool.permission.request`, and `tool.finished`.
-- Verified deny flow over WebSocket:
-  - Prompt: `请用工具帮我掷1个6面骰子。`
-  - Event flow includes `tool.permission.request` followed by a failed `tool.finished`.
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
-
-## Completed Subphase
-
-### Phase 5 Continued: Tool Config Loader
-
-Status: complete for MVP.
-
-- Added a small server-side config loader for `configs/tools.yaml`.
-- Applies configured `enabled` and `permission` values before exposing tools to the model.
-- Supports the legacy `time` config key as an alias for the registered `get_current_time` tool.
-- Validates unknown tool names, invalid boolean values, invalid permission values, and duplicate aliases with startup warnings.
-- Adds loaded tool permission state to `server.hello`.
-- Desktop shows loaded tool state in the diagnostics area, for example `Tools: get_current_time allow, roll_dice ask`.
-- Verified:
-  - `npm run typecheck`
-  - `npm --workspace apps/desktop run build`
-
-## Completed Subphase
-
-### Phase 5 Continued: Tools Package Extraction
-
-Status: complete for first pass.
-
-- Added TypeScript bridge exports inside `@amadeus-agent/amadeus`.
-- Moved tool types, default registry creation, `get_current_time`, `roll_dice`, config loading, enabled schema selection, and permission-state projection into `packages/amadeus/tools.ts`.
-- Updated `apps/server` to consume `@amadeus-agent/amadeus/tools` while keeping WebSocket permission prompts and runtime execution flow in the server app.
-- Updated root typecheck to include `packages/amadeus`.
-- Verified:
-  - `npm install`
-  - `npm run typecheck`
-  - server restart and `/health`
-
-## Completed Subphase
-
-### Phase 5 Continued: Python Runtime Foundation
-
-Status: scaffolded.
-
-- Added `packages/amadeus` as the local Python runtime sidecar.
-- Added peer runtime modules for `agent`, `memory`, `model`, `tools`, `skills`, `live2d`, and `audio`.
-- Added `GET /health`, `POST /tools/execute`, and memory endpoints.
-- Implemented Python versions of `get_current_time` and `roll_dice`.
-- Added SQLite-backed Python memory store matching the existing `messages` table.
-- Added optional Python backend execution in `packages/amadeus/tools.ts`.
-- Server now defaults tool execution to `AMADEUS_PYTHON_RUNTIME_URL`, with `http://127.0.0.1:8790` as the default local sidecar URL.
-- Root `npm run dev` now starts Python runtime, server, and desktop together.
-- Verified:
-  - `npm run typecheck`
-- Not yet verified in this shell:
-  - Python process execution was blocked by a local sandbox spawn refresh during this session.
-
-## Completed Subphase
-
-### Phase 5 Continued: GPT-SoVITS Provider Discovery
-
-Status: environment checked, provider not wired yet.
-
-- Located the local GPT-SoVITS project at `D:\OtherProject\LearningLLM\GPT-SoVITS`.
-- Confirmed the API entrypoint exists at `api_v2.py`.
-- Confirmed the Vivian fine-tuned GPT/SoVITS weights exist:
-  - Chinese GPT: `D:\OtherProject\LearningLLM\dataset\薇薇安_zh\薇薇安-e10.ckpt`
-  - Chinese SoVITS: `D:\OtherProject\LearningLLM\dataset\薇薇安_zh\薇薇安_e10_s1040_l32.pth`
-  - English GPT: `D:\OtherProject\LearningLLM\dataset\薇薇安_en\薇薇安-e10.ckpt`
-  - English SoVITS: `D:\OtherProject\LearningLLM\dataset\薇薇安_en\薇薇安_e10_s1010_l32.pth`
-- Confirmed each language has one reference wav under `reference_audios`.
-- Checked GPT-SoVITS startup log: current output only shows CUDA fallback warnings, not a complete traceback.
-- Found the real setup blocker: `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models` is missing required base assets such as BERT, HuBERT, and v2 base weights.
-- Recommended install command on this machine, where `pwsh` is unavailable and Windows PowerShell should be used:
-  - `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Device CU126 -Source ModelScope`
-- Next integration work should start only after GPT-SoVITS API can generate `vivian_zh_test.wav` and `vivian_en_test.wav` successfully.
-
-## Completed Subphase
-
-### Phase 5 Continued: Practical Ask Tools
-
-Status: local file search complete.
-
-- Added `local_file_search` as a model-triggered `ask` tool.
-- The tool searches filenames and small text files inside the project workspace.
-- Search results include workspace-relative paths, optional line numbers, previews, and match type.
-- The implementation exists in both the TypeScript fallback and Python runtime.
-- Enabled `local_file_search` in `configs/tools.yaml`.
-- Updated the server system prompt so project file, docs, code, configuration, and notes search requests call `local_file_search`.
-- Verified:
-  - `npm run typecheck`
-  - Python compile check for `packages/amadeus/tools.py` and `packages/amadeus/server.py`
-  - Python tool smoke test for `local_file_search`
-
-## Completed Subphase
-
-### Phase 5 Continued: Audio Runtime Interface
-
-Status: complete for first pass.
-
-- Documented the Python-first audio direction.
-- Standardized the local audio asset layout:
-  - `packages/amadeus/assets/audio/voices`
-  - `packages/amadeus/assets/audio/sfx`
-  - `packages/amadeus/assets/audio/cache`
-- Documented `audio.tts-ready` as the runtime-to-desktop event used for Python-provided audio playback.
-- Added the local audio asset directories.
-- Added a Python `AudioRuntime` and `TtsProvider` abstraction.
-- Added `POST /audio/speak` to the Python runtime.
-- Added `GET /audio/files/{relativePath}` to serve local audio files safely from `packages/amadeus/assets/audio`.
-- Clarified that `voices/` stores fixed clips only; arbitrary assistant speech needs a real TTS provider.
-- Updated server event types with `audio.tts-ready`.
-- Updated the server bridge to call Python `/audio/speak` after assistant replies and emit `audio.tts-ready` only when Python returns a real `audioUrl`.
-- Updated the desktop renderer to play runtime-provided audio URLs and cancel the system voice fallback when runtime audio arrives.
-- Kept Electron/browser `speechSynthesis` as the fallback path until Python audio can generate an `audioUrl`.
-- Verified:
-  - `npm --workspace packages/amadeus run typecheck`
-  - `npm --workspace apps/server run typecheck`
-  - `npm --workspace apps/desktop run typecheck`
-  - `npm --workspace apps/desktop run build`
-  - Python source compile check without writing pyc files
+- `apps/server` still contains the full legacy TypeScript fallback loop.
+- The current Python test coverage is runtime-unit coverage only; there are still no HTTP endpoint tests, bridge relay tests, or desktop WebSocket integration tests.
+- The active provider code still lives inline in `packages/amadeus/agent.py`; `model.py` is still a future abstraction boundary.
+- `skills.py` and `live2d.py` are still placeholder boundaries rather than mature runtime modules.
+- `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/main.ts`.
 
 ## Next Recommended Phase
 
-### Phase 6: Python Runtime Ownership
+### Phase 6 Completion: Python Runtime Ownership Cleanup
 
-Goal: move the real agent loop out of `apps/server/src/index.ts` and into `packages/amadeus`, while preserving the existing desktop behavior.
+Goal: finish the Python-first migration by proving parity and shrinking the TypeScript fallback path.
 
 Planned tasks:
 
-- Add `packages/amadeus/agent/runtime.py` or equivalent Python runtime module. Done for the first pass in `packages/amadeus/agent.py`.
-- Add a Python `/agent/turn` endpoint that returns current runtime events. Done for the first pass as NDJSON event streaming.
-- Move OpenAI-compatible model calls from the TypeScript server to Python. Done for the preferred path; TypeScript fallback remains temporarily.
-- Move tool decision, tool execution, memory writes, and behavior event generation to Python. Done for the preferred path.
-- Keep `apps/server` as a WebSocket/HTTP relay to avoid breaking the desktop app. Done for `user.message` when Python runtime is available.
-- Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling.
-- Add focused tests for simple text replies, time tool calls, ask tool permission, denied permissions, and missing API key handling. Initial Python runtime tests are done; HTTP relay and desktop WebSocket integration tests are still needed.
+- Add focused HTTP endpoint tests for the Python runtime.
+- Add bridge-level tests for relaying Python NDJSON events through `apps/server`.
+- Add desktop/WebSocket integration coverage for the permission round-trip and normal chat flow.
+- Keep Python `/agent/turn` as the source of truth for normal user turns.
 - Remove the legacy TypeScript tool/model loop after parity tests cover the Python path.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
@@ -455,15 +176,31 @@ The broader upgrade plan is documented in `docs/agent-maturity-upgrade-plan.md`.
 
 ## Later Phases
 
+### Phase 7: ToolRuntime and Guardrails
+
+Not started as a formal runtime phase.
+
+Notes:
+
+- Tool registry, config loading, and permission-aware tools already exist.
+- The remaining work is the mature runtime layer: Python-owned ToolSpec/ToolContext/ToolResult, timeout/cancellation handling, audit records, and repeated-failure / no-progress guardrails.
+
 ### Phase 8: Agent Memory Optimization
 
 Not started.
 
 - Add conversation summary storage.
-- Add simple user profile facts and preferences.
-- Feed summaries and profile facts into the model context.
+- Add user profile facts and preferences.
 - Add SQLite FTS session search.
-- Add focused tests for memory persistence, reset behavior, and context assembly.
+- Feed summaries and profile facts into model context.
+
+### Phase 9: Live2D and Audio Harnesses
+
+Not started.
+
+- Turn Live2D and audio into installable runtime harnesses instead of ad hoc runtime/renderer coupling.
+- Add `configs/harnesses.yaml`.
+- Add capability feedback from desktop to runtime.
 
 ### Phase 11: Proactive Agent
 
@@ -479,28 +216,30 @@ Not started.
 Not started.
 
 - Add MCP bridge.
-- Add long-task planning.
 - Add sub-agent/task worker abstraction.
 - Add context compression.
+- Add long-task planning.
 - Add human approval checkpoints.
+- Add provider/harness profiles.
+- Add eval coverage for tool choice, permissions, memory, Live2D, audio, and guardrails.
 
 ## Known Issues
 
 - The desktop app currently uses a remote Live2D test model URL. A local model should be added under `models/live2d`.
 - Live2D behavior mapping is currently alias-based and depends on the available motions/expressions in the loaded model.
-- The debug panel now shows model-declared motions and expressions, but some models may still omit metadata or expose very short motions that are hard to notice.
-- The current Live2D model and Cubism runtime are loaded from remote URLs, so network failures can still prevent the model from appearing. A local model bundle should be added next.
-- TTS currently falls back to browser/Electron `speechSynthesis`, so voice quality and available voices depend on the OS until Python audio output is fully wired.
+- The current Live2D model and Cubism runtime are loaded from remote URLs, so network failures can still prevent the model from appearing.
+- TTS currently falls back to browser/Electron `speechSynthesis` in normal practice because the Python audio runtime still defaults to `NoopTtsProvider`.
 - GPT-SoVITS integration is blocked until required pretrained base models are downloaded into `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models`.
-- Lipsync is currently a simple timed mouth loop, not phoneme-accurate.
+- Lipsync is currently a timed mouth loop, not phoneme-accurate.
 - SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
-- Three local tools exist right now: `get_current_time`, `roll_dice`, and `local_file_search`. More useful tools should be added next.
-- `.npmrc` uses `electron_mirror` for Electron downloads. npm prints a warning that this custom config may stop working in a future npm major version.
+- Current Python tests only cover runtime-unit behavior. HTTP relay and desktop integration coverage are still missing.
+- Placeholder boundaries still need real implementations or cleanup: `model.py`, `skills.py`, `live2d.py`, and `packages/live2d-stage`.
 
 ## Useful Commands
 
 ```bash
 npm install
+npm test
 npm run typecheck
 npm --workspace apps/server run dev
 npm --workspace apps/desktop run dev
@@ -514,6 +253,12 @@ Server:
 ```text
 http://127.0.0.1:8788
 ws://127.0.0.1:8788/ws
+```
+
+Python runtime:
+
+```text
+http://127.0.0.1:8790
 ```
 
 Environment:

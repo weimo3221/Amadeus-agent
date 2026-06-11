@@ -1,6 +1,6 @@
 # Event Protocol
 
-This file defines the first draft of the desktop/server event protocol.
+This file documents the current desktop/server event protocol that is actually implemented in the codebase. The source of truth for the typed current event set is `packages/amadeus/events.ts`.
 
 All events are JSON objects with this shape:
 
@@ -14,53 +14,7 @@ export interface RuntimeEvent<TType extends string = string, TPayload = unknown>
 }
 ```
 
-## Desktop to Server
-
-### desktop.capabilities
-
-Sent after the desktop adapter initializes enough to describe available device features.
-
-```json
-{
-  "type": "desktop.capabilities",
-  "payload": {
-    "live2d": true,
-    "audioPlayback": true,
-    "speechSynthesis": true,
-    "voiceInput": false
-  }
-}
-```
-
-### character.capabilities
-
-Sent after a Live2D model loads.
-
-```json
-{
-  "type": "character.capabilities",
-  "payload": {
-    "modelId": "default",
-    "expressions": ["default", "smile"],
-    "motions": ["Idle", "TapBody"]
-  }
-}
-```
-
-### audio.capabilities
-
-Sent after the desktop audio adapter initializes.
-
-```json
-{
-  "type": "audio.capabilities",
-  "payload": {
-    "playback": true,
-    "speechSynthesis": true,
-    "input": false
-  }
-}
-```
+## Current Desktop to Server Events
 
 ### user.message
 
@@ -70,67 +24,6 @@ Sent after the desktop audio adapter initializes.
   "payload": {
     "text": "What should I focus on today?",
     "inputMode": "text"
-  }
-}
-```
-
-### user.voice-start
-
-```json
-{
-  "type": "user.voice-start",
-  "payload": {
-    "sampleRate": 48000
-  }
-}
-```
-
-### user.voice-chunk
-
-Reserved for push-to-talk or streaming ASR.
-
-```json
-{
-  "type": "user.voice-chunk",
-  "payload": {
-    "mimeType": "audio/webm",
-    "chunkBase64": "..."
-  }
-}
-```
-
-### user.voice-end
-
-```json
-{
-  "type": "user.voice-end",
-  "payload": {}
-}
-```
-
-### desktop.pointer
-
-```json
-{
-  "type": "desktop.pointer",
-  "payload": {
-    "x": 300,
-    "y": 500,
-    "target": "character",
-    "action": "click"
-  }
-}
-```
-
-### desktop.character.click
-
-```json
-{
-  "type": "desktop.character.click",
-  "payload": {
-    "x": 300,
-    "y": 500,
-    "button": "left"
   }
 }
 ```
@@ -156,41 +49,7 @@ Reserved for push-to-talk or streaming ASR.
 }
 ```
 
-### audio.playback-started
-
-```json
-{
-  "type": "audio.playback-started",
-  "payload": {
-    "audioUrl": "http://127.0.0.1:8790/audio/files/cache/reply.wav"
-  }
-}
-```
-
-### audio.playback-ended
-
-```json
-{
-  "type": "audio.playback-ended",
-  "payload": {
-    "audioUrl": "http://127.0.0.1:8790/audio/files/cache/reply.wav"
-  }
-}
-```
-
-### audio.playback-error
-
-```json
-{
-  "type": "audio.playback-error",
-  "payload": {
-    "audioUrl": "http://127.0.0.1:8790/audio/files/cache/reply.wav",
-    "message": "Playback failed"
-  }
-}
-```
-
-## Server to Desktop
+## Current Server to Desktop Events
 
 ### server.hello
 
@@ -250,7 +109,7 @@ Reserved for push-to-talk or streaming ASR.
 }
 ```
 
-Allowed states:
+Allowed states in the shared type:
 
 - `idle`
 - `listening`
@@ -258,6 +117,10 @@ Allowed states:
 - `speaking`
 - `tool-running`
 - `error`
+
+Note:
+
+- `listening` exists in the shared type but is not currently a meaningful active state in the desktop/server flow.
 
 ### character.behavior
 
@@ -269,20 +132,6 @@ Allowed states:
     "expression": "smile",
     "motion": "nod",
     "intensity": 0.7
-  }
-}
-```
-
-### character.lipsync
-
-Reserved for runtime-provided lipsync values when desktop playback is not deriving mouth movement locally.
-
-```json
-{
-  "type": "character.lipsync",
-  "payload": {
-    "mouthOpen": 0.62,
-    "durationMs": 50
   }
 }
 ```
@@ -325,6 +174,14 @@ Reserved for runtime-provided lipsync values when desktop playback is not derivi
 }
 ```
 
+Current flow:
+
+- Python emits this request during `/agent/turn`.
+- `apps/server` relays it to desktop.
+- Desktop shows the inline Allow / Deny prompt.
+- Desktop responds with `tool.permission.response`.
+- `apps/server` forwards that response to Python `/tools/permission` unless the request belongs to the legacy TypeScript fallback loop.
+
 ### audio.tts-ready
 
 ```json
@@ -337,34 +194,11 @@ Reserved for runtime-provided lipsync values when desktop playback is not derivi
 }
 ```
 
-If the Python audio runtime cannot provide an audio URL, the desktop may fall back to system `speechSynthesis`.
+Current behavior:
 
-### audio.tts-fallback
-
-```json
-{
-  "type": "audio.tts-fallback",
-  "payload": {
-    "reason": "tts_provider_unavailable:none",
-    "fallback": "speechSynthesis"
-  }
-}
-```
-
-### audio.lipsync-cues
-
-```json
-{
-  "type": "audio.lipsync-cues",
-  "payload": {
-    "audioUrl": "http://127.0.0.1:8790/audio/files/cache/reply.wav",
-    "cues": [
-      { "offsetMs": 0, "mouthOpen": 0.1 },
-      { "offsetMs": 50, "mouthOpen": 0.7 }
-    ]
-  }
-}
-```
+- Desktop prefers runtime audio when this event arrives.
+- If no runtime audio arrives, desktop schedules local `speechSynthesis` fallback after `assistant.message`.
+- There is no separate emitted runtime fallback event today.
 
 ### error
 
@@ -377,3 +211,54 @@ If the Python audio runtime cannot provide an audio URL, the desktop may fall ba
   }
 }
 ```
+
+## Current Bridge to Python Runtime API
+
+Current active endpoints used by the bridge/runtime:
+
+```text
+GET /health
+GET /tools/list
+POST /agent/turn
+POST /tools/execute
+POST /tools/permission
+GET /memory/count
+GET /memory/messages
+POST /memory/messages
+POST /memory/reset
+POST /audio/speak
+GET /audio/files/{relativePath}
+```
+
+Python runtime responses from `/agent/turn` are streamed as NDJSON using the same event names where possible.
+
+## Planned Protocol Extensions
+
+These are discussed elsewhere in the docs but are not part of the current implemented event set in `packages/amadeus/events.ts`:
+
+### Planned desktop to server events
+
+- `desktop.capabilities`
+- `character.capabilities`
+- `audio.capabilities`
+- `desktop.pointer`
+- `desktop.character.click`
+- `audio.playback-started`
+- `audio.playback-ended`
+- `audio.playback-error`
+- `user.voice-start`
+- `user.voice-chunk`
+- `user.voice-end`
+
+### Planned server to desktop events
+
+- `character.lipsync`
+- `audio.tts-fallback`
+- `audio.lipsync-cues`
+
+### Planned bridge/runtime endpoints
+
+- `POST /agent/cancel`
+- `POST /agent/message`
+
+These planned items should be documented as current only after they are added to the active shared event types and wired in code.

@@ -1,13 +1,27 @@
 # Amadeus Agent
 
-Amadeus Agent is a desktop virtual character agent designed around a Live2D presence, real-time interaction, and a local-first agent runtime.
+Amadeus Agent is a desktop virtual character agent designed around a Live2D presence, real-time interaction, and a local-first runtime.
 
-The first goal is not to build a full AIRI clone. The goal is to create a smaller project with clear boundaries:
+The project is now in a Python-first migration stage:
 
-- `apps/desktop`: desktop Live2D shell and user interaction surface
-- `apps/server`: TypeScript bridge between the desktop and Python runtime
-- `packages/amadeus`: Python agent loop, model adapters, memory, tools, skills, Live2D/audio command interfaces
-- `packages/live2d-stage`: desktop Live2D rendering adapter
+- `apps/desktop`: desktop Live2D shell, chat UI, runtime audio playback, and permission UI
+- `apps/server`: TypeScript bridge between the desktop and Python runtime, plus a temporary fallback turn loop
+- `packages/amadeus`: preferred Python agent turn path, memory, tools, runtime HTTP API, and future model/skills/harness boundaries
+- `packages/live2d-stage`: intended desktop Live2D rendering adapter boundary, not yet the active implementation package
+
+## Current flow
+
+Preferred path today:
+
+1. Desktop sends `user.message` over WebSocket.
+2. `apps/server` relays the turn to Python `POST /agent/turn`.
+3. Python runtime loads memory, performs tool decisions, executes Python tools, streams assistant events, and may emit runtime audio.
+4. `apps/server` relays runtime events back to desktop.
+5. Desktop updates chat, permission UI, audio playback, and Live2D behavior.
+
+Fallback path today:
+
+- If Python `/agent/turn` is unavailable, `apps/server` still contains the older TypeScript turn loop to preserve the MVP behavior.
 
 ## Design References
 
@@ -15,15 +29,9 @@ The first goal is not to build a full AIRI clone. The goal is to create a smalle
 - `../hermes-agent`: reference for tool systems, memory, skills, scheduled tasks, and long-running agent behavior.
 - `../deepagents`: reference for long-horizon task planning, sub-agents, filesystem tools, and context management.
 
-## Initial Direction
+## Docs
 
-Build the project in phases:
-
-1. Desktop Live2D window.
-2. Text chat with a local agent runtime.
-3. Character persona, emotion, expression, and motion mapping.
-4. Voice input/output and lipsync.
-5. Memory and tools.
-6. Proactive desktop assistant behavior.
-
-See [docs/architecture.md](docs/architecture.md) and [docs/roadmap.md](docs/roadmap.md).
+- Current implementation status: [docs/project-status.md](docs/project-status.md)
+- Current/target architecture: [docs/architecture.md](docs/architecture.md)
+- Forward-looking roadmap: [docs/roadmap.md](docs/roadmap.md)
+- Runtime event contract: [docs/event-protocol.md](docs/event-protocol.md)
