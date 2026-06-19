@@ -102,10 +102,36 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertTrue(tool_audit[1]["ok"])
         self.assertIsInstance(tool_audit[1]["durationMs"], int)
         self.assertEqual([record.decision for record in runtime.tool_audit_records()], ["started", "finished"])
+        self.assertEqual(
+            [record.decision for record in runtime.persisted_tool_audit_records("default")],
+            ["started", "finished"],
+        )
         final_history = runtime.final_messages[-1]
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_time")
         self.assertIn("formatted", tool_messages[0]["content"])
+
+    def test_persisted_audit_records_survive_runtime_recreation(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_time",
+                    "type": "function",
+                    "function": {"name": "get_current_time", "arguments": "{}"},
+                }],
+            },
+        )
+
+        list(runtime.run_turn("default", "what time is it", lambda _request: False))
+        recreated = FakeAgentRuntime(self.memory)
+
+        persisted = recreated.persisted_tool_audit_records("default")
+        self.assertEqual([record.decision for record in persisted], ["started", "finished"])
+        self.assertEqual(persisted[0].tool_name, "get_current_time")
+        self.assertTrue(persisted[1].ok)
 
     def test_large_tool_result_writes_compact_output_to_model_context(self) -> None:
         runtime = FakeAgentRuntime(
@@ -177,6 +203,9 @@ class AgentRuntimeTests(unittest.TestCase):
         tool_audit = [event.payload for event in events if event.type == "tool.audit"]
         self.assertEqual([entry["decision"] for entry in tool_audit], ["started", "denied"])
         self.assertEqual(tool_audit[1]["failureCode"], "permission_denied")
+        persisted = runtime.persisted_tool_audit_records("default")
+        self.assertEqual([record.decision for record in persisted], ["started", "denied"])
+        self.assertEqual(persisted[1].failure_code, "permission_denied")
         final_history = runtime.final_messages[-1]
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertIn("Permission denied", tool_messages[0]["content"])
@@ -238,6 +267,12 @@ class AgentRuntimeTests(unittest.TestCase):
             ["started", "failed", "started", "failed", "started", "blocked"],
         )
         self.assertEqual(tool_audit[-1]["failureCode"], "guardrail_blocked")
+        persisted = runtime.persisted_tool_audit_records("default")
+        self.assertEqual(
+            [record.decision for record in persisted],
+            ["started", "failed", "started", "failed", "started", "blocked"],
+        )
+        self.assertEqual(persisted[-1].failure_code, "guardrail_blocked")
 
     def test_repeated_successful_tool_call_is_blocked_as_no_progress(self) -> None:
         repeated_tool_calls = [

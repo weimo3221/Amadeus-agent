@@ -195,7 +195,7 @@ Current decisions:
 Current behavior:
 
 - Python emits audit events during `/agent/turn`.
-- The runtime also keeps an in-process audit log for the current runtime instance.
+- The runtime keeps an in-process audit log for the current runtime instance and persists the same records to SQLite for diagnostics after restart.
 - These records are not persisted to SQLite yet.
 
 ### tool.permission.request

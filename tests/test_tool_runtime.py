@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.tool_runtime import ToolContext, ToolLoopGuardrail, ToolRegistry
+from amadeus.tool_runtime import ToolAuditLog, ToolAuditStore, ToolContext, ToolLoopGuardrail, ToolRegistry
 from amadeus.tools import ToolSpec
 
 
@@ -270,6 +270,43 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("Blocked no-progress repeated tool call", decision.reason or "")
         self.assertEqual(decision.failure_code, "no_progress_loop")
+
+
+class ToolAuditStoreTests(unittest.TestCase):
+    def test_saves_and_loads_audit_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ToolAuditStore(Path(tmpdir) / "amadeus.sqlite")
+            log = ToolAuditLog()
+            record = log.append(
+                session_id="session-1",
+                tool_name="get_current_time",
+                decision="finished",
+                ok=True,
+                duration_ms=12,
+            )
+
+            store.save(record)
+            loaded = store.load(session_id="session-1")
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].record_id, record.record_id)
+        self.assertEqual(loaded[0].session_id, "session-1")
+        self.assertEqual(loaded[0].tool_name, "get_current_time")
+        self.assertEqual(loaded[0].decision, "finished")
+        self.assertTrue(loaded[0].ok)
+        self.assertEqual(loaded[0].duration_ms, 12)
+
+    def test_filters_audit_records_by_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ToolAuditStore(Path(tmpdir) / "amadeus.sqlite")
+            log = ToolAuditLog()
+            store.save(log.append(session_id="session-1", tool_name="a", decision="started"))
+            store.save(log.append(session_id="session-2", tool_name="b", decision="started"))
+
+            loaded = store.load(session_id="session-2")
+
+        self.assertEqual([record.session_id for record in loaded], ["session-2"])
+        self.assertEqual([record.tool_name for record in loaded], ["b"])
 
 
 if __name__ == "__main__":

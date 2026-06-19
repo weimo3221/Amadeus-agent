@@ -17,6 +17,7 @@ from amadeus.tool_runtime import (
     DEFAULT_TOOLS_CONFIG_PATH,
     ToolAuditLog,
     ToolAuditRecord,
+    ToolAuditStore,
     ToolContext,
     ToolLoopGuardrail,
     ToolRegistry,
@@ -132,6 +133,7 @@ class AgentRuntime:
         self.model = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
         self.tool_registry = ToolRegistry(config_path=tools_config_path)
         self.tool_audit_log = ToolAuditLog()
+        self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
 
     def run_turn(
@@ -228,6 +230,9 @@ class AgentRuntime:
 
     def tool_audit_records(self) -> list[ToolAuditRecord]:
         return self.tool_audit_log.records()
+
+    def persisted_tool_audit_records(self, session_id: str | None = None, limit: int = 100) -> list[ToolAuditRecord]:
+        return self.tool_audit_store.load(session_id=session_id, limit=limit)
 
     def _load_history(self, session_id: str, limit: int = 40) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
@@ -536,4 +541,5 @@ class AgentRuntime:
             failure_code=failure_code,
             detail=detail,
         )
+        self.tool_audit_store.save(record)
         return AgentEvent("tool.audit", record.to_payload())
