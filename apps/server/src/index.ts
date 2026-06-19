@@ -13,7 +13,8 @@ import {
   type ToolCall,
 } from '@amadeus-agent/amadeus/tools'
 
-import { createServer } from 'node:http'
+import { forwardToolPermissionToPython, relayPythonTurn } from './bridge.js'
+import { createAmadeusBridgeServer } from './websocket-server.js'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,7 +22,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 
 import { config } from 'dotenv'
-import { WebSocketServer, type WebSocket } from 'ws'
+import { type WebSocket } from 'ws'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = resolve(serverDir, '../../..')
@@ -366,91 +367,8 @@ async function requestAudioOutput(text: string): Promise<AudioSpeakResponse | un
   }
 }
 
-async function relayPythonTurn(socket: WebSocket, sessionId: string, userText: string): Promise<boolean> {
-  let response: Response
-  try {
-    response = await fetch(`${pythonRuntimeUrl.replace(/\/$/, '')}/agent/turn`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        sessionId,
-        text: userText,
-        inputMode: 'text',
-      }),
-    })
-  }
-  catch {
-    return false
-  }
-
-  if (!response.ok || !response.body) {
-    return false
-  }
-
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) {
-        continue
-      }
-
-      try {
-        const event = JSON.parse(trimmed) as RuntimeEvent<string, unknown>
-        socket.send(JSON.stringify(event))
-      }
-      catch {
-        send(socket, 'error', sessionId, {
-          code: 'bad_python_event',
-          message: 'Python runtime emitted an invalid event.',
-        })
-      }
-    }
-  }
-
-  const tail = buffer.trim()
-  if (tail) {
-    try {
-      const event = JSON.parse(tail) as RuntimeEvent<string, unknown>
-      socket.send(JSON.stringify(event))
-    }
-    catch {
-      send(socket, 'error', sessionId, {
-        code: 'bad_python_event',
-        message: 'Python runtime emitted an invalid trailing event.',
-      })
-    }
-  }
-
-  return true
-}
-
-async function forwardToolPermissionToPython(requestId: string, approved: boolean): Promise<void> {
-  try {
-    await fetch(`${pythonRuntimeUrl.replace(/\/$/, '')}/tools/permission`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ requestId, approved }),
-    })
-  }
-  catch {
-    // The legacy TypeScript tool loop may own this request, or the Python turn
-    // may have already timed out. Either way, there is nothing else to do here.
-  }
-}
-
 async function streamChat(socket: WebSocket, sessionId: string, userText: string): Promise<void> {
-  const handledByPython = await relayPythonTurn(socket, sessionId, userText)
+  const handledByPython = await relayPythonTurn(socket, sessionId, userText, { runtimeUrl: pythonRuntimeUrl })
   if (handledByPython) {
     return
   }
@@ -581,73 +499,28 @@ async function streamChat(socket: WebSocket, sessionId: string, userText: string
   })
 }
 
-const httpServer = createServer((request, response) => {
-  if (request.url === '/health') {
-    response.writeHead(200, { 'Content-Type': 'application/json' })
-    response.end(JSON.stringify({ ok: true, model }))
-    return
-  }
-
-  response.writeHead(404, { 'Content-Type': 'application/json' })
-  response.end(JSON.stringify({ error: 'not_found' }))
-})
-
-const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
-
-wss.on('connection', (socket) => {
-  const sessionId = defaultSessionId
-  send(socket, 'server.hello', sessionId, {
-    name: 'amadeus-agent-server',
-    model,
-    memoryMessages: countPersistedMessages(sessionId),
-    toolPermissions: getToolPermissionState(toolRegistry),
-  })
-  sendState(socket, sessionId, 'idle')
-
-  socket.on('message', (raw) => {
-    const event = parseEvent(raw as Buffer)
-    if (!event) {
-      send(socket, 'error', sessionId, {
-        code: 'bad_event',
-        message: 'Could not parse client event.',
-      })
-      return
+const { httpServer } = createAmadeusBridgeServer({
+  model,
+  defaultSessionId,
+  countPersistedMessages,
+  getToolPermissions: () => getToolPermissionState(toolRegistry),
+  resetSession(sessionId) {
+    sessions.delete(sessionId)
+    deleteMessages.run(sessionId)
+  },
+  resolvePendingToolPermission(requestId, approved) {
+    const pending = pendingToolPermissions.get(requestId)
+    if (!pending) {
+      return false
     }
 
-    if (event.type === 'session.reset') {
-      sessions.delete(event.sessionId)
-      deleteMessages.run(event.sessionId)
-      send(socket, 'server.hello', event.sessionId, {
-        name: 'amadeus-agent-server',
-        model,
-        memoryMessages: 0,
-        toolPermissions: getToolPermissionState(toolRegistry),
-      })
-      sendState(socket, event.sessionId, 'idle')
-      return
-    }
-
-    if (event.type === 'tool.permission.response') {
-      const pending = pendingToolPermissions.get(event.payload.requestId)
-      if (pending) {
-        pending(event.payload.approved)
-        return
-      }
-
-      void forwardToolPermissionToPython(event.payload.requestId, event.payload.approved)
-      return
-    }
-
-    if (event.type === 'user.message') {
-      void streamChat(socket, event.sessionId, event.payload.text).catch((error: unknown) => {
-        sendState(socket, event.sessionId, 'error')
-        send(socket, 'error', event.sessionId, {
-          code: 'runtime_error',
-          message: error instanceof Error ? error.message : 'Unknown runtime error.',
-        })
-      })
-    }
-  })
+    pending(approved)
+    return true
+  },
+  forwardToolPermissionToPython(requestId, approved) {
+    return forwardToolPermissionToPython(requestId, approved, { runtimeUrl: pythonRuntimeUrl })
+  },
+  streamChat,
 })
 
 httpServer.listen(port, host, () => {

@@ -13,7 +13,7 @@ The project started as a TypeScript monorepo for fast Electron iteration, but th
 
 The Python-first turn path is already in place: `/agent/turn` is implemented as an NDJSON event stream from Python to the TypeScript bridge. The bridge relays each runtime event to desktop and forwards `tool.permission.response` back to Python through `/tools/permission`. The older TypeScript model/tool loop remains as a fallback until parity tests and integration coverage are strong enough to remove it.
 
-`npm test` now runs Python `unittest` coverage for the Python runtime path and HTTP sidecar handlers. Keep these tests focused on deterministic behavior that does not require a live model provider. Current remaining gaps are bridge relay tests and desktop/WebSocket integration coverage.
+`npm test` now runs Python `unittest` coverage for the Python runtime path and HTTP sidecar handlers, plus TypeScript tests for Python NDJSON relay, permission forwarding, and the server-level WebSocket relay path. Keep these tests focused on deterministic behavior that does not require a live model provider. The main remaining gap is Electron renderer/UI integration coverage.
 
 Current implementation note:
 
