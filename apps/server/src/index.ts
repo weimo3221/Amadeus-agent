@@ -1,12 +1,10 @@
 import {
   applyToolConfig,
   createDefaultToolRegistry,
-  getEnabledToolSchemas,
   getToolPermissionState,
 } from '@amadeus-agent/amadeus/tools'
 
 import { forwardToolPermissionToPython, relayPythonTurn } from './bridge.js'
-import { createLegacyFallbackStreamChat, type LegacyChatMessage } from './legacy-fallback.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
@@ -24,24 +22,19 @@ config({ path: resolve(rootDir, '.env') })
 
 const host = process.env.AMADEUS_SERVER_HOST || '127.0.0.1'
 const port = Number(process.env.AMADEUS_SERVER_PORT || 8788)
-const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.deepseek.com'
-const apiKey = process.env.OPENAI_API_KEY || ''
 const model = process.env.OPENAI_MODEL || 'deepseek-v4-flash'
 const pythonRuntimeUrl = process.env.AMADEUS_PYTHON_RUNTIME_URL || process.env.AMADEUS_PYTHON_TOOLS_URL || 'http://127.0.0.1:8790'
-const enableTypeScriptFallback = process.env.AMADEUS_ENABLE_TS_FALLBACK === 'true'
 const defaultSessionId = 'default'
 const dataDir = resolve(rootDir, 'data')
 const databasePath = resolve(dataDir, 'amadeus.sqlite')
 const toolsConfigPath = resolve(rootDir, 'configs/tools.yaml')
 
-const sessions = new Map<string, LegacyChatMessage[]>()
 const pendingToolPermissions = new Map<string, (approved: boolean) => void>()
 
 const toolRegistry = createDefaultToolRegistry({
   pythonBackend: pythonRuntimeUrl ? { baseUrl: pythonRuntimeUrl } : undefined,
 })
 applyToolConfig(toolRegistry, toolsConfigPath)
-const tools = getEnabledToolSchemas(toolRegistry)
 
 if (!existsSync(dataDir)) {
   mkdirSync(dataDir, { recursive: true })
@@ -60,19 +53,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_created
 ON messages(session_id, created_at);
 `)
 
-const insertMessage = db.prepare(`
-INSERT INTO messages (session_id, role, content, created_at)
-VALUES (?, ?, ?, ?)
-`)
-
-const selectMessages = db.prepare(`
-SELECT role, content
-FROM messages
-WHERE session_id = ?
-ORDER BY id DESC
-LIMIT ?
-`)
-
 const deleteMessages = db.prepare(`
 DELETE FROM messages
 WHERE session_id = ?
@@ -84,44 +64,14 @@ FROM messages
 WHERE session_id = ?
 `)
 
-function saveMessage(sessionId: string, role: 'user' | 'assistant', content: string): void {
-  insertMessage.run(sessionId, role, content, new Date().toISOString())
-}
-
-function loadMessages(sessionId: string, limit = 40): LegacyChatMessage[] {
-  const rows = selectMessages.all(sessionId, limit) as Array<{ role: 'user' | 'assistant'; content: string }>
-  return rows.reverse().map((row) => ({
-    role: row.role,
-    content: row.content,
-  }))
-}
-
 function countPersistedMessages(sessionId: string): number {
   const row = countMessages.get(sessionId) as { count: number } | undefined
   return row?.count ?? 0
 }
 
-const legacyFallbackStreamChat = createLegacyFallbackStreamChat({
-  baseUrl,
-  apiKey,
-  model,
-  pythonRuntimeUrl,
-  tools,
-  toolRegistry,
-  sessions,
-  pendingToolPermissions,
-  saveMessage,
-  loadMessages,
-  countPersistedMessages,
-})
 async function streamChat(socket: WebSocket, sessionId: string, userText: string): Promise<void> {
   const handledByPython = await relayPythonTurn(socket, sessionId, userText, { runtimeUrl: pythonRuntimeUrl })
   if (handledByPython) {
-    return
-  }
-
-  if (enableTypeScriptFallback) {
-    await legacyFallbackStreamChat(socket, sessionId, userText)
     return
   }
 
@@ -132,7 +82,7 @@ async function streamChat(socket: WebSocket, sessionId: string, userText: string
     timestamp: new Date().toISOString(),
     payload: {
       code: 'python_runtime_unavailable',
-      message: 'Python runtime did not accept the turn. Start the Python runtime or set AMADEUS_ENABLE_TS_FALLBACK=true to use the legacy TypeScript fallback.',
+      message: 'Python runtime did not accept the turn. Start the Python runtime and try again.',
     },
   }))
 }
@@ -142,7 +92,6 @@ const { httpServer } = createAmadeusBridgeServer({
   countPersistedMessages,
   getToolPermissions: () => getToolPermissionState(toolRegistry),
   resetSession(sessionId) {
-    sessions.delete(sessionId)
     deleteMessages.run(sessionId)
   },
   resolvePendingToolPermission(requestId, approved) {
@@ -165,6 +114,5 @@ httpServer.listen(port, host, () => {
   console.log(`WebSocket endpoint ws://${host}:${port}/ws`)
   console.log(`Model ${model}`)
   console.log(`SQLite memory ${databasePath}`)
-  console.log(`Legacy TypeScript fallback ${enableTypeScriptFallback ? 'enabled' : 'disabled'}`)
 })
 

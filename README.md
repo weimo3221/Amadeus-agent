@@ -5,7 +5,7 @@ Amadeus Agent is a desktop virtual character agent designed around a Live2D pres
 The project is now in a Python-first migration stage:
 
 - `apps/desktop`: desktop Live2D shell, chat UI, runtime audio playback, and permission UI
-- `apps/server`: TypeScript bridge between the desktop and Python runtime, plus a temporary fallback turn loop
+- `apps/server`: TypeScript bridge between the desktop and Python runtime
 - `packages/amadeus`: preferred Python agent turn path, memory, tools, runtime HTTP API, and future model/skills/harness boundaries
 - `packages/live2d-stage`: intended desktop Live2D rendering adapter boundary, not yet the active implementation package
 
@@ -19,10 +19,9 @@ Preferred path today:
 4. `apps/server` relays runtime events back to desktop.
 5. Desktop updates chat, permission UI, audio playback, and Live2D behavior.
 
-Fallback path today:
+Runtime failure behavior:
 
 - If Python `/agent/turn` is unavailable, `apps/server` reports a runtime error by default.
-- The older TypeScript turn loop is isolated in `apps/server/src/legacy-fallback.ts` and can be temporarily enabled with `AMADEUS_ENABLE_TS_FALLBACK=true`.
 
 ## Design References
 

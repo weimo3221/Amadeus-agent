@@ -121,7 +121,7 @@ Target deliverables:
 - Python-owned tool loop and memory writes.
 - TypeScript server reduced toward WebSocket/HTTP transport relay.
 - Compatibility with current desktop events and permission prompts.
-- Enough integration coverage to remove the TypeScript fallback loop confidently.
+- Enough integration coverage to keep shrinking TypeScript bridge scaffolding confidently.
 
 Notes:
 

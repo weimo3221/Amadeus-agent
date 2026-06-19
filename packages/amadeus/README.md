@@ -5,7 +5,7 @@ Python-side Amadeus runtime.
 This package is intended to become the real agent core. The surrounding TypeScript apps are moving toward transport and device-adapter roles:
 
 - `apps/desktop`: Electron window, Live2D rendering, local UI, runtime audio playback, and permission UI.
-- `apps/server`: WebSocket bridge between desktop events and the Python runtime, plus a temporary TypeScript fallback turn loop.
+- `apps/server`: WebSocket bridge between desktop events and the Python runtime.
 - `packages/amadeus`: preferred agent turn path, memory, tools, runtime HTTP API, and future model/skills/harness boundaries.
 
 ## Current active modules

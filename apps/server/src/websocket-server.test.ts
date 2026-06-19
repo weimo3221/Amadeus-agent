@@ -162,7 +162,7 @@ describe('WebSocket Python-first integration', () => {
     assert.deepEqual(event.payload, { text: 'hello' })
   })
 
-  it('forwards desktop permission responses to Python when the fallback loop does not own them', async (t) => {
+  it('forwards desktop permission responses to Python when no local pending request owns them', async (t) => {
     let resolvePermissionBody: (body: Record<string, unknown>) => void
     const permissionBody = new Promise<Record<string, unknown>>((resolve) => {
       resolvePermissionBody = resolve

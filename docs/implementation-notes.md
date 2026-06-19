@@ -11,7 +11,7 @@ The project started as a TypeScript monorepo for fast Electron iteration, but th
 
 `apps/desktop` should remain a UI/device adapter. `apps/server` should remain a transport bridge. Agent, memory, model adapters, tools, skills, and audio planning should move into `packages/amadeus` behind narrow HTTP/event APIs.
 
-The Python-first turn path is already in place: `/agent/turn` is implemented as an NDJSON event stream from Python to the TypeScript bridge. The bridge relays each runtime event to desktop and forwards `tool.permission.response` back to Python through `/tools/permission`. The older TypeScript model/tool loop is isolated in `apps/server/src/legacy-fallback.ts`, disabled by default, and can be temporarily enabled with `AMADEUS_ENABLE_TS_FALLBACK=true` until Electron renderer/UI coverage is strong enough to remove it.
+The Python-first turn path is already in place: `/agent/turn` is implemented as an NDJSON event stream from Python to the TypeScript bridge. The bridge relays each runtime event to desktop and forwards `tool.permission.response` back to Python through `/tools/permission`. The older TypeScript model/tool loop has been removed, so `apps/server` reports a runtime error when Python cannot accept a turn instead of running a second agent loop.
 
 `npm test` now runs Python `unittest` coverage for the Python runtime path and HTTP sidecar handlers, TypeScript tests for Python NDJSON relay, permission forwarding, server-level WebSocket relay, and a desktop renderer harness for runtime UI behavior. Keep these tests focused on deterministic behavior that does not require a live model provider. The main remaining UI gap is full Electron end-to-end coverage around real window startup and Live2D loading.
 

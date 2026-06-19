@@ -52,16 +52,14 @@ apps/server
 apps/desktop
 ```
 
-Current fallback behavior:
+Current runtime failure behavior:
 
 - `apps/server` reports `python_runtime_unavailable` when Python `/agent/turn` cannot be used.
-- The older TypeScript turn loop has been isolated into `apps/server/src/legacy-fallback.ts`.
-- That fallback path still handles provider calls, SQLite writes, tool execution, permission prompts, behavior events, and Python `/audio/speak` integration, but only when `AMADEUS_ENABLE_TS_FALLBACK=true`.
+- There is no second TypeScript model/tool loop.
 
-So in current practice, `apps/server` is both:
+So in current practice, `apps/server` is:
 
-- the transport bridge for the preferred Python path, and
-- the holder of an explicit, temporary legacy fallback runtime while the Python path is being proven.
+- the transport bridge for the Python path.
 
 ## Runtime Diagram
 
@@ -190,7 +188,6 @@ TypeScript bridge responsibilities today:
 - Translate desktop events into Python runtime requests.
 - Forward Python runtime events back to the desktop.
 - Route desktop `tool.permission.response` events back to Python `/tools/permission`.
-- Keep the isolated legacy TypeScript model/tool/memory/audio turn loop as an explicit temporary fallback while migration is in progress.
 
 This layer should shrink over time.
 
@@ -250,7 +247,7 @@ Tool responsibilities:
 - Support permission metadata.
 - Load effective config from `configs/tools.yaml`.
 - Bridge tool execution to the Python runtime in `packages/amadeus`.
-- Keep TypeScript fallback tools only as temporary development scaffolding.
+- Keep TypeScript tool metadata only as bridge diagnostics/development scaffolding while the Python runtime owns active execution.
 
 ### packages/amadeus/events.ts
 
@@ -320,6 +317,6 @@ Migrate toward the Python runtime without breaking the desktop loop:
 - Keep desktop permission UI on the desktop.
 - Keep `apps/server` as the transport bridge while the Python turn path is becoming complete and well-tested.
 - Prefer small vertical migrations: move one capability fully across the boundary before moving the next.
-- Treat the current work as Phase 6 cleanup: parity confidence, integration coverage, and removal of the legacy TypeScript fallback path.
+- Treat the current work as Phase 6 cleanup: parity confidence, integration coverage, and continued shrinking of bridge-owned runtime scaffolding.
 
 More complex systems such as sub-agents, vector memory, MCP, and active scheduling should be added only after the basic desktop experience feels stable.

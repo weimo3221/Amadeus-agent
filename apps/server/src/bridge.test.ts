@@ -140,7 +140,7 @@ describe('Python tool permission forwarding', () => {
     })
   })
 
-  it('swallows Python forwarding failures because the TypeScript fallback may own the request', async () => {
+  it('swallows Python forwarding failures because permission requests may already be resolved or timed out', async () => {
     const fetchImpl: typeof fetch = async () => {
       throw new Error('offline')
     }

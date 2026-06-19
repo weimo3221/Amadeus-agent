@@ -180,7 +180,7 @@ Current flow:
 - `apps/server` relays it to desktop.
 - Desktop shows the inline Allow / Deny prompt.
 - Desktop responds with `tool.permission.response`.
-- `apps/server` forwards that response to Python `/tools/permission` unless the request belongs to the legacy TypeScript fallback loop.
+- `apps/server` forwards that response to Python `/tools/permission`.
 
 ### audio.tts-ready
 
