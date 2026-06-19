@@ -12,6 +12,7 @@
   },
   "include": [
     "electron.vite.config.ts",
+    "e2e/**/*.ts",
     "src/**/*.ts"
   ]
 }

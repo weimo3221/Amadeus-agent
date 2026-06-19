@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Iterable
 
 from amadeus.tools import ToolSpec, list_tool_specs
@@ -13,6 +15,21 @@ TOOL_NAME_ALIASES = {
     "time": "get_current_time",
 }
 VALID_PERMISSIONS = {"allow", "ask", "deny"}
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    session_id: str
+    cwd: Path = REPO_ROOT
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    tool_name: str
+    output: dict[str, Any]
+    ok: bool
+    duration_ms: int
+    failure_code: str | None = None
 
 
 class ToolRegistry:
@@ -28,12 +45,35 @@ class ToolRegistry:
     def get(self, tool_name: str) -> ToolSpec | None:
         return self._specs.get(tool_name)
 
-    def execute(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        context: ToolContext | None = None,
+    ) -> ToolResult:
         spec = self.get(tool_name)
         if not spec:
             raise KeyError(f"Unknown tool: {tool_name}")
 
-        return spec.handler(args)
+        _context = context or ToolContext(session_id="default")
+        start = perf_counter()
+        try:
+            output = spec.handler(args)
+            ok = "error" not in output
+            failure_code = None if ok else "tool_error"
+        except Exception as error:
+            output = {"error": str(error)}
+            ok = False
+            failure_code = "tool_exception"
+
+        duration_ms = max(0, round((perf_counter() - start) * 1000))
+        return ToolResult(
+            tool_name=tool_name,
+            output=output,
+            ok=ok,
+            duration_ms=duration_ms,
+            failure_code=failure_code,
+        )
 
     def permission_state(self) -> list[dict[str, Any]]:
         return [

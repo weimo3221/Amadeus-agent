@@ -88,6 +88,8 @@ export interface ToolStartedPayload {
 export interface ToolFinishedPayload {
   toolName: string
   ok: boolean
+  durationMs?: number | null
+  failureCode?: string | null
 }
 
 export interface ToolPermissionRequestPayload {

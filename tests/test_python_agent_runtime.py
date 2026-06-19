@@ -90,7 +90,10 @@ class AgentRuntimeTests(unittest.TestCase):
         events = list(runtime.run_turn("default", "what time is it", lambda request: permission_requests.append(request) or False))
 
         self.assertEqual(permission_requests, [])
-        self.assertIn(("tool.finished", {"toolName": "get_current_time", "ok": True}), [(event.type, event.payload) for event in events])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(tool_finished[0]["toolName"], "get_current_time")
+        self.assertTrue(tool_finished[0]["ok"])
+        self.assertIsInstance(tool_finished[0]["durationMs"], int)
         final_history = runtime.final_messages[-1]
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_time")
@@ -115,7 +118,12 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(permission_requests), 1)
         self.assertEqual(permission_requests[0].tool_name, "roll_dice")
-        self.assertIn(("tool.finished", {"toolName": "roll_dice", "ok": False}), [(event.type, event.payload) for event in events])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(tool_finished[0], {
+            "toolName": "roll_dice",
+            "ok": False,
+            "failureCode": "permission_denied",
+        })
         final_history = runtime.final_messages[-1]
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertIn("Permission denied", tool_messages[0]["content"])
@@ -157,9 +165,9 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(
             [event.payload for event in events if event.type == "tool.finished"],
             [
-                {"toolName": "missing_tool", "ok": False},
-                {"toolName": "missing_tool", "ok": False},
-                {"toolName": "missing_tool", "ok": False},
+                {"toolName": "missing_tool", "ok": False, "failureCode": "unknown_tool"},
+                {"toolName": "missing_tool", "ok": False, "failureCode": "unknown_tool"},
+                {"toolName": "missing_tool", "ok": False, "failureCode": "guardrail_blocked"},
             ],
         )
         final_history = runtime.final_messages[-1]

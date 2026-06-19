@@ -95,12 +95,14 @@ Fallback path today:
   - chat form submission sends `user.message` over the active socket
   - `audio.tts-ready` cancels speech fallback and plays runtime audio instead
   - `tool.finished` clears permission prompts and updates tool status
+- Desktop Electron smoke coverage now builds the packaged desktop app, starts the Electron main process, and verifies that the renderer finishes loading.
 - The legacy TypeScript fallback loop has been removed.
   - Python runtime failures now produce an explicit desktop error
   - `apps/server` no longer owns provider calls, tool execution, memory writes, or audio trigger logic for user turns
 - Phase 7 ToolRuntime first slice is in place.
   - Python tool registry/config loading now lives under `packages/amadeus/tool_runtime`.
   - Agent tool execution dispatches through `ToolRegistry` instead of direct helpers.
+  - Tool execution now returns structured `ToolResult` metadata with success state, duration, and stable failure codes.
   - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls.
   - Unit tests cover registry config aliases, guardrail threshold behavior, and agent-level repeated failure blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
@@ -110,7 +112,7 @@ Fallback path today:
 
 ### Still Needed
 
-- Add full Electron end-to-end coverage for real window startup and Live2D loading.
+- Expand Electron end-to-end coverage beyond the current startup smoke to cover Live2D loading and real user/runtime interactions.
 - Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone.
 - Add a real Python TTS provider so runtime audio becomes the practical default, not only the interface contract.
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
@@ -206,8 +208,11 @@ Status: first slice complete.
 - Updated `AgentRuntime` to depend on `ToolRegistry` instead of owning tool spec loading.
 - Added `ToolLoopGuardrail` for repeated exact failed tool calls inside a single turn.
 - Wired the guardrail into Python tool execution before running each tool call.
+- Added first-pass `ToolContext` / `ToolResult` objects for structured execution metadata.
+- `tool.finished` events can now include tool duration and stable failure codes.
 - Added focused tests for:
   - registry config alias behavior
+  - structured tool execution results
   - guardrail threshold blocking
   - agent-level repeated failing tool call blocking
 - Verified:
@@ -227,7 +232,7 @@ What is already done:
 What is not done yet:
 
 - `apps/server` no longer contains the legacy TypeScript fallback loop.
-- Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, and desktop renderer runtime UI behavior. Full Electron end-to-end coverage is still missing.
+- Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and an Electron startup smoke. Full Live2D/interaction end-to-end coverage is still missing.
 - The active provider code still lives inline in `packages/amadeus/agent.py`; `model.py` is still a future abstraction boundary.
 - `skills.py` and `live2d.py` are still placeholder boundaries rather than mature runtime modules.
 - `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/main.ts`.
@@ -244,7 +249,7 @@ Planned tasks:
 - Add tool duration, timeout, cancellation, and structured failure codes.
 - Emit or persist audit records for tool started/finished/denied/blocked decisions.
 - Add no-progress loop detection beyond exact repeated failures.
-- Keep full Electron end-to-end coverage on the Python path before removing remaining TypeScript bridge scaffolding.
+- Keep expanding Electron end-to-end coverage on the Python path before removing remaining TypeScript bridge scaffolding.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
 The broader upgrade plan is documented in `docs/agent-maturity-upgrade-plan.md`.
@@ -258,7 +263,7 @@ In progress.
 Notes:
 
 - The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, and repeated-failure guardrails.
-- The remaining work is the mature runtime layer: ToolContext/ToolResult, timeout/cancellation handling, audit records, and broader no-progress guardrails.
+- The remaining work is the mature runtime layer: timeout/cancellation handling, audit records, richer context propagation, and broader no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization
 
@@ -307,7 +312,7 @@ Not started.
 - GPT-SoVITS integration is blocked until required pretrained base models are downloaded into `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models`.
 - Lipsync is currently a timed mouth loop, not phoneme-accurate.
 - SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
-- Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, and desktop renderer runtime UI behavior. Full Electron end-to-end coverage is still missing.
+- Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and Electron startup smoke behavior. Full Live2D/interaction end-to-end coverage is still missing.
 - Placeholder boundaries still need real implementations or cleanup: `model.py`, `skills.py`, `live2d.py`, and `packages/live2d-stage`.
 
 ## Useful Commands
@@ -315,6 +320,7 @@ Not started.
 ```bash
 npm install
 npm test
+npm run test:e2e
 npm run typecheck
 npm --workspace apps/server run dev
 npm --workspace apps/desktop run dev

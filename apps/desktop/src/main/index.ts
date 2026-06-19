@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 const projectRoot = resolve(__dirname, '../../../..')
 const logDir = join(projectRoot, 'logs')
 const runtimeLogPath = join(logDir, 'desktop-runtime.log')
+const isE2eSmoke = process.env.AMADEUS_E2E_SMOKE === '1'
 
 if (is.dev) {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
@@ -64,10 +65,19 @@ function createMainWindow(): BrowserWindow {
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl) => {
     writeRuntimeLog(`Renderer failed to load ${validatedUrl}: ${errorCode} ${errorDescription}`)
     console.error(`Renderer failed to load ${validatedUrl}: ${errorCode} ${errorDescription}`)
+    if (isE2eSmoke) {
+      app.exit(1)
+    }
   })
 
   mainWindow.webContents.on('did-finish-load', () => {
     writeRuntimeLog('Renderer finished loading')
+    if (isE2eSmoke) {
+      console.log('AMADEUS_E2E_SMOKE renderer-ready')
+      setTimeout(() => app.quit(), 100)
+      return
+    }
+
     let checks = 0
     const timer = setInterval(() => {
       checks += 1

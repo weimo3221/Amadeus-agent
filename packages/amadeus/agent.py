@@ -15,6 +15,7 @@ from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
 from amadeus.memory import MessageMemoryStore
 from amadeus.tool_runtime import (
     DEFAULT_TOOLS_CONFIG_PATH,
+    ToolContext,
     ToolLoopGuardrail,
     ToolRegistry,
     parse_bool,
@@ -251,28 +252,44 @@ class AgentRuntime:
         if not guardrail_decision.allowed:
             result = {"error": guardrail_decision.reason or "Tool call blocked by guardrail"}
             self._record_tool_result(history, tool_call_id, result)
-            yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
+            yield AgentEvent("tool.finished", self._tool_finished_payload(
+                tool_name,
+                ok=False,
+                failure_code="guardrail_blocked",
+            ))
             return
 
         if not spec:
             result = {"error": f"Unknown tool: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False)
             self._record_tool_result(history, tool_call_id, result)
-            yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
+            yield AgentEvent("tool.finished", self._tool_finished_payload(
+                tool_name,
+                ok=False,
+                failure_code="unknown_tool",
+            ))
             return
 
         if not spec.enabled:
             result = {"error": f"Tool is disabled: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False)
             self._record_tool_result(history, tool_call_id, result)
-            yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
+            yield AgentEvent("tool.finished", self._tool_finished_payload(
+                tool_name,
+                ok=False,
+                failure_code="tool_disabled",
+            ))
             return
 
         if spec.permission == "deny":
             result = {"error": f"Permission denied for tool: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False)
             self._record_tool_result(history, tool_call_id, result)
-            yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
+            yield AgentEvent("tool.finished", self._tool_finished_payload(
+                tool_name,
+                ok=False,
+                failure_code="permission_denied",
+            ))
             return
 
         if spec.permission == "ask":
@@ -287,19 +304,26 @@ class AgentRuntime:
                 result = {"error": f"Permission denied for tool: {tool_name}"}
                 guardrail.after_call(tool_name, args, result, False)
                 self._record_tool_result(history, tool_call_id, result)
-                yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": False})
+                yield AgentEvent("tool.finished", self._tool_finished_payload(
+                    tool_name,
+                    ok=False,
+                    failure_code="permission_denied",
+                ))
                 return
 
-        try:
-            result = self.tool_registry.execute(tool_name, args)
-            ok = "error" not in result
-        except Exception as error:
-            result = {"error": str(error)}
-            ok = False
-
-        guardrail.after_call(tool_name, args, result, ok)
-        self._record_tool_result(history, tool_call_id, result)
-        yield AgentEvent("tool.finished", {"toolName": tool_name, "ok": ok})
+        result = self.tool_registry.execute(
+            tool_name,
+            args,
+            ToolContext(session_id=session_id, cwd=REPO_ROOT),
+        )
+        guardrail.after_call(tool_name, args, result.output, result.ok)
+        self._record_tool_result(history, tool_call_id, result.output)
+        yield AgentEvent("tool.finished", self._tool_finished_payload(
+            tool_name,
+            ok=result.ok,
+            duration_ms=result.duration_ms,
+            failure_code=result.failure_code,
+        ))
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
@@ -413,3 +437,17 @@ class AgentRuntime:
             "tool_call_id": tool_call_id,
             "content": json.dumps(result, ensure_ascii=False),
         })
+
+    @staticmethod
+    def _tool_finished_payload(
+        tool_name: str,
+        ok: bool,
+        duration_ms: int | None = None,
+        failure_code: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"toolName": tool_name, "ok": ok}
+        if duration_ms is not None:
+            payload["durationMs"] = duration_ms
+        if failure_code is not None:
+            payload["failureCode"] = failure_code
+        return payload

@@ -8,7 +8,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.tool_runtime import ToolLoopGuardrail, ToolRegistry
+from amadeus.tool_runtime import ToolContext, ToolLoopGuardrail, ToolRegistry
+from amadeus.tools import ToolSpec
 
 
 class ToolRegistryTests(unittest.TestCase):
@@ -33,6 +34,55 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(tool_state["get_current_time"]["enabled"])
         self.assertEqual(tool_state["get_current_time"]["permission"], "deny")
         self.assertNotIn("get_current_time", schema_names)
+
+    def test_execute_returns_structured_tool_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="echo",
+                        display_name="Echo",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "echo"}},
+                        handler=lambda args: {"echo": args["text"]},
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute("echo", {"text": "hello"}, ToolContext(session_id="session-1"))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.tool_name, "echo")
+        self.assertEqual(result.output, {"echo": "hello"})
+        self.assertIsNone(result.failure_code)
+        self.assertGreaterEqual(result.duration_ms, 0)
+
+    def test_execute_converts_handler_errors_to_structured_failure(self) -> None:
+        def fail(_args: dict[str, object]) -> dict[str, object]:
+            raise RuntimeError("boom")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="fail",
+                        display_name="Fail",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "fail"}},
+                        handler=fail,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute("fail", {}, ToolContext(session_id="session-1"))
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_code, "tool_exception")
+        self.assertEqual(result.output, {"error": "boom"})
 
 
 class ToolLoopGuardrailTests(unittest.TestCase):
