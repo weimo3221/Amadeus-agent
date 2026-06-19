@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ TOOL_NAME_ALIASES = {
     "time": "get_current_time",
 }
 VALID_PERMISSIONS = {"allow", "ask", "deny"}
+DEFAULT_MAX_MODEL_OUTPUT_CHARS = 4000
+DEFAULT_OUTPUT_PREVIEW_CHARS = 1000
 
 
 @dataclass(frozen=True)
@@ -23,15 +26,20 @@ class ToolContext:
     session_id: str
     cwd: Path = REPO_ROOT
     timeout_seconds: float | None = 30.0
+    max_model_output_chars: int = DEFAULT_MAX_MODEL_OUTPUT_CHARS
+    output_preview_chars: int = DEFAULT_OUTPUT_PREVIEW_CHARS
 
 
 @dataclass(frozen=True)
 class ToolResult:
     tool_name: str
     output: dict[str, Any]
+    model_output: dict[str, Any]
     ok: bool
     duration_ms: int
     failure_code: str | None = None
+    output_preview: str | None = None
+    output_truncated: bool = False
 
 
 class ToolRegistry:
@@ -72,13 +80,23 @@ class ToolRegistry:
             ok = False
             failure_code = "tool_exception"
 
+        model_output, output_preview, output_truncated = normalize_tool_output_for_model(
+            tool_name,
+            output,
+            ok=ok,
+            max_chars=effective_context.max_model_output_chars,
+            preview_chars=effective_context.output_preview_chars,
+        )
         duration_ms = max(0, round((perf_counter() - start) * 1000))
         return ToolResult(
             tool_name=tool_name,
             output=output,
+            model_output=model_output,
             ok=ok,
             duration_ms=duration_ms,
             failure_code=failure_code,
+            output_preview=output_preview,
+            output_truncated=output_truncated,
         )
 
     def permission_state(self) -> list[dict[str, Any]]:
@@ -187,3 +205,28 @@ def run_with_timeout(handler: Any, args: dict[str, Any], timeout_seconds: float 
     finally:
         if future.done():
             executor.shutdown(wait=False, cancel_futures=True)
+
+
+def normalize_tool_output_for_model(
+    tool_name: str,
+    output: dict[str, Any],
+    ok: bool,
+    max_chars: int,
+    preview_chars: int,
+) -> tuple[dict[str, Any], str | None, bool]:
+    serialized = json.dumps(output, ensure_ascii=False, sort_keys=True)
+    if not ok or len(serialized) <= max_chars:
+        return output, None, False
+
+    preview_limit = max(1, min(preview_chars, max_chars))
+    preview = serialized[:preview_limit]
+    return (
+        {
+            "_amadeus_result_truncated": True,
+            "tool_name": tool_name,
+            "original_char_count": len(serialized),
+            "preview": preview,
+        },
+        preview,
+        True,
+    )

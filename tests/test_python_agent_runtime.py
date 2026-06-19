@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.memory import MessageMemoryStore
+from amadeus.tool_runtime import ToolRegistry
+from amadeus.tools import ToolSpec
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -104,6 +106,48 @@ class AgentRuntimeTests(unittest.TestCase):
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_time")
         self.assertIn("formatted", tool_messages[0]["content"])
+
+    def test_large_tool_result_writes_compact_output_to_model_context(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_large",
+                    "type": "function",
+                    "function": {"name": "large_tool", "arguments": "{}"},
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="large_tool",
+                    display_name="Large Tool",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "large_tool"}},
+                    handler=lambda _args: {"text": "x" * 5000},
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+
+        events = list(runtime.run_turn("default", "run large tool", lambda _request: False))
+
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertTrue(tool_finished[0]["ok"])
+        self.assertTrue(tool_finished[0]["outputTruncated"])
+        self.assertIn("resultPreview", tool_finished[0])
+
+        final_history = runtime.final_messages[-1]
+        tool_messages = [message for message in final_history if message["role"] == "tool"]
+        compact_result = json.loads(tool_messages[0]["content"])
+        self.assertEqual(compact_result["_amadeus_result_truncated"], True)
+        self.assertEqual(compact_result["tool_name"], "large_tool")
+        self.assertGreater(compact_result["original_char_count"], 4000)
+        self.assertLess(len(tool_messages[0]["content"]), 1400)
 
     def test_ask_tool_denial_returns_tool_error_to_model(self) -> None:
         runtime = FakeAgentRuntime(

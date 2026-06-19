@@ -91,6 +91,8 @@ export interface ToolFinishedPayload {
   ok: boolean
   durationMs?: number | null
   failureCode?: string | null
+  resultPreview?: string | null
+  outputTruncated?: boolean | null
 }
 
 export interface ToolAuditPayload {

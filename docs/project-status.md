@@ -105,6 +105,7 @@ Fallback path today:
   - Tool execution now returns structured `ToolResult` metadata with success state, duration, and stable failure codes.
   - Tool execution now emits `tool.audit` events and keeps in-process audit records for started/finished/denied/blocked/failed decisions.
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
+  - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
   - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls.
   - Unit tests cover registry config aliases, guardrail threshold behavior, and agent-level repeated failure blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
@@ -121,7 +122,7 @@ Fallback path today:
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Add long-term memory beyond raw message history, such as user facts, preferences, summaries, and retrieval.
-- Harden the Python-owned ToolRuntime with structured context/results, audits, and timeout/cancellation handling.
+- Harden the Python-owned ToolRuntime with stronger cancellation handling, persisted audit records if needed, per-tool result policies, and broader no-progress detection.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
   - `packages/amadeus/skills.py`
@@ -214,10 +215,12 @@ Status: first slice complete.
 - `tool.finished` events can now include tool duration and stable failure codes.
 - Added first-pass `tool.audit` events and in-process audit records for tool started/finished/denied/blocked/failed decisions.
 - Added first-pass tool timeout handling with structured `tool_timeout` failures.
+- Added first-pass result preview/compression so large successful tool outputs do not flood model context.
 - Added focused tests for:
   - registry config alias behavior
   - structured tool execution results
   - structured timeout failures
+  - model-context compression for large tool results
   - audit event/log behavior for allow, deny, and guardrail paths
   - guardrail threshold blocking
   - agent-level repeated failing tool call blocking
@@ -270,7 +273,7 @@ In progress.
 Notes:
 
 - The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, and repeated-failure guardrails.
-- The remaining work is the mature runtime layer: stronger cancellation handling, persisted audit records if needed, richer context propagation, result preview/compression, and broader no-progress guardrails.
+- The remaining work is the mature runtime layer: stronger cancellation handling, persisted audit records if needed, richer context propagation, per-tool result policies, and broader no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization
 

@@ -364,12 +364,14 @@ class AgentRuntime:
             ToolContext(session_id=session_id, cwd=REPO_ROOT),
         )
         guardrail.after_call(tool_name, args, result.output, result.ok)
-        self._record_tool_result(history, tool_call_id, result.output)
+        self._record_tool_result(history, tool_call_id, result.model_output)
         yield AgentEvent("tool.finished", self._tool_finished_payload(
             tool_name,
             ok=result.ok,
             duration_ms=result.duration_ms,
             failure_code=result.failure_code,
+            result_preview=result.output_preview,
+            output_truncated=result.output_truncated,
         ))
         yield self._audit_tool(
             session_id,
@@ -500,12 +502,18 @@ class AgentRuntime:
         ok: bool,
         duration_ms: int | None = None,
         failure_code: str | None = None,
+        result_preview: str | None = None,
+        output_truncated: bool | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"toolName": tool_name, "ok": ok}
         if duration_ms is not None:
             payload["durationMs"] = duration_ms
         if failure_code is not None:
             payload["failureCode"] = failure_code
+        if result_preview is not None:
+            payload["resultPreview"] = result_preview
+        if output_truncated:
+            payload["outputTruncated"] = output_truncated
         return payload
 
     def _audit_tool(
