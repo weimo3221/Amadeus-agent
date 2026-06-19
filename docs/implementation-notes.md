@@ -27,13 +27,23 @@ Live2D and audio should be treated as installable harnesses. They can contribute
 
 The Python runtime now separates concrete tool implementations from runtime tool policy:
 
-- `amadeus.tools`: concrete local tool handlers and their default `ToolSpec` metadata.
+- `amadeus.tools`: public tool registry entrypoint, concrete local tool handlers, and their default `ToolSpec` metadata.
 - `amadeus.tool_runtime.registry`: effective registry construction, `configs/tools.yaml` overlays, enabled schema selection, permission-state projection, structured `ToolContext` / `ToolResult`, duration/failure metadata, first-pass timeout/cancellation handling, result preview/compression for model context, per-tool model-output policies, and handler dispatch.
 - `amadeus.tool_runtime.audit`: tool audit events plus SQLite persistence for started/finished/denied/blocked/failed decisions.
 - `amadeus.tool_runtime.guardrails`: per-turn guardrails for repeated failed calls and repeated completed calls that do not make progress.
 - `amadeus.agent`: conversation loop, permission requests, event streaming, memory writes, and coordination with the tool runtime.
 
 Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be richer context propagation, additional per-tool result policies for new high-volume tools, richer audit query APIs if diagnostics UI needs them, and richer semantic no-progress detection. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
+
+### Tool Inventory And Extension Path
+
+Current active Python tools:
+
+- `get_current_time`: `allow`; returns formatted current time for an IANA timezone.
+- `roll_dice`: `ask`; rolls bounded dice counts/sides and returns rolls plus total.
+- `local_file_search`: `ask`; searches workspace-relative filenames and small text files, with path containment, skipped generated directories, result caps, and a per-tool model-output policy.
+
+To add a simple tool, implement a JSON-serializable handler in a focused module under `packages/amadeus/tools/`, define its `ToolSpec` next to the handler, register that spec from `packages/amadeus/tools/__init__.py`, add the effective config entry in `configs/tools.yaml`, and cover it with focused ToolRuntime tests. Use `handler(args, context)` when the tool should observe cancellation or session/cwd metadata. Keep risky actions as `ask`, constrain filesystem/network behavior explicitly, and add a per-tool result policy in `tool_runtime/registry.py` when outputs can become large.
 
 ## AIRI Code to Study First
 

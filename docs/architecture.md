@@ -82,7 +82,7 @@ packages/amadeus
   |
   +--> agent.py        (active preferred turn path)
   +--> memory.py       (active SQLite message store)
-  +--> tools.py        (active Python tools)
+  +--> tools/          (active Python tools)
   +--> audio.py        (active audio interface; noop TTS by default)
   +--> server.py       (active HTTP runtime)
   +--> model.py        (placeholder boundary)
@@ -148,8 +148,8 @@ packages/amadeus
 
 - `agent.py`: active conversation loop, tool-use policy, response/event streaming.
 - `memory.py`: active SQLite-backed message history.
-- `tools.py`: active concrete Python tool implementations.
-- `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, repeated-failure guardrails, and future audit/timeout handling.
+- `tools/`: active concrete Python tool implementations and public registry entrypoint.
+- `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, and repeated-call guardrails.
 - `audio.py`: active TTS/audio interface, but default runtime uses `NoopTtsProvider`.
 - `server.py`: active HTTP runtime surface.
 - `model.py`: future provider abstraction boundary; not yet the active model call path.
@@ -205,7 +205,7 @@ Python runtime responsibilities later:
 - Own model provider abstractions cleanly.
 - Own skills/workflows.
 - Load and coordinate harnesses.
-- Enforce tool timeouts, tool guardrails, and audit logging.
+- Extend tool runtime policy for richer context propagation, semantic no-progress detection, and more per-tool result policies.
 - Assemble richer context from summaries, profile memory, retrieved memory, task state, and harness prompt fragments.
 
 ### packages/live2d-stage
