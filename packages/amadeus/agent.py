@@ -258,18 +258,19 @@ class AgentRuntime:
         guardrail_decision = guardrail.before_call(tool_name, args)
         if not guardrail_decision.allowed:
             result = {"error": guardrail_decision.reason or "Tool call blocked by guardrail"}
+            failure_code = guardrail_decision.failure_code or "guardrail_blocked"
             self._record_tool_result(history, tool_call_id, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
                 ok=False,
-                failure_code="guardrail_blocked",
+                failure_code=failure_code,
             ))
             yield self._audit_tool(
                 session_id,
                 tool_name,
                 decision="blocked",
                 ok=False,
-                failure_code="guardrail_blocked",
+                failure_code=failure_code,
                 detail=result["error"],
             )
             return

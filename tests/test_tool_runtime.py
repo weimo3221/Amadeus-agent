@@ -167,6 +167,22 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         decision = guardrail.before_call("local_file_search", args)
         self.assertFalse(decision.allowed)
         self.assertIn("Blocked repeated failing tool call", decision.reason or "")
+        self.assertEqual(decision.failure_code, "guardrail_blocked")
+
+    def test_blocks_repeated_completed_calls_as_no_progress(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"query": "same"}
+
+        self.assertTrue(guardrail.before_call("local_file_search", args).allowed)
+        guardrail.after_call("local_file_search", args, {"results": []}, ok=True)
+
+        self.assertTrue(guardrail.before_call("local_file_search", args).allowed)
+        guardrail.after_call("local_file_search", args, {"results": []}, ok=True)
+
+        decision = guardrail.before_call("local_file_search", args)
+        self.assertFalse(decision.allowed)
+        self.assertIn("Blocked no-progress repeated tool call", decision.reason or "")
+        self.assertEqual(decision.failure_code, "no_progress_loop")
 
 
 if __name__ == "__main__":

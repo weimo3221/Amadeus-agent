@@ -9,12 +9,15 @@ from typing import Any
 class ToolGuardrailDecision:
     allowed: bool
     reason: str | None = None
+    failure_code: str | None = None
 
 
 class ToolLoopGuardrail:
-    def __init__(self, max_failed_repeats: int = 2) -> None:
+    def __init__(self, max_failed_repeats: int = 2, max_completed_repeats: int = 2) -> None:
         self.max_failed_repeats = max(1, max_failed_repeats)
+        self.max_completed_repeats = max(1, max_completed_repeats)
         self._failed_signatures: dict[str, int] = {}
+        self._completed_signatures: dict[str, int] = {}
 
     def before_call(self, tool_name: str, args: dict[str, Any]) -> ToolGuardrailDecision:
         signature = self._signature(tool_name, args)
@@ -23,15 +26,26 @@ class ToolLoopGuardrail:
             return ToolGuardrailDecision(
                 allowed=False,
                 reason=f"Blocked repeated failing tool call: {tool_name}",
+                failure_code="guardrail_blocked",
+            )
+
+        completed_count = self._completed_signatures.get(signature, 0)
+        if completed_count >= self.max_completed_repeats:
+            return ToolGuardrailDecision(
+                allowed=False,
+                reason=f"Blocked no-progress repeated tool call: {tool_name}",
+                failure_code="no_progress_loop",
             )
 
         return ToolGuardrailDecision(allowed=True)
 
     def after_call(self, tool_name: str, args: dict[str, Any], result: dict[str, Any], ok: bool) -> None:
+        signature = self._signature(tool_name, args)
+        self._completed_signatures[signature] = self._completed_signatures.get(signature, 0) + 1
+
         if ok and "error" not in result:
             return
 
-        signature = self._signature(tool_name, args)
         self._failed_signatures[signature] = self._failed_signatures.get(signature, 0) + 1
 
     @staticmethod

@@ -239,6 +239,43 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(tool_audit[-1]["failureCode"], "guardrail_blocked")
 
+    def test_repeated_successful_tool_call_is_blocked_as_no_progress(self) -> None:
+        repeated_tool_calls = [
+            {
+                "id": f"call_time_{index}",
+                "type": "function",
+                "function": {"name": "get_current_time", "arguments": "{}"},
+            }
+            for index in range(3)
+        ]
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={"role": "assistant", "content": "", "tool_calls": repeated_tool_calls},
+        )
+
+        events = list(runtime.run_turn("default", "repeat the same tool", lambda _request: False))
+
+        self.assertEqual(
+            [event.payload["failureCode"] for event in events if event.type == "tool.finished" and not event.payload["ok"]],
+            ["no_progress_loop"],
+        )
+        final_history = runtime.final_messages[-1]
+        tool_results = [
+            json.loads(message["content"])
+            for message in final_history
+            if message["role"] == "tool"
+        ]
+        self.assertEqual(len(tool_results), 3)
+        self.assertIn("formatted", tool_results[0])
+        self.assertIn("formatted", tool_results[1])
+        self.assertIn("Blocked no-progress repeated tool call", tool_results[2]["error"])
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual(
+            [entry["decision"] for entry in tool_audit],
+            ["started", "finished", "started", "finished", "started", "blocked"],
+        )
+        self.assertEqual(tool_audit[-1]["failureCode"], "no_progress_loop")
+
 
 class PermissionBrokerTests(unittest.TestCase):
     def test_resolve_unknown_request_returns_false(self) -> None:

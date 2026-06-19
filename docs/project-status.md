@@ -106,8 +106,8 @@ Fallback path today:
   - Tool execution now emits `tool.audit` events and keeps in-process audit records for started/finished/denied/blocked/failed decisions.
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
-  - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls.
-  - Unit tests cover registry config aliases, guardrail threshold behavior, and agent-level repeated failure blocking.
+  - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress.
+  - Unit tests cover registry config aliases, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -122,7 +122,7 @@ Fallback path today:
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Add long-term memory beyond raw message history, such as user facts, preferences, summaries, and retrieval.
-- Harden the Python-owned ToolRuntime with stronger cancellation handling, persisted audit records if needed, per-tool result policies, and broader no-progress detection.
+- Harden the Python-owned ToolRuntime with stronger cancellation handling, persisted audit records if needed, per-tool result policies, and richer no-progress policies where needed.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
   - `packages/amadeus/skills.py`
@@ -192,7 +192,7 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 
 The second vertical slice is complete: Python runtime parity tests, Python HTTP handler tests, TypeScript bridge relay tests, server-level WebSocket integration tests, and desktop renderer harness tests are in place, and `npm test` now runs them.
 
-Phase 7 is in progress. The first vertical slice is complete: Python tool registry/config loading has been extracted into `packages/amadeus/tool_runtime`, and the Python agent loop now applies a simple repeated-failure guardrail during tool execution.
+Phase 7 is in progress. The first vertical slice is complete: Python tool registry/config loading has been extracted into `packages/amadeus/tool_runtime`, and the Python agent loop now applies repeated-failure and no-progress guardrails during tool execution.
 
 ## Completed Subphase
 
@@ -209,13 +209,14 @@ Status: first slice complete.
   - dispatching tool execution through the selected `ToolSpec`
 - Moved Python tool config parsing out of `agent.py`.
 - Updated `AgentRuntime` to depend on `ToolRegistry` instead of owning tool spec loading.
-- Added `ToolLoopGuardrail` for repeated exact failed tool calls inside a single turn.
+- Added `ToolLoopGuardrail` for repeated exact failed tool calls and repeated completed no-progress calls inside a single turn.
 - Wired the guardrail into Python tool execution before running each tool call.
 - Added first-pass `ToolContext` / `ToolResult` objects for structured execution metadata.
 - `tool.finished` events can now include tool duration and stable failure codes.
 - Added first-pass `tool.audit` events and in-process audit records for tool started/finished/denied/blocked/failed decisions.
 - Added first-pass tool timeout handling with structured `tool_timeout` failures.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
+- Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
 - Added focused tests for:
   - registry config alias behavior
   - structured tool execution results
@@ -224,6 +225,7 @@ Status: first slice complete.
   - audit event/log behavior for allow, deny, and guardrail paths
   - guardrail threshold blocking
   - agent-level repeated failing tool call blocking
+  - agent-level repeated no-progress tool call blocking
 - Verified:
   - `npm test`
   - Python source compile check
@@ -257,8 +259,8 @@ Planned tasks:
 - Extend `ToolContext` so tools receive cancellation and audit metadata explicitly.
 - Add cancellation handling and make timeout cancellation stronger where possible.
 - Persist audit records beyond the current in-process runtime log if longer-term diagnostics are needed.
-- Add result preview/compression for large tool outputs.
-- Add no-progress loop detection beyond exact repeated failures.
+- Extend result preview/compression with per-tool policies if needed.
+- Extend no-progress detection with richer semantic policies if needed.
 - Keep expanding Electron end-to-end coverage on the Python path before removing remaining TypeScript bridge scaffolding.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
@@ -272,8 +274,8 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, and repeated-failure guardrails.
-- The remaining work is the mature runtime layer: stronger cancellation handling, persisted audit records if needed, richer context propagation, per-tool result policies, and broader no-progress guardrails.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, repeated-failure guardrails, and first-pass no-progress guardrails.
+- The remaining work is the mature runtime layer: stronger cancellation handling, persisted audit records if needed, richer context propagation, per-tool result policies, and richer semantic no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization
 
