@@ -94,6 +94,12 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(tool_finished[0]["toolName"], "get_current_time")
         self.assertTrue(tool_finished[0]["ok"])
         self.assertIsInstance(tool_finished[0]["durationMs"], int)
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual([entry["decision"] for entry in tool_audit], ["started", "finished"])
+        self.assertEqual(tool_audit[0]["toolName"], "get_current_time")
+        self.assertTrue(tool_audit[1]["ok"])
+        self.assertIsInstance(tool_audit[1]["durationMs"], int)
+        self.assertEqual([record.decision for record in runtime.tool_audit_records()], ["started", "finished"])
         final_history = runtime.final_messages[-1]
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_time")
@@ -124,6 +130,9 @@ class AgentRuntimeTests(unittest.TestCase):
             "ok": False,
             "failureCode": "permission_denied",
         })
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual([entry["decision"] for entry in tool_audit], ["started", "denied"])
+        self.assertEqual(tool_audit[1]["failureCode"], "permission_denied")
         final_history = runtime.final_messages[-1]
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertIn("Permission denied", tool_messages[0]["content"])
@@ -179,6 +188,12 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("Unknown tool", tool_results[0]["error"])
         self.assertIn("Unknown tool", tool_results[1]["error"])
         self.assertIn("Blocked repeated failing tool call", tool_results[2]["error"])
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual(
+            [entry["decision"] for entry in tool_audit],
+            ["started", "failed", "started", "failed", "started", "blocked"],
+        )
+        self.assertEqual(tool_audit[-1]["failureCode"], "guardrail_blocked")
 
 
 class PermissionBrokerTests(unittest.TestCase):

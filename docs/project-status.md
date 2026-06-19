@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-11
+Last updated: 2026-06-19
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -103,6 +103,7 @@ Fallback path today:
   - Python tool registry/config loading now lives under `packages/amadeus/tool_runtime`.
   - Agent tool execution dispatches through `ToolRegistry` instead of direct helpers.
   - Tool execution now returns structured `ToolResult` metadata with success state, duration, and stable failure codes.
+  - Tool execution now emits `tool.audit` events and keeps in-process audit records for started/finished/denied/blocked/failed decisions.
   - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls.
   - Unit tests cover registry config aliases, guardrail threshold behavior, and agent-level repeated failure blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
@@ -210,9 +211,11 @@ Status: first slice complete.
 - Wired the guardrail into Python tool execution before running each tool call.
 - Added first-pass `ToolContext` / `ToolResult` objects for structured execution metadata.
 - `tool.finished` events can now include tool duration and stable failure codes.
+- Added first-pass `tool.audit` events and in-process audit records for tool started/finished/denied/blocked/failed decisions.
 - Added focused tests for:
   - registry config alias behavior
   - structured tool execution results
+  - audit event/log behavior for allow, deny, and guardrail paths
   - guardrail threshold blocking
   - agent-level repeated failing tool call blocking
 - Verified:
@@ -245,9 +248,10 @@ Goal: turn the first ToolRuntime slice into a production-grade tool execution la
 
 Planned tasks:
 
-- Add `ToolContext` and `ToolResult` objects so tools receive session, cwd, cancellation, and audit metadata explicitly.
-- Add tool duration, timeout, cancellation, and structured failure codes.
-- Emit or persist audit records for tool started/finished/denied/blocked decisions.
+- Extend `ToolContext` so tools receive cancellation and audit metadata explicitly.
+- Add tool timeout and cancellation handling.
+- Persist audit records beyond the current in-process runtime log if longer-term diagnostics are needed.
+- Add result preview/compression for large tool outputs.
 - Add no-progress loop detection beyond exact repeated failures.
 - Keep expanding Electron end-to-end coverage on the Python path before removing remaining TypeScript bridge scaffolding.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
@@ -263,7 +267,7 @@ In progress.
 Notes:
 
 - The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, and repeated-failure guardrails.
-- The remaining work is the mature runtime layer: timeout/cancellation handling, audit records, richer context propagation, and broader no-progress guardrails.
+- The remaining work is the mature runtime layer: timeout/cancellation handling, persisted audit records if needed, richer context propagation, result preview/compression, and broader no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization
 

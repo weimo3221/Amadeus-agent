@@ -48,6 +48,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'audio.tts-ready', AudioTtsReadyPayload>
   | RuntimeEvent<'tool.started', ToolStartedPayload>
   | RuntimeEvent<'tool.finished', ToolFinishedPayload>
+  | RuntimeEvent<'tool.audit', ToolAuditPayload>
   | RuntimeEvent<'tool.permission.request', ToolPermissionRequestPayload>
   | RuntimeEvent<'error', ErrorPayload>
 
@@ -90,6 +91,18 @@ export interface ToolFinishedPayload {
   ok: boolean
   durationMs?: number | null
   failureCode?: string | null
+}
+
+export interface ToolAuditPayload {
+  recordId: string
+  timestamp: string
+  sessionId: string
+  toolName: string
+  decision: 'started' | 'finished' | 'denied' | 'blocked' | 'failed'
+  ok?: boolean | null
+  durationMs?: number | null
+  failureCode?: string | null
+  detail?: string | null
 }
 
 export interface ToolPermissionRequestPayload {

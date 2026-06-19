@@ -15,6 +15,8 @@ from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
 from amadeus.memory import MessageMemoryStore
 from amadeus.tool_runtime import (
     DEFAULT_TOOLS_CONFIG_PATH,
+    ToolAuditLog,
+    ToolAuditRecord,
     ToolContext,
     ToolLoopGuardrail,
     ToolRegistry,
@@ -129,6 +131,7 @@ class AgentRuntime:
         self.api_key = os.environ.get("OPENAI_API_KEY", "")
         self.model = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
         self.tool_registry = ToolRegistry(config_path=tools_config_path)
+        self.tool_audit_log = ToolAuditLog()
         self.system_prompt = self._build_system_prompt()
 
     def run_turn(
@@ -223,6 +226,9 @@ class AgentRuntime:
     def enabled_tool_schemas(self) -> list[dict[str, Any]]:
         return self.tool_registry.enabled_schemas()
 
+    def tool_audit_records(self) -> list[ToolAuditRecord]:
+        return self.tool_audit_log.records()
+
     def _load_history(self, session_id: str, limit: int = 40) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
         messages.extend(self.memory_store.load(session_id, limit))
@@ -247,6 +253,7 @@ class AgentRuntime:
             "toolName": tool_name,
             "displayName": spec.display_name if spec else f"Running {tool_name}",
         })
+        yield self._audit_tool(session_id, tool_name, decision="started")
 
         guardrail_decision = guardrail.before_call(tool_name, args)
         if not guardrail_decision.allowed:
@@ -257,6 +264,14 @@ class AgentRuntime:
                 ok=False,
                 failure_code="guardrail_blocked",
             ))
+            yield self._audit_tool(
+                session_id,
+                tool_name,
+                decision="blocked",
+                ok=False,
+                failure_code="guardrail_blocked",
+                detail=result["error"],
+            )
             return
 
         if not spec:
@@ -268,6 +283,14 @@ class AgentRuntime:
                 ok=False,
                 failure_code="unknown_tool",
             ))
+            yield self._audit_tool(
+                session_id,
+                tool_name,
+                decision="failed",
+                ok=False,
+                failure_code="unknown_tool",
+                detail=result["error"],
+            )
             return
 
         if not spec.enabled:
@@ -279,6 +302,14 @@ class AgentRuntime:
                 ok=False,
                 failure_code="tool_disabled",
             ))
+            yield self._audit_tool(
+                session_id,
+                tool_name,
+                decision="denied",
+                ok=False,
+                failure_code="tool_disabled",
+                detail=result["error"],
+            )
             return
 
         if spec.permission == "deny":
@@ -290,6 +321,14 @@ class AgentRuntime:
                 ok=False,
                 failure_code="permission_denied",
             ))
+            yield self._audit_tool(
+                session_id,
+                tool_name,
+                decision="denied",
+                ok=False,
+                failure_code="permission_denied",
+                detail=result["error"],
+            )
             return
 
         if spec.permission == "ask":
@@ -309,6 +348,14 @@ class AgentRuntime:
                     ok=False,
                     failure_code="permission_denied",
                 ))
+                yield self._audit_tool(
+                    session_id,
+                    tool_name,
+                    decision="denied",
+                    ok=False,
+                    failure_code="permission_denied",
+                    detail=result["error"],
+                )
                 return
 
         result = self.tool_registry.execute(
@@ -324,6 +371,15 @@ class AgentRuntime:
             duration_ms=result.duration_ms,
             failure_code=result.failure_code,
         ))
+        yield self._audit_tool(
+            session_id,
+            tool_name,
+            decision="finished",
+            ok=result.ok,
+            duration_ms=result.duration_ms,
+            failure_code=result.failure_code,
+            detail=result.output.get("error") if isinstance(result.output.get("error"), str) else None,
+        )
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
@@ -451,3 +507,24 @@ class AgentRuntime:
         if failure_code is not None:
             payload["failureCode"] = failure_code
         return payload
+
+    def _audit_tool(
+        self,
+        session_id: str,
+        tool_name: str,
+        decision: str,
+        ok: bool | None = None,
+        duration_ms: int | None = None,
+        failure_code: str | None = None,
+        detail: str | None = None,
+    ) -> AgentEvent:
+        record = self.tool_audit_log.append(
+            session_id=session_id,
+            tool_name=tool_name,
+            decision=decision,
+            ok=ok,
+            duration_ms=duration_ms,
+            failure_code=failure_code,
+            detail=detail,
+        )
+        return AgentEvent("tool.audit", record.to_payload())

@@ -155,10 +155,46 @@ Note:
   "type": "tool.finished",
   "payload": {
     "toolName": "local_file_search",
-    "ok": true
+    "ok": true,
+    "durationMs": 12,
+    "failureCode": null
   }
 }
 ```
+
+`durationMs` and `failureCode` are optional for compatibility with older runtime events. Python ToolRuntime emits them when execution reaches the structured `ToolResult` path; permission-denied, disabled, unknown, or guardrail-blocked decisions emit stable failure codes where available.
+
+### tool.audit
+
+```json
+{
+  "type": "tool.audit",
+  "payload": {
+    "recordId": "audit-record-id",
+    "timestamp": "2026-06-19T00:00:00.000000+00:00",
+    "sessionId": "default",
+    "toolName": "local_file_search",
+    "decision": "finished",
+    "ok": true,
+    "durationMs": 12,
+    "failureCode": null
+  }
+}
+```
+
+Current decisions:
+
+- `started`
+- `finished`
+- `denied`
+- `blocked`
+- `failed`
+
+Current behavior:
+
+- Python emits audit events during `/agent/turn`.
+- The runtime also keeps an in-process audit log for the current runtime instance.
+- These records are not persisted to SQLite yet.
 
 ### tool.permission.request
 
