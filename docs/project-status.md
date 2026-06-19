@@ -107,8 +107,9 @@ Fallback path today:
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
+  - `local_file_search` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
   - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress.
-  - Unit tests cover registry config aliases, cancellation behavior, persisted audit records, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
+  - Unit tests cover registry config aliases, cancellation behavior, persisted audit records, result policy behavior, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -123,7 +124,7 @@ Fallback path today:
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Add long-term memory beyond raw message history, such as user facts, preferences, summaries, and retrieval.
-- Harden the Python-owned ToolRuntime with per-tool result policies, richer context propagation, and richer no-progress policies where needed.
+- Harden the Python-owned ToolRuntime with richer context propagation and richer no-progress policies where needed.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
   - `packages/amadeus/skills.py`
@@ -218,6 +219,7 @@ Status: first slice complete.
 - Added first-pass tool timeout handling with structured `tool_timeout` failures.
 - Added first-pass cooperative cancellation handling with structured `tool_cancelled` failures.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
+- Added first-pass per-tool result policy for `local_file_search`, keeping search metadata while capping model-context result count and preview length.
 - Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
 - Added focused tests for:
   - registry config alias behavior
@@ -225,6 +227,7 @@ Status: first slice complete.
   - structured timeout failures
   - structured cancellation failures and timeout cancellation signaling
   - model-context compression for large tool results
+  - `local_file_search` result policy behavior
   - audit event/log behavior and SQLite persistence for allow, deny, and guardrail paths
   - guardrail threshold blocking
   - agent-level repeated failing tool call blocking
@@ -262,7 +265,7 @@ Planned tasks:
 - Extend `ToolContext` so tools receive audit metadata explicitly.
 - Extend cancellation beyond the current cooperative signal if future tools need stronger process-level interruption.
 - Extend audit records with richer query APIs if diagnostics UI needs them.
-- Extend result preview/compression with per-tool policies if needed.
+- Extend result preview/compression with more per-tool policies as new high-volume tools are added.
 - Extend no-progress detection with richer semantic policies if needed.
 - Keep expanding Electron end-to-end coverage on the Python path before removing remaining TypeScript bridge scaffolding.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.

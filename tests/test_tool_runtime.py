@@ -239,6 +239,101 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertGreater(result.model_output["original_char_count"], 80)
         self.assertEqual(result.model_output["preview"], result.output_preview)
 
+    def test_execute_applies_local_file_search_result_policy(self) -> None:
+        long_preview = "match " + ("x" * 220)
+        search_results = [
+            {
+                "path": f"packages/example_{index}.py",
+                "line": index,
+                "preview": long_preview,
+                "match": "content",
+            }
+            for index in range(8)
+        ]
+        output = {
+            "query": "example",
+            "root": ".",
+            "maxResults": 8,
+            "results": search_results,
+            "scannedFiles": 42,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="local_file_search",
+                        display_name="Search",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "local_file_search"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "local_file_search",
+                {"query": "example"},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=500),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, output)
+        self.assertTrue(result.output_truncated)
+        self.assertEqual(result.model_output["_amadeus_result_policy"], "local_file_search_v1")
+        self.assertEqual(result.model_output["resultCount"], 8)
+        self.assertEqual(result.model_output["includedResults"], 5)
+        self.assertEqual(result.model_output["omittedResults"], 3)
+        self.assertEqual(len(result.model_output["results"]), 5)
+        self.assertLessEqual(len(result.model_output["results"][0]["preview"]), 160)
+        self.assertIsNotNone(result.output_preview)
+        self.assertLessEqual(len(result.output_preview or ""), 160)
+
+    def test_execute_keeps_small_local_file_search_result_unchanged(self) -> None:
+        output = {
+            "query": "example",
+            "root": ".",
+            "maxResults": 2,
+            "results": [
+                {
+                    "path": "packages/example.py",
+                    "line": 1,
+                    "preview": "example",
+                    "match": "content",
+                },
+            ],
+            "scannedFiles": 3,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="local_file_search",
+                        display_name="Search",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "local_file_search"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "local_file_search",
+                {"query": "example"},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=500),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, output)
+        self.assertEqual(result.model_output, output)
+        self.assertFalse(result.output_truncated)
+        self.assertIsNone(result.output_preview)
+
 
 class ToolLoopGuardrailTests(unittest.TestCase):
     def test_blocks_repeated_exact_failures_after_threshold(self) -> None:

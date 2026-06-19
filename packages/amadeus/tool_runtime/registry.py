@@ -21,6 +21,8 @@ TOOL_NAME_ALIASES = {
 VALID_PERMISSIONS = {"allow", "ask", "deny"}
 DEFAULT_MAX_MODEL_OUTPUT_CHARS = 4000
 DEFAULT_OUTPUT_PREVIEW_CHARS = 1000
+LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT = 5
+LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS = 160
 
 
 @dataclass(frozen=True)
@@ -276,9 +278,13 @@ def normalize_tool_output_for_model(
     max_chars: int,
     preview_chars: int,
 ) -> tuple[dict[str, Any], str | None, bool]:
-    serialized = json.dumps(output, ensure_ascii=False, sort_keys=True)
+    model_output, policy_preview, policy_truncated = apply_tool_result_policy(tool_name, output, ok, preview_chars)
+    serialized = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
+    if policy_truncated and len(serialized) <= max_chars:
+        return model_output, policy_preview, True
+
     if not ok or len(serialized) <= max_chars:
-        return output, None, False
+        return model_output, policy_preview, policy_truncated
 
     preview_limit = max(1, min(preview_chars, max_chars))
     preview = serialized[:preview_limit]
@@ -292,3 +298,72 @@ def normalize_tool_output_for_model(
         preview,
         True,
     )
+
+
+def apply_tool_result_policy(
+    tool_name: str,
+    output: dict[str, Any],
+    ok: bool,
+    preview_chars: int,
+) -> tuple[dict[str, Any], str | None, bool]:
+    if not ok:
+        return output, None, False
+
+    if tool_name == "local_file_search":
+        return normalize_local_file_search_output(output, preview_chars)
+
+    return output, None, False
+
+
+def normalize_local_file_search_output(
+    output: dict[str, Any],
+    preview_chars: int,
+) -> tuple[dict[str, Any], str | None, bool]:
+    raw_results = output.get("results")
+    if not isinstance(raw_results, list):
+        return output, None, False
+
+    preview_limit = max(1, min(preview_chars, LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS))
+    model_results: list[dict[str, Any]] = []
+    truncated = len(raw_results) > LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT
+
+    for raw_result in raw_results[:LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT]:
+        if not isinstance(raw_result, dict):
+            model_results.append({"preview": str(raw_result)[:preview_limit]})
+            truncated = True
+            continue
+
+        model_result: dict[str, Any] = {}
+        for key in ("path", "line", "match"):
+            if key in raw_result:
+                model_result[key] = raw_result[key]
+
+        raw_preview = raw_result.get("preview")
+        if raw_preview is not None:
+            preview = str(raw_preview)
+            if len(preview) > preview_limit:
+                preview = preview[:preview_limit]
+                truncated = True
+            model_result["preview"] = preview
+
+        model_results.append(model_result)
+
+    if not truncated:
+        return output, None, False
+
+    result_count = len(raw_results)
+    model_output = {
+        "_amadeus_result_truncated": True,
+        "_amadeus_result_policy": "local_file_search_v1",
+        "tool_name": "local_file_search",
+        "query": output.get("query"),
+        "root": output.get("root"),
+        "maxResults": output.get("maxResults"),
+        "scannedFiles": output.get("scannedFiles"),
+        "resultCount": result_count,
+        "includedResults": len(model_results),
+        "omittedResults": max(0, result_count - len(model_results)),
+        "results": model_results,
+    }
+    preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
+    return model_output, preview[:preview_limit], True

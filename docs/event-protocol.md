@@ -164,7 +164,7 @@ Note:
 }
 ```
 
-`durationMs`, `failureCode`, `resultPreview`, and `outputTruncated` are optional for compatibility with older runtime events. Python ToolRuntime emits duration and failure metadata when execution reaches the structured `ToolResult` path. It emits `resultPreview` and `outputTruncated` only when a successful tool result was compacted before being written back into model context. Permission-denied, disabled, unknown, cancelled, timed out, or guardrail-blocked decisions emit stable failure codes where available.
+`durationMs`, `failureCode`, `resultPreview`, and `outputTruncated` are optional for compatibility with older runtime events. Python ToolRuntime emits duration and failure metadata when execution reaches the structured `ToolResult` path. It emits `resultPreview` and `outputTruncated` only when a successful tool result was compacted before being written back into model context, either by a per-tool policy such as `local_file_search` or by the global size fallback. Permission-denied, disabled, unknown, cancelled, timed out, or guardrail-blocked decisions emit stable failure codes where available.
 
 ### tool.audit
 
