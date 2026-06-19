@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -83,6 +84,32 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure_code, "tool_exception")
         self.assertEqual(result.output, {"error": "boom"})
+
+    def test_execute_times_out_slow_tool(self) -> None:
+        def slow(_args: dict[str, object]) -> dict[str, object]:
+            time.sleep(0.05)
+            return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="slow",
+                        display_name="Slow",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "slow"}},
+                        handler=slow,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute("slow", {}, ToolContext(session_id="session-1", timeout_seconds=0.001))
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_code, "tool_timeout")
+        self.assertEqual(result.output, {"error": "Tool timed out: slow"})
 
 
 class ToolLoopGuardrailTests(unittest.TestCase):

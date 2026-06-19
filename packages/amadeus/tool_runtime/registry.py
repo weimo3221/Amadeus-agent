@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ VALID_PERMISSIONS = {"allow", "ask", "deny"}
 class ToolContext:
     session_id: str
     cwd: Path = REPO_ROOT
+    timeout_seconds: float | None = 30.0
 
 
 @dataclass(frozen=True)
@@ -55,12 +57,16 @@ class ToolRegistry:
         if not spec:
             raise KeyError(f"Unknown tool: {tool_name}")
 
-        _context = context or ToolContext(session_id="default")
+        effective_context = context or ToolContext(session_id="default")
         start = perf_counter()
         try:
-            output = spec.handler(args)
+            output = run_with_timeout(spec.handler, args, effective_context.timeout_seconds)
             ok = "error" not in output
             failure_code = None if ok else "tool_error"
+        except TimeoutError:
+            output = {"error": f"Tool timed out: {tool_name}"}
+            ok = False
+            failure_code = "tool_timeout"
         except Exception as error:
             output = {"error": str(error)}
             ok = False
@@ -163,3 +169,21 @@ def parse_bool(value: str) -> bool | None:
     if value == "false":
         return False
     return None
+
+
+def run_with_timeout(handler: Any, args: dict[str, Any], timeout_seconds: float | None) -> dict[str, Any]:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return handler(args)
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(handler, args)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError as error:
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise TimeoutError from error
+
+    finally:
+        if future.done():
+            executor.shutdown(wait=False, cancel_futures=True)

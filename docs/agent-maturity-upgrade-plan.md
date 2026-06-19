@@ -374,7 +374,7 @@ harnesses:
 
 ### Phase 2：统一 ToolRuntime
 
-状态：进行中。已完成 Python `ToolRegistry`、`configs/tools.yaml` loading、`ToolContext` / `ToolResult` 第一版、duration/failure code、permission-aware schema projection、first-pass audit records、repeated-failure guardrail。剩余重点是 timeout/cancellation、持久化审计、结果压缩和 no-progress detection。
+状态：进行中。已完成 Python `ToolRegistry`、`configs/tools.yaml` loading、`ToolContext` / `ToolResult` 第一版、duration/failure code、first-pass timeout handling、permission-aware schema projection、first-pass audit records、repeated-failure guardrail。剩余重点是 stronger cancellation、持久化审计、结果压缩和 no-progress detection。
 
 目标：工具从“函数字典 + TS fallback”升级为可审计 runtime。
 
