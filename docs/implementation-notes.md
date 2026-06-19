@@ -28,12 +28,12 @@ Live2D and audio should be treated as installable harnesses. They can contribute
 The Python runtime now separates concrete tool implementations from runtime tool policy:
 
 - `amadeus.tools`: concrete local tool handlers and their default `ToolSpec` metadata.
-- `amadeus.tool_runtime.registry`: effective registry construction, `configs/tools.yaml` overlays, enabled schema selection, permission-state projection, structured `ToolContext` / `ToolResult`, duration/failure metadata, first-pass timeout handling, result preview/compression for model context, and handler dispatch.
+- `amadeus.tool_runtime.registry`: effective registry construction, `configs/tools.yaml` overlays, enabled schema selection, permission-state projection, structured `ToolContext` / `ToolResult`, duration/failure metadata, first-pass timeout/cancellation handling, result preview/compression for model context, and handler dispatch.
 - `amadeus.tool_runtime.audit`: first-pass tool audit records for started/finished/denied/blocked/failed decisions.
 - `amadeus.tool_runtime.guardrails`: per-turn guardrails for repeated failed calls and repeated completed calls that do not make progress.
 - `amadeus.agent`: conversation loop, permission requests, event streaming, memory writes, and coordination with the tool runtime.
 
-Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be stronger cancellation support, persisted audit records if longer-lived diagnostics are needed, richer context propagation, per-tool result policies, and richer semantic no-progress detection. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
+Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be persisted audit records if longer-lived diagnostics are needed, richer context propagation, per-tool result policies, and richer semantic no-progress detection. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
 
 ## AIRI Code to Study First
 

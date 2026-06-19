@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import tempfile
 import time
 import unittest
@@ -117,6 +118,92 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.output, {"error": "Tool timed out: slow"})
         self.assertEqual(result.model_output, {"error": "Tool timed out: slow"})
         self.assertFalse(result.output_truncated)
+
+    def test_execute_marks_cancelled_context_as_structured_failure(self) -> None:
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="cancelled",
+                        display_name="Cancelled",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "cancelled"}},
+                        handler=lambda _args: {"ok": True},
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "cancelled",
+                {},
+                ToolContext(session_id="session-1", cancel_event=cancel_event),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_code, "tool_cancelled")
+        self.assertEqual(result.output, {"error": "Tool cancelled: cancelled"})
+        self.assertEqual(result.model_output, {"error": "Tool cancelled: cancelled"})
+
+    def test_execute_sets_cancel_event_on_timeout(self) -> None:
+        cancel_event = threading.Event()
+
+        def slow(_args: dict[str, object], context: ToolContext) -> dict[str, object]:
+            time.sleep(0.05)
+            return {"cancelled": context.is_cancelled()}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="slow",
+                        display_name="Slow",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "slow"}},
+                        handler=slow,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "slow",
+                {},
+                ToolContext(session_id="session-1", timeout_seconds=0.001, cancel_event=cancel_event),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_code, "tool_timeout")
+        self.assertTrue(cancel_event.is_set())
+
+    def test_execute_passes_context_to_context_aware_handler(self) -> None:
+        def read_context(_args: dict[str, object], context: ToolContext) -> dict[str, object]:
+            return {"sessionId": context.session_id, "cwd": context.cwd.name}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="read_context",
+                        display_name="Read Context",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "read_context"}},
+                        handler=read_context,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute("read_context", {}, ToolContext(session_id="session-1"))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, {"sessionId": "session-1", "cwd": "Amadeus-agent"})
 
     def test_execute_compresses_large_success_output_for_model_context(self) -> None:
         large_text = "x" * 200

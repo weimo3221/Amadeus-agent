@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import inspect
 import json
+import threading
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,8 +28,16 @@ class ToolContext:
     session_id: str
     cwd: Path = REPO_ROOT
     timeout_seconds: float | None = 30.0
+    cancel_event: threading.Event | None = None
     max_model_output_chars: int = DEFAULT_MAX_MODEL_OUTPUT_CHARS
     output_preview_chars: int = DEFAULT_OUTPUT_PREVIEW_CHARS
+
+    def is_cancelled(self) -> bool:
+        return bool(self.cancel_event and self.cancel_event.is_set())
+
+    def request_cancel(self) -> None:
+        if self.cancel_event:
+            self.cancel_event.set()
 
 
 @dataclass(frozen=True)
@@ -68,9 +78,19 @@ class ToolRegistry:
         effective_context = context or ToolContext(session_id="default")
         start = perf_counter()
         try:
-            output = run_with_timeout(spec.handler, args, effective_context.timeout_seconds)
+            if effective_context.is_cancelled():
+                raise ToolCancelledError
+
+            output = run_with_timeout(spec.handler, args, effective_context)
+            if effective_context.is_cancelled():
+                raise ToolCancelledError
+
             ok = "error" not in output
             failure_code = None if ok else "tool_error"
+        except ToolCancelledError:
+            output = {"error": f"Tool cancelled: {tool_name}"}
+            ok = False
+            failure_code = "tool_cancelled"
         except TimeoutError:
             output = {"error": f"Tool timed out: {tool_name}"}
             ok = False
@@ -189,15 +209,21 @@ def parse_bool(value: str) -> bool | None:
     return None
 
 
-def run_with_timeout(handler: Any, args: dict[str, Any], timeout_seconds: float | None) -> dict[str, Any]:
+class ToolCancelledError(Exception):
+    pass
+
+
+def run_with_timeout(handler: Any, args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    timeout_seconds = context.timeout_seconds
     if timeout_seconds is None or timeout_seconds <= 0:
-        return handler(args)
+        return call_tool_handler(handler, args, context)
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(handler, args)
+    future = executor.submit(call_tool_handler, handler, args, context)
     try:
         return future.result(timeout=timeout_seconds)
     except concurrent.futures.TimeoutError as error:
+        context.request_cancel()
         future.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
         raise TimeoutError from error
@@ -205,6 +231,42 @@ def run_with_timeout(handler: Any, args: dict[str, Any], timeout_seconds: float 
     finally:
         if future.done():
             executor.shutdown(wait=False, cancel_futures=True)
+
+
+def call_tool_handler(handler: Any, args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    if context.is_cancelled():
+        raise ToolCancelledError
+
+    if accepts_tool_context(handler):
+        output = handler(args, context)
+    else:
+        output = handler(args)
+
+    if context.is_cancelled():
+        raise ToolCancelledError
+
+    return output
+
+
+def accepts_tool_context(handler: Any) -> bool:
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return False
+
+    positional_capacity = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    has_varargs = any(
+        parameter.kind == inspect.Parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+    return has_varargs or len(positional_capacity) >= 2
 
 
 def normalize_tool_output_for_model(

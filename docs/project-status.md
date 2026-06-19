@@ -105,9 +105,10 @@ Fallback path today:
   - Tool execution now returns structured `ToolResult` metadata with success state, duration, and stable failure codes.
   - Tool execution now emits `tool.audit` events and keeps in-process audit records for started/finished/denied/blocked/failed decisions.
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
+  - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
   - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress.
-  - Unit tests cover registry config aliases, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
+  - Unit tests cover registry config aliases, cancellation behavior, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -122,7 +123,7 @@ Fallback path today:
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Add long-term memory beyond raw message history, such as user facts, preferences, summaries, and retrieval.
-- Harden the Python-owned ToolRuntime with stronger cancellation handling, persisted audit records if needed, per-tool result policies, and richer no-progress policies where needed.
+- Harden the Python-owned ToolRuntime with persisted audit records if needed, per-tool result policies, richer context propagation, and richer no-progress policies where needed.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
   - `packages/amadeus/skills.py`
@@ -215,12 +216,14 @@ Status: first slice complete.
 - `tool.finished` events can now include tool duration and stable failure codes.
 - Added first-pass `tool.audit` events and in-process audit records for tool started/finished/denied/blocked/failed decisions.
 - Added first-pass tool timeout handling with structured `tool_timeout` failures.
+- Added first-pass cooperative cancellation handling with structured `tool_cancelled` failures.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
 - Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
 - Added focused tests for:
   - registry config alias behavior
   - structured tool execution results
   - structured timeout failures
+  - structured cancellation failures and timeout cancellation signaling
   - model-context compression for large tool results
   - audit event/log behavior for allow, deny, and guardrail paths
   - guardrail threshold blocking
@@ -256,8 +259,8 @@ Goal: turn the first ToolRuntime slice into a production-grade tool execution la
 
 Planned tasks:
 
-- Extend `ToolContext` so tools receive cancellation and audit metadata explicitly.
-- Add cancellation handling and make timeout cancellation stronger where possible.
+- Extend `ToolContext` so tools receive audit metadata explicitly.
+- Extend cancellation beyond the current cooperative signal if future tools need stronger process-level interruption.
 - Persist audit records beyond the current in-process runtime log if longer-term diagnostics are needed.
 - Extend result preview/compression with per-tool policies if needed.
 - Extend no-progress detection with richer semantic policies if needed.
@@ -274,8 +277,8 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, repeated-failure guardrails, and first-pass no-progress guardrails.
-- The remaining work is the mature runtime layer: stronger cancellation handling, persisted audit records if needed, richer context propagation, per-tool result policies, and richer semantic no-progress guardrails.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, repeated-failure guardrails, and first-pass no-progress guardrails.
+- The remaining work is the mature runtime layer: persisted audit records if needed, richer context propagation, per-tool result policies, and richer semantic no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization
 
