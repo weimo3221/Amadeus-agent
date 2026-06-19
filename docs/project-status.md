@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-19
+Last updated: 2026-06-20
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -49,6 +49,7 @@ Fallback path today:
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as an `ask` tool.
 - `local_file_search` is implemented as an `ask` tool in the Python runtime.
+- Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
 - Desktop diagnostics show the loaded tool permission state from the server.
 - Tool definitions, schemas, registry creation, and config loading still exist in `packages/amadeus/tools.ts` for bridge diagnostics and development scaffolding.
@@ -187,6 +188,7 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 - Added inline desktop Allow / Deny prompts.
 - Extracted TypeScript tool metadata and config loading into `packages/amadeus/tools.ts`.
 - Added `local_file_search` as the first practical project-search tool.
+- Split Python tool implementations from the old single `tools.py` file into `packages/amadeus/tools/` modules while keeping the `amadeus.tools` import surface stable.
 
 ## In Progress
 
@@ -220,6 +222,7 @@ Status: first slice complete.
 - Added first-pass cooperative cancellation handling with structured `tool_cancelled` failures.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
 - Added first-pass per-tool result policy for `local_file_search`, keeping search metadata while capping model-context result count and preview length.
+- Split concrete Python tools into focused modules under `packages/amadeus/tools/`, with shared definitions in `tools/base.py` and registry exports in `tools/__init__.py`.
 - Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
 - Added focused tests for:
   - registry config alias behavior
@@ -280,8 +283,8 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, repeated-failure guardrails, and first-pass no-progress guardrails.
-- The remaining work is the mature runtime layer: richer context propagation, per-tool result policies, and richer semantic no-progress guardrails.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and a `local_file_search` result policy.
+- The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and richer semantic no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization
 
