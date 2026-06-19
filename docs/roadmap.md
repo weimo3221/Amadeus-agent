@@ -1,12 +1,18 @@
 # Roadmap
 
-For live implementation status, see `docs/project-status.md`. For the detailed maturity blueprint, see `docs/agent-maturity-upgrade-plan.md`.
+This file is the forward-looking plan. For live implementation status, use `docs/project-status.md`. For the detailed maturity blueprint, use `docs/agent-maturity-upgrade-plan.md`.
+
+## How to read this roadmap
+
+- The phases below are target deliverables, not a guarantee that every earlier deliverable is already complete.
+- Some foundation work from later phases may land early if it helps the current migration.
+- When roadmap wording and current code disagree, trust `docs/project-status.md`.
 
 ## Phase 0: Project Skeleton
 
-Status: started.
+Goal: establish the repository structure, startup docs, and initial config surfaces.
 
-Deliverables:
+Target deliverables:
 
 - Directory structure.
 - Architecture notes.
@@ -18,15 +24,20 @@ Deliverables:
 
 Goal: launch a desktop character window.
 
-Deliverables:
+Target deliverables:
 
 - Electron + Vite desktop app.
 - Transparent window.
 - Always-on-top toggle.
 - Drag-to-move support.
-- Load one Live2D model from `models/live2d`.
+- Live2D model loading and stage behavior.
 - Idle animation.
 - Manual expression and motion test panel.
+
+Notes:
+
+- The current MVP still loads a remote Live2D test model by default.
+- Moving to a local model bundle under `models/live2d` is still follow-up work.
 
 Reference:
 
@@ -37,86 +48,109 @@ Reference:
 
 Goal: chat with the character through a local runtime.
 
-Deliverables:
+Target deliverables:
 
 - Local server process.
 - WebSocket stream from server to desktop.
 - OpenAI-compatible provider adapter.
 - Basic chat history.
-- Runtime states: idle, listening, thinking, speaking, error.
+- Runtime states such as idle, thinking, speaking, tool-running, and error.
 
 ## Phase 3: Character Behavior
 
 Goal: make replies drive the Live2D character.
 
-Deliverables:
+Target deliverables:
 
-- `configs/character.yaml`.
 - Persona prompt.
-- Emotion classification from assistant output.
-- Emotion-to-expression mapping.
+- Runtime-to-expression/motion mapping.
 - Speaking and thinking motions.
 - Click and hover reactions.
+- Character behavior events that the desktop renderer can apply safely.
 
 ## Phase 4: Voice and Lipsync
 
 Goal: voice interaction feels natural enough for daily use.
 
-Deliverables:
+Target deliverables:
 
-- TTS provider adapter.
+- Runtime audio interface.
 - Audio playback in desktop app.
-- Basic amplitude lipsync.
+- Better lipsync than the current timed mouth loop.
 - Optional ASR input.
-- Push-to-talk hotkey.
+- Optional push-to-talk hotkey.
+
+Notes:
+
+- Current MVP voice playback still relies primarily on desktop `speechSynthesis` fallback.
+- Current lipsync is a timed mouth loop, not amplitude-driven or phoneme-aware.
 
 ## Phase 5: Memory and Tools
 
 Goal: the agent remembers useful facts and can act.
 
-Deliverables:
+Target deliverables:
 
 - SQLite storage.
 - Conversation summaries.
 - User profile memory.
 - Tool registry.
-- First tools:
-  - time
-  - local file search
-  - web search
-  - open URL
-  - reminders
 - Permission prompts for sensitive actions.
+- Practical first tools.
+
+Current tool baseline already delivered:
+
+- `get_current_time`
+- `roll_dice`
+- `local_file_search`
+
+Planned follow-up tools:
+
+- `web_search`
+- `open_url`
+- `reminders`
 
 ## Phase 6: Python Runtime Ownership
 
 Goal: move the real agent loop out of the TypeScript bridge and into `packages/amadeus`.
 
-Deliverables:
+Target deliverables:
 
 - Python `/agent/turn` endpoint.
-- Python-owned model adapter and streaming event generation.
+- Python-owned model call path and streaming event generation.
 - Python-owned tool loop and memory writes.
-- TypeScript server reduced to WebSocket/HTTP transport relay.
+- TypeScript server reduced toward WebSocket/HTTP transport relay.
 - Compatibility with current desktop events and permission prompts.
+- Enough integration coverage to remove the TypeScript fallback loop confidently.
+
+Notes:
+
+- This phase is partially delivered already.
+- The current preferred path is Python-first.
+- The remaining work is cleanup and parity confidence, not first implementation from scratch.
 
 ## Phase 7: ToolRuntime and Guardrails
 
 Goal: make tools reliable, auditable, and permission-enforced at runtime.
 
-Deliverables:
+Target deliverables:
 
-- Python `ToolSpec`, `ToolContext`, `ToolResult`, and registry.
-- Python-owned loading for `configs/tools.yaml`.
+- Python `ToolSpec`, `ToolContext`, `ToolResult`, and mature registry boundaries.
+- Python-owned loading for `configs/tools.yaml` as the long-term runtime source.
 - Tool timeout, cancellation, duration, preview, and audit records.
 - Guardrails for repeated failures and no-progress tool loops.
 - `/tools/list` bridge for desktop/server diagnostics.
+
+Notes:
+
+- Some prerequisite work is already done: tool registry, config loading, permission metadata, and practical ask tools.
+- This phase is not complete until the guardrail/audit/runtime layer exists formally.
 
 ## Phase 8: Memory v2
 
 Goal: move beyond raw message replay.
 
-Deliverables:
+Target deliverables:
 
 - Conversation summaries.
 - User profile facts and preferences.
@@ -129,7 +163,7 @@ Deliverables:
 
 Goal: make Amadeus' Live2D/audio strengths installable runtime harnesses.
 
-Deliverables:
+Target deliverables:
 
 - `packages/amadeus/harness` base contract and registry.
 - `configs/harnesses.yaml`.
@@ -142,7 +176,7 @@ Deliverables:
 
 Goal: add procedural memory and reusable workflows.
 
-Deliverables:
+Target deliverables:
 
 - `skills/<category>/<skill-name>/SKILL.md` layout.
 - `skills_list`, `skill_view`, `skill_run`.
@@ -154,7 +188,7 @@ Deliverables:
 
 Goal: the character can help without waiting for every instruction.
 
-Deliverables:
+Target deliverables:
 
 - Scheduled tasks.
 - Reminder notifications.
@@ -166,7 +200,7 @@ Deliverables:
 
 Goal: support complex long-running tasks.
 
-Deliverables:
+Target deliverables:
 
 - MCP bridge.
 - Sub-agent/task worker abstraction.

@@ -11,13 +11,17 @@ The project started as a TypeScript monorepo for fast Electron iteration, but th
 
 `apps/desktop` should remain a UI/device adapter. `apps/server` should remain a transport bridge. Agent, memory, model adapters, tools, skills, and audio planning should move into `packages/amadeus` behind narrow HTTP/event APIs.
 
-The next architecture milestone is Python ownership of `/agent/turn`. The TypeScript server currently still owns the LLM call, tool loop, SQLite writes, and first-pass character behavior dispatch. Move those responsibilities into Python before adding heavier features such as MCP, subagents, or proactive scheduling.
+The Python-first turn path is already in place: `/agent/turn` is implemented as an NDJSON event stream from Python to the TypeScript bridge. The bridge relays each runtime event to desktop and forwards `tool.permission.response` back to Python through `/tools/permission`. The older TypeScript model/tool loop remains as a fallback until parity tests and integration coverage are strong enough to remove it.
+
+`npm test` now runs Python `unittest` coverage for the Python runtime path and HTTP sidecar handlers. Keep these tests focused on deterministic behavior that does not require a live model provider. Current remaining gaps are bridge relay tests and desktop/WebSocket integration coverage.
+
+Current implementation note:
+
+- Active provider/model call logic still lives inline in `packages/amadeus/agent.py`.
+- `packages/amadeus/model.py`, `skills.py`, and `live2d.py` are still future boundaries rather than mature active modules.
+- `packages/live2d-stage` is still an intended package boundary; the working Live2D renderer logic currently lives in `apps/desktop/src/renderer/main.ts`.
 
 Live2D and audio should be treated as installable harnesses. They can contribute prompt fragments and observe runtime events, but the actual rendering and playback stay in the desktop adapter.
-
-Current migration state: `/agent/turn` is implemented as an NDJSON event stream from Python to the TypeScript bridge. The bridge relays each runtime event to desktop and forwards `tool.permission.response` back to Python through `/tools/permission`. The older TypeScript model/tool loop remains as a fallback until parity tests cover the Python path.
-
-`npm test` now runs Python `unittest` coverage for the Python runtime path and HTTP sidecar handlers. Keep these tests focused on deterministic behavior that does not require a live model provider.
 
 ## Tool Runtime Boundary
 
@@ -45,14 +49,14 @@ Do not copy the whole project. Pull over only the specific patterns needed for t
 
 ## MVP Technical Decisions
 
-- Use one Live2D model in `models/live2d` during development.
 - Use WebSocket for desktop/server events.
-- Use OpenAI-compatible API shape for the first LLM provider.
+- Use an OpenAI-compatible API shape for the first LLM provider.
 - Use SQLite for memory.
-- Keep tool execution disabled by default except safe tools such as current time.
-- Keep current desktop voice playback as a fallback, but move the audio interface into Python.
-- Keep Python as the runtime owner and TypeScript as the bridge owner.
+- Keep tool execution behind explicit `allow` / `ask` / `deny` policy.
+- Keep desktop voice playback as the current practical fallback while the Python audio interface matures.
+- Keep Python as the preferred runtime owner and TypeScript as the bridge owner.
 - Add new Live2D/audio behavior through harnesses, not through ad hoc server conditionals.
+- Add a local Live2D bundle later; the current MVP still loads a remote test model.
 
 ## Harness Config Direction
 
@@ -79,7 +83,7 @@ The runtime should load harnesses from this config and expose their effective st
 
 ## Audio Layout
 
-Current fallback voice output uses Electron/browser `speechSynthesis`, so available voices depend on Windows system voices.
+Current fallback voice output uses Electron/browser `speechSynthesis`, so available voices depend on the OS.
 
 The Python audio module owns the long-term audio interface. Local audio assets should live under:
 
@@ -94,9 +98,9 @@ packages/amadeus/assets/audio/
 - `sfx/`: UI and character sound effects.
 - `cache/`: generated TTS output when a real TTS engine is added.
 
-The desktop app should only play the `audioUrl` emitted by the runtime. If no Python TTS provider can generate audio for the requested text, the desktop falls back to `speechSynthesis`.
+The desktop app should play the `audioUrl` emitted by the runtime when one exists. If no Python TTS provider can generate audio for the requested text, the desktop falls back to `speechSynthesis`.
 
-When runtime audio is played, the desktop should report playback feedback:
+When runtime audio is played in the future, the desktop should report playback feedback:
 
 ```text
 audio.playback-started
@@ -104,7 +108,7 @@ audio.playback-ended
 audio.playback-error
 ```
 
-This lets the audio and Live2D harnesses coordinate real speaking state and lipsync instead of relying only on a timed mouth loop.
+This later feedback loop would let the audio and Live2D harnesses coordinate real speaking state and lipsync instead of relying only on a timed mouth loop.
 
 Fixed wav/mp3 files are useful for sound effects and canned reactions, but they are not a replacement for TTS. Arbitrary assistant replies require a provider such as GPT-SoVITS, Bert-VITS2, ChatTTS, Piper, OpenAI TTS, Azure Speech, or another engine behind `amadeus/audio.py`.
 
@@ -159,7 +163,7 @@ Examples:
 The desktop character should react to runtime state:
 
 - `idle`: default breathing/idle animation
-- `listening`: attentive expression
+- `listening`: reserved in shared types but not meaningfully used yet in the current flow
 - `thinking`: focused expression or thinking motion
 - `speaking`: talking motion and lipsync
 - `tool-running`: focused/working state
