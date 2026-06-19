@@ -14,8 +14,9 @@ Local TypeScript bridge for the desktop app.
    - forwards desktop `tool.permission.response` events to Python `POST /tools/permission`
 
 2. **Legacy fallback runtime**
-   - if Python `/agent/turn` is unavailable, `apps/server/src/index.ts` still runs the older TypeScript turn loop
-   - that fallback still handles provider calls, SQLite writes, tool execution, permission prompts, behavior events, and Python `/audio/speak` integration
+   - the older TypeScript turn loop has been isolated into `apps/server/src/legacy-fallback.ts`
+   - it is disabled by default and can be temporarily enabled with `AMADEUS_ENABLE_TS_FALLBACK=true`
+   - that fallback still handles provider calls, SQLite writes, tool execution, permission prompts, behavior events, and Python `/audio/speak` integration when explicitly enabled
 
 ## Responsibilities today
 
@@ -23,7 +24,7 @@ Local TypeScript bridge for the desktop app.
 - Desktop event parsing and validation
 - Python runtime relay
 - Desktop permission-response routing
-- Legacy fallback chat/tool/memory/audio path while migration is still in progress
+- Optional legacy fallback chat/tool/memory/audio path while migration is still in progress
 
 ## Endpoints
 
@@ -33,4 +34,5 @@ Local TypeScript bridge for the desktop app.
 ## Notes
 
 - The preferred user-turn path is now Python-first.
-- The TypeScript fallback loop remains only to preserve behavior until parity tests and integration coverage are strong enough to remove it.
+- If Python `/agent/turn` is unavailable, the server now reports a runtime error by default instead of silently running the TypeScript fallback.
+- The TypeScript fallback loop remains only as an explicit escape hatch until Electron renderer/UI coverage is strong enough to delete it.

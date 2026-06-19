@@ -32,7 +32,8 @@ Preferred path today:
 
 Fallback path today:
 
-- If Python `/agent/turn` is unavailable, `apps/server/src/index.ts` still contains the older TypeScript turn loop for provider calls, SQLite writes, tool execution, permission prompts, behavior events, and Python `/audio/speak` integration.
+- If Python `/agent/turn` is unavailable, `apps/server` now reports `python_runtime_unavailable` by default.
+- The older TypeScript turn loop has been isolated into `apps/server/src/legacy-fallback.ts` and is available only when `AMADEUS_ENABLE_TS_FALLBACK=true`.
 
 ### Done Now
 
@@ -80,13 +81,17 @@ Fallback path today:
   - `/agent/turn` streams missing API key failures as desktop-compatible NDJSON events
 - TypeScript bridge tests now cover the Python-first relay boundary.
   - `/agent/turn` NDJSON events are relayed to the desktop socket
-  - Python runtime connection failures leave the TypeScript fallback path available
+  - Python runtime connection failures return `false` from the relay so the caller can decide whether to report an error or use the explicit fallback
   - malformed Python events emit desktop-compatible `error` events without dropping later valid events
   - unresolved permission responses are forwarded to Python `/tools/permission`
 - Server-level WebSocket integration tests now cover the Python-first desktop event path.
   - `user.message` over WebSocket reaches Python `/agent/turn`
   - streamed Python runtime events are returned to the WebSocket client
   - `tool.permission.response` over WebSocket is forwarded to Python when not owned by the TypeScript fallback loop
+- The legacy TypeScript fallback loop is no longer the default runtime path.
+  - the old loop lives in `apps/server/src/legacy-fallback.ts`
+  - `AMADEUS_ENABLE_TS_FALLBACK=true` temporarily re-enables it
+  - Python runtime failures now produce an explicit desktop error by default
 - Phase 7 ToolRuntime first slice is in place.
   - Python tool registry/config loading now lives under `packages/amadeus/tool_runtime`.
   - Agent tool execution dispatches through `ToolRegistry` instead of direct helpers.
@@ -100,7 +105,7 @@ Fallback path today:
 ### Still Needed
 
 - Add Electron renderer/UI integration tests for the Python-first path.
-- Remove the legacy TypeScript turn loop after parity confidence is high enough.
+- Remove the isolated legacy TypeScript turn loop after Electron renderer/UI confidence is high enough.
 - Add a real Python TTS provider so runtime audio becomes the practical default, not only the interface contract.
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
@@ -215,7 +220,7 @@ What is already done:
 
 What is not done yet:
 
-- `apps/server` still contains the full legacy TypeScript fallback loop.
+- `apps/server` still contains the isolated legacy TypeScript fallback loop, but it is disabled by default.
 - Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, and server-level WebSocket integration behavior; Electron renderer/UI integration tests are still missing.
 - The active provider code still lives inline in `packages/amadeus/agent.py`; `model.py` is still a future abstraction boundary.
 - `skills.py` and `live2d.py` are still placeholder boundaries rather than mature runtime modules.

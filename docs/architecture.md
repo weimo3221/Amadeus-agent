@@ -54,13 +54,14 @@ apps/desktop
 
 Current fallback behavior:
 
-- `apps/server/src/index.ts` still contains the older TypeScript turn loop.
-- That fallback path still handles provider calls, SQLite writes, tool execution, permission prompts, behavior events, and Python `/audio/speak` integration when Python `/agent/turn` cannot be used.
+- `apps/server` reports `python_runtime_unavailable` when Python `/agent/turn` cannot be used.
+- The older TypeScript turn loop has been isolated into `apps/server/src/legacy-fallback.ts`.
+- That fallback path still handles provider calls, SQLite writes, tool execution, permission prompts, behavior events, and Python `/audio/speak` integration, but only when `AMADEUS_ENABLE_TS_FALLBACK=true`.
 
 So in current practice, `apps/server` is both:
 
 - the transport bridge for the preferred Python path, and
-- the legacy fallback runtime when the Python turn path fails.
+- the holder of an explicit, temporary legacy fallback runtime while the Python path is being proven.
 
 ## Runtime Diagram
 
@@ -189,7 +190,7 @@ TypeScript bridge responsibilities today:
 - Translate desktop events into Python runtime requests.
 - Forward Python runtime events back to the desktop.
 - Route desktop `tool.permission.response` events back to Python `/tools/permission`.
-- Keep the legacy TypeScript model/tool/memory/audio turn loop as a fallback while migration is in progress.
+- Keep the isolated legacy TypeScript model/tool/memory/audio turn loop as an explicit temporary fallback while migration is in progress.
 
 This layer should shrink over time.
 

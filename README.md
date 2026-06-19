@@ -21,7 +21,8 @@ Preferred path today:
 
 Fallback path today:
 
-- If Python `/agent/turn` is unavailable, `apps/server` still contains the older TypeScript turn loop to preserve the MVP behavior.
+- If Python `/agent/turn` is unavailable, `apps/server` reports a runtime error by default.
+- The older TypeScript turn loop is isolated in `apps/server/src/legacy-fallback.ts` and can be temporarily enabled with `AMADEUS_ENABLE_TS_FALLBACK=true`.
 
 ## Design References
 
