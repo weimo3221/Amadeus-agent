@@ -1,0 +1,543 @@
+import type {
+  AssistantState,
+  CharacterBehaviorPayload,
+  HelloPayload,
+  RuntimeEvent,
+  ServerRuntimeEvent,
+} from '@amadeus-agent/amadeus/events'
+
+const WEB_SOCKET_OPEN = 1
+
+export interface RuntimeSocketLike {
+  readyState: number
+  send(data: string): void
+  addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void
+}
+
+export interface RuntimeAudioLike {
+  addEventListener(type: 'play' | 'ended' | 'error', listener: () => void): void
+  play(): Promise<void>
+  pause(): void
+}
+
+export interface RuntimeSpeechSynthesisLike {
+  paused: boolean
+  speaking: boolean
+  cancel(): void
+  speak(utterance: SpeechSynthesisUtterance): void
+  resume(): void
+  getVoices(): SpeechSynthesisVoice[]
+  addEventListener(type: 'voiceschanged', listener: () => void): void
+}
+
+export interface RuntimeLive2DAdapter {
+  applyState(state: AssistantState): Promise<void> | void
+  applyBehavior(behavior: CharacterBehaviorPayload): Promise<void> | void
+  startMouthLoop(): void
+  stopMouthLoop(): void
+}
+
+export interface RuntimeUiElements {
+  statusElement: HTMLElement | null
+  chatForm: HTMLFormElement | null
+  chatInput: HTMLInputElement | null
+  chatLog: HTMLDivElement | null
+  voiceButton: HTMLButtonElement | null
+  providerLabel: HTMLElement | null
+  connectionLabel: HTMLElement | null
+  statusDot: HTMLSpanElement | null
+  memoryStatus: HTMLSpanElement | null
+  toolStatus: HTMLDivElement | null
+  toolConfigStatus: HTMLDivElement | null
+  toolPermission: HTMLDivElement | null
+  toolPermissionText: HTMLSpanElement | null
+  toolAllowButton: HTMLButtonElement | null
+  toolDenyButton: HTMLButtonElement | null
+  voiceStatus: HTMLDivElement | null
+  resetSessionButton: HTMLButtonElement | null
+}
+
+export interface RuntimeUiControllerOptions {
+  elements: RuntimeUiElements
+  wsUrl: string
+  modelLabel: string
+  createSocket(url: string): RuntimeSocketLike
+  createAudio(url: string): RuntimeAudioLike
+  createUtterance(text: string): SpeechSynthesisUtterance
+  randomUUID(): string
+  setTimeout(handler: () => void, timeout: number): number
+  clearTimeout(id: number): void
+  speechSynthesis?: RuntimeSpeechSynthesisLike
+  live2d?: RuntimeLive2DAdapter
+}
+
+export class RuntimeUiController {
+  private socket: RuntimeSocketLike | undefined
+  private sessionId: string
+  private activeAssistantMessage: HTMLDivElement | undefined
+  private pendingAssistantText = ''
+  private lastAssistantSpeechText = ''
+  private pendingToolPermissionRequestId: string | undefined
+  private voiceEnabled = true
+  private currentAudio: RuntimeAudioLike | undefined
+  private pendingSpeechFallbackTimer: number | undefined
+  private currentUtterance: SpeechSynthesisUtterance | undefined
+  private availableVoices: SpeechSynthesisVoice[] = []
+
+  constructor(private readonly options: RuntimeUiControllerOptions) {
+    this.sessionId = options.randomUUID()
+  }
+
+  bindControls(): void {
+    const { elements } = this.options
+    if (elements.providerLabel) {
+      elements.providerLabel.textContent = this.options.modelLabel
+    }
+
+    if (this.options.speechSynthesis) {
+      this.refreshVoices()
+      this.options.speechSynthesis.addEventListener('voiceschanged', () => {
+        const voices = this.refreshVoices()
+        this.setVoiceStatus(voices.length ? `Voice ready: ${voices.length} voices` : 'Voice unavailable: no system voices')
+      })
+    }
+    else {
+      this.setVoiceStatus('Voice unavailable: speechSynthesis is not supported')
+    }
+
+    elements.voiceButton?.addEventListener('click', () => {
+      this.voiceEnabled = !this.voiceEnabled
+      if (elements.voiceButton) {
+        elements.voiceButton.textContent = this.voiceEnabled ? 'Voice On' : 'Voice Off'
+        elements.voiceButton.title = this.voiceEnabled ? 'Disable voice output' : 'Enable voice output'
+      }
+
+      if (!this.voiceEnabled) {
+        this.stopAllVoiceOutput()
+        this.setVoiceStatus('Voice off')
+        return
+      }
+
+      this.refreshVoices()
+      this.setVoiceStatus('Voice on')
+    })
+
+    elements.resetSessionButton?.addEventListener('click', () => {
+      if (!this.socket || this.socket.readyState !== WEB_SOCKET_OPEN) {
+        this.appendMessage('assistant', 'Agent runtime is not connected. Cannot reset session.')
+        return
+      }
+
+      elements.chatLog?.replaceChildren()
+      this.activeAssistantMessage = undefined
+      this.pendingAssistantText = ''
+      this.lastAssistantSpeechText = ''
+      this.stopAllVoiceOutput()
+      this.setToolStatus('Tools idle')
+      this.clearToolPermissionPrompt()
+      this.setMemoryStatus('Memory: resetting...')
+      this.sendEvent('session.reset', {})
+    })
+
+    elements.toolAllowButton?.addEventListener('click', () => {
+      this.respondToToolPermission(true)
+    })
+
+    elements.toolDenyButton?.addEventListener('click', () => {
+      this.respondToToolPermission(false)
+    })
+
+    elements.chatForm?.addEventListener('submit', (event) => {
+      event.preventDefault()
+      const text = elements.chatInput?.value.trim()
+      if (!text) {
+        return
+      }
+
+      this.appendMessage('user', text)
+      this.activeAssistantMessage = undefined
+      this.pendingAssistantText = ''
+      this.lastAssistantSpeechText = ''
+      this.stopAllVoiceOutput()
+
+      if (!this.socket || this.socket.readyState !== WEB_SOCKET_OPEN) {
+        this.appendMessage('assistant', 'Agent runtime is not connected. Start apps/server and try again.')
+        if (elements.chatInput) {
+          elements.chatInput.value = ''
+        }
+        return
+      }
+
+      this.sendEvent('user.message', {
+        text,
+        inputMode: 'text',
+      })
+      if (elements.chatInput) {
+        elements.chatInput.value = ''
+      }
+    })
+  }
+
+  connectAgentRuntime(): void {
+    this.setConnection('Connecting', false)
+    this.socket = this.options.createSocket(this.options.wsUrl)
+
+    this.socket.addEventListener('open', () => {
+      this.setConnection('Connected', true)
+    })
+
+    this.socket.addEventListener('message', (message) => {
+      try {
+        this.handleServerEvent(JSON.parse(String(message.data)) as ServerRuntimeEvent)
+      }
+      catch (error) {
+        console.error(error)
+      }
+    })
+
+    this.socket.addEventListener('close', () => {
+      this.setConnection('Disconnected', false)
+      this.options.setTimeout(() => this.connectAgentRuntime(), 1800)
+    })
+
+    this.socket.addEventListener('error', () => {
+      this.setConnection('Runtime offline', false)
+    })
+  }
+
+  handleServerEvent(event: ServerRuntimeEvent): void {
+    switch (event.type) {
+      case 'server.hello':
+        this.sessionId = event.sessionId
+        if (this.options.elements.providerLabel) {
+          this.options.elements.providerLabel.textContent = event.payload.model
+        }
+        this.setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
+        this.setToolConfigStatus(formatToolConfigStatus(event.payload))
+        this.setConnection('Connected', true)
+        break
+      case 'memory.updated':
+        this.setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
+        break
+      case 'assistant.delta':
+        this.pendingAssistantText += event.payload.text
+        this.appendAssistantDelta(event.payload.text)
+        break
+      case 'assistant.message':
+        this.activeAssistantMessage = undefined
+        this.lastAssistantSpeechText = event.payload.text || this.pendingAssistantText
+        this.scheduleSpeechFallback(this.lastAssistantSpeechText)
+        this.pendingAssistantText = ''
+        break
+      case 'assistant.state':
+        this.setStatus(`State: ${event.payload.state}`, event.payload.state !== 'idle')
+        void this.options.live2d?.applyState(event.payload.state)
+        break
+      case 'character.behavior':
+        void this.options.live2d?.applyBehavior(event.payload)
+        break
+      case 'audio.tts-ready':
+        this.playRuntimeAudio(event.payload.audioUrl)
+        break
+      case 'tool.started':
+        this.setToolStatus(`Tool running: ${event.payload.displayName}`)
+        break
+      case 'tool.finished':
+        this.clearToolPermissionPrompt()
+        this.setToolStatus(`Tool ${event.payload.ok ? 'finished' : 'failed'}: ${event.payload.toolName}`)
+        break
+      case 'tool.permission.request':
+        this.setToolPermissionPrompt(event.payload.requestId, event.payload.reason)
+        this.setToolStatus(`Tool needs permission: ${event.payload.displayName}`)
+        break
+      case 'error':
+        this.activeAssistantMessage = undefined
+        this.pendingAssistantText = ''
+        this.clearToolPermissionPrompt()
+        this.appendMessage('assistant', `Error: ${event.payload.message}`)
+        this.setConnection('Error', false)
+        void this.options.live2d?.applyState('error')
+        break
+    }
+  }
+
+  private setStatus(message: string, visible = true): void {
+    const { statusElement } = this.options.elements
+    if (!statusElement) {
+      return
+    }
+
+    statusElement.textContent = message
+    statusElement.hidden = !visible
+  }
+
+  private setVoiceStatus(message: string): void {
+    if (this.options.elements.voiceStatus) {
+      this.options.elements.voiceStatus.textContent = message
+    }
+  }
+
+  private setMemoryStatus(message: string): void {
+    if (this.options.elements.memoryStatus) {
+      this.options.elements.memoryStatus.textContent = message
+    }
+  }
+
+  private setToolStatus(message: string): void {
+    if (this.options.elements.toolStatus) {
+      this.options.elements.toolStatus.textContent = message
+    }
+  }
+
+  private setToolConfigStatus(message: string): void {
+    if (this.options.elements.toolConfigStatus) {
+      this.options.elements.toolConfigStatus.textContent = message
+    }
+  }
+
+  private setToolPermissionPrompt(requestId: string, message: string): void {
+    this.pendingToolPermissionRequestId = requestId
+    if (this.options.elements.toolPermissionText) {
+      this.options.elements.toolPermissionText.textContent = message
+    }
+    if (this.options.elements.toolPermission) {
+      this.options.elements.toolPermission.hidden = false
+    }
+  }
+
+  private clearToolPermissionPrompt(): void {
+    this.pendingToolPermissionRequestId = undefined
+    if (this.options.elements.toolPermissionText) {
+      this.options.elements.toolPermissionText.textContent = ''
+    }
+    if (this.options.elements.toolPermission) {
+      this.options.elements.toolPermission.hidden = true
+    }
+  }
+
+  private respondToToolPermission(approved: boolean): void {
+    if (!this.pendingToolPermissionRequestId) {
+      return
+    }
+
+    this.sendEvent('tool.permission.response', {
+      requestId: this.pendingToolPermissionRequestId,
+      approved,
+    })
+    this.setToolStatus(approved ? 'Tool permission approved' : 'Tool permission denied')
+    this.clearToolPermissionPrompt()
+  }
+
+  private appendMessage(role: 'user' | 'assistant', text: string): HTMLDivElement | undefined {
+    const { chatLog } = this.options.elements
+    if (!chatLog) {
+      return undefined
+    }
+
+    const item = document.createElement('div')
+    item.className = `message ${role}`
+    item.textContent = text
+    chatLog.append(item)
+    chatLog.scrollTop = chatLog.scrollHeight
+    return item
+  }
+
+  private appendAssistantDelta(text: string): void {
+    if (!this.activeAssistantMessage) {
+      this.activeAssistantMessage = this.appendMessage('assistant', '')
+    }
+
+    if (!this.activeAssistantMessage) {
+      return
+    }
+
+    this.activeAssistantMessage.textContent += text
+    if (this.options.elements.chatLog) {
+      this.options.elements.chatLog.scrollTop = this.options.elements.chatLog.scrollHeight
+    }
+  }
+
+  private setConnection(text: string, connected: boolean): void {
+    if (this.options.elements.connectionLabel) {
+      this.options.elements.connectionLabel.textContent = text
+    }
+
+    if (this.options.elements.statusDot) {
+      this.options.elements.statusDot.dataset.connected = String(connected)
+    }
+  }
+
+  private sendEvent<TType extends string, TPayload>(type: TType, payload: TPayload): void {
+    const event: RuntimeEvent<TType, TPayload> = {
+      id: this.options.randomUUID(),
+      type,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      payload,
+    }
+    this.socket?.send(JSON.stringify(event))
+  }
+
+  private refreshVoices(): SpeechSynthesisVoice[] {
+    const speechSynthesis = this.options.speechSynthesis
+    if (!speechSynthesis) {
+      this.setVoiceStatus('Voice unavailable: speechSynthesis is not supported')
+      return []
+    }
+
+    this.availableVoices = speechSynthesis.getVoices()
+    if (!this.availableVoices.length) {
+      this.setVoiceStatus('Voice waiting for system voices')
+    }
+    return this.availableVoices
+  }
+
+  private pickVoice(lang: string): SpeechSynthesisVoice | undefined {
+    const voices = this.availableVoices.length ? this.availableVoices : this.refreshVoices()
+    const normalizedLang = lang.toLowerCase()
+    return (
+      voices.find((voice) => voice.lang.toLowerCase() === normalizedLang)
+      ?? voices.find((voice) => voice.lang.toLowerCase().startsWith(normalizedLang.split('-')[0]))
+      ?? voices[0]
+    )
+  }
+
+  private speak(text: string): void {
+    const speechSynthesis = this.options.speechSynthesis
+    if (!this.voiceEnabled || !speechSynthesis) {
+      this.setVoiceStatus(this.voiceEnabled ? 'Voice unavailable' : 'Voice off')
+      return
+    }
+
+    const normalizedText = text.trim()
+    if (!normalizedText) {
+      return
+    }
+
+    speechSynthesis.cancel()
+    this.options.live2d?.stopMouthLoop()
+
+    this.refreshVoices()
+    const utterance = this.options.createUtterance(normalizedText)
+    utterance.lang = /[\u4E00-\u9FFF]/.test(normalizedText) ? 'zh-CN' : 'en-US'
+    const voice = this.pickVoice(utterance.lang)
+    if (voice) {
+      utterance.voice = voice
+      utterance.lang = voice.lang
+    }
+    utterance.rate = 1
+    utterance.pitch = 1.05
+    utterance.volume = 1
+
+    utterance.addEventListener('start', () => {
+      this.setVoiceStatus(`Speaking with ${utterance.voice?.name ?? utterance.lang}`)
+      void this.options.live2d?.applyState('speaking')
+      this.options.live2d?.startMouthLoop()
+    })
+
+    utterance.addEventListener('end', () => {
+      this.setVoiceStatus('Voice idle')
+      this.options.live2d?.stopMouthLoop()
+      void this.options.live2d?.applyState('idle')
+      this.currentUtterance = undefined
+    })
+
+    utterance.addEventListener('error', (event) => {
+      this.setVoiceStatus(`Voice error: ${event.error}`)
+      this.options.live2d?.stopMouthLoop()
+      void this.options.live2d?.applyState('idle')
+      this.currentUtterance = undefined
+    })
+
+    this.currentUtterance = utterance
+    this.setVoiceStatus(`Queued voice (${utterance.voice?.name ?? utterance.lang})`)
+    speechSynthesis.speak(utterance)
+    speechSynthesis.resume()
+
+    this.options.setTimeout(() => {
+      if (speechSynthesis.paused) {
+        speechSynthesis.resume()
+      }
+      if (speechSynthesis.speaking) {
+        this.options.live2d?.startMouthLoop()
+      }
+    }, 250)
+  }
+
+  private cancelSpeechFallback(): void {
+    if (this.pendingSpeechFallbackTimer !== undefined) {
+      this.options.clearTimeout(this.pendingSpeechFallbackTimer)
+      this.pendingSpeechFallbackTimer = undefined
+    }
+  }
+
+  private scheduleSpeechFallback(text: string): void {
+    this.cancelSpeechFallback()
+    this.pendingSpeechFallbackTimer = this.options.setTimeout(() => {
+      this.pendingSpeechFallbackTimer = undefined
+      this.speak(text)
+    }, 300)
+  }
+
+  private stopRuntimeAudio(): void {
+    this.currentAudio?.pause()
+    this.currentAudio = undefined
+  }
+
+  private stopAllVoiceOutput(): void {
+    this.cancelSpeechFallback()
+    this.stopRuntimeAudio()
+    this.options.speechSynthesis?.cancel()
+    this.currentUtterance = undefined
+    this.options.live2d?.stopMouthLoop()
+  }
+
+  private playRuntimeAudio(audioUrl: string): void {
+    if (!this.voiceEnabled) {
+      this.setVoiceStatus('Voice off')
+      return
+    }
+
+    this.cancelSpeechFallback()
+    this.stopRuntimeAudio()
+    this.options.speechSynthesis?.cancel()
+    this.options.live2d?.stopMouthLoop()
+
+    const audio = this.options.createAudio(audioUrl)
+    this.currentAudio = audio
+
+    audio.addEventListener('play', () => {
+      this.setVoiceStatus('Playing runtime audio')
+      void this.options.live2d?.applyState('speaking')
+      this.options.live2d?.startMouthLoop()
+    })
+
+    audio.addEventListener('ended', () => {
+      this.setVoiceStatus('Voice idle')
+      this.options.live2d?.stopMouthLoop()
+      void this.options.live2d?.applyState('idle')
+      this.currentAudio = undefined
+    })
+
+    audio.addEventListener('error', () => {
+      this.setVoiceStatus('Runtime audio failed; using system voice')
+      this.options.live2d?.stopMouthLoop()
+      this.currentAudio = undefined
+      this.speak(this.lastAssistantSpeechText)
+    })
+
+    void audio.play().catch(() => {
+      this.setVoiceStatus('Runtime audio blocked; using system voice')
+      this.currentAudio = undefined
+      this.speak(this.lastAssistantSpeechText)
+    })
+  }
+}
+
+function formatToolConfigStatus(payload: HelloPayload): string {
+  const summary = payload.toolPermissions
+    .map((tool) => `${tool.name} ${tool.enabled ? tool.permission : 'off'}`)
+    .join(', ')
+
+  return `Tools: ${summary || 'none'}`
+}

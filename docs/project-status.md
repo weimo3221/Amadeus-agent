@@ -88,6 +88,13 @@ Fallback path today:
   - `user.message` over WebSocket reaches Python `/agent/turn`
   - streamed Python runtime events are returned to the WebSocket client
   - `tool.permission.response` over WebSocket is forwarded to Python when not owned by the TypeScript fallback loop
+- Desktop renderer harness tests now cover runtime UI behavior.
+  - `server.hello` updates model, memory, connection, and tool config diagnostics
+  - assistant deltas/messages update chat output and schedule speech fallback
+  - `tool.permission.request` shows Allow / Deny UI and sends `tool.permission.response`
+  - chat form submission sends `user.message` over the active socket
+  - `audio.tts-ready` cancels speech fallback and plays runtime audio instead
+  - `tool.finished` clears permission prompts and updates tool status
 - The legacy TypeScript fallback loop is no longer the default runtime path.
   - the old loop lives in `apps/server/src/legacy-fallback.ts`
   - `AMADEUS_ENABLE_TS_FALLBACK=true` temporarily re-enables it
@@ -104,7 +111,7 @@ Fallback path today:
 
 ### Still Needed
 
-- Add Electron renderer/UI integration tests for the Python-first path.
+- Add full Electron end-to-end coverage for real window startup and Live2D loading.
 - Remove the isolated legacy TypeScript turn loop after Electron renderer/UI confidence is high enough.
 - Add a real Python TTS provider so runtime audio becomes the practical default, not only the interface contract.
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
@@ -179,7 +186,7 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 
 ### Phase 6: Python Runtime Ownership
 
-The second vertical slice is complete: Python runtime parity tests, Python HTTP handler tests, TypeScript bridge relay tests, and server-level WebSocket integration tests are in place, and `npm test` now runs them.
+The second vertical slice is complete: Python runtime parity tests, Python HTTP handler tests, TypeScript bridge relay tests, server-level WebSocket integration tests, and desktop renderer harness tests are in place, and `npm test` now runs them.
 
 Phase 7 is in progress. The first vertical slice is complete: Python tool registry/config loading has been extracted into `packages/amadeus/tool_runtime`, and the Python agent loop now applies a simple repeated-failure guardrail during tool execution.
 
@@ -216,12 +223,12 @@ What is already done:
 - Python reads/writes SQLite message memory for the preferred path.
 - Python owns tool decision and Python tool execution for the preferred path.
 - Python permission brokering is wired through `tool.permission.request` and `/tools/permission`.
-- `npm test` covers deterministic Python runtime behavior, local Python HTTP handlers, TypeScript bridge relay behavior, and server-level WebSocket integration behavior.
+- `npm test` covers deterministic Python runtime behavior, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, and desktop renderer runtime UI behavior.
 
 What is not done yet:
 
 - `apps/server` still contains the isolated legacy TypeScript fallback loop, but it is disabled by default.
-- Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, and server-level WebSocket integration behavior; Electron renderer/UI integration tests are still missing.
+- Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, and desktop renderer runtime UI behavior. Full Electron end-to-end coverage is still missing.
 - The active provider code still lives inline in `packages/amadeus/agent.py`; `model.py` is still a future abstraction boundary.
 - `skills.py` and `live2d.py` are still placeholder boundaries rather than mature runtime modules.
 - `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/main.ts`.
@@ -238,7 +245,7 @@ Planned tasks:
 - Add tool duration, timeout, cancellation, and structured failure codes.
 - Emit or persist audit records for tool started/finished/denied/blocked decisions.
 - Add no-progress loop detection beyond exact repeated failures.
-- Keep Electron renderer/UI integration tests on the Python path before deleting the TypeScript fallback model/tool loop.
+- Keep full Electron end-to-end coverage on the Python path before deleting the TypeScript fallback model/tool loop.
 - Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
 
 The broader upgrade plan is documented in `docs/agent-maturity-upgrade-plan.md`.
@@ -301,7 +308,7 @@ Not started.
 - GPT-SoVITS integration is blocked until required pretrained base models are downloaded into `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models`.
 - Lipsync is currently a timed mouth loop, not phoneme-accurate.
 - SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
-- Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, and server-level WebSocket integration behavior. Electron renderer/UI integration coverage is still missing.
+- Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, and desktop renderer runtime UI behavior. Full Electron end-to-end coverage is still missing.
 - Placeholder boundaries still need real implementations or cleanup: `model.py`, `skills.py`, `live2d.py`, and `packages/live2d-stage`.
 
 ## Useful Commands

@@ -2,13 +2,11 @@ import { Application } from '@pixi/app'
 import type {
   AssistantState,
   CharacterBehaviorPayload,
-  HelloPayload,
-  RuntimeEvent,
-  ServerRuntimeEvent,
 } from '@amadeus-agent/amadeus/events'
 import type { Live2DModel as Live2DModelClass } from 'pixi-live2d-display/cubism4'
 import * as PIXI from 'pixi.js'
 
+import { RuntimeUiController } from './runtime-ui'
 import './styles.css'
 
 window.PIXI = PIXI
@@ -46,18 +44,7 @@ const debugApply = document.querySelector<HTMLButtonElement>('#debug-apply')
 const debugCapabilities = document.querySelector<HTMLDivElement>('#debug-capabilities')
 
 let pinned = true
-let voiceEnabled = true
-let socket: WebSocket | undefined
-let sessionId: string = crypto.randomUUID()
-let activeAssistantMessage: HTMLDivElement | undefined
-let pendingAssistantText = ''
-let lastAssistantSpeechText = ''
-let pendingToolPermissionRequestId: string | undefined
 let live2dController: Live2DController | undefined
-let currentUtterance: SpeechSynthesisUtterance | undefined
-let availableVoices: SpeechSynthesisVoice[] = []
-let currentAudio: HTMLAudioElement | undefined
-let pendingSpeechFallbackTimer: number | undefined
 
 interface Live2DCoreModel {
   setParameterValueById: (id: string, value: number) => void
@@ -337,224 +324,6 @@ function updateDebugCapabilities(capabilities: Live2DModelCapabilities): void {
   }
 }
 
-function setVoiceStatus(message: string): void {
-  if (voiceStatus) {
-    voiceStatus.textContent = message
-  }
-}
-
-function setMemoryStatus(message: string): void {
-  if (memoryStatus) {
-    memoryStatus.textContent = message
-  }
-}
-
-function setToolStatus(message: string): void {
-  if (toolStatus) {
-    toolStatus.textContent = message
-  }
-}
-
-function setToolConfigStatus(message: string): void {
-  if (toolConfigStatus) {
-    toolConfigStatus.textContent = message
-  }
-}
-
-function formatToolConfigStatus(payload: HelloPayload): string {
-  const summary = payload.toolPermissions
-    .map((tool) => `${tool.name} ${tool.enabled ? tool.permission : 'off'}`)
-    .join(', ')
-
-  return `Tools: ${summary || 'none'}`
-}
-
-function setToolPermissionPrompt(requestId: string, message: string): void {
-  pendingToolPermissionRequestId = requestId
-  if (toolPermissionText) {
-    toolPermissionText.textContent = message
-  }
-  if (toolPermission) {
-    toolPermission.hidden = false
-  }
-}
-
-function clearToolPermissionPrompt(): void {
-  pendingToolPermissionRequestId = undefined
-  if (toolPermissionText) {
-    toolPermissionText.textContent = ''
-  }
-  if (toolPermission) {
-    toolPermission.hidden = true
-  }
-}
-
-function respondToToolPermission(approved: boolean): void {
-  if (!pendingToolPermissionRequestId) {
-    return
-  }
-
-  sendEvent('tool.permission.response', {
-    requestId: pendingToolPermissionRequestId,
-    approved,
-  })
-  setToolStatus(approved ? 'Tool permission approved' : 'Tool permission denied')
-  clearToolPermissionPrompt()
-}
-
-function refreshVoices(): SpeechSynthesisVoice[] {
-  if (!('speechSynthesis' in window)) {
-    setVoiceStatus('Voice unavailable: speechSynthesis is not supported')
-    return []
-  }
-
-  availableVoices = window.speechSynthesis.getVoices()
-  if (!availableVoices.length) {
-    setVoiceStatus('Voice waiting for system voices')
-  }
-  return availableVoices
-}
-
-function pickVoice(lang: string): SpeechSynthesisVoice | undefined {
-  const voices = availableVoices.length ? availableVoices : refreshVoices()
-  const normalizedLang = lang.toLowerCase()
-  return (
-    voices.find((voice) => voice.lang.toLowerCase() === normalizedLang)
-    ?? voices.find((voice) => voice.lang.toLowerCase().startsWith(normalizedLang.split('-')[0]))
-    ?? voices[0]
-  )
-}
-
-function speak(text: string): void {
-  if (!voiceEnabled || !('speechSynthesis' in window)) {
-    setVoiceStatus(voiceEnabled ? 'Voice unavailable' : 'Voice off')
-    return
-  }
-
-  const normalizedText = text.trim()
-  if (!normalizedText) {
-    return
-  }
-
-  window.speechSynthesis.cancel()
-  live2dController?.stopMouthLoop()
-
-  refreshVoices()
-  const utterance = new SpeechSynthesisUtterance(normalizedText)
-  utterance.lang = /[\u4E00-\u9FFF]/.test(normalizedText) ? 'zh-CN' : 'en-US'
-  const voice = pickVoice(utterance.lang)
-  if (voice) {
-    utterance.voice = voice
-    utterance.lang = voice.lang
-  }
-  utterance.rate = 1
-  utterance.pitch = 1.05
-  utterance.volume = 1
-
-  utterance.addEventListener('start', () => {
-    setVoiceStatus(`Speaking with ${utterance.voice?.name ?? utterance.lang}`)
-    void live2dController?.applyState('speaking')
-    live2dController?.startMouthLoop()
-  })
-
-  utterance.addEventListener('end', () => {
-    setVoiceStatus('Voice idle')
-    live2dController?.stopMouthLoop()
-    void live2dController?.applyState('idle')
-    currentUtterance = undefined
-  })
-
-  utterance.addEventListener('error', (event) => {
-    setVoiceStatus(`Voice error: ${event.error}`)
-    live2dController?.stopMouthLoop()
-    void live2dController?.applyState('idle')
-    currentUtterance = undefined
-  })
-
-  currentUtterance = utterance
-  setVoiceStatus(`Queued voice (${utterance.voice?.name ?? utterance.lang})`)
-  window.speechSynthesis.speak(utterance)
-  window.speechSynthesis.resume()
-
-  window.setTimeout(() => {
-    if (window.speechSynthesis.paused) {
-      window.speechSynthesis.resume()
-    }
-    if (window.speechSynthesis.speaking) {
-      live2dController?.startMouthLoop()
-    }
-  }, 250)
-}
-
-function cancelSpeechFallback(): void {
-  if (pendingSpeechFallbackTimer !== undefined) {
-    window.clearTimeout(pendingSpeechFallbackTimer)
-    pendingSpeechFallbackTimer = undefined
-  }
-}
-
-function scheduleSpeechFallback(text: string): void {
-  cancelSpeechFallback()
-  pendingSpeechFallbackTimer = window.setTimeout(() => {
-    pendingSpeechFallbackTimer = undefined
-    speak(text)
-  }, 300)
-}
-
-function stopRuntimeAudio(): void {
-  currentAudio?.pause()
-  currentAudio = undefined
-}
-
-function stopAllVoiceOutput(): void {
-  cancelSpeechFallback()
-  stopRuntimeAudio()
-  window.speechSynthesis?.cancel()
-  currentUtterance = undefined
-  live2dController?.stopMouthLoop()
-}
-
-function playRuntimeAudio(audioUrl: string): void {
-  if (!voiceEnabled) {
-    setVoiceStatus('Voice off')
-    return
-  }
-
-  cancelSpeechFallback()
-  stopRuntimeAudio()
-  window.speechSynthesis?.cancel()
-  live2dController?.stopMouthLoop()
-
-  const audio = new Audio(audioUrl)
-  currentAudio = audio
-
-  audio.addEventListener('play', () => {
-    setVoiceStatus('Playing runtime audio')
-    void live2dController?.applyState('speaking')
-    live2dController?.startMouthLoop()
-  })
-
-  audio.addEventListener('ended', () => {
-    setVoiceStatus('Voice idle')
-    live2dController?.stopMouthLoop()
-    void live2dController?.applyState('idle')
-    currentAudio = undefined
-  })
-
-  audio.addEventListener('error', () => {
-    setVoiceStatus('Runtime audio failed; using system voice')
-    live2dController?.stopMouthLoop()
-    currentAudio = undefined
-    speak(lastAssistantSpeechText)
-  })
-
-  void audio.play().catch(() => {
-    setVoiceStatus('Runtime audio blocked; using system voice')
-    currentAudio = undefined
-    speak(lastAssistantSpeechText)
-  })
-}
-
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: number | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -619,136 +388,6 @@ function setStatus(message: string, visible = true): void {
 
   statusElement.textContent = message
   statusElement.hidden = !visible
-}
-
-function appendMessage(role: 'user' | 'assistant', text: string): HTMLDivElement | undefined {
-  if (!chatLog) {
-    return undefined
-  }
-
-  const item = document.createElement('div')
-  item.className = `message ${role}`
-  item.textContent = text
-  chatLog.append(item)
-  chatLog.scrollTop = chatLog.scrollHeight
-  return item
-}
-
-function appendAssistantDelta(text: string): void {
-  if (!activeAssistantMessage) {
-    activeAssistantMessage = appendMessage('assistant', '')
-  }
-
-  if (!activeAssistantMessage) {
-    return
-  }
-
-  activeAssistantMessage.textContent += text
-  chatLog!.scrollTop = chatLog!.scrollHeight
-}
-
-function setConnection(text: string, connected: boolean): void {
-  if (connectionLabel) {
-    connectionLabel.textContent = text
-  }
-
-  const dot = document.querySelector<HTMLSpanElement>('#status-dot')
-  if (dot) {
-    dot.dataset.connected = String(connected)
-  }
-}
-
-function sendEvent<TType extends string, TPayload>(type: TType, payload: TPayload): void {
-  const event: RuntimeEvent<TType, TPayload> = {
-    id: crypto.randomUUID(),
-    type,
-    sessionId,
-    timestamp: new Date().toISOString(),
-    payload,
-  }
-  socket?.send(JSON.stringify(event))
-}
-
-function handleServerEvent(event: ServerRuntimeEvent): void {
-  switch (event.type) {
-    case 'server.hello':
-      sessionId = event.sessionId
-      providerLabel!.textContent = event.payload.model
-      setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
-      setToolConfigStatus(formatToolConfigStatus(event.payload))
-      setConnection('Connected', true)
-      break
-    case 'memory.updated':
-      setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
-      break
-    case 'assistant.delta':
-      pendingAssistantText += event.payload.text
-      appendAssistantDelta(event.payload.text)
-      break
-    case 'assistant.message':
-      activeAssistantMessage = undefined
-      lastAssistantSpeechText = event.payload.text || pendingAssistantText
-      scheduleSpeechFallback(lastAssistantSpeechText)
-      pendingAssistantText = ''
-      break
-    case 'assistant.state':
-      setStatus(`State: ${event.payload.state}`, event.payload.state !== 'idle')
-      void live2dController?.applyState(event.payload.state)
-      break
-    case 'character.behavior':
-      void live2dController?.applyBehavior(event.payload)
-      break
-    case 'audio.tts-ready':
-      playRuntimeAudio(event.payload.audioUrl)
-      break
-    case 'tool.started':
-      setToolStatus(`Tool running: ${event.payload.displayName}`)
-      break
-    case 'tool.finished':
-      clearToolPermissionPrompt()
-      setToolStatus(`Tool ${event.payload.ok ? 'finished' : 'failed'}: ${event.payload.toolName}`)
-      break
-    case 'tool.permission.request':
-      setToolPermissionPrompt(event.payload.requestId, event.payload.reason)
-      setToolStatus(`Tool needs permission: ${event.payload.displayName}`)
-      break
-    case 'error':
-      activeAssistantMessage = undefined
-      pendingAssistantText = ''
-      clearToolPermissionPrompt()
-      appendMessage('assistant', `Error: ${event.payload.message}`)
-      setConnection('Error', false)
-      void live2dController?.applyState('error')
-      break
-  }
-}
-
-function connectAgentRuntime(): void {
-  const wsUrl = import.meta.env.VITE_AGENT_WS_URL || 'ws://127.0.0.1:8788/ws'
-  setConnection('Connecting', false)
-  socket = new WebSocket(wsUrl)
-
-  socket.addEventListener('open', () => {
-    setConnection('Connected', true)
-  })
-
-  socket.addEventListener('message', (message) => {
-    try {
-      handleServerEvent(JSON.parse(String(message.data)) as ServerRuntimeEvent)
-    }
-    catch (error) {
-      console.error(error)
-    }
-  })
-
-  socket.addEventListener('close', () => {
-    setConnection('Disconnected', false)
-    window.setTimeout(connectAgentRuntime, 1800)
-  })
-
-  socket.addEventListener('error', () => {
-    setConnection('Runtime offline', false)
-  })
 }
 
 async function bootLive2D(): Promise<void> {
@@ -817,18 +456,6 @@ async function bootLive2D(): Promise<void> {
 }
 
 function bootControls(): void {
-  providerLabel!.textContent = import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-flash'
-  if ('speechSynthesis' in window) {
-    refreshVoices()
-    window.speechSynthesis.addEventListener('voiceschanged', () => {
-      const voices = refreshVoices()
-      setVoiceStatus(voices.length ? `Voice ready: ${voices.length} voices` : 'Voice unavailable: no system voices')
-    })
-  }
-  else {
-    setVoiceStatus('Voice unavailable: speechSynthesis is not supported')
-  }
-
   if (pinButton) {
     pinButton.textContent = pinned ? 'Unpin' : 'Pin'
     pinButton.title = pinned ? 'Keep window no longer always on top' : 'Keep window always on top'
@@ -854,71 +481,6 @@ function bootControls(): void {
     void window.amadeus?.minimizeWindow()
   })
 
-  voiceButton?.addEventListener('click', () => {
-    voiceEnabled = !voiceEnabled
-    voiceButton.textContent = voiceEnabled ? 'Voice On' : 'Voice Off'
-    voiceButton.title = voiceEnabled ? 'Disable voice output' : 'Enable voice output'
-    if (!voiceEnabled) {
-      stopAllVoiceOutput()
-      setVoiceStatus('Voice off')
-    }
-    else {
-      refreshVoices()
-      setVoiceStatus('Voice on')
-    }
-  })
-
-  resetSessionButton?.addEventListener('click', () => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      appendMessage('assistant', 'Agent runtime is not connected. Cannot reset session.')
-      return
-    }
-
-    chatLog?.replaceChildren()
-    activeAssistantMessage = undefined
-    pendingAssistantText = ''
-    lastAssistantSpeechText = ''
-    stopAllVoiceOutput()
-    setToolStatus('Tools idle')
-    clearToolPermissionPrompt()
-    setMemoryStatus('Memory: resetting...')
-    sendEvent('session.reset', {})
-  })
-
-  toolAllowButton?.addEventListener('click', () => {
-    respondToToolPermission(true)
-  })
-
-  toolDenyButton?.addEventListener('click', () => {
-    respondToToolPermission(false)
-  })
-
-  chatForm?.addEventListener('submit', (event) => {
-    event.preventDefault()
-    const text = chatInput?.value.trim()
-    if (!text) {
-      return
-    }
-
-    appendMessage('user', text)
-    activeAssistantMessage = undefined
-    pendingAssistantText = ''
-    lastAssistantSpeechText = ''
-    stopAllVoiceOutput()
-
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      appendMessage('assistant', 'Agent runtime is not connected. Start apps/server and try again.')
-      chatInput!.value = ''
-      return
-    }
-
-    sendEvent('user.message', {
-      text,
-      inputMode: 'text',
-    })
-    chatInput!.value = ''
-  })
-
   debugApply?.addEventListener('click', () => {
     const state = (debugState?.value || 'idle') as AssistantState
     const expression = debugExpression?.value || 'neutral'
@@ -928,6 +490,44 @@ function bootControls(): void {
   })
 }
 
+const runtimeUi = new RuntimeUiController({
+  elements: {
+    statusElement,
+    chatForm,
+    chatInput,
+    chatLog,
+    voiceButton,
+    providerLabel,
+    connectionLabel,
+    statusDot: document.querySelector<HTMLSpanElement>('#status-dot'),
+    memoryStatus,
+    toolStatus,
+    toolConfigStatus,
+    toolPermission,
+    toolPermissionText,
+    toolAllowButton,
+    toolDenyButton,
+    voiceStatus,
+    resetSessionButton,
+  },
+  wsUrl: import.meta.env.VITE_AGENT_WS_URL || 'ws://127.0.0.1:8788/ws',
+  modelLabel: import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-flash',
+  createSocket: (url) => new WebSocket(url),
+  createAudio: (url) => new Audio(url),
+  createUtterance: (text) => new SpeechSynthesisUtterance(text),
+  randomUUID: () => crypto.randomUUID(),
+  setTimeout: (handler, timeout) => window.setTimeout(handler, timeout),
+  clearTimeout: (id) => window.clearTimeout(id),
+  speechSynthesis: 'speechSynthesis' in window ? window.speechSynthesis : undefined,
+  live2d: {
+    applyState: (state) => live2dController?.applyState(state),
+    applyBehavior: (behavior) => live2dController?.applyBehavior(behavior),
+    startMouthLoop: () => live2dController?.startMouthLoop(),
+    stopMouthLoop: () => live2dController?.stopMouthLoop(),
+  },
+})
+
 bootControls()
-connectAgentRuntime()
+runtimeUi.bindControls()
+runtimeUi.connectAgentRuntime()
 void bootLive2D()

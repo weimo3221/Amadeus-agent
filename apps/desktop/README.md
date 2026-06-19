@@ -12,3 +12,5 @@ Responsibilities:
 - local runtime connection
 
 This app should communicate with `apps/server` through the event protocol in `docs/event-protocol.md`.
+
+Runtime UI behavior is covered by `src/renderer/runtime-ui.test.ts`, which runs without launching Electron or loading Live2D assets.
