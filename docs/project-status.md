@@ -194,7 +194,7 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 - Added the first formal tool registry and tool config loader.
 - Added `allow` / `ask` / `deny` tool permissions.
 - Added inline desktop Allow / Deny prompts.
-- Extracted TypeScript tool metadata and config loading into `packages/amadeus/tools.ts`.
+- Extracted TypeScript tool metadata and config loading into `packages/amadeus/tools.ts`; this was later replaced by the Python-owned `/tools/list` bridge.
 - Added `local_file_search` as the first practical project-search tool.
 - Added `search_files` as the preferred, better-named replacement with `target: all | files | content`.
 - Added `read_file` so the agent can inspect a bounded UTF-8 workspace file after finding it.
