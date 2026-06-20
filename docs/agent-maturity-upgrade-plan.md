@@ -410,7 +410,7 @@ harnesses:
 
 任务：
 
-- 已完成第一片：`messages_fts`、`GET /memory/search`、`search_memory` 工具。
+- 已完成第一片：`messages_fts`、`GET /memory/search`、`search_memory` 工具，以及每轮自动 `<memory-context>` prefetch 注入。
 - 已完成 stable memory 第一片：`data/memory/MEMORY.md`、`data/memory/USER.md`、`read_memory`、`update_memory`。
 - 实现 context assembler：
   - system prompt。
