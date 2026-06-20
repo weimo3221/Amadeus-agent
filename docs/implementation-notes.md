@@ -32,6 +32,7 @@ The Python runtime now separates concrete tool implementations from runtime tool
 - `amadeus.tool_runtime.audit`: tool audit events plus SQLite persistence for started/finished/denied/blocked/failed decisions.
 - `amadeus.tool_runtime.guardrails`: per-turn guardrails for repeated failed calls and repeated completed calls that do not make progress.
 - `amadeus.agent`: conversation loop, permission requests, event streaming, memory writes, and coordination with the tool runtime.
+- `packages/amadeus/tools.ts`: TypeScript bridge types and Python tool HTTP clients only. It intentionally does not mirror concrete tool handlers or schemas; server diagnostics should call Python `/tools/list`.
 
 Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be richer context propagation, additional per-tool result policies for new high-volume tools, richer audit query APIs if diagnostics UI needs them, and richer semantic no-progress detection. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
 

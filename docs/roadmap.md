@@ -142,7 +142,7 @@ Target deliverables:
 - Python-owned loading for `configs/tools.yaml` as the long-term runtime source.
 - Tool timeout, cancellation, duration, preview, and audit records.
 - Guardrails for repeated failures and no-progress tool loops.
-- `/tools/list` bridge for desktop/server diagnostics.
+- `/tools/list` bridge for desktop/server diagnostics. The server now queries Python for tool permission state instead of maintaining a TypeScript mirror.
 
 Notes:
 

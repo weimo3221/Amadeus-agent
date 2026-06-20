@@ -1,7 +1,6 @@
 import {
-  applyToolConfig,
-  createDefaultToolRegistry,
-  getToolPermissionState,
+  fetchPythonToolPermissions,
+  type ToolPermissionState,
 } from '@amadeus-agent/amadeus/tools'
 
 import { forwardToolPermissionToPython, relayPythonTurn } from './bridge.js'
@@ -27,14 +26,22 @@ const pythonRuntimeUrl = process.env.AMADEUS_PYTHON_RUNTIME_URL || process.env.A
 const defaultSessionId = 'default'
 const dataDir = resolve(rootDir, 'data')
 const databasePath = resolve(dataDir, 'amadeus.sqlite')
-const toolsConfigPath = resolve(rootDir, 'configs/tools.yaml')
-
 const pendingToolPermissions = new Map<string, (approved: boolean) => void>()
 
-const toolRegistry = createDefaultToolRegistry({
-  pythonBackend: pythonRuntimeUrl ? { baseUrl: pythonRuntimeUrl } : undefined,
-})
-applyToolConfig(toolRegistry, toolsConfigPath)
+const pythonToolsUnavailable: ToolPermissionState[] = [{
+  name: 'python_runtime_unavailable',
+  displayName: 'Python tools unavailable',
+  enabled: false,
+  permission: 'deny',
+}]
+
+async function getPythonToolPermissions(): Promise<ToolPermissionState[]> {
+  const permissions = await fetchPythonToolPermissions({
+    baseUrl: pythonRuntimeUrl,
+    timeoutMs: 1500,
+  })
+  return permissions ?? pythonToolsUnavailable
+}
 
 if (!existsSync(dataDir)) {
   mkdirSync(dataDir, { recursive: true })
@@ -90,7 +97,7 @@ const { httpServer } = createAmadeusBridgeServer({
   model,
   defaultSessionId,
   countPersistedMessages,
-  getToolPermissions: () => getToolPermissionState(toolRegistry),
+  getToolPermissions: getPythonToolPermissions,
   resetSession(sessionId) {
     deleteMessages.run(sessionId)
   },

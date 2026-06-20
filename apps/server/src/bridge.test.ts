@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { fetchPythonToolPermissions } from '@amadeus-agent/amadeus/tools'
+
 import { forwardToolPermissionToPython, relayPythonTurn, type SocketLike } from './bridge.js'
 
 function streamResponse(chunks: string[], status = 200): Response {
@@ -149,5 +151,61 @@ describe('Python tool permission forwarding', () => {
       runtimeUrl: 'http://runtime',
       fetchImpl,
     }))
+  })
+})
+
+describe('Python tool list bridge', () => {
+  it('reads tool permissions from Python /tools/list', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return new Response(JSON.stringify({
+        ok: true,
+        tools: [
+          { name: 'read_file', displayName: 'Reading local file', enabled: true, permission: 'ask' },
+        ],
+        schemas: [
+          {
+            type: 'function',
+            function: {
+              name: 'read_file',
+              description: 'Read a file',
+              parameters: { type: 'object' },
+            },
+          },
+        ],
+      }), { status: 200 })
+    }
+
+    const permissions = await fetchPythonToolPermissions({
+      baseUrl: 'http://127.0.0.1:8790/',
+      fetchImpl,
+    })
+
+    assert.equal(calls[0].url, 'http://127.0.0.1:8790/tools/list')
+    assert.equal(calls[0].init?.method, 'GET')
+    assert.deepEqual(permissions, [
+      { name: 'read_file', displayName: 'Reading local file', enabled: true, permission: 'ask' },
+    ])
+  })
+
+  it('returns undefined when Python tool list is unavailable or malformed', async () => {
+    const failingFetch: typeof fetch = async () => {
+      throw new Error('offline')
+    }
+    const malformedFetch: typeof fetch = async () => new Response(JSON.stringify({
+      ok: true,
+      tools: [{ name: 'bad' }],
+      schemas: [],
+    }), { status: 200 })
+
+    assert.equal(await fetchPythonToolPermissions({
+      baseUrl: 'http://runtime',
+      fetchImpl: failingFetch,
+    }), undefined)
+    assert.equal(await fetchPythonToolPermissions({
+      baseUrl: 'http://runtime',
+      fetchImpl: malformedFetch,
+    }), undefined)
   })
 })

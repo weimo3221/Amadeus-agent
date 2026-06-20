@@ -95,9 +95,9 @@ http://127.0.0.1:8790
 ## Current HTTP API
 
 - `GET /health`
-- `GET /tools/list`
+- `GET /tools/list`：Python-owned source for effective tool permission state and enabled schemas.
 - `POST /agent/turn`
-- `POST /tools/execute`
+- `POST /tools/execute`：compatibility execution endpoint for direct tool diagnostics; normal turns execute tools inside Python `AgentRuntime`.
 - `POST /tools/permission`
 - `GET /memory/count?sessionId=default`
 - `GET /memory/messages?sessionId=default&limit=40`

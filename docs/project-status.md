@@ -55,8 +55,8 @@ Fallback path today:
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
-- Desktop diagnostics show the loaded tool permission state from the server.
-- Tool definitions, schemas, registry creation, and config loading still exist in `packages/amadeus/tools.ts` for bridge diagnostics and development scaffolding.
+- Desktop diagnostics show the Python runtime tool permission state through the server bridge.
+- `packages/amadeus/tools.ts` now only keeps TypeScript tool types plus Python `/tools/list` and `/tools/execute` bridge helpers; it no longer mirrors the concrete tool registry or local tool handlers.
 - Python `/agent/turn` is wired as the preferred turn path.
 - Python now owns the preferred model/tool/memory/behavior path for a turn:
   - loads OpenAI-compatible provider config from environment or `.env`
@@ -86,6 +86,7 @@ Fallback path today:
   - `/agent/turn` streams missing API key failures as desktop-compatible NDJSON events
 - TypeScript bridge tests now cover the Python-first relay boundary.
   - `/agent/turn` NDJSON events are relayed to the desktop socket
+  - `/tools/list` tool permissions are read from the Python runtime for server diagnostics
   - Python runtime connection failures return `false` from the relay so the caller can decide whether to report an error or use the explicit fallback
   - malformed Python events emit desktop-compatible `error` events without dropping later valid events
   - unresolved permission responses are forwarded to Python `/tools/permission`
@@ -259,11 +260,12 @@ What is already done:
 - Python reads/writes SQLite message memory for the preferred path.
 - Python owns tool decision and Python tool execution for the preferred path.
 - Python permission brokering is wired through `tool.permission.request` and `/tools/permission`.
+- Server tool diagnostics now query Python `/tools/list`; when Python is unavailable, the desktop gets an explicit disabled `python_runtime_unavailable` tool status instead of a stale TS mirror.
 - `npm test` covers deterministic Python runtime behavior, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, and desktop renderer runtime UI behavior.
 
 What is not done yet:
 
-- `apps/server` no longer contains the legacy TypeScript fallback loop.
+- `apps/server` no longer contains the legacy TypeScript fallback loop or local TypeScript tool registry mirror.
 - Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and an Electron startup smoke. Full Live2D/interaction end-to-end coverage is still missing.
 - The active provider code still lives inline in `packages/amadeus/agent.py`; `model.py` is still a future abstraction boundary.
 - `skills.py` and `live2d.py` are still placeholder boundaries rather than mature runtime modules.

@@ -8,13 +8,13 @@ import type {
 
 import { randomUUID } from 'node:crypto'
 import { createServer, type Server as HttpServer } from 'node:http'
-import { WebSocketServer, type WebSocket } from 'ws'
+import { WebSocket, WebSocketServer } from 'ws'
 
 export interface AmadeusBridgeServerOptions {
   model: string
   defaultSessionId: string
   countPersistedMessages(sessionId: string): number
-  getToolPermissions(): ToolPermissionState[]
+  getToolPermissions(): ToolPermissionState[] | Promise<ToolPermissionState[]>
   resetSession(sessionId: string): void
   resolvePendingToolPermission(requestId: string, approved: boolean): boolean
   forwardToolPermissionToPython(requestId: string, approved: boolean): void | Promise<void>
@@ -53,6 +53,25 @@ function sendState(socket: WebSocket, sessionId: string, state: AssistantState):
   send(socket, 'assistant.state', sessionId, { state })
 }
 
+async function sendHello(
+  socket: WebSocket,
+  sessionId: string,
+  options: AmadeusBridgeServerOptions,
+  memoryMessages: number,
+): Promise<void> {
+  const toolPermissions = await Promise.resolve(options.getToolPermissions()).catch(() => [])
+  if (socket.readyState !== WebSocket.OPEN) {
+    return
+  }
+
+  send(socket, 'server.hello', sessionId, {
+    name: 'amadeus-agent-server',
+    model: options.model,
+    memoryMessages,
+    toolPermissions,
+  })
+}
+
 function parseEvent(raw: Buffer): ClientRuntimeEvent | undefined {
   try {
     const data = JSON.parse(raw.toString()) as ClientRuntimeEvent
@@ -82,13 +101,8 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
 
   wss.on('connection', (socket) => {
     const sessionId = options.defaultSessionId
-    send(socket, 'server.hello', sessionId, {
-      name: 'amadeus-agent-server',
-      model: options.model,
-      memoryMessages: options.countPersistedMessages(sessionId),
-      toolPermissions: options.getToolPermissions(),
-    })
-    sendState(socket, sessionId, 'idle')
+    void sendHello(socket, sessionId, options, options.countPersistedMessages(sessionId))
+      .then(() => sendState(socket, sessionId, 'idle'))
 
     socket.on('message', (raw) => {
       const event = parseEvent(raw as Buffer)
@@ -102,13 +116,8 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
 
       if (event.type === 'session.reset') {
         options.resetSession(event.sessionId)
-        send(socket, 'server.hello', event.sessionId, {
-          name: 'amadeus-agent-server',
-          model: options.model,
-          memoryMessages: 0,
-          toolPermissions: options.getToolPermissions(),
-        })
-        sendState(socket, event.sessionId, 'idle')
+        void sendHello(socket, event.sessionId, options, 0)
+          .then(() => sendState(socket, event.sessionId, 'idle'))
         return
       }
 

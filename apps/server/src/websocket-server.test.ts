@@ -78,6 +78,44 @@ function closeWebSocket(socket: WebSocket): void {
 }
 
 describe('WebSocket Python-first integration', () => {
+  it('sends server.hello with async Python tool permissions', async (t) => {
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      countPersistedMessages: () => 3,
+      async getToolPermissions() {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        return [
+          { name: 'write_file', displayName: 'Writing local file', enabled: true, permission: 'ask' },
+        ]
+      },
+      resetSession: () => {},
+      resolvePendingToolPermission: () => false,
+      forwardToolPermissionToPython: () => {},
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws`)
+    t.after(() => {
+      closeWebSocket(socket)
+    })
+
+    const hello = await waitForEvent(socket, (event) => event.type === 'server.hello')
+    assert.deepEqual(hello.payload, {
+      name: 'amadeus-agent-server',
+      model: 'test-model',
+      memoryMessages: 3,
+      toolPermissions: [
+        { name: 'write_file', displayName: 'Writing local file', enabled: true, permission: 'ask' },
+      ],
+    })
+  })
+
   it('relays desktop user messages through Python /agent/turn and returns runtime events', async (t) => {
     let receivedTurnBody: Record<string, unknown> | undefined
     const pythonRuntime = createServer(async (request: IncomingMessage, response: ServerResponse) => {
