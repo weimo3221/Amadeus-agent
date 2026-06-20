@@ -158,6 +158,19 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("recent uncovered detail", serialized)
         self.assertNotIn("covered old task", serialized)
 
+    def test_history_includes_structured_memory_items(self) -> None:
+        self.memory.save_memory_item("user", "The user prefers direct answers.", confidence=0.95)
+        self.memory.save_memory_item("project", "Amadeus uses Python-first runtime.", confidence=0.9)
+        runtime = FakeAgentRuntime(self.memory)
+
+        list(runtime.run_turn("default", "continue", lambda _request: False))
+        system_content = runtime.decision_messages[-1][0]["content"]
+
+        self.assertIn("<memory-items>", system_content)
+        self.assertIn("direct answers", system_content)
+        self.assertIn("Python-first runtime", system_content)
+        self.assertIn("Current user message has priority", system_content)
+
     def test_turn_compacts_old_messages_after_threshold(self) -> None:
         for index in range(4):
             self.memory.save("default", "user" if index % 2 == 0 else "assistant", f"old message {index}")

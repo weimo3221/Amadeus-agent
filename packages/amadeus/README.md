@@ -57,6 +57,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Stable memory is stored as auditable Markdown files under `data/memory/MEMORY.md` and `data/memory/USER.md`, then injected into the frozen system prompt at runtime startup.
 - Each turn prefetches up to three relevant prior session messages and injects them into the API-only current user message as a sanitized `<memory-context>` block; the block is not persisted.
 - Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`, injected as reference-only context, and refreshed by threshold-based compaction or manual `POST /memory/compact`.
+- Structured `memory_items` store durable `user` / `agent` / `project` facts in SQLite, expose explicit add/list/delete APIs, and inject a small active set into model context as reference-only `<memory-items>`.
 - `search_memory` has a per-tool model-output policy that keeps match metadata while limiting model-context result count and snippet length.
 - `search_files` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.
 - `read_file` does not use hidden runtime compression. It returns a caller-controlled `startLine` / `lineLimit` text window with line numbers, `totalLines`, and `hasMore` so the model can continue reading explicitly. Non-text files are identified as `image`, `pdf`, `binary`, or `unknown` and return an unsupported response with a next-tool hint.
@@ -110,8 +111,11 @@ http://127.0.0.1:8790
 - `GET /memory/count?sessionId=default`
 - `GET /memory/messages?sessionId=default&limit=40`
 - `GET /memory/search?sessionId=default&query=hello&limit=10`
+- `GET /memory/items?scope=user&query=preference&limit=20`
 - `GET /memory/summary?sessionId=default`
 - `POST /memory/messages`
+- `POST /memory/items`
+- `POST /memory/items/delete`
 - `POST /memory/summary`
 - `POST /memory/compact`
 - `POST /memory/reset`

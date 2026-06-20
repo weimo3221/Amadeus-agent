@@ -8,7 +8,9 @@ from typing import Literal
 
 MessageRole = Literal["user", "assistant"]
 StableMemoryTarget = Literal["agent", "user"]
+MemoryItemScope = Literal["user", "agent", "project"]
 CONVERSATION_SUMMARY_LIMIT = 12000
+MEMORY_ITEM_LIMIT = 2000
 STABLE_MEMORY_FILES: dict[str, str] = {
     "agent": "MEMORY.md",
     "user": "USER.md",
@@ -59,6 +61,19 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_updated
                   ON conversation_summaries(session_id, updated_at);
+                  CREATE TABLE IF NOT EXISTS memory_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope TEXT NOT NULL CHECK (scope IN ('user', 'agent', 'project')),
+                    content TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    source_session_id TEXT,
+                    source_message_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_memory_items_scope_updated
+                  ON memory_items(scope, deleted_at, updated_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -420,6 +435,123 @@ class MessageMemoryStore:
             "updatedAt": str(row[10]),
         }
 
+    def save_memory_item(
+        self,
+        scope: str,
+        content: str,
+        *,
+        confidence: float = 1.0,
+        source_session_id: str | None = None,
+        source_message_id: int | None = None,
+    ) -> dict[str, str | int | float | bool]:
+        normalized_scope = normalize_memory_item_scope(scope)
+        normalized_content = normalize_memory_item_content(content)
+        normalized_confidence = normalize_confidence(confidence)
+        normalized_source_session_id = normalize_optional_text(source_session_id, "source_session_id", max_chars=200)
+        normalized_source_message_id = normalize_optional_non_negative_int(source_message_id, "source_message_id")
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO memory_items (
+                  scope,
+                  content,
+                  confidence,
+                  source_session_id,
+                  source_message_id,
+                  created_at,
+                  updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_scope,
+                    normalized_content,
+                    normalized_confidence,
+                    normalized_source_session_id,
+                    normalized_source_message_id,
+                    now,
+                    now,
+                ),
+            )
+            item_id = cursor.lastrowid
+
+        return {
+            "memoryItemId": int(item_id),
+            "scope": normalized_scope,
+            "content": normalized_content,
+            "charCount": len(normalized_content),
+            "confidence": normalized_confidence,
+            "sourceSessionId": normalized_source_session_id or "",
+            "sourceMessageId": normalized_source_message_id or 0,
+            "createdAt": now,
+            "updatedAt": now,
+            "deleted": False,
+        }
+
+    def list_memory_items(
+        self,
+        *,
+        scope: str | None = None,
+        query: str | None = None,
+        include_deleted: bool = False,
+        limit: int = 20,
+    ) -> list[dict[str, str | int | float | bool]]:
+        normalized_scope = normalize_memory_item_scope(scope) if scope else None
+        normalized_query = query.strip() if isinstance(query, str) else ""
+        bounded_limit = max(1, min(100, int(limit)))
+        where = "1 = 1"
+        params: list[object] = []
+        if normalized_scope:
+            where += " AND scope = ?"
+            params.append(normalized_scope)
+        if normalized_query:
+            where += " AND content LIKE ?"
+            params.append(f"%{normalized_query}%")
+        if not include_deleted:
+            where += " AND deleted_at IS NULL"
+        params.append(bounded_limit)
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                  id,
+                  scope,
+                  content,
+                  confidence,
+                  source_session_id,
+                  source_message_id,
+                  created_at,
+                  updated_at,
+                  deleted_at
+                FROM memory_items
+                WHERE {where}
+                ORDER BY confidence DESC, updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        return [memory_item_response(row) for row in rows]
+
+    def delete_memory_item(self, memory_item_id: int) -> bool:
+        normalized_id = int(memory_item_id)
+        if normalized_id <= 0:
+            raise ValueError("memory_item_id must be positive")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE memory_items
+                SET deleted_at = ?, updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (now, now, normalized_id),
+            )
+        return cursor.rowcount > 0
+
     def reset(self, session_id: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -517,6 +649,13 @@ def normalize_stable_memory_target(target: str) -> StableMemoryTarget:
     raise ValueError("target must be agent or user")
 
 
+def normalize_memory_item_scope(scope: str) -> MemoryItemScope:
+    normalized = scope.strip().lower() if isinstance(scope, str) else ""
+    if normalized in {"user", "agent", "project"}:
+        return normalized  # type: ignore[return-value]
+    raise ValueError("scope must be user, agent, or project")
+
+
 def normalize_session_id(session_id: str) -> str:
     normalized = session_id.strip() if isinstance(session_id, str) else ""
     if not normalized:
@@ -536,6 +675,24 @@ def normalize_conversation_summary(content: str) -> str:
         raise ValueError("content must be UTF-8 text")
     if len(normalized) > CONVERSATION_SUMMARY_LIMIT:
         raise ValueError(f"content must be at most {CONVERSATION_SUMMARY_LIMIT} characters")
+    return normalized
+
+
+def normalize_memory_item_content(content: str) -> str:
+    normalized = content.strip() if isinstance(content, str) else ""
+    if not normalized:
+        raise ValueError("content is required")
+    if "\x00" in normalized:
+        raise ValueError("content must be UTF-8 text")
+    if len(normalized) > MEMORY_ITEM_LIMIT:
+        raise ValueError(f"content must be at most {MEMORY_ITEM_LIMIT} characters")
+    return normalized
+
+
+def normalize_confidence(confidence: float) -> float:
+    normalized = float(confidence)
+    if normalized < 0 or normalized > 1:
+        raise ValueError("confidence must be between 0 and 1")
     return normalized
 
 
@@ -559,6 +716,24 @@ def normalize_optional_text(value: str | None, field_name: str, max_chars: int) 
     if len(normalized) > max_chars:
         raise ValueError(f"{field_name} must be at most {max_chars} characters")
     return normalized
+
+
+def memory_item_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | float | bool]:
+    deleted_at = row[8]
+    content = str(row[2])
+    return {
+        "memoryItemId": int(row[0]),
+        "scope": str(row[1]),
+        "content": content,
+        "charCount": len(content),
+        "confidence": float(row[3]),
+        "sourceSessionId": str(row[4]) if row[4] is not None else "",
+        "sourceMessageId": int(row[5]) if row[5] is not None else 0,
+        "createdAt": str(row[6]),
+        "updatedAt": str(row[7]),
+        "deleted": deleted_at is not None,
+        "deletedAt": str(deleted_at) if deleted_at is not None else "",
+    }
 
 
 def ensure_stable_memory_file(path: Path, target: str) -> None:

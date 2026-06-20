@@ -130,6 +130,31 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["sessionId"], "http-test")
         self.assertIn("blue", payload["results"][0]["content"])
 
+    def test_memory_items_roundtrip_and_delete_over_http(self) -> None:
+        saved = self.post_json("/memory/items", {
+            "scope": "user",
+            "content": "The user prefers short updates.",
+            "confidence": 0.75,
+            "sourceSessionId": "http-test",
+            "sourceMessageId": 3,
+        })
+        listed = self.get_json("/memory/items?scope=user&query=short&limit=10")
+        deleted = self.post_json("/memory/items/delete", {
+            "memoryItemId": saved["item"]["memoryItemId"],
+        })
+        listed_after_delete = self.get_json("/memory/items?scope=user")
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["item"]["scope"], "user")
+        self.assertEqual(saved["item"]["confidence"], 0.75)
+        self.assertEqual(saved["item"]["sourceSessionId"], "http-test")
+        self.assertTrue(listed["ok"])
+        self.assertEqual(len(listed["items"]), 1)
+        self.assertEqual(listed["items"][0]["content"], "The user prefers short updates.")
+        self.assertTrue(deleted["ok"])
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(listed_after_delete["items"], [])
+
     def test_memory_summary_roundtrip_over_http(self) -> None:
         runtime_server.memory_store.save("http-test", "user", "Long setup")
 

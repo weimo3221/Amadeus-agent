@@ -120,6 +120,37 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, "messages": memory_store.load(session_id, limit)})
             return
 
+        if parsed.path == "/memory/items":
+            query = parse_qs(parsed.query)
+            scope = optional_query_string(query, "scope")
+            search_query = optional_query_string(query, "query")
+            include_deleted = parse_optional_bool(optional_query_string(query, "includeDeleted")) or False
+            limit = parse_int(query.get("limit", ["20"])[0], 20, 1, 100)
+            items = memory_store.list_memory_items(
+                scope=scope,
+                query=search_query,
+                include_deleted=include_deleted,
+                limit=limit,
+            )
+            logger.info(
+                "Handling memory items list scope=%s queryChars=%s includeDeleted=%s count=%s",
+                scope,
+                len(search_query or ""),
+                include_deleted,
+                len(items),
+            )
+            self.write_json(200, {
+                "ok": True,
+                "items": items,
+                "filters": {
+                    "scope": scope,
+                    "query": search_query,
+                    "includeDeleted": include_deleted,
+                    "limit": limit,
+                },
+            })
+            return
+
         if parsed.path == "/memory/summary":
             query = parse_qs(parsed.query)
             session_id = query.get("sessionId", ["default"])[0]
@@ -169,6 +200,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/memory/messages":
             self.handle_memory_save()
+            return
+
+        if self.path == "/memory/items":
+            self.handle_memory_item_save()
+            return
+
+        if self.path == "/memory/items/delete":
+            self.handle_memory_item_delete()
             return
 
         if self.path == "/memory/summary":
@@ -315,6 +354,60 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
             memory_store.save(session_id, role, content)
             self.write_json(200, {"ok": True, "memoryMessages": memory_store.count(session_id)})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_item_save(self) -> None:
+        try:
+            body = self.read_json_body()
+            scope = body.get("scope")
+            content = body.get("content")
+            confidence = body.get("confidence", 1.0)
+            source_session_id = body.get("sourceSessionId")
+            source_message_id = body.get("sourceMessageId")
+
+            if not isinstance(scope, str) or not isinstance(content, str):
+                self.write_json(400, {"ok": False, "error": "scope and content must be strings"})
+                return
+            if not isinstance(confidence, (int, float)):
+                self.write_json(400, {"ok": False, "error": "confidence must be a number"})
+                return
+            if source_session_id is not None and not isinstance(source_session_id, str):
+                self.write_json(400, {"ok": False, "error": "sourceSessionId must be a string"})
+                return
+            if source_message_id is not None and not isinstance(source_message_id, int):
+                self.write_json(400, {"ok": False, "error": "sourceMessageId must be an integer"})
+                return
+
+            item = memory_store.save_memory_item(
+                scope,
+                content,
+                confidence=float(confidence),
+                source_session_id=source_session_id,
+                source_message_id=source_message_id,
+            )
+            logger.info(
+                "Saved memory item itemId=%s scope=%s confidence=%s contentChars=%s",
+                item["memoryItemId"],
+                item["scope"],
+                item["confidence"],
+                item["charCount"],
+            )
+            self.write_json(200, {"ok": True, "item": item})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_item_delete(self) -> None:
+        try:
+            body = self.read_json_body()
+            memory_item_id = body.get("memoryItemId")
+            if not isinstance(memory_item_id, int):
+                self.write_json(400, {"ok": False, "error": "memoryItemId must be an integer"})
+                return
+
+            deleted = memory_store.delete_memory_item(memory_item_id)
+            logger.info("Deleted memory item itemId=%s deleted=%s", memory_item_id, deleted)
+            self.write_json(200, {"ok": True, "deleted": deleted, "memoryItemId": memory_item_id})
         except Exception as error:
             self.write_json(500, {"ok": False, "error": str(error)})
 

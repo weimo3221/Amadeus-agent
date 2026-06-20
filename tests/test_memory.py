@@ -86,6 +86,45 @@ class MessageMemoryStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 memory.save_conversation_summary("session-1", "  ")
 
+    def test_memory_items_can_be_saved_listed_and_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            user_item = memory.save_memory_item(
+                "user",
+                "The user prefers concise Chinese updates.",
+                confidence=0.9,
+                source_session_id="session-1",
+                source_message_id=12,
+            )
+            memory.save_memory_item("project", "The project uses Python-first runtime.", confidence=0.8)
+
+            user_items = memory.list_memory_items(scope="user")
+            queried_items = memory.list_memory_items(query="Python-first")
+            deleted = memory.delete_memory_item(int(user_item["memoryItemId"]))
+            active_items = memory.list_memory_items(scope="user")
+            deleted_items = memory.list_memory_items(scope="user", include_deleted=True)
+
+        self.assertEqual(len(user_items), 1)
+        self.assertEqual(user_items[0]["content"], "The user prefers concise Chinese updates.")
+        self.assertEqual(user_items[0]["confidence"], 0.9)
+        self.assertEqual(user_items[0]["sourceSessionId"], "session-1")
+        self.assertEqual(user_items[0]["sourceMessageId"], 12)
+        self.assertEqual(len(queried_items), 1)
+        self.assertEqual(queried_items[0]["scope"], "project")
+        self.assertTrue(deleted)
+        self.assertEqual(active_items, [])
+        self.assertEqual(len(deleted_items), 1)
+        self.assertTrue(deleted_items[0]["deleted"])
+
+    def test_memory_items_validate_scope_and_confidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+
+            with self.assertRaises(ValueError):
+                memory.save_memory_item("invalid", "fact")
+            with self.assertRaises(ValueError):
+                memory.save_memory_item("user", "fact", confidence=1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

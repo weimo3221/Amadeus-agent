@@ -263,8 +263,11 @@ POST /tools/execute
 POST /tools/permission
 GET /memory/count
 GET /memory/messages
+GET /memory/items
 GET /memory/summary
 POST /memory/messages
+POST /memory/items
+POST /memory/items/delete
 POST /memory/summary
 POST /memory/compact
 POST /memory/reset
