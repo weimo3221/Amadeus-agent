@@ -31,6 +31,14 @@ tools:
     enabled: true
     permission: ask
 
+  memory_replace:
+    enabled: true
+    permission: ask
+
+  memory_forget:
+    enabled: true
+    permission: ask
+
   local_file_search:
     enabled: false
     permission: ask

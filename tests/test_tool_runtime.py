@@ -52,6 +52,16 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["memory_add"]["permission"], "ask")
         self.assertIn("memory_add", schema_names)
 
+        self.assertIn("memory_replace", list_tools())
+        self.assertIn("memory_replace", tool_state)
+        self.assertEqual(tool_state["memory_replace"]["permission"], "ask")
+        self.assertIn("memory_replace", schema_names)
+
+        self.assertIn("memory_forget", list_tools())
+        self.assertIn("memory_forget", tool_state)
+        self.assertEqual(tool_state["memory_forget"]["permission"], "ask")
+        self.assertIn("memory_forget", schema_names)
+
         self.assertIn("local_file_search", list_tools())
         self.assertIn("local_file_search", tool_state)
         self.assertFalse(tool_state["local_file_search"]["enabled"])
@@ -609,6 +619,62 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertIn("remember this user fact", request)
         self.assertIn("direct answers", request)
+
+    def test_memory_replace_and_forget_mutate_structured_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            item = memory.save_memory_item("project", "Old project fact.", confidence=0.6)
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            context = ToolContext(session_id="session-1", memory_store=memory)
+
+            replaced = registry.execute(
+                "memory_replace",
+                {
+                    "memoryItemId": item["memoryItemId"],
+                    "scope": "agent",
+                    "content": "Corrected durable agent fact.",
+                    "confidence": 0.95,
+                },
+                context,
+            )
+            forgotten = registry.execute(
+                "memory_forget",
+                {"memoryItemId": item["memoryItemId"]},
+                context,
+            )
+            active_items = memory.list_memory_items()
+
+        self.assertTrue(replaced.ok)
+        self.assertTrue(replaced.output["replaced"])
+        self.assertEqual(replaced.output["item"]["scope"], "agent")
+        self.assertEqual(replaced.output["item"]["content"], "Corrected durable agent fact.")
+        self.assertEqual(replaced.output["item"]["confidence"], 0.95)
+        self.assertTrue(forgotten.ok)
+        self.assertTrue(forgotten.output["forgotten"])
+        self.assertEqual(active_items, [])
+
+    def test_memory_mutation_permission_requests_describe_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            replace_spec = registry.get("memory_replace")
+            forget_spec = registry.get("memory_forget")
+
+        self.assertIsNotNone(replace_spec)
+        self.assertIsNotNone(forget_spec)
+        assert replace_spec is not None
+        assert forget_spec is not None
+
+        replace_request = replace_spec.describe_request({
+            "memoryItemId": 7,
+            "content": "The corrected fact.",
+        })
+        forget_request = forget_spec.describe_request({"memoryItemId": 7})
+
+        self.assertIn("replace structured memory item 7", replace_request)
+        self.assertIn("The corrected fact", replace_request)
+        self.assertIn("forget structured memory item 7", forget_request)
 
     def test_execute_applies_search_memory_result_policy(self) -> None:
         output = {

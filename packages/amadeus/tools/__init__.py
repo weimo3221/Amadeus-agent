@@ -9,7 +9,16 @@ from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
 from amadeus.tools.search_memory import SEARCH_MEMORY_TOOL_SPEC, search_memory
 from amadeus.tools.stable_memory import READ_MEMORY_TOOL_SPEC, UPDATE_MEMORY_TOOL_SPEC, read_memory, update_memory
-from amadeus.tools.structured_memory import MEMORY_ADD_TOOL_SPEC, SEARCH_MEMORY_ITEMS_TOOL_SPEC, memory_add, search_memory_items
+from amadeus.tools.structured_memory import (
+    MEMORY_ADD_TOOL_SPEC,
+    MEMORY_FORGET_TOOL_SPEC,
+    MEMORY_REPLACE_TOOL_SPEC,
+    SEARCH_MEMORY_ITEMS_TOOL_SPEC,
+    memory_add,
+    memory_forget,
+    memory_replace,
+    search_memory_items,
+)
 from amadeus.tools.time import TIME_TOOL_SPEC, get_current_time
 from amadeus.tools.write_file import WRITE_FILE_TOOL_SPEC, write_file
 
@@ -27,6 +36,8 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         UPDATE_MEMORY_TOOL_SPEC,
         SEARCH_MEMORY_ITEMS_TOOL_SPEC,
         MEMORY_ADD_TOOL_SPEC,
+        MEMORY_REPLACE_TOOL_SPEC,
+        MEMORY_FORGET_TOOL_SPEC,
         PATCH_TOOL_SPEC,
         WRITE_FILE_TOOL_SPEC,
     )
@@ -68,6 +79,8 @@ __all__ = [
     "list_tools",
     "local_file_search",
     "memory_add",
+    "memory_forget",
+    "memory_replace",
     "normalize_positive_int",
     "patch",
     "read_file",

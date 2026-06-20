@@ -570,6 +570,63 @@ class MessageMemoryStore:
             )
         return cursor.rowcount > 0
 
+    def replace_memory_item(
+        self,
+        memory_item_id: int,
+        content: str,
+        *,
+        scope: str | None = None,
+        confidence: float | None = None,
+    ) -> dict[str, str | int | float | bool] | None:
+        normalized_id = int(memory_item_id)
+        if normalized_id <= 0:
+            raise ValueError("memory_item_id must be positive")
+        normalized_content = normalize_memory_item_content(content)
+        normalized_scope = normalize_memory_item_scope(scope) if scope else None
+        normalized_confidence = normalize_confidence(confidence) if confidence is not None else None
+        now = datetime.now(timezone.utc).isoformat()
+
+        assignments = ["content = ?", "updated_at = ?"]
+        params: list[object] = [normalized_content, now]
+        if normalized_scope:
+            assignments.append("scope = ?")
+            params.append(normalized_scope)
+        if normalized_confidence is not None:
+            assignments.append("confidence = ?")
+            params.append(normalized_confidence)
+        params.append(normalized_id)
+
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE memory_items
+                SET {", ".join(assignments)}
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                params,
+            )
+            if cursor.rowcount <= 0:
+                return None
+            row = connection.execute(
+                """
+                SELECT
+                  id,
+                  scope,
+                  content,
+                  confidence,
+                  source_session_id,
+                  source_message_id,
+                  created_at,
+                  updated_at,
+                  deleted_at
+                FROM memory_items
+                WHERE id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+
+        return memory_item_response(row)
+
     def save_memory_review_candidate(
         self,
         session_id: str,
@@ -593,6 +650,34 @@ class MessageMemoryStore:
 
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
+            rejected = connection.execute(
+                """
+                SELECT
+                  id,
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  memory_item_id,
+                  created_at,
+                  updated_at
+                FROM memory_review_candidates
+                WHERE session_id = ? AND scope = ? AND content = ? AND status = 'rejected'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_session_id, normalized_scope, normalized_content),
+            ).fetchone()
+            if rejected:
+                response = memory_review_candidate_response(rejected)
+                response["duplicate"] = True
+                response["suppressed"] = True
+                return response
+
             existing = connection.execute(
                 """
                 SELECT

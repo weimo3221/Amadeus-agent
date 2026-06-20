@@ -264,6 +264,48 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("review failed", result["error"])
         self.assertEqual(self.memory.list_memory_review_candidates(session_id="default"), [])
 
+    def test_run_turn_auto_reviews_memory_after_response(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            memory_review_response=[
+                {
+                    "scope": "project",
+                    "content": "The project keeps memory review candidates pending for human approval.",
+                    "confidence": 0.9,
+                    "reason": "The conversation states human approval is required.",
+                    "sourceMessageStartId": 1,
+                    "sourceMessageEndId": 2,
+                }
+            ],
+        )
+        runtime.memory_review_trigger_message_count = 1
+
+        events = list(runtime.run_turn("default", "Memory writes need review.", lambda request: False))
+        event_types = [event.type for event in events]
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+
+        self.assertIn("assistant.message", event_types)
+        self.assertIn("memory.review.updated", event_types)
+        self.assertEqual(len(runtime.memory_review_requests), 1)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["content"], "The project keeps memory review candidates pending for human approval.")
+        self.assertEqual(self.memory.list_memory_items(scope="project"), [])
+
+    def test_auto_memory_review_uses_success_cooldown(self) -> None:
+        for index in range(2):
+            self.memory.save("default", "user", f"message {index}")
+        runtime = FakeAgentRuntime(self.memory)
+        runtime.memory_review_trigger_message_count = 1
+        runtime.memory_review_success_cooldown_seconds = 60
+
+        first = runtime.review_memory("default", force=False)
+        second = runtime.review_memory("default", force=False)
+
+        self.assertTrue(first["reviewed"])
+        self.assertFalse(second["reviewed"])
+        self.assertEqual(second["reason"], "cooldown")
+        self.assertEqual(len(runtime.memory_review_requests), 1)
+
     def test_summary_failure_sets_auto_cooldown(self) -> None:
         for index in range(4):
             self.memory.save("default", "user", f"message {index}")

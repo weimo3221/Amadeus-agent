@@ -69,6 +69,48 @@ def search_memory_items(args: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"error": str(error)}
 
 
+def memory_replace(args: dict[str, Any], context: Any) -> dict[str, Any]:
+    memory_store = getattr(context, "memory_store", None)
+    if memory_store is None:
+        return {"error": "memory store is not available"}
+
+    memory_item_id = args.get("memoryItemId")
+    content = args.get("content").strip() if isinstance(args.get("content"), str) else ""
+    scope = args.get("scope").strip() if isinstance(args.get("scope"), str) and args.get("scope").strip() else None
+    confidence = args.get("confidence")
+    if not isinstance(memory_item_id, int):
+        return {"error": "memoryItemId must be an integer"}
+
+    try:
+        item = memory_store.replace_memory_item(
+            memory_item_id,
+            content,
+            scope=scope,
+            confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
+        )
+        if item is None:
+            return {"replaced": False, "memoryItemId": memory_item_id, "error": "active memory item not found"}
+        return {"replaced": True, "item": item}
+    except ValueError as error:
+        return {"error": str(error)}
+
+
+def memory_forget(args: dict[str, Any], context: Any) -> dict[str, Any]:
+    memory_store = getattr(context, "memory_store", None)
+    if memory_store is None:
+        return {"error": "memory store is not available"}
+
+    memory_item_id = args.get("memoryItemId")
+    if not isinstance(memory_item_id, int):
+        return {"error": "memoryItemId must be an integer"}
+
+    try:
+        forgotten = memory_store.delete_memory_item(memory_item_id)
+        return {"forgotten": forgotten, "memoryItemId": memory_item_id}
+    except ValueError as error:
+        return {"error": str(error)}
+
+
 MEMORY_ADD_TOOL_SPEC = ToolSpec(
     name="memory_add",
     display_name="Adding structured memory",
@@ -106,6 +148,73 @@ MEMORY_ADD_TOOL_SPEC = ToolSpec(
                     },
                 },
                 "required": ["scope", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+)
+
+
+MEMORY_REPLACE_TOOL_SPEC = ToolSpec(
+    name="memory_replace",
+    display_name="Replacing structured memory",
+    permission="ask",
+    enabled=True,
+    handler=memory_replace,
+    schema={
+        "type": "function",
+        "function": {
+            "name": "memory_replace",
+            "description": "Replace one active durable structured memory item after user approval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memoryItemId": {
+                        "type": "integer",
+                        "description": "The active structured memory item id to replace.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The corrected durable fact. Keep it concise and non-sensitive.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "agent", "project"],
+                        "description": "Optional corrected scope.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Optional corrected confidence from 0 to 1.",
+                    },
+                },
+                "required": ["memoryItemId", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+)
+
+
+MEMORY_FORGET_TOOL_SPEC = ToolSpec(
+    name="memory_forget",
+    display_name="Forgetting structured memory",
+    permission="ask",
+    enabled=True,
+    handler=memory_forget,
+    schema={
+        "type": "function",
+        "function": {
+            "name": "memory_forget",
+            "description": "Delete one active durable structured memory item after user approval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memoryItemId": {
+                        "type": "integer",
+                        "description": "The active structured memory item id to delete.",
+                    },
+                },
+                "required": ["memoryItemId"],
                 "additionalProperties": False,
             },
         },

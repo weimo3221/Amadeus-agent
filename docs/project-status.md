@@ -53,6 +53,7 @@ Fallback path today:
 - `search_memory` is registered as an `allow` tool for searching prior SQLite conversation memory.
 - `search_memory_items` is registered as an `allow` tool for searching structured memory facts.
 - `memory_add` is registered as an `ask` tool for adding durable structured memory facts after user approval.
+- `memory_replace` and `memory_forget` are registered as `ask` tools for correcting or deleting durable structured memory facts after user approval.
 - `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
 - `local_file_search` remains as a disabled compatibility alias for older tool calls.
 - `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
@@ -141,7 +142,7 @@ Fallback path today:
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
-- Add background memory review and safe fact-extraction proposals on top of the current summaries, stable memory, and structured memory items.
+- Add desktop UI review affordances for pending memory review candidates.
 - Harden the Python-owned ToolRuntime with richer context propagation and richer no-progress policies where needed.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
@@ -322,10 +323,11 @@ Started.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.
 - Conversation summaries now track covered message ranges, are injected as reference-only context, and can be refreshed by automatic threshold compaction or manual `POST /memory/compact`.
 - Structured `memory_items` now persist durable `user` / `agent` / `project` facts, expose `GET /memory/items`, `POST /memory/items`, and `POST /memory/items/delete`, and inject the active top items into model context.
-- Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, and `memory_add` writes one durable fact only through the `ask` permission path with duplicate detection.
+- Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, while `memory_add`, `memory_replace`, and `memory_forget` mutate one durable fact only through the `ask` permission path.
 - Memory review candidates now provide a human-controlled promotion queue: `GET/POST /memory/review/candidates` manages pending candidates, `POST /memory/review/accept` promotes one into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory.
-- Background memory review runner can now be triggered with `POST /memory/review/run`; it asks the provider to propose candidates from recent messages and only writes pending `memory_review_candidates`, never durable `memory_items`.
-- Next: add automatic scheduling after compaction or threshold triggers, plus UI review affordances.
+- Background memory review runner can now be triggered with `POST /memory/review/run` or automatically after a completed turn when the threshold/cooldown gates allow it; it asks the provider to propose candidates from recent messages and only writes pending `memory_review_candidates`, never durable `memory_items`.
+- Rejected memory review candidates suppress later identical suggestions for the same session/scope/content.
+- Next: add desktop UI review affordances and persist richer background review job state.
 
 ### Phase 9: Live2D and Audio Harnesses
 

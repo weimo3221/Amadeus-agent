@@ -43,6 +43,9 @@ MEMORY_REVIEW_SOURCE_MAX_MESSAGES = 40
 MEMORY_REVIEW_EXISTING_MEMORY_LIMIT = 40
 MEMORY_REVIEW_PENDING_LIMIT = 40
 MEMORY_REVIEW_MAX_CANDIDATES = 8
+MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT = 12
+MEMORY_REVIEW_SUCCESS_COOLDOWN_SECONDS = 600
+MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS = 300
 logger = logging.getLogger(__name__)
 
 
@@ -162,6 +165,11 @@ class AgentRuntime:
         self.summary_source_max_messages = SUMMARY_SOURCE_MAX_MESSAGES
         self.summary_failure_cooldown_seconds = SUMMARY_FAILURE_COOLDOWN_SECONDS
         self._summary_failure_until: dict[str, float] = {}
+        self.memory_review_trigger_message_count = MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT
+        self.memory_review_success_cooldown_seconds = MEMORY_REVIEW_SUCCESS_COOLDOWN_SECONDS
+        self.memory_review_failure_cooldown_seconds = MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS
+        self._memory_review_cooldown_until: dict[str, float] = {}
+        self._memory_review_last_message_id: dict[str, int] = {}
         logger.info(
             "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s memoryDb=%s",
             self.model,
@@ -290,6 +298,9 @@ class AgentRuntime:
         yield AgentEvent("assistant.message", {"text": assistant_text})
         if summary_event:
             yield summary_event
+        review_event = self._maybe_review_memory(session_id)
+        if review_event:
+            yield review_event
 
         if self.audio_runtime:
             audio_result = self.audio_runtime.speak(AudioOutputCommand(text=assistant_text, format="wav"))
@@ -354,6 +365,50 @@ class AgentRuntime:
             logger.info("Skipping memory review due to missing API key sessionId=%s", session_id)
             return {"reviewed": False, "sessionId": session_id, "error": "OPENAI_API_KEY is not configured."}
 
+        now = perf_counter()
+        cooldown_until = self._memory_review_cooldown_until.get(session_id, 0)
+        if not force and cooldown_until > now:
+            cooldown_remaining_ms = round((cooldown_until - now) * 1000)
+            logger.info("Skipping memory review during cooldown sessionId=%s cooldownRemainingMs=%s", session_id, cooldown_remaining_ms)
+            return {
+                "reviewed": False,
+                "sessionId": session_id,
+                "reason": "cooldown",
+                "cooldownRemainingMs": cooldown_remaining_ms,
+                "candidates": [],
+                "candidateCount": 0,
+            }
+
+        total_messages = self.memory_store.count(session_id)
+        if not force and total_messages < self.memory_review_trigger_message_count:
+            logger.info(
+                "Skipping memory review below threshold sessionId=%s messageCount=%s threshold=%s",
+                session_id,
+                total_messages,
+                self.memory_review_trigger_message_count,
+            )
+            return {
+                "reviewed": False,
+                "sessionId": session_id,
+                "reason": "below_threshold",
+                "messageCount": total_messages,
+                "threshold": self.memory_review_trigger_message_count,
+                "candidates": [],
+                "candidateCount": 0,
+            }
+
+        latest_message_id = self.memory_store.latest_message_id(session_id)
+        if not force and latest_message_id <= self._memory_review_last_message_id.get(session_id, 0):
+            logger.info("Skipping memory review no new messages sessionId=%s latestMessageId=%s", session_id, latest_message_id)
+            return {
+                "reviewed": False,
+                "sessionId": session_id,
+                "reason": "no_new_messages",
+                "latestMessageId": latest_message_id,
+                "candidates": [],
+                "candidateCount": 0,
+            }
+
         messages = self.memory_store.load_detailed(session_id, limit=MEMORY_REVIEW_SOURCE_MAX_MESSAGES)
         if not messages:
             logger.info("Skipping memory review because session has no messages sessionId=%s", session_id)
@@ -381,9 +436,12 @@ class AgentRuntime:
             )
         except RuntimeError as error:
             logger.info("Memory review failed sessionId=%s error=%s", session_id, error)
+            if not force:
+                self._memory_review_cooldown_until[session_id] = perf_counter() + self.memory_review_failure_cooldown_seconds
             return {"reviewed": False, "sessionId": session_id, "error": str(error), "candidates": [], "candidateCount": 0}
 
         saved_candidates = []
+        suppressed_candidate_count = 0
         for proposed in proposed_candidates[:MEMORY_REVIEW_MAX_CANDIDATES]:
             if not isinstance(proposed, dict):
                 continue
@@ -413,14 +471,21 @@ class AgentRuntime:
             except ValueError as error:
                 logger.info("Skipping invalid memory review candidate sessionId=%s error=%s", session_id, error)
                 continue
+            if candidate.get("suppressed"):
+                suppressed_candidate_count += 1
+                continue
             saved_candidates.append(candidate)
 
+        if not force:
+            self._memory_review_cooldown_until[session_id] = perf_counter() + self.memory_review_success_cooldown_seconds
+            self._memory_review_last_message_id[session_id] = latest_message_id
         logger.info(
-            "Memory review completed sessionId=%s sourceMessages=%s proposedCandidates=%s savedCandidates=%s",
+            "Memory review completed sessionId=%s sourceMessages=%s proposedCandidates=%s savedCandidates=%s suppressedCandidates=%s",
             session_id,
             len(messages),
             len(proposed_candidates),
             len(saved_candidates),
+            suppressed_candidate_count,
         )
         return {
             "reviewed": True,
@@ -428,8 +493,15 @@ class AgentRuntime:
             "sourceMessageCount": len(messages),
             "proposedCandidateCount": len(proposed_candidates),
             "candidateCount": len(saved_candidates),
+            "suppressedCandidateCount": suppressed_candidate_count,
             "candidates": saved_candidates,
         }
+
+    def _maybe_review_memory(self, session_id: str) -> AgentEvent | None:
+        result = self.review_memory(session_id, force=False)
+        if not result.get("reviewed"):
+            return None
+        return AgentEvent("memory.review.updated", result)
 
     def _load_history(self, session_id: str, limit: int = 40) -> list[dict[str, Any]]:
         summary = self.memory_store.load_conversation_summary(session_id)

@@ -147,6 +147,13 @@ class ToolLoopGuardrail:
                 "Blocked repeated duplicate structured memory write; the fact is already remembered.",
             )
 
+        if tool_name in {"memory_replace", "memory_forget"} and (not ok or "error" in result):
+            return (
+                "failed",
+                semantic_args_signature,
+                f"Blocked repeated structured memory mutation failure for {tool_name}; search memory items before retrying.",
+            )
+
         if tool_name == "read_file" and ok:
             path = self._string_arg(args, "path")
             start_line = self._intish_arg(args, "startLine", default=1)
@@ -211,6 +218,11 @@ class ToolLoopGuardrail:
             return cls._signature(tool_name, {
                 "scope": cls._string_arg(args, "scope"),
                 "content": cls._string_arg(args, "content"),
+            })
+
+        if tool_name in {"memory_replace", "memory_forget"}:
+            return cls._signature(tool_name, {
+                "memoryItemId": cls._intish_arg(args, "memoryItemId", default=0),
             })
 
         if tool_name == "read_file":

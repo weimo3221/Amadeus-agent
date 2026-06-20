@@ -52,6 +52,17 @@ class ToolSpec:
                 content = content[:117] + "..."
             return f'Allow Amadeus to remember this {scope} fact: "{content}"?'
 
+        if self.name == "memory_replace":
+            memory_item_id = args.get("memoryItemId") if isinstance(args.get("memoryItemId"), int) else "(missing id)"
+            content = args.get("content").strip() if isinstance(args.get("content"), str) and args.get("content").strip() else "(empty memory)"
+            if len(content) > 120:
+                content = content[:117] + "..."
+            return f'Allow Amadeus to replace structured memory item {memory_item_id} with: "{content}"?'
+
+        if self.name == "memory_forget":
+            memory_item_id = args.get("memoryItemId") if isinstance(args.get("memoryItemId"), int) else "(missing id)"
+            return f"Allow Amadeus to forget structured memory item {memory_item_id}?"
+
         return f"Allow Amadeus to run {self.display_name}?"
 
 

@@ -161,7 +161,7 @@ Target deliverables:
 - Conversation summaries.
 - User profile facts and preferences.
 - SQLite FTS session search.
-- Explicit structured memory write/search tools, with replacement/forget paths later.
+- Explicit structured memory search/add/replace/forget tools.
 - Human-controlled memory review candidate queue.
 - Background memory review after turns that proposes candidates instead of directly writing durable memory.
 - Context assembler that combines persona, summaries, profile, retrieved memory, recent messages, task state, and harness prompt fragments.

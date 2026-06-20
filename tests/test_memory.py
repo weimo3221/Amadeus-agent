@@ -197,6 +197,51 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(len(rejected), 1)
         self.assertEqual(items, [])
 
+    def test_rejected_memory_review_candidate_suppresses_same_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            candidate = memory.save_memory_review_candidate(
+                "session-1",
+                "agent",
+                "Never store secrets in durable memory.",
+                confidence=0.7,
+            )
+            memory.reject_memory_review_candidate(int(candidate["candidateId"]))
+            repeated = memory.save_memory_review_candidate(
+                "session-1",
+                "agent",
+                "Never store secrets in durable memory.",
+                confidence=0.9,
+            )
+            pending = memory.list_memory_review_candidates(session_id="session-1", status="pending")
+            rejected = memory.list_memory_review_candidates(session_id="session-1", status="rejected")
+
+        self.assertTrue(repeated["duplicate"])
+        self.assertTrue(repeated["suppressed"])
+        self.assertEqual(repeated["status"], "rejected")
+        self.assertEqual(pending, [])
+        self.assertEqual(len(rejected), 1)
+
+    def test_replace_memory_item_updates_active_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            item = memory.save_memory_item("project", "Old fact.", confidence=0.4)
+            replaced = memory.replace_memory_item(
+                int(item["memoryItemId"]),
+                "New fact.",
+                scope="user",
+                confidence=0.8,
+            )
+            items = memory.list_memory_items(scope="user")
+
+        self.assertIsNotNone(replaced)
+        assert replaced is not None
+        self.assertEqual(replaced["memoryItemId"], item["memoryItemId"])
+        self.assertEqual(replaced["scope"], "user")
+        self.assertEqual(replaced["content"], "New fact.")
+        self.assertEqual(replaced["confidence"], 0.8)
+        self.assertEqual(len(items), 1)
+
     def test_accept_memory_review_candidate_reuses_existing_memory_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
