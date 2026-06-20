@@ -412,6 +412,7 @@ harnesses:
 
 - 已完成第一片：`messages_fts`、`GET /memory/search`、`search_memory` 工具，以及每轮自动 `<memory-context>` prefetch 注入。
 - 已完成 stable memory 第一片：`data/memory/MEMORY.md`、`data/memory/USER.md`、`read_memory`、`update_memory`。
+- 已完成 conversation summary 存储第一片：SQLite `conversation_summaries`、`GET /memory/summary`、`POST /memory/summary`。
 - 实现 context assembler：
   - system prompt。
   - character persona。

@@ -125,6 +125,33 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["sessionId"], "http-test")
         self.assertIn("blue", payload["results"][0]["content"])
 
+    def test_memory_summary_roundtrip_over_http(self) -> None:
+        runtime_server.memory_store.save("http-test", "user", "Long setup")
+
+        saved = self.post_json("/memory/summary", {
+            "sessionId": "http-test",
+            "content": "The session covered the long setup.",
+            "summarizedMessageCount": 1,
+        })
+        loaded = self.get_json("/memory/summary?sessionId=http-test")
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["summary"]["sessionId"], "http-test")
+        self.assertEqual(saved["summary"]["content"], "The session covered the long setup.")
+        self.assertEqual(saved["summary"]["summarizedMessageCount"], 1)
+        self.assertTrue(loaded["ok"])
+        self.assertEqual(loaded["summary"]["summaryId"], saved["summary"]["summaryId"])
+        self.assertEqual(loaded["summary"]["content"], "The session covered the long setup.")
+
+    def test_memory_reset_clears_summary_over_http(self) -> None:
+        runtime_server.memory_store.save_conversation_summary("http-test", "Summary to reset")
+
+        self.post_json("/memory/reset", {"sessionId": "http-test"})
+        payload = self.get_json("/memory/summary?sessionId=http-test")
+
+        self.assertTrue(payload["ok"])
+        self.assertIsNone(payload["summary"])
+
     def test_tool_execute_search_memory_has_memory_context(self) -> None:
         runtime_server.memory_store.save("default", "user", "Remember the green tea preference")
 

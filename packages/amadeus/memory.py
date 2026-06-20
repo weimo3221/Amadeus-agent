@@ -8,6 +8,7 @@ from typing import Literal
 
 MessageRole = Literal["user", "assistant"]
 StableMemoryTarget = Literal["agent", "user"]
+CONVERSATION_SUMMARY_LIMIT = 12000
 STABLE_MEMORY_FILES: dict[str, str] = {
     "agent": "MEMORY.md",
     "user": "USER.md",
@@ -43,6 +44,16 @@ class MessageMemoryStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session_created
                 ON messages(session_id, created_at);
+                  CREATE TABLE IF NOT EXISTS conversation_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    summarized_message_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_updated
+                  ON conversation_summaries(session_id, updated_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -198,6 +209,72 @@ class MessageMemoryStore:
 
         return int(row[0]) if row else 0
 
+    def save_conversation_summary(
+        self,
+        session_id: str,
+        content: str,
+        summarized_message_count: int | None = None,
+    ) -> dict[str, str | int]:
+        normalized_session_id = normalize_session_id(session_id)
+        normalized_content = normalize_conversation_summary(content)
+        message_count = self.count(normalized_session_id) if summarized_message_count is None else int(summarized_message_count)
+        if message_count < 0:
+            raise ValueError("summarized_message_count must be non-negative")
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO conversation_summaries (
+                  session_id,
+                  content,
+                  summarized_message_count,
+                  created_at,
+                  updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (normalized_session_id, normalized_content, message_count, now, now),
+            )
+            summary_id = cursor.lastrowid
+
+        return {
+            "summaryId": int(summary_id),
+            "sessionId": normalized_session_id,
+            "content": normalized_content,
+            "charCount": len(normalized_content),
+            "summarizedMessageCount": message_count,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+
+    def load_conversation_summary(self, session_id: str) -> dict[str, str | int] | None:
+        normalized_session_id = normalize_session_id(session_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, content, summarized_message_count, created_at, updated_at
+                FROM conversation_summaries
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+
+        if not row:
+            return None
+        content = str(row[2])
+        return {
+            "summaryId": int(row[0]),
+            "sessionId": str(row[1]),
+            "content": content,
+            "charCount": len(content),
+            "summarizedMessageCount": int(row[3]),
+            "createdAt": str(row[4]),
+            "updatedAt": str(row[5]),
+        }
+
     def reset(self, session_id: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -210,6 +287,13 @@ class MessageMemoryStore:
             connection.execute(
                 """
                 DELETE FROM messages_fts
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM conversation_summaries
                 WHERE session_id = ?
                 """,
                 (session_id,),
@@ -286,6 +370,28 @@ def normalize_stable_memory_target(target: str) -> StableMemoryTarget:
     if normalized in {"user", "profile", "preferences"}:
         return "user"
     raise ValueError("target must be agent or user")
+
+
+def normalize_session_id(session_id: str) -> str:
+    normalized = session_id.strip() if isinstance(session_id, str) else ""
+    if not normalized:
+        raise ValueError("session_id is required")
+    if "\x00" in normalized:
+        raise ValueError("session_id must be UTF-8 text")
+    if len(normalized) > 200:
+        raise ValueError("session_id must be at most 200 characters")
+    return normalized
+
+
+def normalize_conversation_summary(content: str) -> str:
+    normalized = content.strip() if isinstance(content, str) else ""
+    if not normalized:
+        raise ValueError("content is required")
+    if "\x00" in normalized:
+        raise ValueError("content must be UTF-8 text")
+    if len(normalized) > CONVERSATION_SUMMARY_LIMIT:
+        raise ValueError(f"content must be at most {CONVERSATION_SUMMARY_LIMIT} characters")
+    return normalized
 
 
 def ensure_stable_memory_file(path: Path, target: str) -> None:

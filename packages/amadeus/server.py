@@ -120,6 +120,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, "messages": memory_store.load(session_id, limit)})
             return
 
+        if parsed.path == "/memory/summary":
+            query = parse_qs(parsed.query)
+            session_id = query.get("sessionId", ["default"])[0]
+            summary = memory_store.load_conversation_summary(session_id)
+            logger.info("Handling memory summary load sessionId=%s found=%s", session_id, summary is not None)
+            self.write_json(200, {"ok": True, "sessionId": session_id, "summary": summary})
+            return
+
         if parsed.path == "/memory/search":
             query = parse_qs(parsed.query)
             search_query = query.get("query", [""])[0]
@@ -161,6 +169,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/memory/messages":
             self.handle_memory_save()
+            return
+
+        if self.path == "/memory/summary":
+            self.handle_memory_summary_save()
             return
 
         if self.path == "/memory/reset":
@@ -299,6 +311,36 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
             memory_store.save(session_id, role, content)
             self.write_json(200, {"ok": True, "memoryMessages": memory_store.count(session_id)})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_summary_save(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId", "default")
+            content = body.get("content")
+            summarized_message_count = body.get("summarizedMessageCount")
+
+            if not isinstance(session_id, str) or not isinstance(content, str):
+                self.write_json(400, {"ok": False, "error": "sessionId and content must be strings"})
+                return
+            if summarized_message_count is not None and not isinstance(summarized_message_count, int):
+                self.write_json(400, {"ok": False, "error": "summarizedMessageCount must be an integer"})
+                return
+
+            summary = memory_store.save_conversation_summary(
+                session_id,
+                content,
+                summarized_message_count=summarized_message_count,
+            )
+            logger.info(
+                "Saved memory summary sessionId=%s summaryId=%s summarizedMessageCount=%s contentChars=%s",
+                session_id,
+                summary["summaryId"],
+                summary["summarizedMessageCount"],
+                summary["charCount"],
+            )
+            self.write_json(200, {"ok": True, "summary": summary})
         except Exception as error:
             self.write_json(500, {"ok": False, "error": str(error)})
 

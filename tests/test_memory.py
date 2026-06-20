@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
+
+from amadeus.memory import MessageMemoryStore
+
+
+class MessageMemoryStoreTests(unittest.TestCase):
+    def test_conversation_summary_persists_and_loads_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database_path)
+            memory.save("session-1", "user", "first message")
+            first = memory.save_conversation_summary("session-1", "Initial summary")
+            second = memory.save_conversation_summary("session-1", "Updated summary", summarized_message_count=7)
+
+            reloaded = MessageMemoryStore(database_path).load_conversation_summary("session-1")
+
+        self.assertIsNotNone(reloaded)
+        assert reloaded is not None
+        self.assertEqual(first["summaryId"] + 1, second["summaryId"])
+        self.assertEqual(reloaded["summaryId"], second["summaryId"])
+        self.assertEqual(reloaded["sessionId"], "session-1")
+        self.assertEqual(reloaded["content"], "Updated summary")
+        self.assertEqual(reloaded["charCount"], len("Updated summary"))
+        self.assertEqual(reloaded["summarizedMessageCount"], 7)
+        self.assertIsInstance(reloaded["createdAt"], str)
+        self.assertIsInstance(reloaded["updatedAt"], str)
+
+    def test_conversation_summary_defaults_to_current_message_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "user", "hello")
+            memory.save("session-1", "assistant", "hi")
+
+            summary = memory.save_conversation_summary("session-1", "Two-message summary")
+
+        self.assertEqual(summary["summarizedMessageCount"], 2)
+
+    def test_reset_deletes_conversation_summary_for_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_conversation_summary("session-1", "Summary to delete")
+            memory.save_conversation_summary("session-2", "Summary to keep")
+
+            memory.reset("session-1")
+
+            self.assertIsNone(memory.load_conversation_summary("session-1"))
+            self.assertEqual(memory.load_conversation_summary("session-2")["content"], "Summary to keep")  # type: ignore[index]
+
+    def test_conversation_summary_rejects_empty_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+
+            with self.assertRaises(ValueError):
+                memory.save_conversation_summary("session-1", "  ")
+
+
+if __name__ == "__main__":
+    unittest.main()

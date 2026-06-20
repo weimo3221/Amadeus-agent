@@ -263,7 +263,9 @@ POST /tools/execute
 POST /tools/permission
 GET /memory/count
 GET /memory/messages
+GET /memory/summary
 POST /memory/messages
+POST /memory/summary
 POST /memory/reset
 POST /audio/speak
 GET /audio/files/{relativePath}
