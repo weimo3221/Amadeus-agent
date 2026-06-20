@@ -74,6 +74,17 @@ class AgentRuntimeTests(unittest.TestCase):
             {"role": "assistant", "content": "Hello there"},
         ])
 
+    def test_system_prompt_includes_stable_memory_snapshot(self) -> None:
+        self.memory.update_stable_memory("user", "add", content="The user prefers concise Chinese updates.")
+        self.memory.update_stable_memory("agent", "add", content="The project uses Python-first AgentRuntime.")
+
+        runtime = FakeAgentRuntime(self.memory)
+
+        self.assertIn("<stable_memory target=\"agent\"", runtime.system_prompt)
+        self.assertIn("Python-first AgentRuntime", runtime.system_prompt)
+        self.assertIn("<stable_memory target=\"user\"", runtime.system_prompt)
+        self.assertIn("concise Chinese", runtime.system_prompt)
+
     def test_allow_tool_executes_without_permission_request(self) -> None:
         runtime = FakeAgentRuntime(
             self.memory,

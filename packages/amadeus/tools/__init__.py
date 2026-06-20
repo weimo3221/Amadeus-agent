@@ -8,6 +8,7 @@ from amadeus.tools.local_file_search import LOCAL_FILE_SEARCH_TOOL_SPEC, SEARCH_
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
 from amadeus.tools.search_memory import SEARCH_MEMORY_TOOL_SPEC, search_memory
+from amadeus.tools.stable_memory import READ_MEMORY_TOOL_SPEC, UPDATE_MEMORY_TOOL_SPEC, read_memory, update_memory
 from amadeus.tools.time import TIME_TOOL_SPEC, get_current_time
 from amadeus.tools.write_file import WRITE_FILE_TOOL_SPEC, write_file
 
@@ -21,6 +22,8 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         LOCAL_FILE_SEARCH_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
         SEARCH_MEMORY_TOOL_SPEC,
+        READ_MEMORY_TOOL_SPEC,
+        UPDATE_MEMORY_TOOL_SPEC,
         PATCH_TOOL_SPEC,
         WRITE_FILE_TOOL_SPEC,
     )
@@ -64,8 +67,10 @@ __all__ = [
     "normalize_positive_int",
     "patch",
     "read_file",
+    "read_memory",
     "roll_dice",
     "search_files",
     "search_memory",
+    "update_memory",
     "write_file",
 ]

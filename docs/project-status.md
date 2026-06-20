@@ -48,6 +48,8 @@ Fallback path today:
 - Tool execution now goes through a formal registry with `allow`, `ask`, and `deny` metadata.
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as an `ask` tool.
+- `read_memory` is registered as an `allow` tool for stable Markdown memory reads.
+- `update_memory` is registered as an `ask` tool for controlled stable memory updates.
 - `search_memory` is registered as an `allow` tool for searching prior SQLite conversation memory.
 - `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
 - `local_file_search` remains as a disabled compatibility alias for older tool calls.
@@ -114,6 +116,7 @@ Fallback path today:
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
+  - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the frozen system prompt at runtime startup.
   - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
   - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression, and reports non-text file kinds without decoding them.
@@ -309,8 +312,9 @@ Started.
 - SQLite FTS-backed session search is implemented for raw conversation messages.
 - Python runtime exposes `GET /memory/search`.
 - `search_memory` lets the model search current-session memory, with optional all-session search.
+- Stable long-term memory is implemented with bounded Markdown files under `data/memory/`.
+- `read_memory` / `update_memory` expose controlled read and add/replace/remove operations for agent facts and user preferences.
 - Add conversation summary storage.
-- Add user profile facts and preferences.
 - Feed summaries and profile facts into model context.
 
 ### Phase 9: Live2D and Audio Harnesses

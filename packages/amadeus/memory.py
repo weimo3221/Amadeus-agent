@@ -7,12 +7,27 @@ from typing import Literal
 
 
 MessageRole = Literal["user", "assistant"]
+StableMemoryTarget = Literal["agent", "user"]
+STABLE_MEMORY_FILES: dict[str, str] = {
+    "agent": "MEMORY.md",
+    "user": "USER.md",
+}
+STABLE_MEMORY_TITLES: dict[str, str] = {
+    "agent": "Amadeus Stable Memory",
+    "user": "User Profile And Preferences",
+}
+STABLE_MEMORY_LIMITS: dict[str, int] = {
+    "agent": 4000,
+    "user": 2500,
+}
 
 
 class MessageMemoryStore:
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, stable_memory_dir: Path | None = None) -> None:
         self.database_path = database_path
+        self.stable_memory_dir = stable_memory_dir or database_path.parent / "memory"
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.stable_memory_dir.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
     def initialize(self) -> None:
@@ -203,6 +218,58 @@ class MessageMemoryStore:
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)
 
+    def read_stable_memory(self, target: str) -> dict[str, str | int]:
+        target = normalize_stable_memory_target(target)
+        path = self._stable_memory_path(target)
+        ensure_stable_memory_file(path, target)
+        content = path.read_text(encoding="utf-8")
+        return stable_memory_response(target, path, content)
+
+    def stable_memory_snapshot(self) -> dict[str, dict[str, str | int]]:
+        return {
+            target: self.read_stable_memory(target)
+            for target in STABLE_MEMORY_FILES
+        }
+
+    def update_stable_memory(
+        self,
+        target: str,
+        action: str,
+        content: str | None = None,
+        old_text: str | None = None,
+    ) -> dict[str, str | int | bool]:
+        target = normalize_stable_memory_target(target)
+        normalized_action = action.strip().lower()
+        if normalized_action not in {"add", "replace", "remove"}:
+            raise ValueError("action must be add, replace, or remove")
+
+        path = self._stable_memory_path(target)
+        ensure_stable_memory_file(path, target)
+        before = path.read_text(encoding="utf-8")
+        new_content = build_stable_memory_update(
+            before,
+            target=target,
+            action=normalized_action,
+            content=content,
+            old_text=old_text,
+        )
+
+        limit = STABLE_MEMORY_LIMITS[target]
+        if len(new_content) > limit:
+            raise ValueError(f"{target} memory exceeds {limit} characters")
+
+        atomic_write_text(path, new_content)
+        response = stable_memory_response(target, path, new_content)
+        response.update({
+            "action": normalized_action,
+            "beforeCharCount": len(before),
+            "changed": before != new_content,
+        })
+        return response
+
+    def _stable_memory_path(self, target: str) -> Path:
+        return self.stable_memory_dir / STABLE_MEMORY_FILES[target]
+
 
 def make_fts_query(query: str) -> str:
     terms = [term.replace('"', " ").strip() for term in query.split()]
@@ -210,3 +277,103 @@ def make_fts_query(query: str) -> str:
     if not terms:
         return '""'
     return " OR ".join(f'"{term}"' for term in terms)
+
+
+def normalize_stable_memory_target(target: str) -> StableMemoryTarget:
+    normalized = target.strip().lower()
+    if normalized in {"memory", "agent", "amadeus"}:
+        return "agent"
+    if normalized in {"user", "profile", "preferences"}:
+        return "user"
+    raise ValueError("target must be agent or user")
+
+
+def ensure_stable_memory_file(path: Path, target: str) -> None:
+    if path.exists():
+        return
+
+    title = STABLE_MEMORY_TITLES[target]
+    path.write_text(
+        f"# {title}\n\n"
+        "Stable facts only. Do not store transient task progress, raw transcripts, secrets, or speculative guesses.\n\n"
+        "## Entries\n\n",
+        encoding="utf-8",
+    )
+
+
+def stable_memory_response(target: str, path: Path, content: str) -> dict[str, str | int]:
+    return {
+        "target": target,
+        "path": path.as_posix(),
+        "content": content,
+        "charCount": len(content),
+        "lineCount": len(content.splitlines()),
+        "limit": STABLE_MEMORY_LIMITS[target],
+    }
+
+
+def build_stable_memory_update(
+    before: str,
+    target: str,
+    action: str,
+    content: str | None,
+    old_text: str | None,
+) -> str:
+    if action == "add":
+        entry = normalize_memory_entry(content)
+        return append_stable_memory_entry(before, entry)
+
+    needle = old_text.strip() if isinstance(old_text, str) else ""
+    if not needle:
+        raise ValueError("oldText is required for replace/remove")
+
+    count = before.count(needle)
+    if count == 0:
+        raise ValueError("oldText was not found in stable memory")
+    if count > 1:
+        raise ValueError("oldText must match exactly one stable memory section")
+
+    if action == "remove":
+        return normalize_markdown_spacing(before.replace(needle, "", 1))
+
+    replacement = normalize_memory_entry(content)
+    return before.replace(needle, replacement, 1)
+
+
+def normalize_memory_entry(content: str | None) -> str:
+    entry = content.strip() if isinstance(content, str) else ""
+    if not entry:
+        raise ValueError("content is required")
+    if "\x00" in entry:
+        raise ValueError("content must be UTF-8 text")
+    if len(entry) > 1000:
+        raise ValueError("content must be at most 1000 characters")
+    if not entry.startswith(("- ", "* ", "## ", "### ")):
+        entry = f"- {entry}"
+    return entry
+
+
+def append_stable_memory_entry(before: str, entry: str) -> str:
+    stripped = before.rstrip()
+    return f"{stripped}\n\n{entry}\n"
+
+
+def normalize_markdown_spacing(content: str) -> str:
+    lines = content.splitlines()
+    normalized: list[str] = []
+    blank_count = 0
+    for line in lines:
+        if line.strip():
+            blank_count = 0
+            normalized.append(line.rstrip())
+        else:
+            blank_count += 1
+            if blank_count <= 2:
+                normalized.append("")
+    return "\n".join(normalized).rstrip() + "\n"
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(content, encoding="utf-8")
+    temp_path.replace(path)

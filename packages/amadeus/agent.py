@@ -471,20 +471,37 @@ class AgentRuntime:
         }
 
     def _build_system_prompt(self) -> str:
-        return "\n".join([
+        prompt_parts = [
             "You are Amadeus, a desktop Live2D companion agent.",
             "Reply in the same language as the user unless they ask otherwise.",
             "Be concise, practical, and calm.",
-            "You can use safe local tools for current time, dice rolls, searching conversation memory, searching project files, reading bounded project text files, patching project text files, and writing new project text files.",
+            "You can use safe local tools for current time, dice rolls, reading stable memory, updating stable memory, searching conversation memory, searching project files, reading bounded project text files, patching project text files, and writing new project text files.",
             "When the user asks for the current time, current date, today, now, or scheduling context, you must call get_current_time before answering.",
             "When the user asks to roll dice or generate a dice result, call roll_dice.",
+            "When the user explicitly asks you to remember a durable fact, user preference, or important project decision, call update_memory.",
+            "Use stable memory only for durable facts. Do not store transient task progress, raw transcripts, secrets, or guesses.",
             "When the user asks about earlier messages, remembered preferences, past decisions, or conversation history, call search_memory.",
             "When the user asks to find local project files, docs, code, configuration, or notes, call search_files.",
             "When the user needs the contents of a specific found text file, call read_file.",
             "When the user asks you to edit an existing project text file, call patch with oldText and newText from the current file contents.",
             "When the user asks you to create a new project text file or intentionally replace a whole file, call write_file.",
             "Do not answer current time or date questions from memory or estimation.",
-        ])
+        ]
+
+        stable_memory = self._format_stable_memory_for_prompt()
+        if stable_memory:
+            prompt_parts.append(stable_memory)
+
+        return "\n".join(prompt_parts)
+
+    def _format_stable_memory_for_prompt(self) -> str:
+        snapshot = self.memory_store.stable_memory_snapshot()
+        sections: list[str] = []
+        for target, label in (("agent", "Agent Stable Memory"), ("user", "User Profile And Preferences")):
+            content = str(snapshot[target]["content"]).strip()
+            sections.append(f"<stable_memory target=\"{target}\" label=\"{label}\">\n{content}\n</stable_memory>")
+
+        return "\n\n".join(sections)
 
     @staticmethod
     def _parse_tool_args(raw: Any) -> dict[str, Any]:

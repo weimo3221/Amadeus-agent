@@ -40,6 +40,11 @@ class ToolSpec:
             path = args.get("path").strip() if isinstance(args.get("path"), str) and args.get("path").strip() else "(empty path)"
             return f"Allow Amadeus to write local project file {path}?"
 
+        if self.name == "update_memory":
+            target = args.get("target").strip() if isinstance(args.get("target"), str) and args.get("target").strip() else "agent"
+            action = args.get("action").strip() if isinstance(args.get("action"), str) and args.get("action").strip() else "update"
+            return f"Allow Amadeus to {action} stable {target} memory?"
+
         return f"Allow Amadeus to run {self.display_name}?"
 
 

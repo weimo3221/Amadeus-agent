@@ -32,6 +32,16 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["search_memory"]["permission"], "allow")
         self.assertIn("search_memory", schema_names)
 
+        self.assertIn("read_memory", list_tools())
+        self.assertIn("read_memory", tool_state)
+        self.assertEqual(tool_state["read_memory"]["permission"], "allow")
+        self.assertIn("read_memory", schema_names)
+
+        self.assertIn("update_memory", list_tools())
+        self.assertIn("update_memory", tool_state)
+        self.assertEqual(tool_state["update_memory"]["permission"], "ask")
+        self.assertIn("update_memory", schema_names)
+
         self.assertIn("local_file_search", list_tools())
         self.assertIn("local_file_search", tool_state)
         self.assertFalse(tool_state["local_file_search"]["enabled"])
@@ -409,6 +419,88 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.output["sessionId"], "session-1")
         self.assertEqual(result.output["resultCount"], 1)
         self.assertIn("concise", result.output["results"][0]["content"])
+
+    def test_read_memory_uses_stable_markdown_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.update_stable_memory("user", "add", content="The user prefers Chinese responses.")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "read_memory",
+                {"target": "user"},
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["target"], "user")
+        self.assertIn("prefers Chinese", result.output["content"])
+
+    def test_update_memory_add_replace_remove(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            added = registry.execute(
+                "update_memory",
+                {"target": "agent", "action": "add", "content": "Project uses Python-first runtime."},
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+            replaced = registry.execute(
+                "update_memory",
+                {
+                    "target": "agent",
+                    "action": "replace",
+                    "oldText": "- Project uses Python-first runtime.",
+                    "content": "Project uses Python-first AgentRuntime.",
+                },
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+            removed = registry.execute(
+                "update_memory",
+                {
+                    "target": "agent",
+                    "action": "remove",
+                    "oldText": "- Project uses Python-first AgentRuntime.",
+                },
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+
+        self.assertTrue(added.ok)
+        self.assertTrue(added.output["changed"])
+        self.assertIn("- Project uses Python-first runtime.", added.output["content"])
+        self.assertTrue(replaced.ok)
+        self.assertIn("AgentRuntime", replaced.output["content"])
+        self.assertTrue(removed.ok)
+        self.assertNotIn("AgentRuntime", removed.output["content"])
+
+    def test_update_memory_rejects_ambiguous_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.update_stable_memory("agent", "add", content="Duplicate entry")
+            memory.update_stable_memory("agent", "add", content="Duplicate entry")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "update_memory",
+                {
+                    "target": "agent",
+                    "action": "replace",
+                    "oldText": "- Duplicate entry",
+                    "content": "New entry",
+                },
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_code, "tool_error")
+        self.assertIn("exactly one", result.output["error"])
 
     def test_execute_applies_search_memory_result_policy(self) -> None:
         output = {

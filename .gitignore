@@ -8,6 +8,7 @@ build/
 .env.*
 !.env.example
 *.log
+data/
 *.sqlite
 *.sqlite3
 coverage/

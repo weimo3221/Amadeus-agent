@@ -15,6 +15,14 @@ tools:
     enabled: true
     permission: allow
 
+  read_memory:
+    enabled: true
+    permission: allow
+
+  update_memory:
+    enabled: true
+    permission: ask
+
   local_file_search:
     enabled: false
     permission: ask

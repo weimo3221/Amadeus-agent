@@ -42,6 +42,8 @@ Current active Python tools:
 
 - `get_current_time`: `allow`; returns formatted current time for an IANA timezone.
 - `roll_dice`: `ask`; rolls bounded dice counts/sides and returns rolls plus total.
+- `read_memory`: `allow`; reads stable Markdown memory from `data/memory/MEMORY.md` or `data/memory/USER.md`.
+- `update_memory`: `ask`; performs controlled `add` / `replace` / `remove` updates to stable Markdown memory, with exact-match replacement and size limits.
 - `search_memory`: `allow`; searches prior SQLite conversation memory through an FTS-backed index, scoped to the current session by default, with a per-tool model-output policy for bounded snippets.
 - `search_files`: `ask`; searches workspace-relative filenames and/or small text file contents with `target: all | files | content`, path containment, skipped generated directories, result caps, and a per-tool model-output policy.
 - `read_file`: `ask`; reads an explicit line-numbered window from a workspace-relative UTF-8 text file with path containment, file type/size limits, `startLine` / `lineLimit`, `totalLines`, `hasMore`, and a visible character cap. It intentionally avoids hidden runtime compression. Images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded.
