@@ -32,6 +32,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["search_memory"]["permission"], "allow")
         self.assertIn("search_memory", schema_names)
 
+        self.assertIn("search_memory_items", list_tools())
+        self.assertIn("search_memory_items", tool_state)
+        self.assertEqual(tool_state["search_memory_items"]["permission"], "allow")
+        self.assertIn("search_memory_items", schema_names)
+
         self.assertIn("read_memory", list_tools())
         self.assertIn("read_memory", tool_state)
         self.assertEqual(tool_state["read_memory"]["permission"], "allow")
@@ -41,6 +46,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertIn("update_memory", tool_state)
         self.assertEqual(tool_state["update_memory"]["permission"], "ask")
         self.assertIn("update_memory", schema_names)
+
+        self.assertIn("memory_add", list_tools())
+        self.assertIn("memory_add", tool_state)
+        self.assertEqual(tool_state["memory_add"]["permission"], "ask")
+        self.assertIn("memory_add", schema_names)
 
         self.assertIn("local_file_search", list_tools())
         self.assertIn("local_file_search", tool_state)
@@ -532,6 +542,74 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.failure_code, "tool_error")
         self.assertIn("exactly one", result.output["error"])
 
+    def test_search_memory_items_uses_context_memory_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_memory_item("user", "The user prefers concise updates.", confidence=0.95)
+            memory.save_memory_item("project", "Amadeus uses Python-first runtime.", confidence=0.9)
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "search_memory_items",
+                {"scope": "user", "query": "concise", "limit": 5},
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["scope"], "user")
+        self.assertEqual(result.output["query"], "concise")
+        self.assertEqual(result.output["resultCount"], 1)
+        self.assertIn("concise updates", result.output["items"][0]["content"])
+
+    def test_memory_add_writes_structured_memory_and_deduplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            context = ToolContext(session_id="session-1", memory_store=memory)
+
+            first = registry.execute(
+                "memory_add",
+                {
+                    "scope": "project",
+                    "content": "Amadeus should prefer Python runtime ownership.",
+                    "confidence": 0.9,
+                    "sourceMessageId": 12,
+                },
+                context,
+            )
+            duplicate = registry.execute(
+                "memory_add",
+                {"scope": "project", "content": "Amadeus should prefer Python runtime ownership."},
+                context,
+            )
+            items = memory.list_memory_items(scope="project")
+
+        self.assertTrue(first.ok)
+        self.assertTrue(first.output["added"])
+        self.assertFalse(first.output["duplicate"])
+        self.assertEqual(first.output["item"]["sourceSessionId"], "session-1")
+        self.assertEqual(first.output["item"]["sourceMessageId"], 12)
+        self.assertTrue(duplicate.ok)
+        self.assertFalse(duplicate.output["added"])
+        self.assertTrue(duplicate.output["duplicate"])
+        self.assertEqual(len(items), 1)
+
+    def test_memory_add_permission_request_describes_fact_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            spec = registry.get("memory_add")
+
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        request = spec.describe_request({"scope": "user", "content": "The user prefers direct answers."})
+
+        self.assertIn("remember this user fact", request)
+        self.assertIn("direct answers", request)
+
     def test_execute_applies_search_memory_result_policy(self) -> None:
         output = {
             "query": "preference",
@@ -579,6 +657,56 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.model_output["includedResults"], 5)
         self.assertEqual(result.model_output["omittedResults"], 3)
         self.assertLessEqual(len(result.model_output["results"][0]["snippet"]), 240)
+
+    def test_execute_applies_search_memory_items_result_policy(self) -> None:
+        output = {
+            "scope": "user",
+            "query": "preference",
+            "limit": 20,
+            "resultCount": 12,
+            "items": [
+                {
+                    "memoryItemId": index,
+                    "scope": "user",
+                    "content": "preference " + ("x" * 500),
+                    "confidence": 0.9,
+                    "sourceSessionId": "session-1",
+                    "sourceMessageId": 10 + index,
+                    "createdAt": "2026-06-20T00:00:00+00:00",
+                    "updatedAt": "2026-06-20T00:00:00+00:00",
+                }
+                for index in range(12)
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="search_memory_items",
+                        display_name="Search Memory Items",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "search_memory_items"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "search_memory_items",
+                {"scope": "user", "query": "preference"},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=300),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, output)
+        self.assertTrue(result.output_truncated)
+        self.assertEqual(result.model_output["_amadeus_result_policy"], "search_memory_items_v1")
+        self.assertEqual(result.model_output["includedItems"], 8)
+        self.assertEqual(result.model_output["omittedItems"], 4)
+        self.assertLessEqual(len(result.model_output["items"][0]["content"]), 240)
 
     def test_read_file_reads_workspace_text_file_with_line_numbers(self) -> None:
         output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "lineLimit": 2, "maxChars": 200})
@@ -950,6 +1078,37 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.failure_code, "no_progress_loop")
         self.assertIn("empty memory search", decision.reason or "")
+
+    def test_blocks_repeated_empty_structured_memory_search_with_specific_reason(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"scope": "user", "query": "preference"}
+
+        self.assertTrue(guardrail.before_call("search_memory_items", args).allowed)
+        guardrail.after_call("search_memory_items", args, {"items": []}, ok=True)
+
+        self.assertTrue(guardrail.before_call("search_memory_items", args).allowed)
+        guardrail.after_call("search_memory_items", args, {"items": []}, ok=True)
+
+        decision = guardrail.before_call("search_memory_items", args)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "no_progress_loop")
+        self.assertIn("empty structured memory search", decision.reason or "")
+
+    def test_blocks_repeated_duplicate_structured_memory_write(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"scope": "project", "content": "Amadeus uses Python runtime."}
+        result = {"added": False, "duplicate": True}
+
+        self.assertTrue(guardrail.before_call("memory_add", args).allowed)
+        guardrail.after_call("memory_add", args, result, ok=True)
+
+        self.assertTrue(guardrail.before_call("memory_add", args).allowed)
+        guardrail.after_call("memory_add", args, result, ok=True)
+
+        decision = guardrail.before_call("memory_add", args)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "no_progress_loop")
+        self.assertIn("already remembered", decision.reason or "")
 
     def test_blocks_repeated_read_file_window_with_specific_reason(self) -> None:
         guardrail = ToolLoopGuardrail(max_completed_repeats=2)

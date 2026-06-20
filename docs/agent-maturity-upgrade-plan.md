@@ -414,6 +414,7 @@ harnesses:
 - 已完成 stable memory 第一片：`data/memory/MEMORY.md`、`data/memory/USER.md`、`read_memory`、`update_memory`。
 - 已完成 conversation summary 第一片：SQLite `conversation_summaries`、覆盖范围元数据、`GET /memory/summary`、`POST /memory/summary`、`POST /memory/compact`、阈值触发 compaction、context 注入。
 - 已完成 structured memory 第一片：SQLite `memory_items`、`user` / `agent` / `project` scope、显式 add/list/delete HTTP API、`<memory-items>` context 注入。
+- 已完成 explicit structured memory tools 第一片：`search_memory_items` 只读检索 durable facts，`memory_add` 通过 `ask` 权限写入单条 durable fact，并带重复检测、来源 session 元数据、模型输出裁剪和 no-progress guardrail。
 - 实现 context assembler：
   - system prompt。
   - character persona。

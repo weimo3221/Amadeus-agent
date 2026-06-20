@@ -26,6 +26,8 @@ LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT = 5
 LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS = 160
 MEMORY_SEARCH_MODEL_RESULT_LIMIT = 5
 MEMORY_SEARCH_MODEL_PREVIEW_CHARS = 240
+MEMORY_ITEMS_MODEL_RESULT_LIMIT = 8
+MEMORY_ITEMS_MODEL_CONTENT_CHARS = 240
 logger = logging.getLogger(__name__)
 
 
@@ -367,6 +369,9 @@ def apply_tool_result_policy(
     if tool_name == "search_memory":
         return normalize_search_memory_output(tool_name, output, preview_chars)
 
+    if tool_name == "search_memory_items":
+        return normalize_search_memory_items_output(tool_name, output, preview_chars)
+
     return output, None, False
 
 
@@ -472,6 +477,65 @@ def normalize_search_memory_output(
         "includedResults": len(model_results),
         "omittedResults": max(0, result_count - len(model_results)),
         "results": model_results,
+    }
+    preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
+    return model_output, preview[:preview_limit], True
+
+
+def normalize_search_memory_items_output(
+    tool_name: str,
+    output: dict[str, Any],
+    preview_chars: int,
+) -> tuple[dict[str, Any], str | None, bool]:
+    raw_items = output.get("items")
+    if not isinstance(raw_items, list):
+        return output, None, False
+
+    preview_limit = max(1, min(preview_chars, MEMORY_ITEMS_MODEL_CONTENT_CHARS))
+    model_items: list[dict[str, Any]] = []
+    truncated = len(raw_items) > MEMORY_ITEMS_MODEL_RESULT_LIMIT
+
+    for raw_item in raw_items[:MEMORY_ITEMS_MODEL_RESULT_LIMIT]:
+        if not isinstance(raw_item, dict):
+            model_items.append({"content": str(raw_item)[:preview_limit]})
+            truncated = True
+            continue
+
+        model_item: dict[str, Any] = {}
+        for key in (
+            "memoryItemId",
+            "scope",
+            "confidence",
+            "sourceSessionId",
+            "sourceMessageId",
+            "createdAt",
+            "updatedAt",
+        ):
+            if key in raw_item:
+                model_item[key] = raw_item[key]
+
+        content = str(raw_item.get("content") or "")
+        if len(content) > preview_limit:
+            content = content[:preview_limit]
+            truncated = True
+        model_item["content"] = content
+        model_items.append(model_item)
+
+    if not truncated:
+        return output, None, False
+
+    result_count = len(raw_items)
+    model_output = {
+        "_amadeus_result_truncated": True,
+        "_amadeus_result_policy": "search_memory_items_v1",
+        "tool_name": tool_name,
+        "scope": output.get("scope"),
+        "query": output.get("query"),
+        "limit": output.get("limit"),
+        "resultCount": result_count,
+        "includedItems": len(model_items),
+        "omittedItems": max(0, result_count - len(model_items)),
+        "items": model_items,
     }
     preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
     return model_output, preview[:preview_limit], True

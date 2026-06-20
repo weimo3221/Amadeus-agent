@@ -15,11 +15,19 @@ tools:
     enabled: true
     permission: allow
 
+  search_memory_items:
+    enabled: true
+    permission: allow
+
   read_memory:
     enabled: true
     permission: allow
 
   update_memory:
+    enabled: true
+    permission: ask
+
+  memory_add:
     enabled: true
     permission: ask
 

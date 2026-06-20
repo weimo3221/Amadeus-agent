@@ -125,6 +125,28 @@ class ToolLoopGuardrail:
                     "Blocked repeated memory search returning the same snippets; use the recalled context or change the query.",
                 )
 
+        if tool_name == "search_memory_items":
+            items = result.get("items")
+            if ok and isinstance(items, list):
+                if not items:
+                    return (
+                        "completed",
+                        semantic_args_signature,
+                        "Blocked repeated empty structured memory search; change the scope/query or answer from available context.",
+                    )
+                return (
+                    "completed",
+                    semantic_args_signature,
+                    "Blocked repeated structured memory search returning the same facts; use the recalled facts or change the query.",
+                )
+
+        if tool_name == "memory_add" and ok and result.get("duplicate") is True:
+            return (
+                "completed",
+                semantic_args_signature,
+                "Blocked repeated duplicate structured memory write; the fact is already remembered.",
+            )
+
         if tool_name == "read_file" and ok:
             path = self._string_arg(args, "path")
             start_line = self._intish_arg(args, "startLine", default=1)
@@ -177,6 +199,18 @@ class ToolLoopGuardrail:
                 "query": cls._string_arg(args, "query"),
                 "sessionId": cls._string_arg(args, "sessionId", default=None),
                 "includeAllSessions": bool(args.get("includeAllSessions", False)),
+            })
+
+        if tool_name == "search_memory_items":
+            return cls._signature(tool_name, {
+                "scope": cls._string_arg(args, "scope", default=None),
+                "query": cls._string_arg(args, "query", default=None),
+            })
+
+        if tool_name == "memory_add":
+            return cls._signature(tool_name, {
+                "scope": cls._string_arg(args, "scope"),
+                "content": cls._string_arg(args, "content"),
             })
 
         if tool_name == "read_file":

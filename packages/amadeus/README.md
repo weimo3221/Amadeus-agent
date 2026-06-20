@@ -42,6 +42,8 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 | `read_memory` | `allow` | Reads stable Markdown memory for agent facts (`MEMORY.md`) or user preferences (`USER.md`). |
 | `update_memory` | `ask` | Adds, replaces, or removes bounded stable memory entries without allowing whole-file rewrites. |
 | `search_memory` | `allow` | Searches prior SQLite conversation memory for earlier messages, remembered preferences, past decisions, or conversation history. |
+| `search_memory_items` | `allow` | Searches durable structured `user` / `agent` / `project` memory facts stored in SQLite. |
+| `memory_add` | `ask` | Adds one durable structured memory fact after user approval, with duplicate detection and source-session metadata. |
 | `search_files` | `ask` | Searches workspace-relative filenames and/or small text file contents using `target: all | files | content`, skipping generated/heavy directories and capping result count. |
 | `read_file` | `ask` | Reads an explicit, line-numbered window from a workspace-relative UTF-8 text file after search; images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded. |
 | `patch` | `ask` | Applies a safe single-file text replacement inside the workspace, requiring a unique `oldText` match unless `replaceAll=true`, and returns a unified diff preview. |
@@ -57,8 +59,9 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Stable memory is stored as auditable Markdown files under `data/memory/MEMORY.md` and `data/memory/USER.md`, then injected into the frozen system prompt at runtime startup.
 - Each turn prefetches up to three relevant prior session messages and injects them into the API-only current user message as a sanitized `<memory-context>` block; the block is not persisted.
 - Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`, injected as reference-only context, and refreshed by threshold-based compaction or manual `POST /memory/compact`.
-- Structured `memory_items` store durable `user` / `agent` / `project` facts in SQLite, expose explicit add/list/delete APIs, and inject a small active set into model context as reference-only `<memory-items>`.
+- Structured `memory_items` store durable `user` / `agent` / `project` facts in SQLite, expose explicit HTTP add/list/delete APIs, are searchable through the read-only `search_memory_items` tool, can be written through the approval-gated `memory_add` tool, and inject a small active set into model context as reference-only `<memory-items>`.
 - `search_memory` has a per-tool model-output policy that keeps match metadata while limiting model-context result count and snippet length.
+- `search_memory_items` has a per-tool model-output policy that keeps structured fact metadata while limiting model-context item count and content length.
 - `search_files` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.
 - `read_file` does not use hidden runtime compression. It returns a caller-controlled `startLine` / `lineLimit` text window with line numbers, `totalLines`, and `hasMore` so the model can continue reading explicitly. Non-text files are identified as `image`, `pdf`, `binary`, or `unknown` and return an unsupported response with a next-tool hint.
 - `patch` follows the Hermes-style edit path: exact `oldText` / `newText`, unique-match default, optional `replaceAll`, restricted generated directories, UTF-8 text-only writes, and diff output for review.

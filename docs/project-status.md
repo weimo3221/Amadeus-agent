@@ -51,6 +51,8 @@ Fallback path today:
 - `read_memory` is registered as an `allow` tool for stable Markdown memory reads.
 - `update_memory` is registered as an `ask` tool for controlled stable memory updates.
 - `search_memory` is registered as an `allow` tool for searching prior SQLite conversation memory.
+- `search_memory_items` is registered as an `allow` tool for searching structured memory facts.
+- `memory_add` is registered as an `ask` tool for adding durable structured memory facts after user approval.
 - `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
 - `local_file_search` remains as a disabled compatibility alias for older tool calls.
 - `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
@@ -119,6 +121,7 @@ Fallback path today:
   - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the frozen system prompt at runtime startup.
   - Each turn now prefetches a small sanitized SQLite FTS result set and injects it as an API-only `<memory-context>` block on the current user message.
   - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
+  - `search_memory_items` now has a per-tool model-output policy that keeps structured fact metadata while capping model-context item count and content length.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
   - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression, and reports non-text file kinds without decoding them.
   - `patch` now supports safe single-file UTF-8 text replacement with unique-match default, optional `replaceAll`, generated-directory restrictions, and diff output.
@@ -138,7 +141,7 @@ Fallback path today:
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
-- Add long-term memory beyond raw message history, such as user facts, preferences, summaries, and retrieval.
+- Add background memory review and safe fact-extraction proposals on top of the current summaries, stable memory, and structured memory items.
 - Harden the Python-owned ToolRuntime with richer context propagation and richer no-progress policies where needed.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
@@ -319,7 +322,8 @@ Started.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.
 - Conversation summaries now track covered message ranges, are injected as reference-only context, and can be refreshed by automatic threshold compaction or manual `POST /memory/compact`.
 - Structured `memory_items` now persist durable `user` / `agent` / `project` facts, expose `GET /memory/items`, `POST /memory/items`, and `POST /memory/items/delete`, and inject the active top items into model context.
-- Next: add explicit memory write tools and later background memory review for safe fact extraction.
+- Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, and `memory_add` writes one durable fact only through the `ask` permission path with duplicate detection.
+- Next: add background memory review for safe fact extraction and promotion suggestions.
 
 ### Phase 9: Live2D and Audio Harnesses
 

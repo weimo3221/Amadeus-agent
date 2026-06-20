@@ -45,6 +45,13 @@ class ToolSpec:
             action = args.get("action").strip() if isinstance(args.get("action"), str) and args.get("action").strip() else "update"
             return f"Allow Amadeus to {action} stable {target} memory?"
 
+        if self.name == "memory_add":
+            scope = args.get("scope").strip() if isinstance(args.get("scope"), str) and args.get("scope").strip() else "memory"
+            content = args.get("content").strip() if isinstance(args.get("content"), str) and args.get("content").strip() else "(empty memory)"
+            if len(content) > 120:
+                content = content[:117] + "..."
+            return f'Allow Amadeus to remember this {scope} fact: "{content}"?'
+
         return f"Allow Amadeus to run {self.display_name}?"
 
 
