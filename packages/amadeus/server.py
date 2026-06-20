@@ -253,6 +253,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_memory_review_reject()
             return
 
+        if self.path == "/memory/review/run":
+            self.handle_memory_review_run()
+            return
+
         if self.path == "/memory/summary":
             self.handle_memory_summary_save()
             return
@@ -535,6 +539,31 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "Rejected memory review candidate candidateId=%s rejected=%s",
                 candidate_id,
                 result.get("rejected"),
+            )
+            self.write_json(200, {"ok": True, **result})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_review_run(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId", "default")
+            force = body.get("force", True)
+
+            if not isinstance(session_id, str):
+                self.write_json(400, {"ok": False, "error": "sessionId must be a string"})
+                return
+            if not isinstance(force, bool):
+                self.write_json(400, {"ok": False, "error": "force must be a boolean"})
+                return
+
+            result = agent_runtime.review_memory(session_id, force=force)
+            logger.info(
+                "Handled memory review run sessionId=%s force=%s reviewed=%s candidateCount=%s",
+                session_id,
+                force,
+                result.get("reviewed"),
+                result.get("candidateCount"),
             )
             self.write_json(200, {"ok": True, **result})
         except Exception as error:

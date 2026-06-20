@@ -25,6 +25,8 @@ class FakeAgentRuntime(AgentRuntime):
         deltas: list[str] | None = None,
         tools_config_path: Path | None = None,
         summary_error: str | None = None,
+        memory_review_response: list[dict[str, Any]] | None = None,
+        memory_review_error: str | None = None,
     ) -> None:
         os.environ["OPENAI_API_KEY"] = "test-key"
         self.decision_messages: list[list[dict[str, Any]]] = []
@@ -33,6 +35,9 @@ class FakeAgentRuntime(AgentRuntime):
         self.deltas = deltas or ["ok"]
         self.summary_requests: list[dict[str, Any]] = []
         self.summary_error = summary_error
+        self.memory_review_requests: list[dict[str, Any]] = []
+        self.memory_review_response = memory_review_response or []
+        self.memory_review_error = memory_review_error
         super().__init__(
             memory_store,
             audio_runtime=None,
@@ -59,6 +64,23 @@ class FakeAgentRuntime(AgentRuntime):
             "messages": json.loads(json.dumps(messages)),
         })
         return "Summary: older setup is now compacted."
+
+    def _request_memory_review(
+        self,
+        session_id: str,
+        messages: list[dict[str, str | int]],
+        existing_items: list[dict[str, str | int | float | bool]],
+        pending_candidates: list[dict[str, str | int | float | bool]],
+    ) -> list[dict[str, Any]]:
+        if self.memory_review_error:
+            raise RuntimeError(self.memory_review_error)
+        self.memory_review_requests.append({
+            "sessionId": session_id,
+            "messages": json.loads(json.dumps(messages)),
+            "existingItems": json.loads(json.dumps(existing_items)),
+            "pendingCandidates": json.loads(json.dumps(pending_candidates)),
+        })
+        return self.memory_review_response
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -201,6 +223,46 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result["compacted"])
         self.assertEqual(result["summary"]["content"], "Summary: older setup is now compacted.")
+
+    def test_memory_review_runner_saves_candidates_without_promoting(self) -> None:
+        first_id = self.memory.save("default", "user", "Please keep responses direct.")
+        last_id = self.memory.save("default", "assistant", "Understood.")
+        runtime = FakeAgentRuntime(
+            self.memory,
+            memory_review_response=[
+                {
+                    "scope": "user",
+                    "content": "The user prefers direct responses.",
+                    "confidence": 0.8,
+                    "reason": "The user explicitly asked for direct responses.",
+                    "sourceMessageStartId": first_id,
+                    "sourceMessageEndId": last_id,
+                }
+            ],
+        )
+
+        result = runtime.review_memory("default", force=True)
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+        items = self.memory.list_memory_items(scope="user")
+
+        self.assertTrue(result["reviewed"])
+        self.assertEqual(result["candidateCount"], 1)
+        self.assertEqual(len(runtime.memory_review_requests), 1)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["content"], "The user prefers direct responses.")
+        self.assertEqual(candidates[0]["sourceMessageStartId"], first_id)
+        self.assertEqual(candidates[0]["sourceMessageEndId"], last_id)
+        self.assertEqual(items, [])
+
+    def test_memory_review_runner_reports_provider_failure_without_candidates(self) -> None:
+        self.memory.save("default", "user", "Remember nothing yet.")
+        runtime = FakeAgentRuntime(self.memory, memory_review_error="review failed")
+
+        result = runtime.review_memory("default", force=True)
+
+        self.assertFalse(result["reviewed"])
+        self.assertIn("review failed", result["error"])
+        self.assertEqual(self.memory.list_memory_review_candidates(session_id="default"), [])
 
     def test_summary_failure_sets_auto_cooldown(self) -> None:
         for index in range(4):

@@ -430,9 +430,9 @@ harnesses:
   - 已完成：`memory_add`、`search_memory_items`。
   - 后续可补：`memory_replace`、`memory_forget`。
 - 实现 background memory review runner：
-  - 每个 turn 后异步判断是否需要保存偏好/事实。
-  - 不阻塞主回复。
-  - 只生成 `memory_review_candidates`，不直接写入 `memory_items`。
+  - 已完成手动触发第一片：`POST /memory/review/run` 读取最近消息、已有 durable memory 和 pending candidates，只生成 `memory_review_candidates`，不直接写入 `memory_items`。
+  - 后续补自动调度：每个 turn 后或 compaction 后异步判断是否需要保存偏好/事实。
+  - 自动调度不阻塞主回复。
   - 严禁保存 API key、临时状态和敏感内容。
 - `session_search` 支持跨会话召回。
 

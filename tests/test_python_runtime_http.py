@@ -23,6 +23,26 @@ class SummaryRuntime(AgentRuntime):
         return "HTTP compacted summary"
 
 
+class ReviewRuntime(AgentRuntime):
+    def _request_memory_review(
+        self,
+        session_id: str,
+        messages: list[dict],
+        existing_items: list[dict],
+        pending_candidates: list[dict],
+    ) -> list[dict]:
+        return [
+            {
+                "scope": "user",
+                "content": "The user prefers HTTP-reviewed direct answers.",
+                "confidence": 0.82,
+                "reason": "The user asked for direct answers.",
+                "sourceMessageStartId": int(messages[0]["id"]),
+                "sourceMessageEndId": int(messages[-1]["id"]),
+            }
+        ]
+
+
 class PythonRuntimeHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -202,6 +222,25 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(rejected["rejected"])
         self.assertEqual(rejected["candidate"]["status"], "rejected")
         self.assertEqual(len(rejected_list["candidates"]), 1)
+
+    def test_memory_review_run_creates_pending_candidates_over_http(self) -> None:
+        runtime_server.memory_store.save("http-test", "user", "Please answer directly over HTTP.")
+        runtime_server.memory_store.save("http-test", "assistant", "Understood.")
+        runtime_server.agent_runtime = ReviewRuntime(
+            runtime_server.memory_store,
+            audio_runtime=None,
+            tools_config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+
+        reviewed = self.post_json("/memory/review/run", {"sessionId": "http-test", "force": True})
+        listed = self.get_json("/memory/review/candidates?sessionId=http-test&status=pending")
+
+        self.assertTrue(reviewed["ok"])
+        self.assertTrue(reviewed["reviewed"])
+        self.assertEqual(reviewed["candidateCount"], 1)
+        self.assertEqual(len(listed["candidates"]), 1)
+        self.assertEqual(listed["candidates"][0]["content"], "The user prefers HTTP-reviewed direct answers.")
+        self.assertEqual(self.get_json("/memory/items?scope=user")["items"], [])
 
     def test_memory_summary_roundtrip_over_http(self) -> None:
         runtime_server.memory_store.save("http-test", "user", "Long setup")

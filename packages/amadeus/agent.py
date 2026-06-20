@@ -39,6 +39,10 @@ SUMMARY_TRIGGER_MESSAGE_COUNT = 40
 SUMMARY_KEEP_RECENT_MESSAGES = 20
 SUMMARY_SOURCE_MAX_MESSAGES = 120
 SUMMARY_FAILURE_COOLDOWN_SECONDS = 300
+MEMORY_REVIEW_SOURCE_MAX_MESSAGES = 40
+MEMORY_REVIEW_EXISTING_MEMORY_LIMIT = 40
+MEMORY_REVIEW_PENDING_LIMIT = 40
+MEMORY_REVIEW_MAX_CANDIDATES = 8
 logger = logging.getLogger(__name__)
 
 
@@ -345,6 +349,88 @@ class AgentRuntime:
             "summary": event.payload["summary"] if event else self.memory_store.load_conversation_summary(session_id),
         }
 
+    def review_memory(self, session_id: str, force: bool = True) -> dict[str, Any]:
+        if not self.api_key:
+            logger.info("Skipping memory review due to missing API key sessionId=%s", session_id)
+            return {"reviewed": False, "sessionId": session_id, "error": "OPENAI_API_KEY is not configured."}
+
+        messages = self.memory_store.load_detailed(session_id, limit=MEMORY_REVIEW_SOURCE_MAX_MESSAGES)
+        if not messages:
+            logger.info("Skipping memory review because session has no messages sessionId=%s", session_id)
+            return {
+                "reviewed": False,
+                "sessionId": session_id,
+                "reason": "no_messages",
+                "candidates": [],
+                "candidateCount": 0,
+            }
+
+        existing_items = self.memory_store.list_memory_items(limit=MEMORY_REVIEW_EXISTING_MEMORY_LIMIT)
+        pending_candidates = self.memory_store.list_memory_review_candidates(
+            session_id=session_id,
+            status="pending",
+            limit=MEMORY_REVIEW_PENDING_LIMIT,
+        )
+
+        try:
+            proposed_candidates = self._request_memory_review(
+                session_id,
+                messages,
+                existing_items,
+                pending_candidates,
+            )
+        except RuntimeError as error:
+            logger.info("Memory review failed sessionId=%s error=%s", session_id, error)
+            return {"reviewed": False, "sessionId": session_id, "error": str(error), "candidates": [], "candidateCount": 0}
+
+        saved_candidates = []
+        for proposed in proposed_candidates[:MEMORY_REVIEW_MAX_CANDIDATES]:
+            if not isinstance(proposed, dict):
+                continue
+            scope = proposed.get("scope")
+            content = proposed.get("content")
+            if not isinstance(scope, str) or not isinstance(content, str):
+                continue
+            confidence = proposed.get("confidence", 0.7)
+            if not isinstance(confidence, (int, float)):
+                confidence = 0.7
+            reason = proposed.get("reason") if isinstance(proposed.get("reason"), str) else None
+            source_start = proposed.get("sourceMessageStartId")
+            source_end = proposed.get("sourceMessageEndId")
+            source_start_id = source_start if isinstance(source_start, int) else None
+            source_end_id = source_end if isinstance(source_end, int) else None
+
+            try:
+                candidate = self.memory_store.save_memory_review_candidate(
+                    session_id,
+                    scope,
+                    content,
+                    confidence=float(confidence),
+                    reason=reason,
+                    source_message_start_id=source_start_id,
+                    source_message_end_id=source_end_id,
+                )
+            except ValueError as error:
+                logger.info("Skipping invalid memory review candidate sessionId=%s error=%s", session_id, error)
+                continue
+            saved_candidates.append(candidate)
+
+        logger.info(
+            "Memory review completed sessionId=%s sourceMessages=%s proposedCandidates=%s savedCandidates=%s",
+            session_id,
+            len(messages),
+            len(proposed_candidates),
+            len(saved_candidates),
+        )
+        return {
+            "reviewed": True,
+            "sessionId": session_id,
+            "sourceMessageCount": len(messages),
+            "proposedCandidateCount": len(proposed_candidates),
+            "candidateCount": len(saved_candidates),
+            "candidates": saved_candidates,
+        }
+
     def _load_history(self, session_id: str, limit: int = 40) -> list[dict[str, Any]]:
         summary = self.memory_store.load_conversation_summary(session_id)
         memory_items = self.memory_store.list_memory_items(limit=MEMORY_ITEMS_CONTEXT_LIMIT)
@@ -540,6 +626,73 @@ class AgentRuntime:
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("summary provider returned empty content")
         return content.strip()
+
+    def _request_memory_review(
+        self,
+        session_id: str,
+        messages: list[dict[str, str | int]],
+        existing_items: list[dict[str, str | int | float | bool]],
+        pending_candidates: list[dict[str, str | int | float | bool]],
+    ) -> list[dict[str, Any]]:
+        transcript_lines = [
+            f"{message['id']}. {message['role']}: {sanitize_memory_context_text(str(message['content']), max_chars=1000, collapse_whitespace=False)}"
+            for message in messages
+        ]
+        existing_lines = [
+            f"- scope={item.get('scope', '')} confidence={item.get('confidence', '')}: "
+            f"{sanitize_memory_context_text(str(item.get('content', '')), max_chars=300)}"
+            for item in existing_items
+            if not item.get("deleted")
+        ]
+        pending_lines = [
+            f"- scope={candidate.get('scope', '')} confidence={candidate.get('confidence', '')}: "
+            f"{sanitize_memory_context_text(str(candidate.get('content', '')), max_chars=300)}"
+            for candidate in pending_candidates
+        ]
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Review a recent conversation and propose durable structured memory candidates. "
+                        "Return strict JSON only, with no Markdown. "
+                        "Only propose stable user preferences, agent operating facts, project facts, or durable decisions explicitly supported by the messages. "
+                        "Do not propose transient task progress, raw transcripts, secrets, credentials, API keys, private tokens, guesses, or sensitive personal data. "
+                        "Do not duplicate existing memory or pending candidates."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Session id: {session_id}\n\n"
+                        "Existing durable memory:\n"
+                        + ("\n".join(existing_lines) if existing_lines else "None")
+                        + "\n\nPending memory candidates:\n"
+                        + ("\n".join(pending_lines) if pending_lines else "None")
+                        + "\n\nRecent messages:\n"
+                        + "\n".join(transcript_lines)
+                        + "\n\nReturn JSON in this exact shape:\n"
+                        '{"candidates":[{"scope":"user|agent|project","content":"concise durable fact","confidence":0.0,"reason":"why this is durable","sourceMessageStartId":1,"sourceMessageEndId":2}]}'
+                    ),
+                },
+            ],
+            "stream": False,
+            "temperature": 0,
+        }
+        data = self._post_json("/chat/completions", payload)
+        choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+        first = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first.get("message"), dict) else {}
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("memory review provider returned empty content")
+
+        parsed = parse_json_object_from_text(content)
+        candidates = parsed.get("candidates")
+        if not isinstance(candidates, list):
+            raise RuntimeError("memory review provider returned JSON without candidates array")
+        return [candidate for candidate in candidates if isinstance(candidate, dict)]
 
     def _inject_memory_context(self, session_id: str, user_text: str) -> str:
         memory_context = self._format_prefetched_memory_context(session_id, user_text)
@@ -1076,6 +1229,33 @@ def sanitize_memory_context_text(text: str, max_chars: int, collapse_whitespace:
     if len(sanitized) > max_chars:
         return sanitized[:max_chars].rstrip() + "..."
     return sanitized
+
+
+def parse_json_object_from_text(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
+            raise RuntimeError("provider returned invalid JSON")
+        try:
+            parsed = json.loads(stripped[start:end + 1])
+        except json.JSONDecodeError as error:
+            raise RuntimeError("provider returned invalid JSON") from error
+
+    if not isinstance(parsed, dict):
+        raise RuntimeError("provider returned JSON that is not an object")
+    return parsed
 
 
 def is_context_overflow_error(error: RuntimeError) -> bool:

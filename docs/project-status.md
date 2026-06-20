@@ -324,7 +324,8 @@ Started.
 - Structured `memory_items` now persist durable `user` / `agent` / `project` facts, expose `GET /memory/items`, `POST /memory/items`, and `POST /memory/items/delete`, and inject the active top items into model context.
 - Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, and `memory_add` writes one durable fact only through the `ask` permission path with duplicate detection.
 - Memory review candidates now provide a human-controlled promotion queue: `GET/POST /memory/review/candidates` manages pending candidates, `POST /memory/review/accept` promotes one into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory.
-- Next: add the background review runner that proposes candidates after compaction or threshold triggers, without directly writing durable memory.
+- Background memory review runner can now be triggered with `POST /memory/review/run`; it asks the provider to propose candidates from recent messages and only writes pending `memory_review_candidates`, never durable `memory_items`.
+- Next: add automatic scheduling after compaction or threshold triggers, plus UI review affordances.
 
 ### Phase 9: Live2D and Audio Harnesses
 
