@@ -82,6 +82,7 @@ const searchableExtensions = new Set([
   '.yaml',
   '.yml',
 ])
+const maxReadFileBytes = 512 * 1024
 
 export function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
   const number = typeof value === 'number' ? value : Number(value)
@@ -182,6 +183,61 @@ function searchLocalFiles(args: Record<string, unknown>): string {
     maxResults,
     results,
     scannedFiles,
+  })
+}
+
+function readLocalFile(args: Record<string, unknown>): string {
+  const pathText = typeof args.path === 'string' ? args.path.trim() : ''
+  if (!pathText) {
+    return JSON.stringify({ error: 'path is required' })
+  }
+
+  const targetPath = resolve(repoRoot, pathText)
+  if (!isInside(targetPath, repoRoot)) {
+    return JSON.stringify({ error: 'path must be inside the project workspace' })
+  }
+
+  if (!existsSync(targetPath)) {
+    return JSON.stringify({ error: 'path must point to an existing file' })
+  }
+
+  let stats
+  try {
+    stats = statSync(targetPath)
+  }
+  catch {
+    return JSON.stringify({ error: 'could not inspect file' })
+  }
+
+  if (!stats.isFile()) {
+    return JSON.stringify({ error: 'path must point to an existing file' })
+  }
+
+  if (!searchableExtensions.has(extname(targetPath).toLowerCase())) {
+    return JSON.stringify({ error: 'file type is not readable by this tool' })
+  }
+
+  if (stats.size > maxReadFileBytes) {
+    return JSON.stringify({ error: 'file is too large to read safely' })
+  }
+
+  const maxChars = normalizePositiveInteger(args.maxChars, 4000, 1, 20000)
+  let content = ''
+  try {
+    content = readFileSync(targetPath, 'utf8')
+  }
+  catch {
+    return JSON.stringify({ error: 'file is not readable as utf-8 text' })
+  }
+
+  const truncated = content.length > maxChars
+  return JSON.stringify({
+    path: relative(repoRoot, targetPath).replace(/\\/g, '/'),
+    sizeBytes: stats.size,
+    charCount: content.length,
+    maxChars,
+    truncated,
+    content: truncated ? content.slice(0, maxChars) : content,
   })
 }
 
@@ -484,6 +540,39 @@ export function createDefaultToolRegistry(options: {
         return `Allow Amadeus to search local project files under ${root} for "${query}"?`
       },
       execute: executeTool('local_file_search', searchLocalFiles),
+    },
+    read_file: {
+      name: 'read_file',
+      displayName: 'Reading local file',
+      permission: 'ask',
+      enabled: true,
+      schema: {
+        type: 'function',
+        function: {
+          name: 'read_file',
+          description: 'Read a small UTF-8 text file inside the project workspace. Use this after local_file_search when the user needs the contents of a specific project file.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+                description: 'Workspace-relative file path to read.',
+              },
+              maxChars: {
+                type: 'number',
+                description: 'Maximum characters to return. Defaults to 4000 and is capped at 20000.',
+              },
+            },
+            required: ['path'],
+            additionalProperties: false,
+          },
+        },
+      },
+      describeRequest: (args) => {
+        const path = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : '(empty path)'
+        return `Allow Amadeus to read local project file ${path}?`
+      },
+      execute: executeTool('read_file', readLocalFile),
     },
   }
 }

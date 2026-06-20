@@ -49,6 +49,7 @@ Fallback path today:
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as an `ask` tool.
 - `local_file_search` is implemented as an `ask` tool in the Python runtime.
+- `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
 - Desktop diagnostics show the loaded tool permission state from the server.
@@ -188,6 +189,7 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 - Added inline desktop Allow / Deny prompts.
 - Extracted TypeScript tool metadata and config loading into `packages/amadeus/tools.ts`.
 - Added `local_file_search` as the first practical project-search tool.
+- Added `read_file` so the agent can inspect a bounded UTF-8 workspace file after finding it.
 - Split Python tool implementations from the old single `tools.py` file into `packages/amadeus/tools/` modules while keeping the `amadeus.tools` import surface stable.
 
 ## In Progress
@@ -222,6 +224,7 @@ Status: first slice complete.
 - Added first-pass cooperative cancellation handling with structured `tool_cancelled` failures.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
 - Added first-pass per-tool result policy for `local_file_search`, keeping search metadata while capping model-context result count and preview length.
+- Added first-pass per-tool result policy for `read_file`, keeping file metadata while capping file content written back into model context.
 - Split concrete Python tools into focused modules under `packages/amadeus/tools/`, with shared definitions in `tools/base.py` and registry exports in `tools/__init__.py`.
 - Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
 - Added focused tests for:

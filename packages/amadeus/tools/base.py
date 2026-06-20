@@ -28,6 +28,10 @@ class ToolSpec:
             root = args.get("root").strip() if isinstance(args.get("root"), str) and args.get("root").strip() else "."
             return f'Allow Amadeus to search local project files under {root} for "{query}"?'
 
+        if self.name == "read_file":
+            path = args.get("path").strip() if isinstance(args.get("path"), str) and args.get("path").strip() else "(empty path)"
+            return f"Allow Amadeus to read local project file {path}?"
+
         return f"Allow Amadeus to run {self.display_name}?"
 
 

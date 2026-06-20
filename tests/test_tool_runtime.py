@@ -11,10 +11,22 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.tool_runtime import ToolAuditLog, ToolAuditStore, ToolContext, ToolLoopGuardrail, ToolRegistry
-from amadeus.tools import ToolSpec
+from amadeus.tools import ToolSpec, execute_tool, list_tools
 
 
 class ToolRegistryTests(unittest.TestCase):
+    def test_default_registry_includes_read_file_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+        tool_state = {entry["name"]: entry for entry in registry.permission_state()}
+        schema_names = {entry["function"]["name"] for entry in registry.enabled_schemas()}
+
+        self.assertIn("read_file", list_tools())
+        self.assertIn("read_file", tool_state)
+        self.assertEqual(tool_state["read_file"]["permission"], "ask")
+        self.assertIn("read_file", schema_names)
+
     def test_config_alias_updates_effective_tool_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "tools.yaml"
@@ -333,6 +345,59 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.model_output, output)
         self.assertFalse(result.output_truncated)
         self.assertIsNone(result.output_preview)
+
+    def test_read_file_reads_workspace_text_file(self) -> None:
+        output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "maxChars": 80})
+
+        self.assertEqual(output["path"], "packages/amadeus/README.md")
+        self.assertIn("# Amadeus Runtime", output["content"])
+        self.assertLessEqual(len(output["content"]), 80)
+        self.assertGreater(output["sizeBytes"], 0)
+
+    def test_read_file_blocks_paths_outside_workspace(self) -> None:
+        output = execute_tool("read_file", {"path": "../outside.txt"})
+
+        self.assertEqual(output, {"error": "path must be inside the project workspace"})
+
+    def test_execute_applies_read_file_result_policy(self) -> None:
+        content = "x" * 5000
+        output = {
+            "path": "packages/example.py",
+            "sizeBytes": len(content),
+            "charCount": len(content),
+            "maxChars": len(content),
+            "truncated": False,
+            "content": content,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="read_file",
+                        display_name="Read",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "read_file"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "read_file",
+                {"path": "packages/example.py"},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=200),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, output)
+        self.assertTrue(result.output_truncated)
+        self.assertEqual(result.model_output["_amadeus_result_policy"], "read_file_v1")
+        self.assertEqual(result.model_output["path"], "packages/example.py")
+        self.assertEqual(len(result.model_output["content"]), 3000)
+        self.assertEqual(result.output_preview, "x" * 200)
 
 
 class ToolLoopGuardrailTests(unittest.TestCase):

@@ -40,6 +40,7 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 | `get_current_time` | `allow` | Returns the current date/time for a requested IANA timezone. It defaults to `Asia/Shanghai` and falls back to UTC for invalid timezones. |
 | `roll_dice` | `ask` | Rolls one or more dice with bounded `sides` and `count`, returning individual rolls and the total. |
 | `local_file_search` | `ask` | Searches workspace-relative filenames and small text files for a query, skipping generated/heavy directories and capping result count. |
+| `read_file` | `ask` | Reads a workspace-relative UTF-8 text file after search, with workspace containment, file type, size, and returned-content limits. |
 
 The runtime layer around these tools adds behavior that tool handlers do not need to reimplement:
 
@@ -49,6 +50,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Tool execution records duration, stable failure codes, `tool.started` / `tool.finished` events, and persisted `tool.audit` records.
 - Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn.
 - `local_file_search` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.
+- `read_file` has a per-tool model-output policy that preserves file metadata while capping file content written back into model context.
 
 ## Adding A Tool
 
