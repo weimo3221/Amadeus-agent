@@ -8,8 +8,31 @@ from amadeus.tools.local_file_search import REPO_ROOT, SEARCHABLE_EXTENSIONS, is
 
 
 MAX_READ_FILE_BYTES = 512 * 1024
-DEFAULT_READ_FILE_CHARS = 4000
+DEFAULT_READ_FILE_CHARS = 12000
 MAX_READ_FILE_CHARS = 20000
+DEFAULT_READ_FILE_LINE_LIMIT = 200
+MAX_READ_FILE_LINE_LIMIT = 1000
+
+
+def _normalize_start_line(args: dict[str, Any]) -> int:
+    if args.get("startLine") is not None:
+        return normalize_positive_int(args.get("startLine"), 1, 1, 1_000_000)
+
+    if args.get("offset") is not None:
+        offset = normalize_positive_int(args.get("offset"), 0, 0, 1_000_000)
+        return offset + 1
+
+    return 1
+
+
+def _normalize_line_limit(args: dict[str, Any]) -> int:
+    if args.get("lineLimit") is not None:
+        return normalize_positive_int(args.get("lineLimit"), DEFAULT_READ_FILE_LINE_LIMIT, 1, MAX_READ_FILE_LINE_LIMIT)
+
+    if args.get("limit") is not None:
+        return normalize_positive_int(args.get("limit"), DEFAULT_READ_FILE_LINE_LIMIT, 1, MAX_READ_FILE_LINE_LIMIT)
+
+    return DEFAULT_READ_FILE_LINE_LIMIT
 
 
 def read_file(args: dict[str, Any]) -> dict[str, Any]:
@@ -34,6 +57,8 @@ def read_file(args: dict[str, Any]) -> dict[str, Any]:
     if size_bytes > MAX_READ_FILE_BYTES:
         return {"error": "file is too large to read safely"}
 
+    start_line = _normalize_start_line(args)
+    line_limit = _normalize_line_limit(args)
     max_chars = normalize_positive_int(args.get("maxChars"), DEFAULT_READ_FILE_CHARS, 1, MAX_READ_FILE_CHARS)
 
     try:
@@ -41,15 +66,42 @@ def read_file(args: dict[str, Any]) -> dict[str, Any]:
     except (OSError, UnicodeDecodeError):
         return {"error": "file is not readable as utf-8 text"}
 
-    truncated = len(content) > max_chars
-    returned_content = content[:max_chars] if truncated else content
+    lines = content.splitlines()
+    total_lines = len(lines)
+    start_index = min(start_line - 1, total_lines)
+    end_index = min(start_index + line_limit, total_lines)
+    selected_lines = lines[start_index:end_index]
+
+    rendered_lines: list[str] = []
+    truncated_by_chars = False
+    for line_number, line in enumerate(selected_lines, start=start_index + 1):
+        rendered_line = f"{line_number:>6} | {line}"
+        projected = "\n".join([*rendered_lines, rendered_line]) if rendered_lines else rendered_line
+        if len(projected) > max_chars:
+            remaining = max_chars - (len("\n".join(rendered_lines)) + (1 if rendered_lines else 0))
+            if remaining > 0:
+                rendered_lines.append(rendered_line[:remaining])
+            truncated_by_chars = True
+            break
+        rendered_lines.append(rendered_line)
+
+    returned_content = "\n".join(rendered_lines)
+    returned_line_count = len(rendered_lines)
+    returned_end_line = start_index + returned_line_count
+    has_more = end_index < total_lines or truncated_by_chars
 
     return {
         "path": target_path.relative_to(REPO_ROOT).as_posix(),
         "sizeBytes": size_bytes,
         "charCount": len(content),
+        "totalLines": total_lines,
+        "startLine": start_index + 1 if total_lines else 1,
+        "endLine": returned_end_line,
+        "lineCount": returned_line_count,
+        "lineLimit": line_limit,
         "maxChars": max_chars,
-        "truncated": truncated,
+        "hasMore": has_more,
+        "truncated": truncated_by_chars,
         "content": returned_content,
     }
 
@@ -74,7 +126,15 @@ READ_FILE_TOOL_SPEC = ToolSpec(
                     },
                     "maxChars": {
                         "type": "number",
-                        "description": "Maximum characters to return. Defaults to 4000 and is capped at 20000.",
+                        "description": "Maximum rendered characters to return from this explicit read window. Defaults to 12000 and is capped at 20000.",
+                    },
+                    "startLine": {
+                        "type": "number",
+                        "description": "1-based first line to read. Defaults to 1.",
+                    },
+                    "lineLimit": {
+                        "type": "number",
+                        "description": "Maximum lines to return. Defaults to 200 and is capped at 1000.",
                     },
                 },
                 "required": ["path"],

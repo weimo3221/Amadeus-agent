@@ -84,6 +84,10 @@ const searchableExtensions = new Set([
 ])
 const maxReadFileBytes = 512 * 1024
 const searchTargets = new Set(['all', 'files', 'content'])
+const defaultReadFileChars = 12000
+const maxReadFileChars = 20000
+const defaultReadFileLineLimit = 200
+const maxReadFileLineLimit = 1000
 
 export function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
   const number = typeof value === 'number' ? value : Number(value)
@@ -228,7 +232,17 @@ function readLocalFile(args: Record<string, unknown>): string {
     return JSON.stringify({ error: 'file is too large to read safely' })
   }
 
-  const maxChars = normalizePositiveInteger(args.maxChars, 4000, 1, 20000)
+  const startLine = args.startLine !== undefined
+    ? normalizePositiveInteger(args.startLine, 1, 1, 1_000_000)
+    : args.offset !== undefined
+      ? normalizePositiveInteger(args.offset, 0, 0, 1_000_000) + 1
+      : 1
+  const lineLimit = args.lineLimit !== undefined
+    ? normalizePositiveInteger(args.lineLimit, defaultReadFileLineLimit, 1, maxReadFileLineLimit)
+    : args.limit !== undefined
+      ? normalizePositiveInteger(args.limit, defaultReadFileLineLimit, 1, maxReadFileLineLimit)
+      : defaultReadFileLineLimit
+  const maxChars = normalizePositiveInteger(args.maxChars, defaultReadFileChars, 1, maxReadFileChars)
   let content = ''
   try {
     content = readFileSync(targetPath, 'utf8')
@@ -237,14 +251,45 @@ function readLocalFile(args: Record<string, unknown>): string {
     return JSON.stringify({ error: 'file is not readable as utf-8 text' })
   }
 
-  const truncated = content.length > maxChars
+  const lines = content.split(/\r?\n/)
+  const totalLines = lines.length === 1 && lines[0] === '' ? 0 : lines.length
+  const startIndex = Math.min(startLine - 1, totalLines)
+  const endIndex = Math.min(startIndex + lineLimit, totalLines)
+  const selectedLines = lines.slice(startIndex, endIndex)
+  const renderedLines: string[] = []
+  let truncatedByChars = false
+
+  for (let index = 0; index < selectedLines.length; index += 1) {
+    const lineNumber = startIndex + index + 1
+    const renderedLine = `${String(lineNumber).padStart(6, ' ')} | ${selectedLines[index]}`
+    const current = renderedLines.join('\n')
+    const projected = current ? `${current}\n${renderedLine}` : renderedLine
+    if (projected.length > maxChars) {
+      const remaining = maxChars - (current.length + (current ? 1 : 0))
+      if (remaining > 0) {
+        renderedLines.push(renderedLine.slice(0, remaining))
+      }
+      truncatedByChars = true
+      break
+    }
+    renderedLines.push(renderedLine)
+  }
+
+  const returnedLineCount = renderedLines.length
+  const returnedEndLine = startIndex + returnedLineCount
   return JSON.stringify({
     path: relative(repoRoot, targetPath).replace(/\\/g, '/'),
     sizeBytes: stats.size,
     charCount: content.length,
+    totalLines,
+    startLine: totalLines ? startIndex + 1 : 1,
+    endLine: returnedEndLine,
+    lineCount: returnedLineCount,
+    lineLimit,
     maxChars,
-    truncated,
-    content: truncated ? content.slice(0, maxChars) : content,
+    hasMore: endIndex < totalLines || truncatedByChars,
+    truncated: truncatedByChars,
+    content: renderedLines.join('\n'),
   })
 }
 
@@ -610,7 +655,15 @@ export function createDefaultToolRegistry(options: {
               },
               maxChars: {
                 type: 'number',
-                description: 'Maximum characters to return. Defaults to 4000 and is capped at 20000.',
+                description: 'Maximum rendered characters to return from this explicit read window. Defaults to 12000 and is capped at 20000.',
+              },
+              startLine: {
+                type: 'number',
+                description: '1-based first line to read. Defaults to 1.',
+              },
+              lineLimit: {
+                type: 'number',
+                description: 'Maximum lines to return. Defaults to 200 and is capped at 1000.',
               },
             },
             required: ['path'],

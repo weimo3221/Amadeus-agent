@@ -42,7 +42,7 @@ Current active Python tools:
 - `get_current_time`: `allow`; returns formatted current time for an IANA timezone.
 - `roll_dice`: `ask`; rolls bounded dice counts/sides and returns rolls plus total.
 - `search_files`: `ask`; searches workspace-relative filenames and/or small text file contents with `target: all | files | content`, path containment, skipped generated directories, result caps, and a per-tool model-output policy.
-- `read_file`: `ask`; reads workspace-relative UTF-8 text files with path containment, file type/size limits, returned-content caps, and a per-tool model-output policy.
+- `read_file`: `ask`; reads an explicit line-numbered window from a workspace-relative UTF-8 text file with path containment, file type/size limits, `startLine` / `lineLimit`, `totalLines`, `hasMore`, and a visible character cap. It intentionally avoids hidden runtime compression.
 
 `local_file_search` remains registered as a disabled compatibility alias for older tool calls. New prompts, schemas, and docs should prefer `search_files`.
 

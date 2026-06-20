@@ -374,12 +374,17 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertTrue(output["results"])
         self.assertTrue(all(result["match"] == "path" for result in output["results"]))
 
-    def test_read_file_reads_workspace_text_file(self) -> None:
-        output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "maxChars": 80})
+    def test_read_file_reads_workspace_text_file_with_line_numbers(self) -> None:
+        output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "lineLimit": 2, "maxChars": 200})
 
         self.assertEqual(output["path"], "packages/amadeus/README.md")
         self.assertIn("# Amadeus Runtime", output["content"])
-        self.assertLessEqual(len(output["content"]), 80)
+        self.assertIn("     1 |", output["content"])
+        self.assertEqual(output["startLine"], 1)
+        self.assertEqual(output["lineCount"], 2)
+        self.assertGreaterEqual(output["totalLines"], 2)
+        self.assertTrue(output["hasMore"])
+        self.assertLessEqual(len(output["content"]), 200)
         self.assertGreater(output["sizeBytes"], 0)
 
     def test_read_file_blocks_paths_outside_workspace(self) -> None:
@@ -387,13 +392,30 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertEqual(output, {"error": "path must be inside the project workspace"})
 
-    def test_execute_applies_read_file_result_policy(self) -> None:
+    def test_read_file_supports_explicit_line_window(self) -> None:
+        output = execute_tool(
+            "read_file",
+            {"path": "packages/amadeus/README.md", "startLine": 2, "lineLimit": 1, "maxChars": 200},
+        )
+
+        self.assertEqual(output["startLine"], 2)
+        self.assertEqual(output["endLine"], 2)
+        self.assertEqual(output["lineCount"], 1)
+        self.assertTrue(output["content"].startswith("     2 |"))
+
+    def test_execute_does_not_apply_read_file_result_policy(self) -> None:
         content = "x" * 5000
         output = {
             "path": "packages/example.py",
             "sizeBytes": len(content),
             "charCount": len(content),
+            "totalLines": 1,
+            "startLine": 1,
+            "endLine": 1,
+            "lineCount": 1,
+            "lineLimit": 1,
             "maxChars": len(content),
+            "hasMore": False,
             "truncated": False,
             "content": content,
         }
@@ -421,11 +443,9 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.output, output)
-        self.assertTrue(result.output_truncated)
-        self.assertEqual(result.model_output["_amadeus_result_policy"], "read_file_v1")
-        self.assertEqual(result.model_output["path"], "packages/example.py")
-        self.assertEqual(len(result.model_output["content"]), 3000)
-        self.assertEqual(result.output_preview, "x" * 200)
+        self.assertEqual(result.model_output, output)
+        self.assertFalse(result.output_truncated)
+        self.assertIsNone(result.output_preview)
 
 
 class ToolLoopGuardrailTests(unittest.TestCase):

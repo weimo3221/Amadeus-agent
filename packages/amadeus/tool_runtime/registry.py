@@ -23,7 +23,6 @@ DEFAULT_MAX_MODEL_OUTPUT_CHARS = 4000
 DEFAULT_OUTPUT_PREVIEW_CHARS = 1000
 LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT = 5
 LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS = 160
-READ_FILE_MODEL_CONTENT_CHARS = 3000
 
 
 @dataclass(frozen=True)
@@ -287,6 +286,9 @@ def normalize_tool_output_for_model(
     if not ok or len(serialized) <= max_chars:
         return model_output, policy_preview, policy_truncated
 
+    if tool_name == "read_file":
+        return model_output, policy_preview, policy_truncated
+
     preview_limit = max(1, min(preview_chars, max_chars))
     preview = serialized[:preview_limit]
     return (
@@ -312,8 +314,6 @@ def apply_tool_result_policy(
 
     if tool_name in {"search_files", "local_file_search"}:
         return normalize_search_files_output(tool_name, output, preview_chars)
-    if tool_name == "read_file":
-        return normalize_read_file_output(output, preview_chars)
 
     return output, None, False
 
@@ -372,30 +372,3 @@ def normalize_search_files_output(
     }
     preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
     return model_output, preview[:preview_limit], True
-
-
-def normalize_read_file_output(
-    output: dict[str, Any],
-    preview_chars: int,
-) -> tuple[dict[str, Any], str | None, bool]:
-    content = output.get("content")
-    if not isinstance(content, str):
-        return output, None, False
-
-    if len(content) <= READ_FILE_MODEL_CONTENT_CHARS and not output.get("truncated"):
-        return output, None, False
-
-    model_content = content[:READ_FILE_MODEL_CONTENT_CHARS]
-    model_output = {
-        "_amadeus_result_truncated": True,
-        "_amadeus_result_policy": "read_file_v1",
-        "tool_name": "read_file",
-        "path": output.get("path"),
-        "sizeBytes": output.get("sizeBytes"),
-        "charCount": output.get("charCount"),
-        "maxChars": output.get("maxChars"),
-        "truncated": True,
-        "content": model_content,
-    }
-    preview_limit = max(1, min(preview_chars, READ_FILE_MODEL_CONTENT_CHARS))
-    return model_output, model_content[:preview_limit], True

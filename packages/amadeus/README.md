@@ -40,7 +40,7 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 | `get_current_time` | `allow` | Returns the current date/time for a requested IANA timezone. It defaults to `Asia/Shanghai` and falls back to UTC for invalid timezones. |
 | `roll_dice` | `ask` | Rolls one or more dice with bounded `sides` and `count`, returning individual rolls and the total. |
 | `search_files` | `ask` | Searches workspace-relative filenames and/or small text file contents using `target: all | files | content`, skipping generated/heavy directories and capping result count. |
-| `read_file` | `ask` | Reads a workspace-relative UTF-8 text file after search, with workspace containment, file type, size, and returned-content limits. |
+| `read_file` | `ask` | Reads an explicit, line-numbered window from a workspace-relative UTF-8 text file after search, with workspace containment, file type, size, line, and character limits. |
 
 The runtime layer around these tools adds behavior that tool handlers do not need to reimplement:
 
@@ -50,7 +50,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Tool execution records duration, stable failure codes, `tool.started` / `tool.finished` events, and persisted `tool.audit` records.
 - Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn.
 - `search_files` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.
-- `read_file` has a per-tool model-output policy that preserves file metadata while capping file content written back into model context.
+- `read_file` does not use hidden runtime compression. It returns a caller-controlled `startLine` / `lineLimit` window with line numbers, `totalLines`, and `hasMore` so the model can continue reading explicitly.
 
 `local_file_search` is still registered as a disabled compatibility alias for older calls, but new schemas and prompts should use `search_files`.
 

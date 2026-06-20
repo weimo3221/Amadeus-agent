@@ -110,7 +110,8 @@ Fallback path today:
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
-  - `local_file_search` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
+  - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
+  - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression.
   - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress.
   - Unit tests cover registry config aliases, cancellation behavior, persisted audit records, result policy behavior, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
@@ -226,7 +227,7 @@ Status: first slice complete.
 - Added first-pass cooperative cancellation handling with structured `tool_cancelled` failures.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
 - Added first-pass per-tool result policy for `search_files`, keeping search metadata while capping model-context result count and preview length.
-- Added first-pass per-tool result policy for `read_file`, keeping file metadata while capping file content written back into model context.
+- Changed `read_file` to explicit `startLine` / `lineLimit` window reads with line numbers, `totalLines`, and `hasMore`; it no longer uses hidden runtime model-output compression.
 - Split concrete Python tools into focused modules under `packages/amadeus/tools/`, with shared definitions in `tools/base.py` and registry exports in `tools/__init__.py`.
 - Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
 - Added focused tests for:
@@ -235,7 +236,7 @@ Status: first slice complete.
   - structured timeout failures
   - structured cancellation failures and timeout cancellation signaling
   - model-context compression for large tool results
-  - `local_file_search` result policy behavior
+  - `search_files` result policy behavior
   - audit event/log behavior and SQLite persistence for allow, deny, and guardrail paths
   - guardrail threshold blocking
   - agent-level repeated failing tool call blocking
@@ -288,7 +289,7 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and `search_files` / `read_file` result policies.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression.
 - The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and richer semantic no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization
