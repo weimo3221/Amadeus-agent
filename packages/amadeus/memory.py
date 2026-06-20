@@ -96,7 +96,7 @@ class MessageMemoryStore:
             if column not in columns:
                 connection.execute(statement)
 
-    def save(self, session_id: str, role: str, content: str) -> None:
+    def save(self, session_id: str, role: str, content: str) -> int:
         if role not in ("user", "assistant"):
             raise ValueError("role must be user or assistant")
 
@@ -125,6 +125,7 @@ class MessageMemoryStore:
                     """,
                     (row_id, row[0], row[1], row[2], row[3]),
                 )
+        return int(row_id)
 
     def search(self, query: str, session_id: str | None = None, limit: int = 10) -> list[dict[str, str | int]]:
         normalized_query = query.strip()
@@ -205,17 +206,25 @@ class MessageMemoryStore:
             (pattern, limit),
         ).fetchall()
 
-    def load(self, session_id: str, limit: int = 40) -> list[dict[str, str]]:
+    def load(self, session_id: str, limit: int = 40, after_message_id: int | None = None) -> list[dict[str, str]]:
+        normalized_after_id = normalize_optional_non_negative_int(after_message_id, "after_message_id")
+        where = "session_id = ?"
+        params: list[object] = [session_id]
+        if normalized_after_id:
+            where += " AND id > ?"
+            params.append(normalized_after_id)
+        params.append(limit)
+
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT role, content
                 FROM messages
-                WHERE session_id = ?
+                WHERE {where}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (session_id, limit),
+                params,
             ).fetchall()
 
         return [{"role": row[0], "content": row[1]} for row in reversed(rows)]

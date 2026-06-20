@@ -58,6 +58,16 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(summary["summarizedMessageCount"], 2)
         self.assertEqual(summary["coveredMessageCount"], 2)
 
+    def test_load_can_filter_after_message_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            first_id = memory.save("session-1", "user", "old")
+            memory.save("session-1", "assistant", "new")
+
+            messages = memory.load("session-1", after_message_id=first_id)
+
+        self.assertEqual(messages, [{"role": "assistant", "content": "new"}])
+
     def test_reset_deletes_conversation_summary_for_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
