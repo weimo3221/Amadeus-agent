@@ -5,6 +5,7 @@ from typing import Any
 from amadeus.tools.base import ToolHandler, ToolPermission, ToolSpec, normalize_positive_int
 from amadeus.tools.dice import DICE_TOOL_SPEC, roll_dice
 from amadeus.tools.local_file_search import LOCAL_FILE_SEARCH_TOOL_SPEC, SEARCH_FILES_TOOL_SPEC, local_file_search, search_files
+from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
 from amadeus.tools.time import TIME_TOOL_SPEC, get_current_time
 
@@ -17,6 +18,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         SEARCH_FILES_TOOL_SPEC,
         LOCAL_FILE_SEARCH_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
+        PATCH_TOOL_SPEC,
     )
 }
 
@@ -56,6 +58,7 @@ __all__ = [
     "list_tools",
     "local_file_search",
     "normalize_positive_int",
+    "patch",
     "read_file",
     "roll_dice",
     "search_files",

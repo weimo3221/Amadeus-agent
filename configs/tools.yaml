@@ -20,6 +20,10 @@ tools:
     enabled: true
     permission: ask
 
+  patch:
+    enabled: true
+    permission: ask
+
   web_search:
     enabled: false
     permission: ask

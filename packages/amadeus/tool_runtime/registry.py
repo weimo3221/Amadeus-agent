@@ -286,7 +286,7 @@ def normalize_tool_output_for_model(
     if not ok or len(serialized) <= max_chars:
         return model_output, policy_preview, policy_truncated
 
-    if tool_name == "read_file":
+    if tool_name in {"read_file", "patch"}:
         return model_output, policy_preview, policy_truncated
 
     preview_limit = max(1, min(preview_chars, max_chars))

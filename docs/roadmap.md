@@ -104,6 +104,7 @@ Current tool baseline already delivered:
 - `roll_dice`
 - `search_files`
 - `read_file`
+- `patch`
 
 Planned follow-up tools:
 

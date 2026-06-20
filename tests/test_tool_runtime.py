@@ -37,6 +37,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["read_file"]["permission"], "ask")
         self.assertIn("read_file", schema_names)
 
+        self.assertIn("patch", list_tools())
+        self.assertIn("patch", tool_state)
+        self.assertEqual(tool_state["patch"]["permission"], "ask")
+        self.assertIn("patch", schema_names)
+
     def test_config_alias_updates_effective_tool_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "tools.yaml"
@@ -443,6 +448,91 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.output, output)
+        self.assertEqual(result.model_output, output)
+        self.assertFalse(result.output_truncated)
+        self.assertIsNone(result.output_preview)
+
+    def test_patch_replaces_unique_text_and_returns_diff(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-patch.txt"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+        try:
+            output = execute_tool("patch", {"path": relative_path, "oldText": "beta", "newText": "delta"})
+
+            self.assertTrue(output["changed"])
+            self.assertEqual(output["path"], relative_path)
+            self.assertEqual(output["replacements"], 1)
+            self.assertIn("-beta", output["diff"])
+            self.assertIn("+delta", output["diff"])
+            self.assertEqual(test_path.read_text(encoding="utf-8"), "alpha\ndelta\ngamma\n")
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_patch_requires_unique_match_by_default(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-patch.txt"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_text("same\nsame\n", encoding="utf-8")
+        try:
+            output = execute_tool("patch", {"path": relative_path, "oldText": "same", "newText": "changed"})
+
+            self.assertIn("multiple times", output["error"])
+            self.assertEqual(output["matchCount"], 2)
+            self.assertEqual(test_path.read_text(encoding="utf-8"), "same\nsame\n")
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_patch_replace_all_allows_multiple_matches(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-patch.txt"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_text("same\nsame\n", encoding="utf-8")
+        try:
+            output = execute_tool("patch", {"path": relative_path, "oldText": "same", "newText": "changed", "replaceAll": True})
+
+            self.assertEqual(output["replacements"], 2)
+            self.assertTrue(output["replaceAll"])
+            self.assertEqual(test_path.read_text(encoding="utf-8"), "changed\nchanged\n")
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_patch_blocks_paths_outside_workspace(self) -> None:
+        output = execute_tool("patch", {"path": "../outside.txt", "oldText": "a", "newText": "b"})
+
+        self.assertEqual(output, {"error": "path must be inside the project workspace"})
+
+    def test_execute_does_not_apply_global_compression_to_patch_result(self) -> None:
+        output = {
+            "path": "packages/example.py",
+            "changed": True,
+            "replacements": 1,
+            "replaceAll": False,
+            "sizeBytesBefore": 10,
+            "sizeBytesAfter": 5000,
+            "diff": "x" * 5000,
+            "diffTruncated": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="patch",
+                        display_name="Patch",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "patch"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "patch",
+                {"path": "packages/example.py", "oldText": "a", "newText": "b"},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=200),
+            )
+
+        self.assertTrue(result.ok)
         self.assertEqual(result.model_output, output)
         self.assertFalse(result.output_truncated)
         self.assertIsNone(result.output_preview)

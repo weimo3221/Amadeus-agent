@@ -51,6 +51,7 @@ Fallback path today:
 - `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
 - `local_file_search` remains as a disabled compatibility alias for older tool calls.
 - `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search.
+- `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
 - Desktop diagnostics show the loaded tool permission state from the server.
@@ -112,6 +113,7 @@ Fallback path today:
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
   - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression.
+  - `patch` now supports safe single-file UTF-8 text replacement with unique-match default, optional `replaceAll`, generated-directory restrictions, and diff output.
   - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress.
   - Unit tests cover registry config aliases, cancellation behavior, persisted audit records, result policy behavior, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
@@ -228,6 +230,7 @@ Status: first slice complete.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
 - Added first-pass per-tool result policy for `search_files`, keeping search metadata while capping model-context result count and preview length.
 - Changed `read_file` to explicit `startLine` / `lineLimit` window reads with line numbers, `totalLines`, and `hasMore`; it no longer uses hidden runtime model-output compression.
+- Added first-pass `patch` tool for safe single-file text replacement, following the Hermes/Deepagents pattern of exact old/new text with unique-match default and diff output.
 - Split concrete Python tools into focused modules under `packages/amadeus/tools/`, with shared definitions in `tools/base.py` and registry exports in `tools/__init__.py`.
 - Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
 - Added focused tests for:
@@ -289,7 +292,7 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression, and `patch` provides the first write-side file mutation tool.
 - The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and richer semantic no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization

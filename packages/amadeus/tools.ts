@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -88,6 +88,9 @@ const defaultReadFileChars = 12000
 const maxReadFileChars = 20000
 const defaultReadFileLineLimit = 200
 const maxReadFileLineLimit = 1000
+const maxPatchFileBytes = 512 * 1024
+const maxPatchTextBytes = 512 * 1024
+const maxPatchDiffChars = 6000
 
 export function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
   const number = typeof value === 'number' ? value : Number(value)
@@ -101,6 +104,71 @@ export function normalizePositiveInteger(value: unknown, fallback: number, min: 
 function isInside(path: string, parent: string): boolean {
   const relativePath = relative(parent, path)
   return relativePath === '' || (!!relativePath && !relativePath.startsWith('..') && !isAbsolute(relativePath))
+}
+
+function isRestrictedPath(path: string): boolean {
+  return relative(repoRoot, path)
+    .split(/[\\/]/)
+    .some((part) => skippedSearchDirs.has(part))
+}
+
+function countOccurrences(content: string, needle: string): number {
+  if (!needle) {
+    return 0
+  }
+
+  let count = 0
+  let index = content.indexOf(needle)
+  while (index !== -1) {
+    count += 1
+    index = content.indexOf(needle, index + needle.length)
+  }
+  return count
+}
+
+function normalizePatchLineEndings(content: string, oldText: string, newText: string): { oldText: string, newText: string } {
+  if (content.includes(oldText)) {
+    return { oldText, newText }
+  }
+
+  if (content.includes('\r\n') && !oldText.includes('\r\n')) {
+    const oldCrLf = oldText.replace(/\n/g, '\r\n')
+    const newCrLf = newText.replace(/\n/g, '\r\n')
+    if (content.includes(oldCrLf)) {
+      return { oldText: oldCrLf, newText: newCrLf }
+    }
+  }
+
+  return { oldText, newText }
+}
+
+function diffPreview(path: string, before: string, after: string): { diff: string, diffTruncated: boolean } {
+  const beforeLines = before.split(/\r?\n/)
+  const afterLines = after.split(/\r?\n/)
+  const lines = [`--- a/${path}`, `+++ b/${path}`]
+  const maxLines = Math.max(beforeLines.length, afterLines.length)
+  for (let index = 0; index < maxLines; index += 1) {
+    const beforeLine = beforeLines[index]
+    const afterLine = afterLines[index]
+    if (beforeLine === afterLine) {
+      if (beforeLine !== undefined) {
+        lines.push(` ${beforeLine}`)
+      }
+      continue
+    }
+    if (beforeLine !== undefined) {
+      lines.push(`-${beforeLine}`)
+    }
+    if (afterLine !== undefined) {
+      lines.push(`+${afterLine}`)
+    }
+  }
+
+  const diff = `${lines.join('\n')}\n`
+  if (diff.length <= maxPatchDiffChars) {
+    return { diff, diffTruncated: false }
+  }
+  return { diff: diff.slice(0, maxPatchDiffChars), diffTruncated: true }
 }
 
 function searchLocalFiles(args: Record<string, unknown>): string {
@@ -290,6 +358,106 @@ function readLocalFile(args: Record<string, unknown>): string {
     hasMore: endIndex < totalLines || truncatedByChars,
     truncated: truncatedByChars,
     content: renderedLines.join('\n'),
+  })
+}
+
+function patchLocalFile(args: Record<string, unknown>): string {
+  const pathText = typeof args.path === 'string' ? args.path.trim() : ''
+  if (!pathText) {
+    return JSON.stringify({ error: 'path is required' })
+  }
+
+  const oldArg = typeof args.oldText === 'string' ? args.oldText : typeof args.old_string === 'string' ? args.old_string : undefined
+  const newArg = typeof args.newText === 'string' ? args.newText : typeof args.new_string === 'string' ? args.new_string : undefined
+  if (oldArg === undefined || newArg === undefined) {
+    return JSON.stringify({ error: 'oldText and newText are required' })
+  }
+  if (!oldArg) {
+    return JSON.stringify({ error: 'oldText cannot be empty' })
+  }
+  if (oldArg === newArg) {
+    return JSON.stringify({ error: 'oldText and newText are identical' })
+  }
+
+  const targetPath = resolve(repoRoot, pathText)
+  if (!isInside(targetPath, repoRoot)) {
+    return JSON.stringify({ error: 'path must be inside the project workspace' })
+  }
+  if (isRestrictedPath(targetPath)) {
+    return JSON.stringify({ error: 'path is restricted and cannot be patched' })
+  }
+  if (!existsSync(targetPath)) {
+    return JSON.stringify({ error: 'path must point to an existing file' })
+  }
+
+  let stats
+  try {
+    stats = statSync(targetPath)
+  }
+  catch {
+    return JSON.stringify({ error: 'could not inspect file' })
+  }
+
+  if (!stats.isFile()) {
+    return JSON.stringify({ error: 'path must point to an existing file' })
+  }
+  if (!searchableExtensions.has(extname(targetPath).toLowerCase())) {
+    return JSON.stringify({ error: 'file type is not patchable by this tool' })
+  }
+  if (stats.size > maxPatchFileBytes) {
+    return JSON.stringify({ error: 'file is too large to patch safely' })
+  }
+
+  let content = ''
+  try {
+    content = readFileSync(targetPath, 'utf8')
+  }
+  catch {
+    return JSON.stringify({ error: 'file is not readable as utf-8 text' })
+  }
+
+  const { oldText, newText } = normalizePatchLineEndings(content, oldArg, newArg)
+  const matchCount = countOccurrences(content, oldText)
+  const replaceAll = typeof args.replaceAll === 'boolean'
+    ? args.replaceAll
+    : typeof args.replace_all === 'boolean'
+      ? args.replace_all
+      : false
+
+  if (matchCount === 0) {
+    return JSON.stringify({ error: 'oldText was not found; use read_file to verify the current file contents' })
+  }
+  if (matchCount > 1 && !replaceAll) {
+    return JSON.stringify({
+      error: 'oldText matched multiple times; include more surrounding context or set replaceAll=true',
+      matchCount,
+    })
+  }
+
+  const newContent = replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText)
+  const newSizeBytes = Buffer.byteLength(newContent, 'utf8')
+  if (newSizeBytes > maxPatchTextBytes) {
+    return JSON.stringify({ error: 'patched file would be too large' })
+  }
+
+  const relativePath = relative(repoRoot, targetPath).replace(/\\/g, '/')
+  const { diff, diffTruncated } = diffPreview(relativePath, content, newContent)
+  try {
+    writeFileSync(targetPath, newContent, 'utf8')
+  }
+  catch {
+    return JSON.stringify({ error: 'could not write patched file' })
+  }
+
+  return JSON.stringify({
+    path: relativePath,
+    changed: true,
+    replacements: replaceAll ? matchCount : 1,
+    replaceAll,
+    sizeBytesBefore: stats.size,
+    sizeBytesAfter: newSizeBytes,
+    diff,
+    diffTruncated,
   })
 }
 
@@ -676,6 +844,47 @@ export function createDefaultToolRegistry(options: {
         return `Allow Amadeus to read local project file ${path}?`
       },
       execute: executeTool('read_file', readLocalFile),
+    },
+    patch: {
+      name: 'patch',
+      displayName: 'Patching local file',
+      permission: 'ask',
+      enabled: true,
+      schema: {
+        type: 'function',
+        function: {
+          name: 'patch',
+          description: 'Apply a safe single-file text replacement inside the project workspace. Use this for local edits after read_file. oldText must uniquely identify the target text unless replaceAll=true.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+                description: 'Workspace-relative file path to patch.',
+              },
+              oldText: {
+                type: 'string',
+                description: 'Exact text to replace. Include enough surrounding context to make it unique.',
+              },
+              newText: {
+                type: 'string',
+                description: 'Replacement text.',
+              },
+              replaceAll: {
+                type: 'boolean',
+                description: 'Replace every occurrence. Defaults to false; by default oldText must be unique.',
+              },
+            },
+            required: ['path', 'oldText', 'newText'],
+            additionalProperties: false,
+          },
+        },
+      },
+      describeRequest: (args) => {
+        const path = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : '(empty path)'
+        return `Allow Amadeus to patch local project file ${path}?`
+      },
+      execute: executeTool('patch', patchLocalFile),
     },
   }
 }

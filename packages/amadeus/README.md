@@ -41,6 +41,7 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 | `roll_dice` | `ask` | Rolls one or more dice with bounded `sides` and `count`, returning individual rolls and the total. |
 | `search_files` | `ask` | Searches workspace-relative filenames and/or small text file contents using `target: all | files | content`, skipping generated/heavy directories and capping result count. |
 | `read_file` | `ask` | Reads an explicit, line-numbered window from a workspace-relative UTF-8 text file after search, with workspace containment, file type, size, line, and character limits. |
+| `patch` | `ask` | Applies a safe single-file text replacement inside the workspace, requiring a unique `oldText` match unless `replaceAll=true`, and returns a unified diff preview. |
 
 The runtime layer around these tools adds behavior that tool handlers do not need to reimplement:
 
@@ -51,6 +52,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn.
 - `search_files` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.
 - `read_file` does not use hidden runtime compression. It returns a caller-controlled `startLine` / `lineLimit` window with line numbers, `totalLines`, and `hasMore` so the model can continue reading explicitly.
+- `patch` follows the Hermes-style edit path: exact `oldText` / `newText`, unique-match default, optional `replaceAll`, restricted generated directories, UTF-8 text-only writes, and diff output for review.
 
 `local_file_search` is still registered as a disabled compatibility alias for older calls, but new schemas and prompts should use `search_files`.
 
