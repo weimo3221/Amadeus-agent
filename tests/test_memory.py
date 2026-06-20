@@ -125,6 +125,96 @@ class MessageMemoryStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 memory.save_memory_item("user", "fact", confidence=1.5)
 
+    def test_memory_review_candidates_can_be_saved_listed_and_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            first = memory.save_memory_review_candidate(
+                "session-1",
+                "user",
+                "The user prefers concise updates.",
+                confidence=0.8,
+                reason="User explicitly requested concise status updates.",
+                source_message_start_id=2,
+                source_message_end_id=4,
+            )
+            duplicate = memory.save_memory_review_candidate(
+                "session-1",
+                "user",
+                "The user prefers concise updates.",
+                confidence=0.6,
+            )
+            pending = memory.list_memory_review_candidates(session_id="session-1", status="pending")
+
+        self.assertFalse(first["duplicate"])
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(first["candidateId"], duplicate["candidateId"])
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["scope"], "user")
+        self.assertEqual(pending[0]["confidence"], 0.8)
+        self.assertEqual(pending[0]["reason"], "User explicitly requested concise status updates.")
+        self.assertEqual(pending[0]["sourceMessageStartId"], 2)
+        self.assertEqual(pending[0]["sourceMessageEndId"], 4)
+
+    def test_accept_memory_review_candidate_promotes_to_memory_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            candidate = memory.save_memory_review_candidate(
+                "session-1",
+                "project",
+                "Amadeus uses Python-first runtime.",
+                confidence=0.85,
+                source_message_end_id=9,
+            )
+            result = memory.accept_memory_review_candidate(int(candidate["candidateId"]))
+            accepted = memory.list_memory_review_candidates(status="accepted")
+            items = memory.list_memory_items(scope="project")
+
+        self.assertTrue(result["accepted"])
+        self.assertFalse(result["duplicateMemoryItem"])
+        self.assertEqual(result["candidate"]["status"], "accepted")
+        self.assertEqual(result["item"]["content"], "Amadeus uses Python-first runtime.")
+        self.assertEqual(result["item"]["sourceSessionId"], "session-1")
+        self.assertEqual(result["item"]["sourceMessageId"], 9)
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["memoryItemId"], result["item"]["memoryItemId"])
+        self.assertEqual(len(items), 1)
+
+    def test_reject_memory_review_candidate_does_not_write_memory_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            candidate = memory.save_memory_review_candidate(
+                "session-1",
+                "agent",
+                "Do not store transient task progress.",
+                confidence=0.7,
+            )
+            result = memory.reject_memory_review_candidate(int(candidate["candidateId"]))
+            rejected = memory.list_memory_review_candidates(status="rejected")
+            items = memory.list_memory_items(scope="agent")
+
+        self.assertTrue(result["rejected"])
+        self.assertEqual(result["candidate"]["status"], "rejected")
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(items, [])
+
+    def test_accept_memory_review_candidate_reuses_existing_memory_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            existing = memory.save_memory_item("user", "The user prefers Chinese responses.", confidence=1.0)
+            candidate = memory.save_memory_review_candidate(
+                "session-1",
+                "user",
+                "The user prefers Chinese responses.",
+                confidence=0.6,
+            )
+            result = memory.accept_memory_review_candidate(int(candidate["candidateId"]))
+            items = memory.list_memory_items(scope="user")
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["duplicateMemoryItem"])
+        self.assertEqual(result["item"]["memoryItemId"], existing["memoryItemId"])
+        self.assertEqual(len(items), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -323,7 +323,8 @@ Started.
 - Conversation summaries now track covered message ranges, are injected as reference-only context, and can be refreshed by automatic threshold compaction or manual `POST /memory/compact`.
 - Structured `memory_items` now persist durable `user` / `agent` / `project` facts, expose `GET /memory/items`, `POST /memory/items`, and `POST /memory/items/delete`, and inject the active top items into model context.
 - Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, and `memory_add` writes one durable fact only through the `ask` permission path with duplicate detection.
-- Next: add background memory review for safe fact extraction and promotion suggestions.
+- Memory review candidates now provide a human-controlled promotion queue: `GET/POST /memory/review/candidates` manages pending candidates, `POST /memory/review/accept` promotes one into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory.
+- Next: add the background review runner that proposes candidates after compaction or threshold triggers, without directly writing durable memory.
 
 ### Phase 9: Live2D and Audio Harnesses
 

@@ -415,6 +415,7 @@ harnesses:
 - 已完成 conversation summary 第一片：SQLite `conversation_summaries`、覆盖范围元数据、`GET /memory/summary`、`POST /memory/summary`、`POST /memory/compact`、阈值触发 compaction、context 注入。
 - 已完成 structured memory 第一片：SQLite `memory_items`、`user` / `agent` / `project` scope、显式 add/list/delete HTTP API、`<memory-items>` context 注入。
 - 已完成 explicit structured memory tools 第一片：`search_memory_items` 只读检索 durable facts，`memory_add` 通过 `ask` 权限写入单条 durable fact，并带重复检测、来源 session 元数据、模型输出裁剪和 no-progress guardrail。
+- 已完成 memory review candidate 队列第一片：SQLite `memory_review_candidates`、`pending` / `accepted` / `rejected` / `superseded` 状态、候选查询/创建 API、accept 提升到 `memory_items`、reject 不写入 durable memory。
 - 实现 context assembler：
   - system prompt。
   - character persona。
@@ -425,14 +426,13 @@ harnesses:
   - relevant retrieved memories。
   - tool state/task state。
 - 继续增强 summary compaction：从 message-count 阈值升级到 token-budget 阈值，并补更完整的 provider overflow fallback。
-- 实现 memory write 工具：
-  - `memory_add`
-  - `memory_replace`
-  - `memory_search`
-  - `memory_forget`
-- 实现 background memory review：
+- 继续扩展 explicit structured memory 工具：
+  - 已完成：`memory_add`、`search_memory_items`。
+  - 后续可补：`memory_replace`、`memory_forget`。
+- 实现 background memory review runner：
   - 每个 turn 后异步判断是否需要保存偏好/事实。
   - 不阻塞主回复。
+  - 只生成 `memory_review_candidates`，不直接写入 `memory_items`。
   - 严禁保存 API key、临时状态和敏感内容。
 - `session_search` 支持跨会话召回。
 

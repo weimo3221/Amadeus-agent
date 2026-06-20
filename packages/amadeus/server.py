@@ -151,6 +151,37 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path == "/memory/review/candidates":
+            query = parse_qs(parsed.query)
+            session_id = optional_query_string(query, "sessionId")
+            status = optional_query_string(query, "status")
+            scope = optional_query_string(query, "scope")
+            limit = parse_int(query.get("limit", ["50"])[0], 50, 1, 200)
+            candidates = memory_store.list_memory_review_candidates(
+                session_id=session_id,
+                status=status,
+                scope=scope,
+                limit=limit,
+            )
+            logger.info(
+                "Handling memory review candidates list sessionId=%s status=%s scope=%s count=%s",
+                session_id,
+                status,
+                scope,
+                len(candidates),
+            )
+            self.write_json(200, {
+                "ok": True,
+                "candidates": candidates,
+                "filters": {
+                    "sessionId": session_id,
+                    "status": status,
+                    "scope": scope,
+                    "limit": limit,
+                },
+            })
+            return
+
         if parsed.path == "/memory/summary":
             query = parse_qs(parsed.query)
             session_id = query.get("sessionId", ["default"])[0]
@@ -208,6 +239,18 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/memory/items/delete":
             self.handle_memory_item_delete()
+            return
+
+        if self.path == "/memory/review/candidates":
+            self.handle_memory_review_candidate_save()
+            return
+
+        if self.path == "/memory/review/accept":
+            self.handle_memory_review_accept()
+            return
+
+        if self.path == "/memory/review/reject":
+            self.handle_memory_review_reject()
             return
 
         if self.path == "/memory/summary":
@@ -408,6 +451,92 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             deleted = memory_store.delete_memory_item(memory_item_id)
             logger.info("Deleted memory item itemId=%s deleted=%s", memory_item_id, deleted)
             self.write_json(200, {"ok": True, "deleted": deleted, "memoryItemId": memory_item_id})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_review_candidate_save(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId", "default")
+            scope = body.get("scope")
+            content = body.get("content")
+            confidence = body.get("confidence", 0.7)
+            reason = body.get("reason")
+            source_message_start_id = body.get("sourceMessageStartId")
+            source_message_end_id = body.get("sourceMessageEndId")
+
+            if not isinstance(session_id, str) or not isinstance(scope, str) or not isinstance(content, str):
+                self.write_json(400, {"ok": False, "error": "sessionId, scope, and content must be strings"})
+                return
+            if not isinstance(confidence, (int, float)):
+                self.write_json(400, {"ok": False, "error": "confidence must be a number"})
+                return
+            if reason is not None and not isinstance(reason, str):
+                self.write_json(400, {"ok": False, "error": "reason must be a string"})
+                return
+            if source_message_start_id is not None and not isinstance(source_message_start_id, int):
+                self.write_json(400, {"ok": False, "error": "sourceMessageStartId must be an integer"})
+                return
+            if source_message_end_id is not None and not isinstance(source_message_end_id, int):
+                self.write_json(400, {"ok": False, "error": "sourceMessageEndId must be an integer"})
+                return
+
+            candidate = memory_store.save_memory_review_candidate(
+                session_id,
+                scope,
+                content,
+                confidence=float(confidence),
+                reason=reason,
+                source_message_start_id=source_message_start_id,
+                source_message_end_id=source_message_end_id,
+            )
+            logger.info(
+                "Saved memory review candidate candidateId=%s sessionId=%s scope=%s confidence=%s duplicate=%s contentChars=%s",
+                candidate["candidateId"],
+                candidate["sessionId"],
+                candidate["scope"],
+                candidate["confidence"],
+                candidate.get("duplicate"),
+                candidate["charCount"],
+            )
+            self.write_json(200, {"ok": True, "candidate": candidate, "duplicate": bool(candidate.get("duplicate"))})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_review_accept(self) -> None:
+        try:
+            body = self.read_json_body()
+            candidate_id = body.get("candidateId")
+            if not isinstance(candidate_id, int):
+                self.write_json(400, {"ok": False, "error": "candidateId must be an integer"})
+                return
+
+            result = memory_store.accept_memory_review_candidate(candidate_id)
+            logger.info(
+                "Accepted memory review candidate candidateId=%s accepted=%s duplicateMemoryItem=%s",
+                candidate_id,
+                result.get("accepted"),
+                result.get("duplicateMemoryItem"),
+            )
+            self.write_json(200, {"ok": True, **result})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_review_reject(self) -> None:
+        try:
+            body = self.read_json_body()
+            candidate_id = body.get("candidateId")
+            if not isinstance(candidate_id, int):
+                self.write_json(400, {"ok": False, "error": "candidateId must be an integer"})
+                return
+
+            result = memory_store.reject_memory_review_candidate(candidate_id)
+            logger.info(
+                "Rejected memory review candidate candidateId=%s rejected=%s",
+                candidate_id,
+                result.get("rejected"),
+            )
+            self.write_json(200, {"ok": True, **result})
         except Exception as error:
             self.write_json(500, {"ok": False, "error": str(error)})
 

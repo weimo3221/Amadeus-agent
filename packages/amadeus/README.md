@@ -60,6 +60,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Each turn prefetches up to three relevant prior session messages and injects them into the API-only current user message as a sanitized `<memory-context>` block; the block is not persisted.
 - Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`, injected as reference-only context, and refreshed by threshold-based compaction or manual `POST /memory/compact`.
 - Structured `memory_items` store durable `user` / `agent` / `project` facts in SQLite, expose explicit HTTP add/list/delete APIs, are searchable through the read-only `search_memory_items` tool, can be written through the approval-gated `memory_add` tool, and inject a small active set into model context as reference-only `<memory-items>`.
+- Memory review candidates are persisted in SQLite as a human-controlled queue. `GET/POST /memory/review/candidates` lists or creates candidates, `POST /memory/review/accept` promotes a pending candidate into `memory_items`, and `POST /memory/review/reject` rejects it without writing durable memory.
 - `search_memory` has a per-tool model-output policy that keeps match metadata while limiting model-context result count and snippet length.
 - `search_memory_items` has a per-tool model-output policy that keeps structured fact metadata while limiting model-context item count and content length.
 - `search_files` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.

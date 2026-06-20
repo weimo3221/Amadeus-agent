@@ -9,8 +9,10 @@ from typing import Literal
 MessageRole = Literal["user", "assistant"]
 StableMemoryTarget = Literal["agent", "user"]
 MemoryItemScope = Literal["user", "agent", "project"]
+MemoryReviewCandidateStatus = Literal["pending", "accepted", "rejected", "superseded"]
 CONVERSATION_SUMMARY_LIMIT = 12000
 MEMORY_ITEM_LIMIT = 2000
+MEMORY_REVIEW_REASON_LIMIT = 1000
 STABLE_MEMORY_FILES: dict[str, str] = {
     "agent": "MEMORY.md",
     "user": "USER.md",
@@ -74,6 +76,22 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_memory_items_scope_updated
                   ON memory_items(scope, deleted_at, updated_at);
+                  CREATE TABLE IF NOT EXISTS memory_review_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    scope TEXT NOT NULL CHECK (scope IN ('user', 'agent', 'project')),
+                    content TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 0.7,
+                    reason TEXT,
+                    source_message_start_id INTEGER,
+                    source_message_end_id INTEGER,
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'superseded')),
+                    memory_item_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_memory_review_candidates_session_status
+                  ON memory_review_candidates(session_id, status, updated_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -552,6 +570,304 @@ class MessageMemoryStore:
             )
         return cursor.rowcount > 0
 
+    def save_memory_review_candidate(
+        self,
+        session_id: str,
+        scope: str,
+        content: str,
+        *,
+        confidence: float = 0.7,
+        reason: str | None = None,
+        source_message_start_id: int | None = None,
+        source_message_end_id: int | None = None,
+    ) -> dict[str, str | int | float | bool]:
+        normalized_session_id = normalize_session_id(session_id)
+        normalized_scope = normalize_memory_item_scope(scope)
+        normalized_content = normalize_memory_item_content(content)
+        normalized_confidence = normalize_confidence(confidence)
+        normalized_reason = normalize_optional_text(reason, "reason", max_chars=MEMORY_REVIEW_REASON_LIMIT)
+        normalized_start_id = normalize_optional_non_negative_int(source_message_start_id, "source_message_start_id")
+        normalized_end_id = normalize_optional_non_negative_int(source_message_end_id, "source_message_end_id")
+        if normalized_start_id is not None and normalized_end_id is not None and normalized_start_id > normalized_end_id:
+            raise ValueError("source_message_start_id must be less than or equal to source_message_end_id")
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT
+                  id,
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  memory_item_id,
+                  created_at,
+                  updated_at
+                FROM memory_review_candidates
+                WHERE session_id = ? AND scope = ? AND content = ? AND status = 'pending'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_session_id, normalized_scope, normalized_content),
+            ).fetchone()
+            if existing:
+                response = memory_review_candidate_response(existing)
+                response["duplicate"] = True
+                return response
+
+            cursor = connection.execute(
+                """
+                INSERT INTO memory_review_candidates (
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  created_at,
+                  updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    normalized_session_id,
+                    normalized_scope,
+                    normalized_content,
+                    normalized_confidence,
+                    normalized_reason,
+                    normalized_start_id,
+                    normalized_end_id,
+                    now,
+                    now,
+                ),
+            )
+            candidate_id = int(cursor.lastrowid)
+
+            row = connection.execute(
+                """
+                SELECT
+                  id,
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  memory_item_id,
+                  created_at,
+                  updated_at
+                FROM memory_review_candidates
+                WHERE id = ?
+                """,
+                (candidate_id,),
+            ).fetchone()
+
+        response = memory_review_candidate_response(row)
+        response["duplicate"] = False
+        return response
+
+    def list_memory_review_candidates(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+        scope: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, str | int | float | bool]]:
+        normalized_session_id = normalize_session_id(session_id) if session_id else None
+        normalized_status = normalize_memory_review_status(status) if status else None
+        normalized_scope = normalize_memory_item_scope(scope) if scope else None
+        bounded_limit = max(1, min(200, int(limit)))
+        where = "1 = 1"
+        params: list[object] = []
+        if normalized_session_id:
+            where += " AND session_id = ?"
+            params.append(normalized_session_id)
+        if normalized_status:
+            where += " AND status = ?"
+            params.append(normalized_status)
+        if normalized_scope:
+            where += " AND scope = ?"
+            params.append(normalized_scope)
+        params.append(bounded_limit)
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                  id,
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  memory_item_id,
+                  created_at,
+                  updated_at
+                FROM memory_review_candidates
+                WHERE {where}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        return [memory_review_candidate_response(row) for row in rows]
+
+    def accept_memory_review_candidate(self, candidate_id: int) -> dict[str, object]:
+        normalized_id = int(candidate_id)
+        if normalized_id <= 0:
+            raise ValueError("candidate_id must be positive")
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                  id,
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  memory_item_id,
+                  created_at,
+                  updated_at
+                FROM memory_review_candidates
+                WHERE id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+
+        if not row:
+            return {"accepted": False, "candidateId": normalized_id, "error": "candidate not found"}
+
+        candidate = memory_review_candidate_response(row)
+        if candidate["status"] != "pending":
+            return {
+                "accepted": False,
+                "candidateId": normalized_id,
+                "candidate": candidate,
+                "error": "candidate is not pending",
+            }
+
+        existing_items = self.list_memory_items(
+            scope=str(candidate["scope"]),
+            query=str(candidate["content"]),
+            limit=10,
+        )
+        duplicate_item = next(
+            (
+                item
+                for item in existing_items
+                if str(item.get("content", "")).strip() == str(candidate["content"]).strip()
+            ),
+            None,
+        )
+        item = duplicate_item or self.save_memory_item(
+            str(candidate["scope"]),
+            str(candidate["content"]),
+            confidence=float(candidate["confidence"]),
+            source_session_id=str(candidate["sessionId"]),
+            source_message_id=int(candidate["sourceMessageEndId"]) or None,
+        )
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE memory_review_candidates
+                SET status = 'accepted', memory_item_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (int(item["memoryItemId"]), now, normalized_id),
+            )
+            updated = connection.execute(
+                """
+                SELECT
+                  id,
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  memory_item_id,
+                  created_at,
+                  updated_at
+                FROM memory_review_candidates
+                WHERE id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+
+        return {
+            "accepted": True,
+            "candidate": memory_review_candidate_response(updated),
+            "item": item,
+            "duplicateMemoryItem": duplicate_item is not None,
+        }
+
+    def reject_memory_review_candidate(self, candidate_id: int) -> dict[str, object]:
+        normalized_id = int(candidate_id)
+        if normalized_id <= 0:
+            raise ValueError("candidate_id must be positive")
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE memory_review_candidates
+                SET status = 'rejected', updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (now, normalized_id),
+            )
+            row = connection.execute(
+                """
+                SELECT
+                  id,
+                  session_id,
+                  scope,
+                  content,
+                  confidence,
+                  reason,
+                  source_message_start_id,
+                  source_message_end_id,
+                  status,
+                  memory_item_id,
+                  created_at,
+                  updated_at
+                FROM memory_review_candidates
+                WHERE id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+
+        if not row:
+            return {"rejected": False, "candidateId": normalized_id, "error": "candidate not found"}
+
+        return {
+            "rejected": cursor.rowcount > 0,
+            "candidate": memory_review_candidate_response(row),
+        }
+
     def reset(self, session_id: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -571,6 +887,13 @@ class MessageMemoryStore:
             connection.execute(
                 """
                 DELETE FROM conversation_summaries
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM memory_review_candidates
                 WHERE session_id = ?
                 """,
                 (session_id,),
@@ -656,6 +979,13 @@ def normalize_memory_item_scope(scope: str) -> MemoryItemScope:
     raise ValueError("scope must be user, agent, or project")
 
 
+def normalize_memory_review_status(status: str) -> MemoryReviewCandidateStatus:
+    normalized = status.strip().lower() if isinstance(status, str) else ""
+    if normalized in {"pending", "accepted", "rejected", "superseded"}:
+        return normalized  # type: ignore[return-value]
+    raise ValueError("status must be pending, accepted, rejected, or superseded")
+
+
 def normalize_session_id(session_id: str) -> str:
     normalized = session_id.strip() if isinstance(session_id, str) else ""
     if not normalized:
@@ -733,6 +1063,25 @@ def memory_item_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str
         "updatedAt": str(row[7]),
         "deleted": deleted_at is not None,
         "deletedAt": str(deleted_at) if deleted_at is not None else "",
+    }
+
+
+def memory_review_candidate_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | float | bool]:
+    content = str(row[3])
+    return {
+        "candidateId": int(row[0]),
+        "sessionId": str(row[1]),
+        "scope": str(row[2]),
+        "content": content,
+        "charCount": len(content),
+        "confidence": float(row[4]),
+        "reason": str(row[5]) if row[5] is not None else "",
+        "sourceMessageStartId": int(row[6]) if row[6] is not None else 0,
+        "sourceMessageEndId": int(row[7]) if row[7] is not None else 0,
+        "status": str(row[8]),
+        "memoryItemId": int(row[9]) if row[9] is not None else 0,
+        "createdAt": str(row[10]),
+        "updatedAt": str(row[11]),
     }
 
 

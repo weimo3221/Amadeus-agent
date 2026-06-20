@@ -155,6 +155,54 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(deleted["deleted"])
         self.assertEqual(listed_after_delete["items"], [])
 
+    def test_memory_review_candidates_accept_and_reject_over_http(self) -> None:
+        saved = self.post_json("/memory/review/candidates", {
+            "sessionId": "http-test",
+            "scope": "user",
+            "content": "The user prefers direct answers.",
+            "confidence": 0.8,
+            "reason": "The user asked for direct answers.",
+            "sourceMessageStartId": 2,
+            "sourceMessageEndId": 4,
+        })
+        duplicate = self.post_json("/memory/review/candidates", {
+            "sessionId": "http-test",
+            "scope": "user",
+            "content": "The user prefers direct answers.",
+        })
+        listed = self.get_json("/memory/review/candidates?sessionId=http-test&status=pending&scope=user")
+        accepted = self.post_json("/memory/review/accept", {
+            "candidateId": saved["candidate"]["candidateId"],
+        })
+        items = self.get_json("/memory/items?scope=user&query=direct")
+
+        rejected_candidate = self.post_json("/memory/review/candidates", {
+            "sessionId": "http-test",
+            "scope": "project",
+            "content": "Temporary implementation detail should not be stored.",
+        })
+        rejected = self.post_json("/memory/review/reject", {
+            "candidateId": rejected_candidate["candidate"]["candidateId"],
+        })
+        rejected_list = self.get_json("/memory/review/candidates?sessionId=http-test&status=rejected")
+
+        self.assertTrue(saved["ok"])
+        self.assertFalse(saved["duplicate"])
+        self.assertEqual(saved["candidate"]["status"], "pending")
+        self.assertEqual(saved["candidate"]["reason"], "The user asked for direct answers.")
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(duplicate["candidate"]["candidateId"], saved["candidate"]["candidateId"])
+        self.assertEqual(len(listed["candidates"]), 1)
+        self.assertTrue(accepted["ok"])
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["candidate"]["status"], "accepted")
+        self.assertEqual(accepted["item"]["content"], "The user prefers direct answers.")
+        self.assertEqual(len(items["items"]), 1)
+        self.assertTrue(rejected["ok"])
+        self.assertTrue(rejected["rejected"])
+        self.assertEqual(rejected["candidate"]["status"], "rejected")
+        self.assertEqual(len(rejected_list["candidates"]), 1)
+
     def test_memory_summary_roundtrip_over_http(self) -> None:
         runtime_server.memory_store.save("http-test", "user", "Long setup")
 
