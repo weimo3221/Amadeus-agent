@@ -42,6 +42,7 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 | `search_files` | `ask` | Searches workspace-relative filenames and/or small text file contents using `target: all | files | content`, skipping generated/heavy directories and capping result count. |
 | `read_file` | `ask` | Reads an explicit, line-numbered window from a workspace-relative UTF-8 text file after search; images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded. |
 | `patch` | `ask` | Applies a safe single-file text replacement inside the workspace, requiring a unique `oldText` match unless `replaceAll=true`, and returns a unified diff preview. |
+| `write_file` | `ask` | Creates or fully overwrites a workspace-relative UTF-8 text file, refusing accidental overwrites unless `overwrite=true`, and returns size/line metadata plus a diff preview. |
 
 The runtime layer around these tools adds behavior that tool handlers do not need to reimplement:
 
@@ -53,6 +54,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - `search_files` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.
 - `read_file` does not use hidden runtime compression. It returns a caller-controlled `startLine` / `lineLimit` text window with line numbers, `totalLines`, and `hasMore` so the model can continue reading explicitly. Non-text files are identified as `image`, `pdf`, `binary`, or `unknown` and return an unsupported response with a next-tool hint.
 - `patch` follows the Hermes-style edit path: exact `oldText` / `newText`, unique-match default, optional `replaceAll`, restricted generated directories, UTF-8 text-only writes, and diff output for review.
+- `write_file` is the whole-file write path: new UTF-8 text files by default, explicit `overwrite=true` for replacement, restricted generated directories, text-extension checks, size limits, parent directory creation inside the workspace, and diff output for review.
 
 `local_file_search` is still registered as a disabled compatibility alias for older calls, but new schemas and prompts should use `search_files`.
 

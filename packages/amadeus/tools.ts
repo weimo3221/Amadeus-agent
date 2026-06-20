@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -130,6 +130,7 @@ const maxReadFileLineLimit = 1000
 const maxPatchFileBytes = 512 * 1024
 const maxPatchTextBytes = 512 * 1024
 const maxPatchDiffChars = 6000
+const maxWriteFileBytes = 512 * 1024
 
 export function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
   const number = typeof value === 'number' ? value : Number(value)
@@ -537,6 +538,107 @@ function patchLocalFile(args: Record<string, unknown>): string {
     replaceAll,
     sizeBytesBefore: stats.size,
     sizeBytesAfter: newSizeBytes,
+    diff,
+    diffTruncated,
+  })
+}
+
+function writeLocalFile(args: Record<string, unknown>): string {
+  const pathText = typeof args.path === 'string' ? args.path.trim() : ''
+  if (!pathText) {
+    return JSON.stringify({ error: 'path is required' })
+  }
+
+  if (typeof args.content !== 'string') {
+    return JSON.stringify({ error: 'content is required' })
+  }
+
+  const targetPath = resolve(repoRoot, pathText)
+  if (!isInside(targetPath, repoRoot)) {
+    return JSON.stringify({ error: 'path must be inside the project workspace' })
+  }
+  if (isRestrictedPath(targetPath)) {
+    return JSON.stringify({ error: 'path is restricted and cannot be written' })
+  }
+  if (!readableTextExtensions.has(extname(targetPath).toLowerCase())) {
+    return JSON.stringify({ error: 'file type is not writable by this tool' })
+  }
+
+  const content = args.content
+  const contentBytes = Buffer.byteLength(content, 'utf8')
+  if (contentBytes > maxWriteFileBytes) {
+    return JSON.stringify({ error: 'content is too large to write safely' })
+  }
+
+  const parentPath = dirname(targetPath)
+  if (!isInside(parentPath, repoRoot)) {
+    return JSON.stringify({ error: 'parent directory must be inside the project workspace' })
+  }
+  if (isRestrictedPath(parentPath)) {
+    return JSON.stringify({ error: 'parent directory is restricted and cannot be written' })
+  }
+  if (existsSync(parentPath)) {
+    try {
+      if (!statSync(parentPath).isDirectory()) {
+        return JSON.stringify({ error: 'parent path exists and is not a directory' })
+      }
+    }
+    catch {
+      return JSON.stringify({ error: 'could not inspect parent directory' })
+    }
+  }
+
+  const overwrite = typeof args.overwrite === 'boolean' ? args.overwrite : false
+  const existed = existsSync(targetPath)
+  let before = ''
+  let sizeBefore = 0
+  if (existed) {
+    let stats
+    try {
+      stats = statSync(targetPath)
+    }
+    catch {
+      return JSON.stringify({ error: 'could not inspect file' })
+    }
+
+    if (!stats.isFile()) {
+      return JSON.stringify({ error: 'path exists and is not a file' })
+    }
+    if (!overwrite) {
+      return JSON.stringify({ error: 'path already exists; set overwrite=true to replace it' })
+    }
+    if (stats.size > maxWriteFileBytes) {
+      return JSON.stringify({ error: 'existing file is too large to overwrite safely' })
+    }
+
+    try {
+      before = readFileSync(targetPath, 'utf8')
+      sizeBefore = stats.size
+    }
+    catch {
+      return JSON.stringify({ error: 'existing file is not readable as utf-8 text' })
+    }
+  }
+
+  const relativePath = relative(repoRoot, targetPath).replace(/\\/g, '/')
+  const { diff, diffTruncated } = diffPreview(relativePath, before, content)
+  try {
+    mkdirSync(parentPath, { recursive: true })
+    writeFileSync(targetPath, content, 'utf8')
+  }
+  catch {
+    return JSON.stringify({ error: 'could not write file' })
+  }
+
+  return JSON.stringify({
+    path: relativePath,
+    changed: before !== content,
+    created: !existed,
+    overwritten: existed,
+    overwrite,
+    sizeBytesBefore: existed ? sizeBefore : null,
+    sizeBytesAfter: contentBytes,
+    lineCount: content.split(/\r?\n/).filter((_, index, lines) => !(index === lines.length - 1 && lines[index] === '')).length,
     diff,
     diffTruncated,
   })
@@ -966,6 +1068,43 @@ export function createDefaultToolRegistry(options: {
         return `Allow Amadeus to patch local project file ${path}?`
       },
       execute: executeTool('patch', patchLocalFile),
+    },
+    write_file: {
+      name: 'write_file',
+      displayName: 'Writing local file',
+      permission: 'ask',
+      enabled: true,
+      schema: {
+        type: 'function',
+        function: {
+          name: 'write_file',
+          description: 'Create or fully overwrite a UTF-8 text file inside the project workspace. Use patch for targeted edits to existing files; use write_file for new files or intentional full replacement.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+                description: 'Workspace-relative text file path to create or overwrite.',
+              },
+              content: {
+                type: 'string',
+                description: 'Complete UTF-8 text content to write.',
+              },
+              overwrite: {
+                type: 'boolean',
+                description: 'Allow replacing an existing file. Defaults to false.',
+              },
+            },
+            required: ['path', 'content'],
+            additionalProperties: false,
+          },
+        },
+      },
+      describeRequest: (args) => {
+        const path = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : '(empty path)'
+        return `Allow Amadeus to write local project file ${path}?`
+      },
+      execute: executeTool('write_file', writeLocalFile),
     },
   }
 }

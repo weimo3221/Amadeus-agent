@@ -24,6 +24,10 @@ tools:
     enabled: true
     permission: ask
 
+  write_file:
+    enabled: true
+    permission: ask
+
   web_search:
     enabled: false
     permission: ask

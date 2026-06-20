@@ -36,6 +36,10 @@ class ToolSpec:
             path = args.get("path").strip() if isinstance(args.get("path"), str) and args.get("path").strip() else "(empty path)"
             return f"Allow Amadeus to patch local project file {path}?"
 
+        if self.name == "write_file":
+            path = args.get("path").strip() if isinstance(args.get("path"), str) and args.get("path").strip() else "(empty path)"
+            return f"Allow Amadeus to write local project file {path}?"
+
         return f"Allow Amadeus to run {self.display_name}?"
 
 

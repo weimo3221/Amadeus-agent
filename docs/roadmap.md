@@ -105,6 +105,7 @@ Current tool baseline already delivered:
 - `search_files`
 - `read_file`
 - `patch`
+- `write_file`
 
 Planned follow-up tools:
 

@@ -8,6 +8,7 @@ from amadeus.tools.local_file_search import LOCAL_FILE_SEARCH_TOOL_SPEC, SEARCH_
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
 from amadeus.tools.time import TIME_TOOL_SPEC, get_current_time
+from amadeus.tools.write_file import WRITE_FILE_TOOL_SPEC, write_file
 
 
 DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
@@ -19,6 +20,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         LOCAL_FILE_SEARCH_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
         PATCH_TOOL_SPEC,
+        WRITE_FILE_TOOL_SPEC,
     )
 }
 
@@ -62,4 +64,5 @@ __all__ = [
     "read_file",
     "roll_dice",
     "search_files",
+    "write_file",
 ]

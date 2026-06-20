@@ -15,7 +15,7 @@ from amadeus.tools import ToolSpec, execute_tool, list_tools
 
 
 class ToolRegistryTests(unittest.TestCase):
-    def test_default_registry_includes_search_and_read_file_tools(self) -> None:
+    def test_default_registry_includes_file_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
 
@@ -41,6 +41,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertIn("patch", tool_state)
         self.assertEqual(tool_state["patch"]["permission"], "ask")
         self.assertIn("patch", schema_names)
+
+        self.assertIn("write_file", list_tools())
+        self.assertIn("write_file", tool_state)
+        self.assertEqual(tool_state["write_file"]["permission"], "ask")
+        self.assertIn("write_file", schema_names)
 
     def test_config_alias_updates_effective_tool_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -584,6 +589,102 @@ class ToolRegistryTests(unittest.TestCase):
             result = registry.execute(
                 "patch",
                 {"path": "packages/example.py", "oldText": "a", "newText": "b"},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=200),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.model_output, output)
+        self.assertFalse(result.output_truncated)
+        self.assertIsNone(result.output_preview)
+
+    def test_write_file_creates_new_text_file(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-write.md"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.unlink(missing_ok=True)
+        try:
+            output = execute_tool("write_file", {"path": relative_path, "content": "# Title\nbody\n"})
+
+            self.assertTrue(output["changed"])
+            self.assertTrue(output["created"])
+            self.assertFalse(output["overwritten"])
+            self.assertEqual(output["path"], relative_path)
+            self.assertEqual(output["lineCount"], 2)
+            self.assertIn("+# Title", output["diff"])
+            self.assertEqual(test_path.read_text(encoding="utf-8"), "# Title\nbody\n")
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_write_file_refuses_overwrite_without_flag(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-write.md"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_text("original\n", encoding="utf-8")
+        try:
+            output = execute_tool("write_file", {"path": relative_path, "content": "replacement\n"})
+
+            self.assertIn("already exists", output["error"])
+            self.assertEqual(test_path.read_text(encoding="utf-8"), "original\n")
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_write_file_overwrites_with_diff_when_explicit(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-write.md"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_text("original\n", encoding="utf-8")
+        try:
+            output = execute_tool("write_file", {"path": relative_path, "content": "replacement\n", "overwrite": True})
+
+            self.assertTrue(output["changed"])
+            self.assertFalse(output["created"])
+            self.assertTrue(output["overwritten"])
+            self.assertTrue(output["overwrite"])
+            self.assertIn("-original", output["diff"])
+            self.assertIn("+replacement", output["diff"])
+            self.assertEqual(test_path.read_text(encoding="utf-8"), "replacement\n")
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_write_file_blocks_paths_outside_workspace(self) -> None:
+        output = execute_tool("write_file", {"path": "../outside.md", "content": "x"})
+
+        self.assertEqual(output, {"error": "path must be inside the project workspace"})
+
+    def test_write_file_rejects_non_text_extension(self) -> None:
+        output = execute_tool("write_file", {"path": ".amadeus-test-write.png", "content": "x"})
+
+        self.assertEqual(output, {"error": "file type is not writable by this tool"})
+
+    def test_execute_does_not_apply_global_compression_to_write_file_result(self) -> None:
+        output = {
+            "path": "packages/example.py",
+            "changed": True,
+            "created": True,
+            "overwritten": False,
+            "overwrite": False,
+            "sizeBytesBefore": None,
+            "sizeBytesAfter": 5000,
+            "lineCount": 1,
+            "diff": "x" * 5000,
+            "diffTruncated": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="write_file",
+                        display_name="Write",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "write_file"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "write_file",
+                {"path": "packages/example.py", "content": "x"},
                 ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=200),
             )
 
