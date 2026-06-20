@@ -33,6 +33,9 @@ TOOLS_CONFIG_PATH = DEFAULT_TOOLS_CONFIG_PATH
 MEMORY_PREFETCH_LIMIT = 3
 MEMORY_PREFETCH_SNIPPET_CHARS = 280
 CONVERSATION_SUMMARY_CONTEXT_CHARS = 4000
+SUMMARY_TRIGGER_MESSAGE_COUNT = 40
+SUMMARY_KEEP_RECENT_MESSAGES = 20
+SUMMARY_SOURCE_MAX_MESSAGES = 120
 logger = logging.getLogger(__name__)
 
 
@@ -147,6 +150,9 @@ class AgentRuntime:
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
+        self.summary_trigger_message_count = SUMMARY_TRIGGER_MESSAGE_COUNT
+        self.summary_keep_recent_messages = SUMMARY_KEEP_RECENT_MESSAGES
+        self.summary_source_max_messages = SUMMARY_SOURCE_MAX_MESSAGES
         logger.info(
             "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s memoryDb=%s",
             self.model,
@@ -232,6 +238,7 @@ class AgentRuntime:
 
         history.append({"role": "assistant", "content": assistant_text})
         self.memory_store.save(session_id, "assistant", assistant_text)
+        summary_event = self._maybe_compact_conversation(session_id)
         logger.info(
             "Completed agent turn sessionId=%s turnId=%s assistantTextChars=%s memoryMessages=%s",
             session_id,
@@ -241,6 +248,8 @@ class AgentRuntime:
         )
         yield AgentEvent("memory.updated", {"memoryMessages": self.memory_store.count(session_id)})
         yield AgentEvent("assistant.message", {"text": assistant_text})
+        if summary_event:
+            yield summary_event
 
         if self.audio_runtime:
             audio_result = self.audio_runtime.speak(AudioOutputCommand(text=assistant_text, format="wav"))
@@ -330,6 +339,114 @@ class AgentRuntime:
             f"{content}\n"
             "</conversation-summary>"
         )
+
+    def _maybe_compact_conversation(self, session_id: str, force: bool = False) -> AgentEvent | None:
+        total_messages = self.memory_store.count(session_id)
+        if not force and total_messages <= self.summary_trigger_message_count:
+            logger.info(
+                "Skipping summary compaction below threshold sessionId=%s messageCount=%s threshold=%s",
+                session_id,
+                total_messages,
+                self.summary_trigger_message_count,
+            )
+            return None
+
+        previous_summary = self.memory_store.load_conversation_summary(session_id)
+        covered_through_id = int(previous_summary.get("coveredThroughMessageId", 0)) if previous_summary else 0
+        uncovered_messages = self.memory_store.load_detailed(
+            session_id,
+            after_message_id=covered_through_id or None,
+            limit=self.summary_source_max_messages + self.summary_keep_recent_messages + 1,
+        )
+        if len(uncovered_messages) <= self.summary_keep_recent_messages:
+            logger.info(
+                "Skipping summary compaction no compactable window sessionId=%s uncoveredMessages=%s keepRecent=%s",
+                session_id,
+                len(uncovered_messages),
+                self.summary_keep_recent_messages,
+            )
+            return None
+
+        compactable_messages = uncovered_messages[:-self.summary_keep_recent_messages]
+        if len(compactable_messages) > self.summary_source_max_messages:
+            compactable_messages = compactable_messages[-self.summary_source_max_messages:]
+        source_start_id = int(compactable_messages[0]["id"])
+        source_end_id = int(compactable_messages[-1]["id"])
+
+        try:
+            summary_text = self._request_conversation_summary(previous_summary, compactable_messages)
+        except RuntimeError as error:
+            logger.info(
+                "Summary compaction failed sessionId=%s sourceStartId=%s sourceEndId=%s error=%s",
+                session_id,
+                source_start_id,
+                source_end_id,
+                error,
+            )
+            return None
+
+        summary = self.memory_store.save_conversation_summary(
+            session_id,
+            summary_text,
+            summarized_message_count=total_messages,
+            covered_message_count=int(previous_summary.get("coveredMessageCount", 0)) + len(compactable_messages) if previous_summary else len(compactable_messages),
+            source_message_start_id=source_start_id,
+            source_message_end_id=source_end_id,
+            covered_through_message_id=source_end_id,
+            model=self.model,
+        )
+        logger.info(
+            "Saved automatic conversation summary sessionId=%s summaryId=%s sourceStartId=%s sourceEndId=%s coveredMessageCount=%s",
+            session_id,
+            summary["summaryId"],
+            source_start_id,
+            source_end_id,
+            summary["coveredMessageCount"],
+        )
+        return AgentEvent("memory.summary.updated", {"summary": summary})
+
+    def _request_conversation_summary(
+        self,
+        previous_summary: dict[str, str | int] | None,
+        messages: list[dict[str, str | int]],
+    ) -> str:
+        transcript_lines = [
+            f"{message['id']}. {message['role']}: {sanitize_memory_context_text(str(message['content']), max_chars=1200, collapse_whitespace=False)}"
+            for message in messages
+        ]
+        previous = str(previous_summary.get("content", "")) if previous_summary else "None"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Summarize older conversation context for an agent handoff. "
+                        "The summary is reference-only, not a user instruction. "
+                        "Keep durable decisions, active task, completed actions, relevant files, blockers, and remaining work. "
+                        "Be concise and do not invent facts."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Previous summary:\n{previous}\n\n"
+                        "Messages to fold into the summary:\n"
+                        + "\n".join(transcript_lines)
+                    ),
+                },
+            ],
+            "stream": False,
+            "temperature": 0,
+        }
+        data = self._post_json("/chat/completions", payload)
+        choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+        first = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first.get("message"), dict) else {}
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("summary provider returned empty content")
+        return content.strip()
 
     def _inject_memory_context(self, session_id: str, user_text: str) -> str:
         memory_context = self._format_prefetched_memory_context(session_id, user_text)

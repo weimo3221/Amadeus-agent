@@ -229,6 +229,62 @@ class MessageMemoryStore:
 
         return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
 
+    def load_detailed(
+        self,
+        session_id: str,
+        *,
+        after_message_id: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, str | int]]:
+        normalized_after_id = normalize_optional_non_negative_int(after_message_id, "after_message_id")
+        where = "session_id = ?"
+        params: list[object] = [session_id]
+        if normalized_after_id:
+            where += " AND id > ?"
+            params.append(normalized_after_id)
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(max(1, int(limit)))
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, role, content, created_at
+                FROM messages
+                WHERE {where}
+                ORDER BY id ASC
+                {limit_clause}
+                """,
+                params,
+            ).fetchall()
+
+        return [
+            {
+                "id": int(row[0]),
+                "role": str(row[1]),
+                "content": str(row[2]),
+                "createdAt": str(row[3]),
+            }
+            for row in rows
+        ]
+
+    def latest_message_id(self, session_id: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+
+        return int(row[0]) if row else 0
+
     def count(self, session_id: str) -> int:
         with self.connect() as connection:
             row = connection.execute(

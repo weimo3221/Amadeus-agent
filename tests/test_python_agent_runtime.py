@@ -30,6 +30,7 @@ class FakeAgentRuntime(AgentRuntime):
         self.final_messages: list[list[dict[str, Any]]] = []
         self.tool_decision = tool_decision or {"role": "assistant", "content": "", "tool_calls": []}
         self.deltas = deltas or ["ok"]
+        self.summary_requests: list[dict[str, Any]] = []
         super().__init__(
             memory_store,
             audio_runtime=None,
@@ -43,6 +44,17 @@ class FakeAgentRuntime(AgentRuntime):
     def _stream_final_response(self, messages: list[dict[str, Any]]) -> Iterable[str]:
         self.final_messages.append(messages)
         yield from self.deltas
+
+    def _request_conversation_summary(
+        self,
+        previous_summary: dict[str, str | int] | None,
+        messages: list[dict[str, str | int]],
+    ) -> str:
+        self.summary_requests.append({
+            "previousSummary": previous_summary,
+            "messages": json.loads(json.dumps(messages)),
+        })
+        return "Summary: older setup is now compacted."
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -141,6 +153,25 @@ class AgentRuntimeTests(unittest.TestCase):
         serialized = json.dumps(decision_messages)
         self.assertIn("recent uncovered detail", serialized)
         self.assertNotIn("covered old task", serialized)
+
+    def test_turn_compacts_old_messages_after_threshold(self) -> None:
+        for index in range(4):
+            self.memory.save("default", "user" if index % 2 == 0 else "assistant", f"old message {index}")
+        runtime = FakeAgentRuntime(self.memory, deltas=["final"])
+        runtime.summary_trigger_message_count = 4
+        runtime.summary_keep_recent_messages = 2
+
+        events = list(runtime.run_turn("default", "new request", lambda _request: False))
+        summary = self.memory.load_conversation_summary("default")
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["content"], "Summary: older setup is now compacted.")
+        self.assertEqual(summary["coveredMessageCount"], 4)
+        self.assertEqual(summary["coveredThroughMessageId"], 4)
+        self.assertEqual(len(runtime.summary_requests), 1)
+        self.assertIn("old message 0", json.dumps(runtime.summary_requests[0]["messages"]))
+        self.assertIn("memory.summary.updated", [event.type for event in events])
 
     def test_allow_tool_executes_without_permission_request(self) -> None:
         runtime = FakeAgentRuntime(
