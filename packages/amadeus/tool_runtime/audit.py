@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,15 @@ class ToolAuditLog:
             detail=detail,
         )
         self._records.append(record)
+        logger.info(
+            "Appended in-memory tool audit sessionId=%s toolName=%s decision=%s ok=%s failureCode=%s recordId=%s",
+            session_id,
+            tool_name,
+            decision,
+            ok,
+            failure_code,
+            record.record_id,
+        )
         return record
 
     def records(self) -> list[ToolAuditRecord]:
@@ -99,6 +112,7 @@ class ToolAuditStore:
                 ON tool_audit_records(tool_name, timestamp);
                 """
             )
+        logger.info("Initialized tool audit store database=%s", self.database_path)
 
     def save(self, record: ToolAuditRecord) -> None:
         with self.connect() as connection:
@@ -129,44 +143,119 @@ class ToolAuditStore:
                     record.detail,
                 ),
             )
+        logger.info(
+            "Persisted tool audit record sessionId=%s toolName=%s decision=%s ok=%s failureCode=%s recordId=%s",
+            record.session_id,
+            record.tool_name,
+            record.decision,
+            record.ok,
+            record.failure_code,
+            record.record_id,
+        )
 
     def load(self, session_id: str | None = None, limit: int = 100) -> list[ToolAuditRecord]:
+        return self.query(session_id=session_id, limit=limit)
+
+    def query(
+        self,
+        *,
+        session_id: str | None = None,
+        tool_name: str | None = None,
+        decision: str | None = None,
+        ok: bool | None = None,
+        failure_code: str | None = None,
+        limit: int = 100,
+    ) -> list[ToolAuditRecord]:
         limit = max(1, limit)
+        clauses: list[str] = []
+        params: list[Any] = []
+
         if session_id:
-            query = """
-                SELECT record_id, timestamp, session_id, tool_name, decision, ok, duration_ms, failure_code, detail
-                FROM tool_audit_records
-                WHERE session_id = ?
-                ORDER BY rowid DESC
-                LIMIT ?
-            """
-            params: tuple[Any, ...] = (session_id, limit)
-        else:
-            query = """
-                SELECT record_id, timestamp, session_id, tool_name, decision, ok, duration_ms, failure_code, detail
-                FROM tool_audit_records
-                ORDER BY rowid DESC
-                LIMIT ?
-            """
-            params = (limit,)
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if tool_name:
+            clauses.append("tool_name = ?")
+            params.append(tool_name)
+        if decision:
+            clauses.append("decision = ?")
+            params.append(decision)
+        if ok is not None:
+            clauses.append("ok = ?")
+            params.append(int(ok))
+        if failure_code:
+            clauses.append("failure_code = ?")
+            params.append(failure_code)
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"""
+            SELECT record_id, timestamp, session_id, tool_name, decision, ok, duration_ms, failure_code, detail
+            FROM tool_audit_records
+            {where_sql}
+            ORDER BY rowid DESC
+            LIMIT ?
+        """
+        params.append(limit)
 
         with self.connect() as connection:
-            rows = connection.execute(query, params).fetchall()
+            rows = connection.execute(query, tuple(params)).fetchall()
 
-        return [self._row_to_record(row) for row in reversed(rows)]
+        records = [self._row_to_record(row) for row in reversed(rows)]
+        logger.info(
+            "Queried tool audit records sessionId=%s toolName=%s decision=%s ok=%s failureCode=%s limit=%s resultCount=%s",
+            session_id,
+            tool_name,
+            decision,
+            ok,
+            failure_code,
+            limit,
+            len(records),
+        )
+        return records
 
-    def count(self, session_id: str | None = None) -> int:
+    def count(
+        self,
+        session_id: str | None = None,
+        tool_name: str | None = None,
+        decision: str | None = None,
+        ok: bool | None = None,
+        failure_code: str | None = None,
+    ) -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+
         if session_id:
-            query = "SELECT COUNT(*) FROM tool_audit_records WHERE session_id = ?"
-            params: tuple[Any, ...] = (session_id,)
-        else:
-            query = "SELECT COUNT(*) FROM tool_audit_records"
-            params = ()
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if tool_name:
+            clauses.append("tool_name = ?")
+            params.append(tool_name)
+        if decision:
+            clauses.append("decision = ?")
+            params.append(decision)
+        if ok is not None:
+            clauses.append("ok = ?")
+            params.append(int(ok))
+        if failure_code:
+            clauses.append("failure_code = ?")
+            params.append(failure_code)
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT COUNT(*) FROM tool_audit_records {where_sql}"
 
         with self.connect() as connection:
-            row = connection.execute(query, params).fetchone()
+            row = connection.execute(query, tuple(params)).fetchone()
 
-        return int(row[0]) if row else 0
+        count = int(row[0]) if row else 0
+        logger.info(
+            "Counted tool audit records sessionId=%s toolName=%s decision=%s ok=%s failureCode=%s count=%s",
+            session_id,
+            tool_name,
+            decision,
+            ok,
+            failure_code,
+            count,
+        )
+        return count
 
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)

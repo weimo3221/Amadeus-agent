@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.tool_runtime import ToolRegistry
+from amadeus.tool_runtime import ToolContext, ToolRegistry
 from amadeus.tools import ToolSpec
 
 
@@ -220,6 +220,58 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertGreater(compact_result["original_char_count"], 4000)
         self.assertLess(len(tool_messages[0]["content"]), 1400)
 
+    def test_agent_populates_extended_tool_context_for_executed_tools(self) -> None:
+        observed_contexts: list[ToolContext] = []
+
+        def inspect_context(_args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+            observed_contexts.append(context)
+            return {
+                "sessionId": context.session_id,
+                "toolCallId": context.tool_call_id,
+                "permissionDecision": context.permission_decision,
+            }
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_inspect",
+                    "type": "function",
+                    "function": {"name": "inspect_context", "arguments": "{}"},
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="inspect_context",
+                    display_name="Inspect Context",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "inspect_context"}},
+                    handler=inspect_context,
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+
+        events = list(runtime.run_turn("session-ctx", "inspect context", lambda _request: False))
+
+        self.assertEqual(len(observed_contexts), 1)
+        context = observed_contexts[0]
+        self.assertEqual(context.session_id, "session-ctx")
+        self.assertEqual(context.tool_call_id, "call_inspect")
+        self.assertEqual(context.tool_name, "inspect_context")
+        self.assertEqual(context.permission_decision, "allow")
+        self.assertIsNone(context.permission_request_id)
+        self.assertIsNotNone(context.turn_id)
+        self.assertEqual(context.audit_metadata["toolCallId"], "call_inspect")
+        self.assertEqual(context.audit_metadata["permissionDecision"], "allow")
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertTrue(tool_finished[0]["ok"])
+
     def test_ask_tool_denial_returns_tool_error_to_model(self) -> None:
         runtime = FakeAgentRuntime(
             self.memory,
@@ -355,6 +407,61 @@ class AgentRuntimeTests(unittest.TestCase):
             ["started", "finished", "started", "finished", "started", "blocked"],
         )
         self.assertEqual(tool_audit[-1]["failureCode"], "no_progress_loop")
+
+    def test_repeated_empty_file_search_is_blocked_with_semantic_reason(self) -> None:
+        repeated_tool_calls = [
+            {
+                "id": f"call_search_{index}",
+                "type": "function",
+                "function": {"name": "search_files", "arguments": "{\"query\":\"missing\",\"target\":\"content\"}"},
+            }
+            for index in range(3)
+        ]
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={"role": "assistant", "content": "", "tool_calls": repeated_tool_calls},
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="search_files",
+                    display_name="Search Files",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "search_files"}},
+                    handler=lambda _args: {"query": "missing", "target": "content", "results": []},
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+
+        events = list(runtime.run_turn("default", "search missing files", lambda _request: False))
+
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(
+            tool_finished,
+            [
+                {"toolName": "search_files", "ok": True, "durationMs": tool_finished[0]["durationMs"]},
+                {"toolName": "search_files", "ok": True, "durationMs": tool_finished[1]["durationMs"]},
+                {"toolName": "search_files", "ok": False, "failureCode": "no_progress_loop"},
+            ],
+        )
+        final_history = runtime.final_messages[-1]
+        tool_results = [
+            json.loads(message["content"])
+            for message in final_history
+            if message["role"] == "tool"
+        ]
+        self.assertEqual(tool_results[0]["results"], [])
+        self.assertEqual(tool_results[1]["results"], [])
+        self.assertIn("empty file search", tool_results[2]["error"])
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual(
+            [entry["decision"] for entry in tool_audit],
+            ["started", "finished", "started", "finished", "started", "blocked"],
+        )
+        self.assertEqual(tool_audit[-1]["failureCode"], "no_progress_loop")
+        self.assertIn("empty file search", tool_audit[-1]["detail"])
 
 
 class PermissionBrokerTests(unittest.TestCase):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import urllib.error
@@ -8,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Iterable
 from uuid import uuid4
 
@@ -30,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_CONFIG_PATH = DEFAULT_TOOLS_CONFIG_PATH
 MEMORY_PREFETCH_LIMIT = 3
 MEMORY_PREFETCH_SNIPPET_CHARS = 280
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class PermissionBroker:
     def register(self, request_id: str) -> None:
         with self._lock:
             self._pending[request_id] = (threading.Event(), None)
+        logger.info("Registered tool permission request requestId=%s", request_id)
 
     def wait(self, request_id: str, timeout_seconds: float = 30) -> bool:
         with self._lock:
@@ -81,6 +85,9 @@ class PermissionBroker:
             if event.wait(timeout_seconds):
                 with self._lock:
                     approved = bool(self._pending.get(request_id, (event, False))[1])
+                logger.info("Resolved tool permission request requestId=%s approved=%s", request_id, approved)
+            else:
+                logger.info("Timed out waiting for tool permission request requestId=%s timeoutSeconds=%s", request_id, timeout_seconds)
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -91,11 +98,13 @@ class PermissionBroker:
         with self._lock:
             pending = self._pending.get(request_id)
             if not pending:
+                logger.info("Ignoring permission response for unknown request requestId=%s approved=%s", request_id, approved)
                 return False
 
             event, _approval = pending
             self._pending[request_id] = (event, approved)
             event.set()
+            logger.info("Accepted permission response requestId=%s approved=%s", request_id, approved)
             return True
 
 
@@ -137,6 +146,13 @@ class AgentRuntime:
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
+        logger.info(
+            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s memoryDb=%s",
+            self.model,
+            self.base_url,
+            tools_config_path,
+            memory_store.database_path,
+        )
 
     def run_turn(
         self,
@@ -146,13 +162,17 @@ class AgentRuntime:
     ) -> Iterable[AgentEvent]:
         normalized_text = user_text.strip()
         if not normalized_text:
+            logger.info("Rejecting empty turn sessionId=%s", session_id)
             yield AgentEvent("error", {"code": "empty_message", "message": "Message text is required."})
             return
 
         if not self.api_key:
+            logger.info("Rejecting turn due to missing API key sessionId=%s", session_id)
             yield AgentEvent("error", {"code": "missing_api_key", "message": "OPENAI_API_KEY is not configured."})
             return
 
+        turn_id = str(uuid4())
+        logger.info("Starting agent turn sessionId=%s turnId=%s userTextChars=%s", session_id, turn_id, len(normalized_text))
         history = self._load_history(session_id)
         history.append({
             "role": "user",
@@ -172,11 +192,13 @@ class AgentRuntime:
         try:
             tool_decision = self._request_tool_decision(history)
         except RuntimeError as error:
+            logger.info("Tool-decision provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
             yield AgentEvent("assistant.state", {"state": "error"})
             yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
             return
 
         tool_calls = tool_decision.get("tool_calls") or []
+        logger.info("Received tool decision sessionId=%s turnId=%s toolCallCount=%s", session_id, turn_id, len(tool_calls))
         if tool_calls:
             history.append({
                 "role": "assistant",
@@ -186,7 +208,7 @@ class AgentRuntime:
 
             guardrail = ToolLoopGuardrail()
             for tool_call in tool_calls:
-                for event in self._execute_tool_call(session_id, tool_call, request_permission, history, guardrail):
+                for event in self._execute_tool_call(session_id, turn_id, tool_call, request_permission, history, guardrail):
                     yield event
 
         try:
@@ -202,22 +224,33 @@ class AgentRuntime:
                 assistant_text += delta
                 yield AgentEvent("assistant.delta", {"text": delta})
         except RuntimeError as error:
+            logger.info("Final response provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
             yield AgentEvent("assistant.state", {"state": "error"})
             yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
             return
 
         history.append({"role": "assistant", "content": assistant_text})
         self.memory_store.save(session_id, "assistant", assistant_text)
+        logger.info(
+            "Completed agent turn sessionId=%s turnId=%s assistantTextChars=%s memoryMessages=%s",
+            session_id,
+            turn_id,
+            len(assistant_text),
+            self.memory_store.count(session_id),
+        )
         yield AgentEvent("memory.updated", {"memoryMessages": self.memory_store.count(session_id)})
         yield AgentEvent("assistant.message", {"text": assistant_text})
 
         if self.audio_runtime:
             audio_result = self.audio_runtime.speak(AudioOutputCommand(text=assistant_text, format="wav"))
             if not isinstance(audio_result, AudioFallbackResult):
+                logger.info("Runtime audio ready sessionId=%s turnId=%s durationMs=%s", session_id, turn_id, audio_result.duration_ms)
                 yield AgentEvent("audio.tts-ready", {
                     "audioUrl": audio_result.audio_url,
                     "durationMs": audio_result.duration_ms,
                 })
+            else:
+                logger.info("Runtime audio fallback sessionId=%s turnId=%s fallback=%s reason=%s", session_id, turn_id, audio_result.fallback, audio_result.reason)
 
         yield AgentEvent("assistant.state", {"state": "idle"})
         yield AgentEvent("character.behavior", {
@@ -239,6 +272,25 @@ class AgentRuntime:
     def persisted_tool_audit_records(self, session_id: str | None = None, limit: int = 100) -> list[ToolAuditRecord]:
         return self.tool_audit_store.load(session_id=session_id, limit=limit)
 
+    def query_tool_audit_records(
+        self,
+        *,
+        session_id: str | None = None,
+        tool_name: str | None = None,
+        decision: str | None = None,
+        ok: bool | None = None,
+        failure_code: str | None = None,
+        limit: int = 100,
+    ) -> list[ToolAuditRecord]:
+        return self.tool_audit_store.query(
+            session_id=session_id,
+            tool_name=tool_name,
+            decision=decision,
+            ok=ok,
+            failure_code=failure_code,
+            limit=limit,
+        )
+
     def _load_history(self, session_id: str, limit: int = 40) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
         messages.extend(self.memory_store.load(session_id, limit))
@@ -254,7 +306,9 @@ class AgentRuntime:
     def _format_prefetched_memory_context(self, session_id: str, user_text: str) -> str:
         results = self.memory_store.search(user_text, session_id=session_id, limit=MEMORY_PREFETCH_LIMIT)
         if not results:
+            logger.info("Memory prefetch found no matches sessionId=%s queryChars=%s", session_id, len(user_text))
             return ""
+        logger.info("Memory prefetch matched snippets sessionId=%s matchCount=%s queryChars=%s", session_id, len(results), len(user_text))
 
         lines = [
             "<memory-context>",
@@ -273,6 +327,7 @@ class AgentRuntime:
     def _execute_tool_call(
         self,
         session_id: str,
+        turn_id: str,
         tool_call: dict[str, Any],
         request_permission: PermissionRequester,
         history: list[dict[str, Any]],
@@ -283,6 +338,14 @@ class AgentRuntime:
         tool_call_id = tool_call.get("id") if isinstance(tool_call.get("id"), str) else str(uuid4())
         spec = self.tool_registry.get(tool_name)
         args = self._parse_tool_args(function.get("arguments"))
+        logger.info(
+            "Starting tool call sessionId=%s turnId=%s toolCallId=%s toolName=%s argKeys=%s",
+            session_id,
+            turn_id,
+            tool_call_id,
+            tool_name,
+            sorted(args.keys()),
+        )
 
         yield AgentEvent("assistant.state", {"state": "tool-running"})
         yield AgentEvent("tool.started", {
@@ -293,6 +356,14 @@ class AgentRuntime:
 
         guardrail_decision = guardrail.before_call(tool_name, args)
         if not guardrail_decision.allowed:
+            logger.info(
+                "Tool call blocked by guardrail sessionId=%s turnId=%s toolCallId=%s toolName=%s failureCode=%s",
+                session_id,
+                turn_id,
+                tool_call_id,
+                tool_name,
+                guardrail_decision.failure_code or "guardrail_blocked",
+            )
             result = {"error": guardrail_decision.reason or "Tool call blocked by guardrail"}
             failure_code = guardrail_decision.failure_code or "guardrail_blocked"
             self._record_tool_result(history, tool_call_id, result)
@@ -312,6 +383,7 @@ class AgentRuntime:
             return
 
         if not spec:
+            logger.info("Tool call failed: unknown tool sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Unknown tool: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False)
             self._record_tool_result(history, tool_call_id, result)
@@ -331,6 +403,7 @@ class AgentRuntime:
             return
 
         if not spec.enabled:
+            logger.info("Tool call denied: disabled tool sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Tool is disabled: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False)
             self._record_tool_result(history, tool_call_id, result)
@@ -350,6 +423,7 @@ class AgentRuntime:
             return
 
         if spec.permission == "deny":
+            logger.info("Tool call denied by policy sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Permission denied for tool: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False)
             self._record_tool_result(history, tool_call_id, result)
@@ -368,6 +442,8 @@ class AgentRuntime:
             )
             return
 
+        permission_request_id: str | None = None
+        permission_decision = "allow"
         if spec.permission == "ask":
             request = PermissionRequest(
                 request_id=str(uuid4()),
@@ -375,8 +451,25 @@ class AgentRuntime:
                 display_name=spec.display_name,
                 reason=spec.describe_request(args),
             )
+            permission_request_id = request.request_id
+            logger.info(
+                "Requesting tool permission sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
+                session_id,
+                turn_id,
+                tool_call_id,
+                permission_request_id,
+                tool_name,
+            )
             approved = request_permission(request)
             if not approved:
+                logger.info(
+                    "Tool permission denied sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
+                    session_id,
+                    turn_id,
+                    tool_call_id,
+                    permission_request_id,
+                    tool_name,
+                )
                 result = {"error": f"Permission denied for tool: {tool_name}"}
                 guardrail.after_call(tool_name, args, result, False)
                 self._record_tool_result(history, tool_call_id, result)
@@ -394,13 +487,48 @@ class AgentRuntime:
                     detail=result["error"],
                 )
                 return
+            permission_decision = "approved"
+            logger.info(
+                "Tool permission approved sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
+                session_id,
+                turn_id,
+                tool_call_id,
+                permission_request_id,
+                tool_name,
+            )
 
         result = self.tool_registry.execute(
             tool_name,
             args,
-            ToolContext(session_id=session_id, cwd=REPO_ROOT, memory_store=self.memory_store),
+            ToolContext(
+                session_id=session_id,
+                cwd=REPO_ROOT,
+                memory_store=self.memory_store,
+                turn_id=turn_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                permission_request_id=permission_request_id,
+                permission_decision=permission_decision,
+                audit_metadata={
+                    "turnId": turn_id,
+                    "toolCallId": tool_call_id,
+                    "permission": spec.permission,
+                    "permissionDecision": permission_decision,
+                },
+            ),
         )
         guardrail.after_call(tool_name, args, result.output, result.ok)
+        logger.info(
+            "Finished tool call sessionId=%s turnId=%s toolCallId=%s toolName=%s ok=%s failureCode=%s durationMs=%s outputTruncated=%s",
+            session_id,
+            turn_id,
+            tool_call_id,
+            tool_name,
+            result.ok,
+            result.failure_code,
+            result.duration_ms,
+            result.output_truncated,
+        )
         self._record_tool_result(history, tool_call_id, result.model_output)
         yield AgentEvent("tool.finished", self._tool_finished_payload(
             tool_name,
@@ -442,6 +570,16 @@ class AgentRuntime:
             "stream": True,
             "temperature": 0.7,
         }
+        request_start = perf_counter()
+        chunk_count = 0
+        content_chars = 0
+        logger.info(
+            "Provider stream request starting path=%s model=%s messageCount=%s timeoutSeconds=%s",
+            "/chat/completions",
+            self.model,
+            len(messages),
+            120,
+        )
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -451,6 +589,13 @@ class AgentRuntime:
 
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
+                logger.info(
+                    "Provider stream response opened path=%s model=%s status=%s elapsedMs=%s",
+                    "/chat/completions",
+                    self.model,
+                    getattr(response, "status", None),
+                    round((perf_counter() - request_start) * 1000),
+                )
                 for raw_line in response:
                     line = raw_line.decode("utf-8", errors="replace").strip()
                     if not line.startswith("data:"):
@@ -470,29 +615,90 @@ class AgentRuntime:
                     delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
                     content = delta.get("content")
                     if isinstance(content, str) and content:
+                        chunk_count += 1
+                        content_chars += len(content)
                         yield content
+                logger.info(
+                    "Provider stream request finished path=%s model=%s chunks=%s contentChars=%s elapsedMs=%s",
+                    "/chat/completions",
+                    self.model,
+                    chunk_count,
+                    content_chars,
+                    round((perf_counter() - request_start) * 1000),
+                )
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
+            logger.info(
+                "Provider stream request failed path=%s model=%s status=%s elapsedMs=%s bodyChars=%s",
+                "/chat/completions",
+                self.model,
+                error.code,
+                round((perf_counter() - request_start) * 1000),
+                len(body),
+            )
             raise RuntimeError(f"Provider returned {error.code}: {body or error.reason}") from error
         except OSError as error:
+            logger.info(
+                "Provider stream request failed path=%s model=%s error=%s elapsedMs=%s",
+                "/chat/completions",
+                self.model,
+                error,
+                round((perf_counter() - request_start) * 1000),
+            )
             raise RuntimeError(str(error)) from error
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        request_start = perf_counter()
+        serialized_payload = json.dumps(payload).encode("utf-8")
+        logger.info(
+            "Provider JSON request starting path=%s model=%s stream=%s messageCount=%s toolCount=%s payloadBytes=%s timeoutSeconds=%s",
+            path,
+            payload.get("model"),
+            payload.get("stream"),
+            len(payload.get("messages", [])) if isinstance(payload.get("messages"), list) else None,
+            len(payload.get("tools", [])) if isinstance(payload.get("tools"), list) else None,
+            len(serialized_payload),
+            60,
+        )
         request = urllib.request.Request(
             f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
+            data=serialized_payload,
             headers=self._headers(),
             method="POST",
         )
 
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                raw_body = response.read().decode("utf-8")
+                logger.info(
+                    "Provider JSON request finished path=%s model=%s status=%s responseChars=%s elapsedMs=%s",
+                    path,
+                    payload.get("model"),
+                    getattr(response, "status", None),
+                    len(raw_body),
+                    round((perf_counter() - request_start) * 1000),
+                )
+                data = json.loads(raw_body)
                 return data if isinstance(data, dict) else {}
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
+            logger.info(
+                "Provider JSON request failed path=%s model=%s status=%s elapsedMs=%s bodyChars=%s",
+                path,
+                payload.get("model"),
+                error.code,
+                round((perf_counter() - request_start) * 1000),
+                len(body),
+            )
             raise RuntimeError(f"Provider returned {error.code}: {body or error.reason}") from error
         except (OSError, json.JSONDecodeError) as error:
+            logger.info(
+                "Provider JSON request failed path=%s model=%s error=%s elapsedMs=%s",
+                path,
+                payload.get("model"),
+                error,
+                round((perf_counter() - request_start) * 1000),
+            )
             raise RuntimeError(str(error)) from error
 
     def _headers(self) -> dict[str, str]:
@@ -599,6 +805,15 @@ class AgentRuntime:
             detail=detail,
         )
         self.tool_audit_store.save(record)
+        logger.info(
+            "Recorded tool audit sessionId=%s toolName=%s decision=%s ok=%s failureCode=%s recordId=%s",
+            session_id,
+            tool_name,
+            decision,
+            ok,
+            failure_code,
+            record.record_id,
+        )
         return AgentEvent("tool.audit", record.to_payload())
 
 

@@ -18,8 +18,23 @@ class ToolLoopGuardrail:
         self.max_completed_repeats = max(1, max_completed_repeats)
         self._failed_signatures: dict[str, int] = {}
         self._completed_signatures: dict[str, int] = {}
+        self._semantic_failed_signatures: dict[str, int] = {}
+        self._semantic_completed_signatures: dict[str, int] = {}
+        self._semantic_reasons: dict[str, str] = {}
 
     def before_call(self, tool_name: str, args: dict[str, Any]) -> ToolGuardrailDecision:
+        semantic_args_signature = self._semantic_args_signature(tool_name, args)
+        semantic_failed_count = self._semantic_failed_signatures.get(semantic_args_signature, 0)
+        if semantic_failed_count >= self.max_failed_repeats:
+            return ToolGuardrailDecision(
+                allowed=False,
+                reason=self._semantic_reasons.get(
+                    semantic_args_signature,
+                    f"Blocked repeated failing tool call with no progress: {tool_name}",
+                ),
+                failure_code="guardrail_blocked",
+            )
+
         signature = self._signature(tool_name, args)
         failed_count = self._failed_signatures.get(signature, 0)
         if failed_count >= self.max_failed_repeats:
@@ -27,6 +42,17 @@ class ToolLoopGuardrail:
                 allowed=False,
                 reason=f"Blocked repeated failing tool call: {tool_name}",
                 failure_code="guardrail_blocked",
+            )
+
+        semantic_completed_count = self._semantic_completed_signatures.get(semantic_args_signature, 0)
+        if semantic_completed_count >= self.max_completed_repeats:
+            return ToolGuardrailDecision(
+                allowed=False,
+                reason=self._semantic_reasons.get(
+                    semantic_args_signature,
+                    f"Blocked repeated no-progress tool call: {tool_name}",
+                ),
+                failure_code="no_progress_loop",
             )
 
         completed_count = self._completed_signatures.get(signature, 0)
@@ -42,17 +68,161 @@ class ToolLoopGuardrail:
     def after_call(self, tool_name: str, args: dict[str, Any], result: dict[str, Any], ok: bool) -> None:
         signature = self._signature(tool_name, args)
         self._completed_signatures[signature] = self._completed_signatures.get(signature, 0) + 1
+        semantic_observation = self._semantic_observation(tool_name, args, result, ok)
+        if semantic_observation:
+            kind, semantic_signature, reason = semantic_observation
+            self._semantic_reasons[semantic_signature] = reason
+            if kind == "failed":
+                self._semantic_failed_signatures[semantic_signature] = (
+                    self._semantic_failed_signatures.get(semantic_signature, 0) + 1
+                )
+            else:
+                self._semantic_completed_signatures[semantic_signature] = (
+                    self._semantic_completed_signatures.get(semantic_signature, 0) + 1
+                )
 
         if ok and "error" not in result:
             return
 
         self._failed_signatures[signature] = self._failed_signatures.get(signature, 0) + 1
 
+    def _semantic_observation(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+        ok: bool,
+    ) -> tuple[str, str, str] | None:
+        semantic_args_signature = self._semantic_args_signature(tool_name, args)
+
+        if tool_name in {"search_files", "local_file_search"}:
+            results = result.get("results")
+            if ok and isinstance(results, list):
+                if not results:
+                    return (
+                        "completed",
+                        semantic_args_signature,
+                        "Blocked repeated empty file search; change the query, target, or stop searching.",
+                    )
+                return (
+                    "completed",
+                    semantic_args_signature,
+                    "Blocked repeated file search returning the same results; inspect a result or change the query.",
+                )
+
+        if tool_name == "search_memory":
+            results = result.get("results")
+            if ok and isinstance(results, list):
+                if not results:
+                    return (
+                        "completed",
+                        semantic_args_signature,
+                        "Blocked repeated empty memory search; change the query or answer from available context.",
+                    )
+                return (
+                    "completed",
+                    semantic_args_signature,
+                    "Blocked repeated memory search returning the same snippets; use the recalled context or change the query.",
+                )
+
+        if tool_name == "read_file" and ok:
+            path = self._string_arg(args, "path")
+            start_line = self._intish_arg(args, "startLine", default=1)
+            line_limit = self._intish_arg(args, "lineLimit", default=None)
+            max_chars = self._intish_arg(args, "maxChars", default=None)
+            return (
+                "completed",
+                self._signature(tool_name, {
+                    "path": path,
+                    "startLine": start_line,
+                    "lineLimit": line_limit,
+                    "maxChars": max_chars,
+                }),
+                "Blocked repeated read_file window; use a different line window or summarize the current content.",
+            )
+
+        if tool_name == "patch" and (not ok or "error" in result):
+            return (
+                "failed",
+                self._signature(tool_name, {
+                    "path": self._string_arg(args, "path"),
+                    "oldText": self._string_arg(args, "oldText"),
+                }),
+                "Blocked repeated patch failure for the same file/text; call read_file to verify current contents before patching again.",
+            )
+
+        if tool_name == "write_file" and (not ok or "error" in result):
+            return (
+                "failed",
+                self._signature(tool_name, {
+                    "path": self._string_arg(args, "path"),
+                    "overwrite": bool(args.get("overwrite", False)),
+                }),
+                "Blocked repeated write_file failure for the same path; choose a new path or explicitly set overwrite when intended.",
+            )
+
+        return None
+
+    @classmethod
+    def _semantic_args_signature(cls, tool_name: str, args: dict[str, Any]) -> str:
+        if tool_name in {"search_files", "local_file_search"}:
+            return cls._signature(tool_name, {
+                "query": cls._string_arg(args, "query"),
+                "target": cls._string_arg(args, "target", default="all"),
+                "root": cls._string_arg(args, "root", default="."),
+            })
+
+        if tool_name == "search_memory":
+            return cls._signature(tool_name, {
+                "query": cls._string_arg(args, "query"),
+                "sessionId": cls._string_arg(args, "sessionId", default=None),
+                "includeAllSessions": bool(args.get("includeAllSessions", False)),
+            })
+
+        if tool_name == "read_file":
+            return cls._signature(tool_name, {
+                "path": cls._string_arg(args, "path"),
+                "startLine": cls._intish_arg(args, "startLine", default=1),
+                "lineLimit": cls._intish_arg(args, "lineLimit", default=None),
+                "maxChars": cls._intish_arg(args, "maxChars", default=None),
+            })
+
+        if tool_name == "patch":
+            return cls._signature(tool_name, {
+                "path": cls._string_arg(args, "path"),
+                "oldText": cls._string_arg(args, "oldText"),
+            })
+
+        if tool_name == "write_file":
+            return cls._signature(tool_name, {
+                "path": cls._string_arg(args, "path"),
+                "overwrite": bool(args.get("overwrite", False)),
+            })
+
+        return cls._signature(tool_name, args)
+
+    @staticmethod
+    def _string_arg(args: dict[str, Any], key: str, default: str | None = "") -> str | None:
+        value = args.get(key, default)
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _intish_arg(args: dict[str, Any], key: str, default: int | None) -> int | None:
+        value = args.get(key, default)
+        try:
+            return None if value is None else int(value)
+        except (TypeError, ValueError):
+            return default
+
     @staticmethod
     def _signature(tool_name: str, args: dict[str, Any]) -> str:
-        try:
-            normalized_args = json.dumps(args, ensure_ascii=False, sort_keys=True)
-        except TypeError:
-            normalized_args = json.dumps(str(args), ensure_ascii=False)
+        return f"{tool_name}:{ToolLoopGuardrail._json_dumps(args)}"
 
-        return f"{tool_name}:{normalized_args}"
+    @staticmethod
+    def _json_dumps(value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            return json.dumps(str(value), ensure_ascii=False)

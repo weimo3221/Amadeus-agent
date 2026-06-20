@@ -196,7 +196,7 @@ Current behavior:
 
 - Python emits audit events during `/agent/turn`.
 - The runtime keeps an in-process audit log for the current runtime instance and persists the same records to SQLite for diagnostics after restart.
-- These records are not persisted to SQLite yet.
+- Persisted audit records are queryable through `GET /tools/audit` with optional filters: `sessionId`, `toolName`, `decision`, `ok`, `failureCode`, and `limit`.
 
 ### tool.permission.request
 
@@ -257,6 +257,7 @@ Current active endpoints used by the bridge/runtime:
 ```text
 GET /health
 GET /tools/list
+GET /tools/audit
 POST /agent/turn
 POST /tools/execute
 POST /tools/permission

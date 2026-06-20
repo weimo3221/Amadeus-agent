@@ -28,13 +28,13 @@ Live2D and audio should be treated as installable harnesses. They can contribute
 The Python runtime now separates concrete tool implementations from runtime tool policy:
 
 - `amadeus.tools`: public tool registry entrypoint, concrete local tool handlers, and their default `ToolSpec` metadata.
-- `amadeus.tool_runtime.registry`: effective registry construction, `configs/tools.yaml` overlays, enabled schema selection, permission-state projection, structured `ToolContext` / `ToolResult`, duration/failure metadata, first-pass timeout/cancellation handling, result preview/compression for model context, per-tool model-output policies, and handler dispatch.
-- `amadeus.tool_runtime.audit`: tool audit events plus SQLite persistence for started/finished/denied/blocked/failed decisions.
-- `amadeus.tool_runtime.guardrails`: per-turn guardrails for repeated failed calls and repeated completed calls that do not make progress.
+- `amadeus.tool_runtime.registry`: effective registry construction, `configs/tools.yaml` overlays, enabled schema selection, permission-state projection, structured `ToolContext` / `ToolResult`, turn/tool-call and permission metadata propagation, duration/failure metadata, first-pass timeout/cancellation handling, result preview/compression for model context, per-tool model-output policies, and handler dispatch.
+- `amadeus.tool_runtime.audit`: tool audit events plus SQLite persistence and filtered query APIs for started/finished/denied/blocked/failed decisions.
+- `amadeus.tool_runtime.guardrails`: per-turn guardrails for repeated failed calls, repeated completed calls, and semantic no-progress patterns such as empty/same searches, repeated read windows, repeated patch failures, and repeated write failures.
 - `amadeus.agent`: conversation loop, permission requests, event streaming, memory writes, and coordination with the tool runtime.
 - `packages/amadeus/tools.ts`: TypeScript bridge types and Python tool HTTP clients only. It intentionally does not mirror concrete tool handlers or schemas; server diagnostics should call Python `/tools/list`.
 
-Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be richer context propagation, additional per-tool result policies for new high-volume tools, richer audit query APIs if diagnostics UI needs them, and richer semantic no-progress detection. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
+Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be additional per-tool result policies for new high-volume tools, richer diagnostics UI surfaces on top of `GET /tools/audit` if needed, and continued tuning of semantic no-progress policies as new tools land. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
 
 ### Tool Inventory And Extension Path
 

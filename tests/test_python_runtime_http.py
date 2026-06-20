@@ -138,6 +138,36 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["result"]["resultCount"], 1)
         self.assertIn("green tea", payload["result"]["results"][0]["content"])
 
+    def test_tools_audit_returns_filtered_persisted_records(self) -> None:
+        record = runtime_server.agent_runtime.tool_audit_log.append(
+            session_id="http-test",
+            tool_name="search_files",
+            decision="finished",
+            ok=True,
+            duration_ms=7,
+        )
+        runtime_server.agent_runtime.tool_audit_store.save(record)
+        other_record = runtime_server.agent_runtime.tool_audit_log.append(
+            session_id="other-session",
+            tool_name="patch",
+            decision="finished",
+            ok=False,
+            failure_code="tool_error",
+        )
+        runtime_server.agent_runtime.tool_audit_store.save(other_record)
+
+        payload = self.get_json("/tools/audit?sessionId=http-test&toolName=search_files&decision=finished&ok=true")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["filters"]["sessionId"], "http-test")
+        self.assertEqual(payload["filters"]["toolName"], "search_files")
+        self.assertEqual(payload["filters"]["decision"], "finished")
+        self.assertTrue(payload["filters"]["ok"])
+        self.assertEqual(payload["records"][0]["recordId"], record.record_id)
+        self.assertEqual(payload["records"][0]["toolName"], "search_files")
+        self.assertTrue(payload["records"][0]["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

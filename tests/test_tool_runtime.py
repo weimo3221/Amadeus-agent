@@ -230,7 +230,16 @@ class ToolRegistryTests(unittest.TestCase):
 
     def test_execute_passes_context_to_context_aware_handler(self) -> None:
         def read_context(_args: dict[str, object], context: ToolContext) -> dict[str, object]:
-            return {"sessionId": context.session_id, "cwd": context.cwd.name}
+            return {
+                "sessionId": context.session_id,
+                "cwd": context.cwd.name,
+                "turnId": context.turn_id,
+                "toolCallId": context.tool_call_id,
+                "toolName": context.tool_name,
+                "permissionRequestId": context.permission_request_id,
+                "permissionDecision": context.permission_decision,
+                "auditSource": context.audit_metadata["source"],
+            }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             registry = ToolRegistry(
@@ -247,10 +256,31 @@ class ToolRegistryTests(unittest.TestCase):
                 config_path=Path(tmpdir) / "missing-tools.yaml",
             )
 
-            result = registry.execute("read_context", {}, ToolContext(session_id="session-1"))
+            result = registry.execute(
+                "read_context",
+                {},
+                ToolContext(
+                    session_id="session-1",
+                    turn_id="turn-1",
+                    tool_call_id="call-1",
+                    tool_name="read_context",
+                    permission_request_id="permission-1",
+                    permission_decision="approved",
+                    audit_metadata={"source": "unit-test"},
+                ),
+            )
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.output, {"sessionId": "session-1", "cwd": "Amadeus-agent"})
+        self.assertEqual(result.output, {
+            "sessionId": "session-1",
+            "cwd": "Amadeus-agent",
+            "turnId": "turn-1",
+            "toolCallId": "call-1",
+            "toolName": "read_context",
+            "permissionRequestId": "permission-1",
+            "permissionDecision": "approved",
+            "auditSource": "unit-test",
+        })
 
     def test_execute_compresses_large_success_output_for_model_context(self) -> None:
         large_text = "x" * 200
@@ -888,8 +918,86 @@ class ToolLoopGuardrailTests(unittest.TestCase):
 
         decision = guardrail.before_call("local_file_search", args)
         self.assertFalse(decision.allowed)
-        self.assertIn("Blocked no-progress repeated tool call", decision.reason or "")
+        self.assertIn("empty file search", decision.reason or "")
         self.assertEqual(decision.failure_code, "no_progress_loop")
+
+    def test_blocks_repeated_empty_file_search_with_specific_reason(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"query": "missing", "target": "content"}
+
+        self.assertTrue(guardrail.before_call("search_files", args).allowed)
+        guardrail.after_call("search_files", args, {"results": []}, ok=True)
+
+        self.assertTrue(guardrail.before_call("search_files", args).allowed)
+        guardrail.after_call("search_files", args, {"results": []}, ok=True)
+
+        decision = guardrail.before_call("search_files", args)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "no_progress_loop")
+        self.assertIn("empty file search", decision.reason or "")
+
+    def test_blocks_repeated_empty_memory_search_with_specific_reason(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"query": "preference", "includeAllSessions": False}
+
+        self.assertTrue(guardrail.before_call("search_memory", args).allowed)
+        guardrail.after_call("search_memory", args, {"results": []}, ok=True)
+
+        self.assertTrue(guardrail.before_call("search_memory", args).allowed)
+        guardrail.after_call("search_memory", args, {"results": []}, ok=True)
+
+        decision = guardrail.before_call("search_memory", args)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "no_progress_loop")
+        self.assertIn("empty memory search", decision.reason or "")
+
+    def test_blocks_repeated_read_file_window_with_specific_reason(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"path": "README.md", "startLine": 10, "lineLimit": 20}
+        result = {"path": "README.md", "content": "same", "startLine": 10, "lineLimit": 20}
+
+        self.assertTrue(guardrail.before_call("read_file", args).allowed)
+        guardrail.after_call("read_file", args, result, ok=True)
+
+        self.assertTrue(guardrail.before_call("read_file", args).allowed)
+        guardrail.after_call("read_file", args, result, ok=True)
+
+        decision = guardrail.before_call("read_file", args)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "no_progress_loop")
+        self.assertIn("read_file window", decision.reason or "")
+
+    def test_blocks_repeated_patch_failure_by_path_and_old_text(self) -> None:
+        guardrail = ToolLoopGuardrail(max_failed_repeats=2)
+        first_args = {"path": "README.md", "oldText": "missing", "newText": "one"}
+        second_args = {"path": "README.md", "oldText": "missing", "newText": "two"}
+
+        self.assertTrue(guardrail.before_call("patch", first_args).allowed)
+        guardrail.after_call("patch", first_args, {"error": "oldText was not found"}, ok=False)
+
+        self.assertTrue(guardrail.before_call("patch", second_args).allowed)
+        guardrail.after_call("patch", second_args, {"error": "oldText was not found"}, ok=False)
+
+        decision = guardrail.before_call("patch", {"path": "README.md", "oldText": "missing", "newText": "three"})
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "guardrail_blocked")
+        self.assertIn("read_file", decision.reason or "")
+
+    def test_blocks_repeated_write_file_failure_by_path_and_overwrite(self) -> None:
+        guardrail = ToolLoopGuardrail(max_failed_repeats=2)
+        first_args = {"path": "README.md", "content": "one"}
+        second_args = {"path": "README.md", "content": "two"}
+
+        self.assertTrue(guardrail.before_call("write_file", first_args).allowed)
+        guardrail.after_call("write_file", first_args, {"error": "file already exists"}, ok=False)
+
+        self.assertTrue(guardrail.before_call("write_file", second_args).allowed)
+        guardrail.after_call("write_file", second_args, {"error": "file already exists"}, ok=False)
+
+        decision = guardrail.before_call("write_file", {"path": "README.md", "content": "three"})
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "guardrail_blocked")
+        self.assertIn("overwrite", decision.reason or "")
 
 
 class ToolAuditStoreTests(unittest.TestCase):
@@ -927,6 +1035,47 @@ class ToolAuditStoreTests(unittest.TestCase):
 
         self.assertEqual([record.session_id for record in loaded], ["session-2"])
         self.assertEqual([record.tool_name for record in loaded], ["b"])
+
+    def test_queries_audit_records_by_tool_decision_ok_and_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ToolAuditStore(Path(tmpdir) / "amadeus.sqlite")
+            log = ToolAuditLog()
+            store.save(log.append(session_id="session-1", tool_name="search_files", decision="started"))
+            store.save(log.append(
+                session_id="session-1",
+                tool_name="search_files",
+                decision="finished",
+                ok=True,
+                duration_ms=3,
+            ))
+            store.save(log.append(
+                session_id="session-1",
+                tool_name="patch",
+                decision="finished",
+                ok=False,
+                failure_code="tool_error",
+            ))
+            store.save(log.append(
+                session_id="session-2",
+                tool_name="patch",
+                decision="finished",
+                ok=False,
+                failure_code="tool_timeout",
+            ))
+
+            loaded = store.query(
+                session_id="session-1",
+                tool_name="patch",
+                decision="finished",
+                ok=False,
+                failure_code="tool_error",
+            )
+            count = store.count(session_id="session-1", decision="finished", ok=False)
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].tool_name, "patch")
+        self.assertEqual(loaded[0].failure_code, "tool_error")
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

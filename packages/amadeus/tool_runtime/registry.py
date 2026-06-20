@@ -3,9 +3,10 @@ from __future__ import annotations
 import concurrent.futures
 import inspect
 import json
+import logging
 import threading
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Iterable
@@ -25,6 +26,7 @@ LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT = 5
 LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS = 160
 MEMORY_SEARCH_MODEL_RESULT_LIMIT = 5
 MEMORY_SEARCH_MODEL_PREVIEW_CHARS = 240
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,12 @@ class ToolContext:
     session_id: str
     cwd: Path = REPO_ROOT
     memory_store: Any | None = None
+    turn_id: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    permission_request_id: str | None = None
+    permission_decision: str | None = None
+    audit_metadata: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: float | None = 30.0
     cancel_event: threading.Event | None = None
     max_model_output_chars: int = DEFAULT_MAX_MODEL_OUTPUT_CHARS
@@ -78,29 +86,56 @@ class ToolRegistry:
     ) -> ToolResult:
         spec = self.get(tool_name)
         if not spec:
+            logger.info("ToolRegistry execute rejected unknown tool toolName=%s", tool_name)
             raise KeyError(f"Unknown tool: {tool_name}")
 
         effective_context = context or ToolContext(session_id="default")
+        logger.info(
+            "ToolRegistry execute starting sessionId=%s turnId=%s toolCallId=%s toolName=%s timeoutSeconds=%s argKeys=%s",
+            effective_context.session_id,
+            effective_context.turn_id,
+            effective_context.tool_call_id,
+            tool_name,
+            effective_context.timeout_seconds,
+            sorted(args.keys()),
+        )
         start = perf_counter()
         try:
             if effective_context.is_cancelled():
+                logger.info(
+                    "ToolRegistry execute cancelled before handler sessionId=%s turnId=%s toolCallId=%s toolName=%s",
+                    effective_context.session_id,
+                    effective_context.turn_id,
+                    effective_context.tool_call_id,
+                    tool_name,
+                )
                 raise ToolCancelledError
 
             output = run_with_timeout(spec.handler, args, effective_context)
             if effective_context.is_cancelled():
+                logger.info(
+                    "ToolRegistry execute cancelled after handler sessionId=%s turnId=%s toolCallId=%s toolName=%s",
+                    effective_context.session_id,
+                    effective_context.turn_id,
+                    effective_context.tool_call_id,
+                    tool_name,
+                )
                 raise ToolCancelledError
 
             ok = "error" not in output
             failure_code = None if ok else "tool_error"
         except ToolCancelledError:
+            logger.info("ToolRegistry execute cancelled toolName=%s", tool_name)
             output = {"error": f"Tool cancelled: {tool_name}"}
             ok = False
             failure_code = "tool_cancelled"
         except TimeoutError:
+            logger.info("ToolRegistry execute timed out toolName=%s timeoutSeconds=%s", tool_name, effective_context.timeout_seconds)
             output = {"error": f"Tool timed out: {tool_name}"}
             ok = False
             failure_code = "tool_timeout"
         except Exception as error:
+            logger.info("ToolRegistry execute handler exception toolName=%s error=%s", tool_name, error)
             output = {"error": str(error)}
             ok = False
             failure_code = "tool_exception"
@@ -113,6 +148,17 @@ class ToolRegistry:
             preview_chars=effective_context.output_preview_chars,
         )
         duration_ms = max(0, round((perf_counter() - start) * 1000))
+        logger.info(
+            "ToolRegistry execute finished sessionId=%s turnId=%s toolCallId=%s toolName=%s ok=%s failureCode=%s durationMs=%s outputTruncated=%s",
+            effective_context.session_id,
+            effective_context.turn_id,
+            effective_context.tool_call_id,
+            tool_name,
+            ok,
+            failure_code,
+            duration_ms,
+            output_truncated,
+        )
         return ToolResult(
             tool_name=tool_name,
             output=output,

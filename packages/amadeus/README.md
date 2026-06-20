@@ -50,7 +50,7 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 The runtime layer around these tools adds behavior that tool handlers do not need to reimplement:
 
 - `ToolRegistry` loads default specs and applies `configs/tools.yaml`.
-- `ToolContext` carries session id, cwd, optional memory store, timeout, cooperative cancellation, and model-output size limits.
+- `ToolContext` carries session id, cwd, optional memory store, turn/tool-call ids, permission decision metadata, audit metadata, timeout, cooperative cancellation, and model-output size limits.
 - `ToolResult` keeps the full tool output separately from the smaller `model_output` written back into model context.
 - Tool execution records duration, stable failure codes, `tool.started` / `tool.finished` events, and persisted `tool.audit` records.
 - Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn.
@@ -102,6 +102,7 @@ http://127.0.0.1:8790
 
 - `GET /health`
 - `GET /tools/list`：Python-owned source for effective tool permission state and enabled schemas.
+- `GET /tools/audit?sessionId=default&toolName=search_files&decision=finished&ok=true&limit=100`：query persisted tool audit records for diagnostics.
 - `POST /agent/turn`
 - `POST /tools/execute`：compatibility execution endpoint for direct tool diagnostics; normal turns execute tools inside Python `AgentRuntime`.
 - `POST /tools/permission`

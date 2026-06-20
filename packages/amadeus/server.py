@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import sys
@@ -29,6 +30,8 @@ PORT = int(os.environ.get("AMADEUS_PYTHON_RUNTIME_PORT", os.environ.get("AMADEUS
 DATABASE_PATH = Path(os.environ.get("AMADEUS_MEMORY_DB", str(REPO_ROOT / "data" / "amadeus.sqlite")))
 AUDIO_ROOT = Path(os.environ.get("AMADEUS_AUDIO_ROOT", str(RUNTIME_DIR / "assets" / "audio")))
 PUBLIC_BASE_URL = os.environ.get("AMADEUS_PYTHON_RUNTIME_URL", f"http://{HOST}:{PORT}")
+LOG_LEVEL = os.environ.get("AMADEUS_LOG_LEVEL", "INFO").upper()
+logger = logging.getLogger(__name__)
 
 memory_store = MessageMemoryStore(DATABASE_PATH)
 audio_library = LocalAudioLibrary(AUDIO_ROOT, PUBLIC_BASE_URL)
@@ -44,6 +47,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == "/health":
+            logger.info("Handling runtime health request")
             self.write_json(200, {
                 "ok": True,
                 "runtime": "python",
@@ -54,10 +58,52 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/tools/list":
+            logger.info("Handling tools list request")
             self.write_json(200, {
                 "ok": True,
                 "tools": agent_runtime.tool_permission_state(),
                 "schemas": agent_runtime.enabled_tool_schemas(),
+            })
+            return
+
+        if parsed.path == "/tools/audit":
+            query = parse_qs(parsed.query)
+            session_id = optional_query_string(query, "sessionId")
+            tool_name = optional_query_string(query, "toolName")
+            decision = optional_query_string(query, "decision")
+            failure_code = optional_query_string(query, "failureCode")
+            ok = parse_optional_bool(optional_query_string(query, "ok"))
+            limit = parse_int(query.get("limit", ["100"])[0], 100, 1, 500)
+            records = agent_runtime.query_tool_audit_records(
+                session_id=session_id,
+                tool_name=tool_name,
+                decision=decision,
+                ok=ok,
+                failure_code=failure_code,
+                limit=limit,
+            )
+            logger.info(
+                "Handling tools audit query sessionId=%s toolName=%s decision=%s ok=%s failureCode=%s limit=%s resultCount=%s",
+                session_id,
+                tool_name,
+                decision,
+                ok,
+                failure_code,
+                limit,
+                len(records),
+            )
+            self.write_json(200, {
+                "ok": True,
+                "records": [record.to_payload() for record in records],
+                "count": len(records),
+                "filters": {
+                    "sessionId": session_id,
+                    "toolName": tool_name,
+                    "decision": decision,
+                    "ok": ok,
+                    "failureCode": failure_code,
+                    "limit": limit,
+                },
             })
             return
 
@@ -134,9 +180,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             text = body.get("text")
 
             if not isinstance(session_id, str) or not isinstance(text, str):
+                logger.info("Rejecting malformed agent turn request sessionIdType=%s textType=%s", type(session_id).__name__, type(text).__name__)
                 self.write_json(400, {"ok": False, "error": "sessionId and text must be strings"})
                 return
 
+            logger.info("Handling agent turn request sessionId=%s textChars=%s", session_id, len(text))
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
@@ -145,6 +193,12 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
             def request_permission(request: PermissionRequest) -> bool:
                 permission_broker.register(request.request_id)
+                logger.info(
+                    "Streaming tool permission request sessionId=%s requestId=%s toolName=%s",
+                    session_id,
+                    request.request_id,
+                    request.tool_name,
+                )
                 self.write_event(session_id, "tool.permission.request", {
                     "requestId": request.request_id,
                     "toolName": request.tool_name,
@@ -154,10 +208,13 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 return permission_broker.wait(request.request_id)
 
             for event in agent_runtime.run_turn(session_id, text, request_permission):
+                logger.info("Streaming runtime event sessionId=%s type=%s", session_id, event.type)
                 self.write_json_line(event.to_runtime_event(session_id))
         except BrokenPipeError:
+            logger.info("Agent turn stream closed by client")
             return
         except Exception as error:
+            logger.info("Agent turn runtime error error=%s", error)
             try:
                 self.write_json_line({
                     "id": "",
@@ -176,13 +233,27 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             args = body.get("args") if isinstance(body.get("args"), dict) else {}
 
             if not isinstance(tool_name, str):
+                logger.info("Rejecting malformed tool execute request toolNameType=%s", type(tool_name).__name__)
                 self.write_json(400, {"ok": False, "error": "toolName must be a string"})
                 return
 
+            logger.info("Handling direct tool execute request toolName=%s argKeys=%s", tool_name, sorted(args.keys()))
             result = agent_runtime.tool_registry.execute(
                 tool_name,
                 args,
-                ToolContext(session_id="default", memory_store=memory_store),
+                ToolContext(
+                    session_id="default",
+                    memory_store=memory_store,
+                    tool_name=tool_name,
+                    permission_decision="direct_execute",
+                    audit_metadata={"source": "http_tools_execute"},
+                ),
+            )
+            logger.info(
+                "Completed direct tool execute request toolName=%s toolOk=%s failureCode=%s",
+                tool_name,
+                result.ok,
+                result.failure_code,
             )
             self.write_json(200, {
                 "ok": True,
@@ -191,8 +262,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "failureCode": result.failure_code,
             })
         except KeyError as error:
+            logger.info("Direct tool execute unknown tool error=%s", error)
             self.write_json(404, {"ok": False, "error": str(error)})
         except Exception as error:
+            logger.info("Direct tool execute runtime error error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_tool_permission(self) -> None:
@@ -202,12 +275,15 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             approved = body.get("approved")
 
             if not isinstance(request_id, str) or not isinstance(approved, bool):
+                logger.info("Rejecting malformed permission response requestIdType=%s approvedType=%s", type(request_id).__name__, type(approved).__name__)
                 self.write_json(400, {"ok": False, "error": "requestId must be a string and approved must be a boolean"})
                 return
 
             resolved = permission_broker.resolve(request_id, approved)
+            logger.info("Handled permission response requestId=%s approved=%s resolved=%s", request_id, approved, resolved)
             self.write_json(200, {"ok": True, "resolved": resolved})
         except Exception as error:
+            logger.info("Permission response runtime error error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_memory_save(self) -> None:
@@ -338,8 +414,29 @@ def parse_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, number))
 
 
+def optional_query_string(query: dict[str, list[str]], key: str) -> str | None:
+    values = query.get(key)
+    if not values:
+        return None
+    value = values[0].strip()
+    return value or None
+
+
+def parse_optional_bool(value: str | None) -> bool | None:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    return None
+
+
 def main() -> None:
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     server = ThreadingHTTPServer((HOST, PORT), RuntimeRequestHandler)
+    logger.info("Amadeus runtime starting host=%s port=%s database=%s audioRoot=%s", HOST, PORT, DATABASE_PATH, AUDIO_ROOT)
     print(f"Amadeus runtime listening on http://{HOST}:{PORT}", flush=True)
     server.serve_forever()
 

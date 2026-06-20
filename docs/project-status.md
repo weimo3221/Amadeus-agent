@@ -123,8 +123,8 @@ Fallback path today:
   - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression, and reports non-text file kinds without decoding them.
   - `patch` now supports safe single-file UTF-8 text replacement with unique-match default, optional `replaceAll`, generated-directory restrictions, and diff output.
   - `write_file` now supports safe UTF-8 text file creation and explicit whole-file overwrite with generated-directory restrictions, text-extension checks, size limits, parent directory creation, and diff output.
-  - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress.
-  - Unit tests cover registry config aliases, cancellation behavior, persisted audit records, result policy behavior, guardrail threshold behavior, agent-level repeated failure blocking, and agent-level no-progress blocking.
+  - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress, with semantic no-progress policies for repeated empty/same searches, repeated read windows, repeated patch failures, and repeated write failures.
+  - Unit tests cover registry config aliases, cancellation behavior, persisted audit records, result policy behavior, guardrail threshold behavior, semantic no-progress policies, agent-level repeated failure blocking, and agent-level no-progress blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -285,9 +285,9 @@ Goal: turn the first ToolRuntime slice into a production-grade tool execution la
 
 Planned tasks:
 
-- Extend `ToolContext` so tools receive audit metadata explicitly.
+- Extend `ToolContext` so tools receive audit metadata explicitly. Done: `ToolContext` now carries turn/tool-call ids, tool name, permission request/decision metadata, and audit metadata.
 - Extend cancellation beyond the current cooperative signal if future tools need stronger process-level interruption.
-- Extend audit records with richer query APIs if diagnostics UI needs them.
+- Extend audit records with richer query APIs if diagnostics UI needs them. Done: persisted audit records are queryable through `GET /tools/audit`.
 - Extend result preview/compression with more per-tool policies as new high-volume tools are added.
 - Extend no-progress detection with richer semantic policies if needed.
 - Keep expanding Electron end-to-end coverage on the Python path before removing remaining TypeScript bridge scaffolding.
@@ -303,8 +303,8 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression and reports unsupported non-text file kinds; `patch` and `write_file` provide targeted-edit and whole-file write paths.
-- The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and richer semantic no-progress guardrails.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, semantic no-progress guardrails, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression and reports unsupported non-text file kinds; `patch` and `write_file` provide targeted-edit and whole-file write paths.
+- The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and continued tuning of semantic no-progress policies as new tools land.
 
 ### Phase 8: Agent Memory Optimization
 
