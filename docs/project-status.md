@@ -48,7 +48,8 @@ Fallback path today:
 - Tool execution now goes through a formal registry with `allow`, `ask`, and `deny` metadata.
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as an `ask` tool.
-- `local_file_search` is implemented as an `ask` tool in the Python runtime.
+- `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
+- `local_file_search` remains as a disabled compatibility alias for older tool calls.
 - `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
@@ -189,6 +190,7 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 - Added inline desktop Allow / Deny prompts.
 - Extracted TypeScript tool metadata and config loading into `packages/amadeus/tools.ts`.
 - Added `local_file_search` as the first practical project-search tool.
+- Added `search_files` as the preferred, better-named replacement with `target: all | files | content`.
 - Added `read_file` so the agent can inspect a bounded UTF-8 workspace file after finding it.
 - Split Python tool implementations from the old single `tools.py` file into `packages/amadeus/tools/` modules while keeping the `amadeus.tools` import surface stable.
 
@@ -223,7 +225,7 @@ Status: first slice complete.
 - Added first-pass tool timeout handling with structured `tool_timeout` failures.
 - Added first-pass cooperative cancellation handling with structured `tool_cancelled` failures.
 - Added first-pass result preview/compression so large successful tool outputs do not flood model context.
-- Added first-pass per-tool result policy for `local_file_search`, keeping search metadata while capping model-context result count and preview length.
+- Added first-pass per-tool result policy for `search_files`, keeping search metadata while capping model-context result count and preview length.
 - Added first-pass per-tool result policy for `read_file`, keeping file metadata while capping file content written back into model context.
 - Split concrete Python tools into focused modules under `packages/amadeus/tools/`, with shared definitions in `tools/base.py` and registry exports in `tools/__init__.py`.
 - Added first-pass no-progress loop detection with structured `no_progress_loop` failures.
@@ -286,7 +288,7 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and a `local_file_search` result policy.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, first-pass no-progress guardrails, and `search_files` / `read_file` result policies.
 - The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and richer semantic no-progress guardrails.
 
 ### Phase 8: Agent Memory Optimization

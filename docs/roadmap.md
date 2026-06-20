@@ -102,7 +102,8 @@ Current tool baseline already delivered:
 
 - `get_current_time`
 - `roll_dice`
-- `local_file_search`
+- `search_files`
+- `read_file`
 
 Planned follow-up tools:
 

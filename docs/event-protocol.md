@@ -142,7 +142,7 @@ Note:
 {
   "type": "tool.started",
   "payload": {
-    "toolName": "local_file_search",
+    "toolName": "search_files",
     "displayName": "Searching files"
   }
 }
@@ -154,7 +154,7 @@ Note:
 {
   "type": "tool.finished",
   "payload": {
-    "toolName": "local_file_search",
+    "toolName": "search_files",
     "ok": true,
     "durationMs": 12,
     "failureCode": null,
@@ -164,7 +164,7 @@ Note:
 }
 ```
 
-`durationMs`, `failureCode`, `resultPreview`, and `outputTruncated` are optional for compatibility with older runtime events. Python ToolRuntime emits duration and failure metadata when execution reaches the structured `ToolResult` path. It emits `resultPreview` and `outputTruncated` only when a successful tool result was compacted before being written back into model context, either by a per-tool policy such as `local_file_search` or by the global size fallback. Permission-denied, disabled, unknown, cancelled, timed out, or guardrail-blocked decisions emit stable failure codes where available.
+`durationMs`, `failureCode`, `resultPreview`, and `outputTruncated` are optional for compatibility with older runtime events. Python ToolRuntime emits duration and failure metadata when execution reaches the structured `ToolResult` path. It emits `resultPreview` and `outputTruncated` only when a successful tool result was compacted before being written back into model context, either by a per-tool policy such as `search_files` / `read_file` or by the global size fallback. Permission-denied, disabled, unknown, cancelled, timed out, or guardrail-blocked decisions emit stable failure codes where available.
 
 ### tool.audit
 
@@ -175,7 +175,7 @@ Note:
     "recordId": "audit-record-id",
     "timestamp": "2026-06-19T00:00:00.000000+00:00",
     "sessionId": "default",
-    "toolName": "local_file_search",
+    "toolName": "search_files",
     "decision": "finished",
     "ok": true,
     "durationMs": 12,
@@ -205,7 +205,7 @@ Current behavior:
   "type": "tool.permission.request",
   "payload": {
     "requestId": "permission-request-id",
-    "toolName": "local_file_search",
+    "toolName": "search_files",
     "displayName": "Searching local files",
     "reason": "Allow Amadeus to search local project files?"
   }

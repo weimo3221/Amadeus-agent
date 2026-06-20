@@ -21,6 +21,7 @@ SEARCHABLE_EXTENSIONS = {
     ".yaml",
     ".yml",
 }
+SEARCH_TARGETS = {"all", "files", "content"}
 
 
 def is_inside(path: Path, parent: Path) -> bool:
@@ -31,11 +32,16 @@ def is_inside(path: Path, parent: Path) -> bool:
         return False
 
 
-def local_file_search(args: dict[str, Any]) -> dict[str, Any]:
+def search_files(args: dict[str, Any]) -> dict[str, Any]:
     requested_query = args.get("query")
     query = requested_query.strip() if isinstance(requested_query, str) else ""
     if not query:
         return {"error": "query is required"}
+
+    requested_target = args.get("target")
+    target = requested_target.strip() if isinstance(requested_target, str) else "all"
+    if target not in SEARCH_TARGETS:
+        return {"error": "target must be one of: all, files, content"}
 
     requested_root = args.get("root")
     root_text = requested_root.strip() if isinstance(requested_root, str) and requested_root.strip() else "."
@@ -67,8 +73,11 @@ def local_file_search(args: dict[str, Any]) -> dict[str, Any]:
 
         scanned_files += 1
         relative_path = current.relative_to(REPO_ROOT).as_posix()
-        if normalized_query in relative_path.casefold():
+        if target in {"all", "files"} and normalized_query in relative_path.casefold():
             results.append({"path": relative_path, "preview": relative_path, "match": "path"})
+            continue
+
+        if target == "files":
             continue
 
         try:
@@ -90,6 +99,7 @@ def local_file_search(args: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "query": query,
+        "target": target,
         "root": search_root.relative_to(REPO_ROOT).as_posix() or ".",
         "maxResults": max_results,
         "results": results,
@@ -97,17 +107,63 @@ def local_file_search(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def local_file_search(args: dict[str, Any]) -> dict[str, Any]:
+    legacy_args = dict(args)
+    legacy_args.setdefault("target", "all")
+    return search_files(legacy_args)
+
+
+SEARCH_FILES_TOOL_SPEC = ToolSpec(
+    name="search_files",
+    display_name="Searching local files",
+    permission="ask",
+    enabled=True,
+    handler=search_files,
+    schema={
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search workspace-relative filenames and small text file contents. Use target='files' for path/name search, target='content' for text search, or target='all' when either can satisfy the request.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search text to match in paths or file contents.",
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["all", "files", "content"],
+                        "description": "Search mode. Use 'files' for filenames/paths, 'content' for text contents, and 'all' for both. Defaults to 'all'.",
+                    },
+                    "root": {
+                        "type": "string",
+                        "description": "Optional workspace-relative directory to search. Defaults to the project root.",
+                    },
+                    "maxResults": {
+                        "type": "number",
+                        "description": "Maximum results to return. Defaults to 10 and is capped at 30.",
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+)
+
+
 LOCAL_FILE_SEARCH_TOOL_SPEC = ToolSpec(
     name="local_file_search",
     display_name="Searching local files",
     permission="ask",
-    enabled=True,
+    enabled=False,
     handler=local_file_search,
     schema={
         "type": "function",
         "function": {
             "name": "local_file_search",
-            "description": "Search filenames and small text files inside the project workspace. Use this when the user asks to find local project files, docs, code, configuration, or notes.",
+            "description": "Legacy alias for search_files. Prefer search_files for new calls.",
             "parameters": {
                 "type": "object",
                 "properties": {

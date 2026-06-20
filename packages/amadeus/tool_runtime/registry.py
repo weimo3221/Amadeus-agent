@@ -310,15 +310,16 @@ def apply_tool_result_policy(
     if not ok:
         return output, None, False
 
-    if tool_name == "local_file_search":
-        return normalize_local_file_search_output(output, preview_chars)
+    if tool_name in {"search_files", "local_file_search"}:
+        return normalize_search_files_output(tool_name, output, preview_chars)
     if tool_name == "read_file":
         return normalize_read_file_output(output, preview_chars)
 
     return output, None, False
 
 
-def normalize_local_file_search_output(
+def normalize_search_files_output(
+    tool_name: str,
     output: dict[str, Any],
     preview_chars: int,
 ) -> tuple[dict[str, Any], str | None, bool]:
@@ -357,9 +358,10 @@ def normalize_local_file_search_output(
     result_count = len(raw_results)
     model_output = {
         "_amadeus_result_truncated": True,
-        "_amadeus_result_policy": "local_file_search_v1",
-        "tool_name": "local_file_search",
+        "_amadeus_result_policy": "search_files_v1",
+        "tool_name": tool_name,
         "query": output.get("query"),
+        "target": output.get("target"),
         "root": output.get("root"),
         "maxResults": output.get("maxResults"),
         "scannedFiles": output.get("scannedFiles"),

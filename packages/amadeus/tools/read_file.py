@@ -64,7 +64,7 @@ READ_FILE_TOOL_SPEC = ToolSpec(
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a small UTF-8 text file inside the project workspace. Use this after local_file_search when the user needs the contents of a specific project file.",
+            "description": "Read a small UTF-8 text file inside the project workspace. Use this after search_files when the user needs the contents of a specific project file.",
             "parameters": {
                 "type": "object",
                 "properties": {

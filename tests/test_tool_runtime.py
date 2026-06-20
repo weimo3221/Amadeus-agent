@@ -15,12 +15,22 @@ from amadeus.tools import ToolSpec, execute_tool, list_tools
 
 
 class ToolRegistryTests(unittest.TestCase):
-    def test_default_registry_includes_read_file_tool(self) -> None:
+    def test_default_registry_includes_search_and_read_file_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
 
         tool_state = {entry["name"]: entry for entry in registry.permission_state()}
         schema_names = {entry["function"]["name"] for entry in registry.enabled_schemas()}
+
+        self.assertIn("search_files", list_tools())
+        self.assertIn("search_files", tool_state)
+        self.assertEqual(tool_state["search_files"]["permission"], "ask")
+        self.assertIn("search_files", schema_names)
+
+        self.assertIn("local_file_search", list_tools())
+        self.assertIn("local_file_search", tool_state)
+        self.assertFalse(tool_state["local_file_search"]["enabled"])
+        self.assertNotIn("local_file_search", schema_names)
 
         self.assertIn("read_file", list_tools())
         self.assertIn("read_file", tool_state)
@@ -251,7 +261,7 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertGreater(result.model_output["original_char_count"], 80)
         self.assertEqual(result.model_output["preview"], result.output_preview)
 
-    def test_execute_applies_local_file_search_result_policy(self) -> None:
+    def test_execute_applies_search_files_result_policy(self) -> None:
         long_preview = "match " + ("x" * 220)
         search_results = [
             {
@@ -264,6 +274,7 @@ class ToolRegistryTests(unittest.TestCase):
         ]
         output = {
             "query": "example",
+            "target": "all",
             "root": ".",
             "maxResults": 8,
             "results": search_results,
@@ -274,11 +285,11 @@ class ToolRegistryTests(unittest.TestCase):
             registry = ToolRegistry(
                 specs=[
                     ToolSpec(
-                        name="local_file_search",
+                        name="search_files",
                         display_name="Search",
                         permission="allow",
                         enabled=True,
-                        schema={"type": "function", "function": {"name": "local_file_search"}},
+                        schema={"type": "function", "function": {"name": "search_files"}},
                         handler=lambda _args: output,
                     ),
                 ],
@@ -286,7 +297,7 @@ class ToolRegistryTests(unittest.TestCase):
             )
 
             result = registry.execute(
-                "local_file_search",
+                "search_files",
                 {"query": "example"},
                 ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=500),
             )
@@ -294,7 +305,9 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.output, output)
         self.assertTrue(result.output_truncated)
-        self.assertEqual(result.model_output["_amadeus_result_policy"], "local_file_search_v1")
+        self.assertEqual(result.model_output["_amadeus_result_policy"], "search_files_v1")
+        self.assertEqual(result.model_output["tool_name"], "search_files")
+        self.assertEqual(result.model_output["target"], "all")
         self.assertEqual(result.model_output["resultCount"], 8)
         self.assertEqual(result.model_output["includedResults"], 5)
         self.assertEqual(result.model_output["omittedResults"], 3)
@@ -303,9 +316,10 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertIsNotNone(result.output_preview)
         self.assertLessEqual(len(result.output_preview or ""), 160)
 
-    def test_execute_keeps_small_local_file_search_result_unchanged(self) -> None:
+    def test_execute_keeps_small_search_files_result_unchanged(self) -> None:
         output = {
             "query": "example",
+            "target": "content",
             "root": ".",
             "maxResults": 2,
             "results": [
@@ -323,11 +337,11 @@ class ToolRegistryTests(unittest.TestCase):
             registry = ToolRegistry(
                 specs=[
                     ToolSpec(
-                        name="local_file_search",
+                        name="search_files",
                         display_name="Search",
                         permission="allow",
                         enabled=True,
-                        schema={"type": "function", "function": {"name": "local_file_search"}},
+                        schema={"type": "function", "function": {"name": "search_files"}},
                         handler=lambda _args: output,
                     ),
                 ],
@@ -335,7 +349,7 @@ class ToolRegistryTests(unittest.TestCase):
             )
 
             result = registry.execute(
-                "local_file_search",
+                "search_files",
                 {"query": "example"},
                 ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=500),
             )
@@ -345,6 +359,20 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.model_output, output)
         self.assertFalse(result.output_truncated)
         self.assertIsNone(result.output_preview)
+
+    def test_local_file_search_alias_still_executes(self) -> None:
+        output = execute_tool("local_file_search", {"query": "README", "maxResults": 1})
+
+        self.assertEqual(output["query"], "README")
+        self.assertEqual(output["target"], "all")
+        self.assertIn("results", output)
+
+    def test_search_files_can_search_only_filenames(self) -> None:
+        output = execute_tool("search_files", {"query": "README", "target": "files", "maxResults": 3})
+
+        self.assertEqual(output["target"], "files")
+        self.assertTrue(output["results"])
+        self.assertTrue(all(result["match"] == "path" for result in output["results"]))
 
     def test_read_file_reads_workspace_text_file(self) -> None:
         output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "maxChars": 80})

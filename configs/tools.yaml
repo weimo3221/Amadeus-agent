@@ -7,8 +7,12 @@ tools:
     enabled: true
     permission: ask
 
-  local_file_search:
+  search_files:
     enabled: true
+    permission: ask
+
+  local_file_search:
+    enabled: false
     permission: ask
     roots: []
 

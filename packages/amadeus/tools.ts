@@ -83,6 +83,7 @@ const searchableExtensions = new Set([
   '.yml',
 ])
 const maxReadFileBytes = 512 * 1024
+const searchTargets = new Set(['all', 'files', 'content'])
 
 export function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
   const number = typeof value === 'number' ? value : Number(value)
@@ -104,6 +105,7 @@ function searchLocalFiles(args: Record<string, unknown>): string {
     return JSON.stringify({ error: 'query is required' })
   }
 
+  const target = typeof args.target === 'string' && searchTargets.has(args.target) ? args.target : 'all'
   const maxResults = normalizePositiveInteger(args.maxResults, 10, 1, 30)
   const requestedRoot = typeof args.root === 'string' && args.root.trim() ? args.root.trim() : '.'
   const searchRoot = resolve(repoRoot, requestedRoot)
@@ -148,8 +150,12 @@ function searchLocalFiles(args: Record<string, unknown>): string {
 
     scannedFiles += 1
     const relativePath = relative(repoRoot, current).replace(/\\/g, '/')
-    if (relativePath.toLowerCase().includes(normalizedQuery)) {
+    if ((target === 'all' || target === 'files') && relativePath.toLowerCase().includes(normalizedQuery)) {
       results.push({ path: relativePath, preview: relativePath, match: 'path' })
+      continue
+    }
+
+    if (target === 'files') {
       continue
     }
 
@@ -179,6 +185,7 @@ function searchLocalFiles(args: Record<string, unknown>): string {
 
   return JSON.stringify({
     query,
+    target,
     root: relative(repoRoot, searchRoot).replace(/\\/g, '/') || '.',
     maxResults,
     results,
@@ -503,16 +510,59 @@ export function createDefaultToolRegistry(options: {
         })
       }),
     },
-    local_file_search: {
-      name: 'local_file_search',
+    search_files: {
+      name: 'search_files',
       displayName: 'Searching local files',
       permission: 'ask',
       enabled: true,
       schema: {
         type: 'function',
         function: {
+          name: 'search_files',
+          description: 'Search workspace-relative filenames and small text file contents. Use target="files" for path/name search, target="content" for text search, or target="all" when either can satisfy the request.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'Search text to match in paths or file contents.',
+              },
+              target: {
+                type: 'string',
+                enum: ['all', 'files', 'content'],
+                description: 'Search mode. Use "files" for filenames/paths, "content" for text contents, and "all" for both. Defaults to "all".',
+              },
+              root: {
+                type: 'string',
+                description: 'Optional workspace-relative directory to search. Defaults to the project root.',
+              },
+              maxResults: {
+                type: 'number',
+                description: 'Maximum results to return. Defaults to 10 and is capped at 30.',
+              },
+            },
+            required: ['query'],
+            additionalProperties: false,
+          },
+        },
+      },
+      describeRequest: (args) => {
+        const query = typeof args.query === 'string' && args.query.trim() ? args.query.trim() : '(empty query)'
+        const root = typeof args.root === 'string' && args.root.trim() ? args.root.trim() : '.'
+        return `Allow Amadeus to search local project files under ${root} for "${query}"?`
+      },
+      execute: executeTool('search_files', searchLocalFiles),
+    },
+    local_file_search: {
+      name: 'local_file_search',
+      displayName: 'Searching local files',
+      permission: 'ask',
+      enabled: false,
+      schema: {
+        type: 'function',
+        function: {
           name: 'local_file_search',
-          description: 'Search filenames and small text files inside the project workspace. Use this when the user asks to find local project files, docs, code, configuration, or notes.',
+          description: 'Legacy alias for search_files. Prefer search_files for new calls.',
           parameters: {
             type: 'object',
             properties: {
@@ -550,7 +600,7 @@ export function createDefaultToolRegistry(options: {
         type: 'function',
         function: {
           name: 'read_file',
-          description: 'Read a small UTF-8 text file inside the project workspace. Use this after local_file_search when the user needs the contents of a specific project file.',
+          description: 'Read a small UTF-8 text file inside the project workspace. Use this after search_files when the user needs the contents of a specific project file.',
           parameters: {
             type: 'object',
             properties: {
