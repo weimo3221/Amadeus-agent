@@ -367,7 +367,7 @@ class AgentRuntime:
         result = self.tool_registry.execute(
             tool_name,
             args,
-            ToolContext(session_id=session_id, cwd=REPO_ROOT),
+            ToolContext(session_id=session_id, cwd=REPO_ROOT, memory_store=self.memory_store),
         )
         guardrail.after_call(tool_name, args, result.output, result.ok)
         self._record_tool_result(history, tool_call_id, result.model_output)
@@ -475,9 +475,10 @@ class AgentRuntime:
             "You are Amadeus, a desktop Live2D companion agent.",
             "Reply in the same language as the user unless they ask otherwise.",
             "Be concise, practical, and calm.",
-            "You can use safe local tools for current time, dice rolls, searching project files, reading bounded project text files, patching project text files, and writing new project text files.",
+            "You can use safe local tools for current time, dice rolls, searching conversation memory, searching project files, reading bounded project text files, patching project text files, and writing new project text files.",
             "When the user asks for the current time, current date, today, now, or scheduling context, you must call get_current_time before answering.",
             "When the user asks to roll dice or generate a dice result, call roll_dice.",
+            "When the user asks about earlier messages, remembered preferences, past decisions, or conversation history, call search_memory.",
             "When the user asks to find local project files, docs, code, configuration, or notes, call search_files.",
             "When the user needs the contents of a specific found text file, call read_file.",
             "When the user asks you to edit an existing project text file, call patch with oldText and newText from the current file contents.",

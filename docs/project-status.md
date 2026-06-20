@@ -48,6 +48,7 @@ Fallback path today:
 - Tool execution now goes through a formal registry with `allow`, `ask`, and `deny` metadata.
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as an `ask` tool.
+- `search_memory` is registered as an `allow` tool for searching prior SQLite conversation memory.
 - `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
 - `local_file_search` remains as a disabled compatibility alias for older tool calls.
 - `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
@@ -113,6 +114,7 @@ Fallback path today:
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
+  - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
   - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression, and reports non-text file kinds without decoding them.
   - `patch` now supports safe single-file UTF-8 text replacement with unique-match default, optional `replaceAll`, generated-directory restrictions, and diff output.
@@ -302,11 +304,13 @@ Notes:
 
 ### Phase 8: Agent Memory Optimization
 
-Not started.
+Started.
 
+- SQLite FTS-backed session search is implemented for raw conversation messages.
+- Python runtime exposes `GET /memory/search`.
+- `search_memory` lets the model search current-session memory, with optional all-session search.
 - Add conversation summary storage.
 - Add user profile facts and preferences.
-- Add SQLite FTS session search.
 - Feed summaries and profile facts into model context.
 
 ### Phase 9: Live2D and Audio Harnesses

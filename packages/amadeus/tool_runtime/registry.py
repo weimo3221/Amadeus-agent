@@ -23,12 +23,15 @@ DEFAULT_MAX_MODEL_OUTPUT_CHARS = 4000
 DEFAULT_OUTPUT_PREVIEW_CHARS = 1000
 LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT = 5
 LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS = 160
+MEMORY_SEARCH_MODEL_RESULT_LIMIT = 5
+MEMORY_SEARCH_MODEL_PREVIEW_CHARS = 240
 
 
 @dataclass(frozen=True)
 class ToolContext:
     session_id: str
     cwd: Path = REPO_ROOT
+    memory_store: Any | None = None
     timeout_seconds: float | None = 30.0
     cancel_event: threading.Event | None = None
     max_model_output_chars: int = DEFAULT_MAX_MODEL_OUTPUT_CHARS
@@ -315,6 +318,9 @@ def apply_tool_result_policy(
     if tool_name in {"search_files", "local_file_search"}:
         return normalize_search_files_output(tool_name, output, preview_chars)
 
+    if tool_name == "search_memory":
+        return normalize_search_memory_output(tool_name, output, preview_chars)
+
     return output, None, False
 
 
@@ -365,6 +371,57 @@ def normalize_search_files_output(
         "root": output.get("root"),
         "maxResults": output.get("maxResults"),
         "scannedFiles": output.get("scannedFiles"),
+        "resultCount": result_count,
+        "includedResults": len(model_results),
+        "omittedResults": max(0, result_count - len(model_results)),
+        "results": model_results,
+    }
+    preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
+    return model_output, preview[:preview_limit], True
+
+
+def normalize_search_memory_output(
+    tool_name: str,
+    output: dict[str, Any],
+    preview_chars: int,
+) -> tuple[dict[str, Any], str | None, bool]:
+    raw_results = output.get("results")
+    if not isinstance(raw_results, list):
+        return output, None, False
+
+    preview_limit = max(1, min(preview_chars, MEMORY_SEARCH_MODEL_PREVIEW_CHARS))
+    model_results: list[dict[str, Any]] = []
+    truncated = len(raw_results) > MEMORY_SEARCH_MODEL_RESULT_LIMIT
+
+    for raw_result in raw_results[:MEMORY_SEARCH_MODEL_RESULT_LIMIT]:
+        if not isinstance(raw_result, dict):
+            model_results.append({"snippet": str(raw_result)[:preview_limit]})
+            truncated = True
+            continue
+
+        model_result: dict[str, Any] = {}
+        for key in ("id", "sessionId", "role", "createdAt"):
+            if key in raw_result:
+                model_result[key] = raw_result[key]
+
+        preview = str(raw_result.get("snippet") or raw_result.get("content") or "")
+        if len(preview) > preview_limit:
+            preview = preview[:preview_limit]
+            truncated = True
+        model_result["snippet"] = preview
+        model_results.append(model_result)
+
+    if not truncated:
+        return output, None, False
+
+    result_count = len(raw_results)
+    model_output = {
+        "_amadeus_result_truncated": True,
+        "_amadeus_result_policy": "search_memory_v1",
+        "tool_name": tool_name,
+        "query": output.get("query"),
+        "sessionId": output.get("sessionId"),
+        "includeAllSessions": output.get("includeAllSessions"),
         "resultCount": result_count,
         "includedResults": len(model_results),
         "omittedResults": max(0, result_count - len(model_results)),

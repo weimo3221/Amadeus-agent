@@ -102,6 +102,7 @@ Current tool baseline already delivered:
 
 - `get_current_time`
 - `roll_dice`
+- `search_memory`
 - `search_files`
 - `read_file`
 - `patch`

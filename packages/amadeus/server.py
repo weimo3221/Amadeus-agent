@@ -20,7 +20,8 @@ sys.path.insert(0, str(PACKAGES_DIR))
 from amadeus.memory import MessageMemoryStore
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary
-from amadeus.tools import execute_tool, list_tools
+from amadeus.tool_runtime import ToolContext
+from amadeus.tools import list_tools
 
 
 HOST = os.environ.get("AMADEUS_PYTHON_RUNTIME_HOST", os.environ.get("AMADEUS_PYTHON_TOOLS_HOST", "127.0.0.1"))
@@ -71,6 +72,26 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             session_id = query.get("sessionId", ["default"])[0]
             limit = parse_int(query.get("limit", ["40"])[0], 40, 1, 200)
             self.write_json(200, {"ok": True, "messages": memory_store.load(session_id, limit)})
+            return
+
+        if parsed.path == "/memory/search":
+            query = parse_qs(parsed.query)
+            search_query = query.get("query", [""])[0]
+            session_id = query.get("sessionId", ["default"])[0]
+            include_all_sessions = query.get("includeAllSessions", ["false"])[0] == "true"
+            limit = parse_int(query.get("limit", ["10"])[0], 10, 1, 50)
+            results = memory_store.search(
+                search_query,
+                session_id=None if include_all_sessions else session_id,
+                limit=limit,
+            )
+            self.write_json(200, {
+                "ok": True,
+                "query": search_query,
+                "sessionId": None if include_all_sessions else session_id,
+                "includeAllSessions": include_all_sessions,
+                "results": results,
+            })
             return
 
         if parsed.path.startswith("/audio/files/"):
@@ -158,8 +179,17 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 self.write_json(400, {"ok": False, "error": "toolName must be a string"})
                 return
 
-            result = execute_tool(tool_name, args)
-            self.write_json(200, {"ok": True, "result": result})
+            result = agent_runtime.tool_registry.execute(
+                tool_name,
+                args,
+                ToolContext(session_id="default", memory_store=memory_store),
+            )
+            self.write_json(200, {
+                "ok": True,
+                "result": result.output,
+                "toolOk": result.ok,
+                "failureCode": result.failure_code,
+            })
         except KeyError as error:
             self.write_json(404, {"ok": False, "error": str(error)})
         except Exception as error:

@@ -11,6 +11,10 @@ tools:
     enabled: true
     permission: ask
 
+  search_memory:
+    enabled: true
+    permission: allow
+
   local_file_search:
     enabled: false
     permission: ask

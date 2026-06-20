@@ -27,6 +27,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["search_files"]["permission"], "ask")
         self.assertIn("search_files", schema_names)
 
+        self.assertIn("search_memory", list_tools())
+        self.assertIn("search_memory", tool_state)
+        self.assertEqual(tool_state["search_memory"]["permission"], "allow")
+        self.assertIn("search_memory", schema_names)
+
         self.assertIn("local_file_search", list_tools())
         self.assertIn("local_file_search", tool_state)
         self.assertFalse(tool_state["local_file_search"]["enabled"])
@@ -383,6 +388,75 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(output["target"], "files")
         self.assertTrue(output["results"])
         self.assertTrue(all(result["match"] == "path" for result in output["results"]))
+
+    def test_search_memory_uses_context_memory_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "user", "I prefer concise status updates")
+            memory.save("session-2", "user", "Use verbose explanations")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "search_memory",
+                {"query": "concise", "limit": 5},
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["query"], "concise")
+        self.assertEqual(result.output["sessionId"], "session-1")
+        self.assertEqual(result.output["resultCount"], 1)
+        self.assertIn("concise", result.output["results"][0]["content"])
+
+    def test_execute_applies_search_memory_result_policy(self) -> None:
+        output = {
+            "query": "preference",
+            "sessionId": "session-1",
+            "includeAllSessions": False,
+            "resultCount": 8,
+            "results": [
+                {
+                    "id": index,
+                    "sessionId": "session-1",
+                    "role": "user",
+                    "createdAt": "2026-06-20T00:00:00+00:00",
+                    "content": "preference " + ("x" * 500),
+                    "snippet": "preference " + ("x" * 500),
+                }
+                for index in range(8)
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="search_memory",
+                        display_name="Search Memory",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "search_memory"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "search_memory",
+                {"query": "preference"},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=300),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, output)
+        self.assertTrue(result.output_truncated)
+        self.assertEqual(result.model_output["_amadeus_result_policy"], "search_memory_v1")
+        self.assertEqual(result.model_output["includedResults"], 5)
+        self.assertEqual(result.model_output["omittedResults"], 3)
+        self.assertLessEqual(len(result.model_output["results"][0]["snippet"]), 240)
 
     def test_read_file_reads_workspace_text_file_with_line_numbers(self) -> None:
         output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "lineLimit": 2, "maxChars": 200})

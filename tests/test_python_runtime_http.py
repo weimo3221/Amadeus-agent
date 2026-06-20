@@ -112,6 +112,32 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(events[0]["payload"]["code"], "missing_api_key")
         self.assertEqual(runtime_server.memory_store.count("http-test"), 0)
 
+    def test_memory_search_returns_matching_messages(self) -> None:
+        runtime_server.memory_store.save("http-test", "user", "Please remember the blue notebook")
+        runtime_server.memory_store.save("other-session", "user", "The red notebook is elsewhere")
+
+        payload = self.get_json("/memory/search?sessionId=http-test&query=blue&limit=5")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["query"], "blue")
+        self.assertEqual(payload["sessionId"], "http-test")
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["sessionId"], "http-test")
+        self.assertIn("blue", payload["results"][0]["content"])
+
+    def test_tool_execute_search_memory_has_memory_context(self) -> None:
+        runtime_server.memory_store.save("default", "user", "Remember the green tea preference")
+
+        payload = self.post_json("/tools/execute", {
+            "toolName": "search_memory",
+            "args": {"query": "green tea"},
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["toolOk"])
+        self.assertEqual(payload["result"]["resultCount"], 1)
+        self.assertIn("green tea", payload["result"]["results"][0]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()
