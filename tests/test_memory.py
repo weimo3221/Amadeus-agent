@@ -18,7 +18,16 @@ class MessageMemoryStoreTests(unittest.TestCase):
             memory = MessageMemoryStore(database_path)
             memory.save("session-1", "user", "first message")
             first = memory.save_conversation_summary("session-1", "Initial summary")
-            second = memory.save_conversation_summary("session-1", "Updated summary", summarized_message_count=7)
+            second = memory.save_conversation_summary(
+                "session-1",
+                "Updated summary",
+                summarized_message_count=7,
+                covered_message_count=5,
+                source_message_start_id=2,
+                source_message_end_id=9,
+                covered_through_message_id=9,
+                model="test-model",
+            )
 
             reloaded = MessageMemoryStore(database_path).load_conversation_summary("session-1")
 
@@ -30,6 +39,11 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(reloaded["content"], "Updated summary")
         self.assertEqual(reloaded["charCount"], len("Updated summary"))
         self.assertEqual(reloaded["summarizedMessageCount"], 7)
+        self.assertEqual(reloaded["coveredMessageCount"], 5)
+        self.assertEqual(reloaded["sourceMessageStartId"], 2)
+        self.assertEqual(reloaded["sourceMessageEndId"], 9)
+        self.assertEqual(reloaded["coveredThroughMessageId"], 9)
+        self.assertEqual(reloaded["model"], "test-model")
         self.assertIsInstance(reloaded["createdAt"], str)
         self.assertIsInstance(reloaded["updatedAt"], str)
 
@@ -42,6 +56,7 @@ class MessageMemoryStoreTests(unittest.TestCase):
             summary = memory.save_conversation_summary("session-1", "Two-message summary")
 
         self.assertEqual(summary["summarizedMessageCount"], 2)
+        self.assertEqual(summary["coveredMessageCount"], 2)
 
     def test_reset_deletes_conversation_summary_for_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
