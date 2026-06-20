@@ -36,6 +36,7 @@ CONVERSATION_SUMMARY_CONTEXT_CHARS = 4000
 SUMMARY_TRIGGER_MESSAGE_COUNT = 40
 SUMMARY_KEEP_RECENT_MESSAGES = 20
 SUMMARY_SOURCE_MAX_MESSAGES = 120
+SUMMARY_FAILURE_COOLDOWN_SECONDS = 300
 logger = logging.getLogger(__name__)
 
 
@@ -153,6 +154,8 @@ class AgentRuntime:
         self.summary_trigger_message_count = SUMMARY_TRIGGER_MESSAGE_COUNT
         self.summary_keep_recent_messages = SUMMARY_KEEP_RECENT_MESSAGES
         self.summary_source_max_messages = SUMMARY_SOURCE_MAX_MESSAGES
+        self.summary_failure_cooldown_seconds = SUMMARY_FAILURE_COOLDOWN_SECONDS
+        self._summary_failure_until: dict[str, float] = {}
         logger.info(
             "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s memoryDb=%s",
             self.model,
@@ -199,10 +202,24 @@ class AgentRuntime:
         try:
             tool_decision = self._request_tool_decision(history)
         except RuntimeError as error:
-            logger.info("Tool-decision provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
-            yield AgentEvent("assistant.state", {"state": "error"})
-            yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
-            return
+            if self._handle_context_overflow(session_id, "tool_decision", error):
+                history = self._load_history(session_id)
+                history.append({
+                    "role": "user",
+                    "content": self._inject_memory_context(session_id, normalized_text),
+                })
+                try:
+                    tool_decision = self._request_tool_decision(history)
+                except RuntimeError as retry_error:
+                    logger.info("Tool-decision provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
+                    yield AgentEvent("assistant.state", {"state": "error"})
+                    yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
+                    return
+            else:
+                logger.info("Tool-decision provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
+                yield AgentEvent("assistant.state", {"state": "error"})
+                yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
+                return
 
         tool_calls = tool_decision.get("tool_calls") or []
         logger.info("Received tool decision sessionId=%s turnId=%s toolCallCount=%s", session_id, turn_id, len(tool_calls))
@@ -218,23 +235,40 @@ class AgentRuntime:
                 for event in self._execute_tool_call(session_id, turn_id, tool_call, request_permission, history, guardrail):
                     yield event
 
+        yield AgentEvent("assistant.state", {"state": "speaking"})
+        yield AgentEvent("character.behavior", {
+            "emotion": "neutral",
+            "expression": "smile",
+            "motion": "talk",
+            "intensity": 0.5,
+        })
+        assistant_text = ""
         try:
-            yield AgentEvent("assistant.state", {"state": "speaking"})
-            yield AgentEvent("character.behavior", {
-                "emotion": "neutral",
-                "expression": "smile",
-                "motion": "talk",
-                "intensity": 0.5,
-            })
-            assistant_text = ""
             for delta in self._stream_final_response(history):
                 assistant_text += delta
                 yield AgentEvent("assistant.delta", {"text": delta})
         except RuntimeError as error:
-            logger.info("Final response provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
-            yield AgentEvent("assistant.state", {"state": "error"})
-            yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
-            return
+            if self._handle_context_overflow(session_id, "final_response", error):
+                history = self._load_history(session_id)
+                history.append({
+                    "role": "user",
+                    "content": self._inject_memory_context(session_id, normalized_text),
+                })
+                assistant_text = ""
+                try:
+                    for delta in self._stream_final_response(history):
+                        assistant_text += delta
+                        yield AgentEvent("assistant.delta", {"text": delta})
+                except RuntimeError as retry_error:
+                    logger.info("Final response provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
+                    yield AgentEvent("assistant.state", {"state": "error"})
+                    yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
+                    return
+            else:
+                logger.info("Final response provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
+                yield AgentEvent("assistant.state", {"state": "error"})
+                yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
+                return
 
         history.append({"role": "assistant", "content": assistant_text})
         self.memory_store.save(session_id, "assistant", assistant_text)
@@ -301,6 +335,14 @@ class AgentRuntime:
             limit=limit,
         )
 
+    def compact_conversation(self, session_id: str, force: bool = True) -> dict[str, Any]:
+        event = self._maybe_compact_conversation(session_id, force=force)
+        return {
+            "compacted": event is not None,
+            "event": event.to_runtime_event(session_id) if event else None,
+            "summary": event.payload["summary"] if event else self.memory_store.load_conversation_summary(session_id),
+        }
+
     def _load_history(self, session_id: str, limit: int = 40) -> list[dict[str, Any]]:
         summary = self.memory_store.load_conversation_summary(session_id)
         covered_through_id = int(summary.get("coveredThroughMessageId", 0)) if summary else 0
@@ -341,6 +383,16 @@ class AgentRuntime:
         )
 
     def _maybe_compact_conversation(self, session_id: str, force: bool = False) -> AgentEvent | None:
+        cooldown_until = self._summary_failure_until.get(session_id, 0)
+        now = perf_counter()
+        if not force and cooldown_until > now:
+            logger.info(
+                "Skipping summary compaction during failure cooldown sessionId=%s cooldownRemainingMs=%s",
+                session_id,
+                round((cooldown_until - now) * 1000),
+            )
+            return None
+
         total_messages = self.memory_store.count(session_id)
         if not force and total_messages <= self.summary_trigger_message_count:
             logger.info(
@@ -383,6 +435,8 @@ class AgentRuntime:
                 source_end_id,
                 error,
             )
+            if not force:
+                self._summary_failure_until[session_id] = perf_counter() + self.summary_failure_cooldown_seconds
             return None
 
         summary = self.memory_store.save_conversation_summary(
@@ -395,6 +449,7 @@ class AgentRuntime:
             covered_through_message_id=source_end_id,
             model=self.model,
         )
+        self._summary_failure_until.pop(session_id, None)
         logger.info(
             "Saved automatic conversation summary sessionId=%s summaryId=%s sourceStartId=%s sourceEndId=%s coveredMessageCount=%s",
             session_id,
@@ -404,6 +459,14 @@ class AgentRuntime:
             summary["coveredMessageCount"],
         )
         return AgentEvent("memory.summary.updated", {"summary": summary})
+
+    def _handle_context_overflow(self, session_id: str, phase: str, error: RuntimeError) -> bool:
+        if not is_context_overflow_error(error):
+            return False
+        logger.info("Provider context overflow detected sessionId=%s phase=%s; forcing summary compaction", session_id, phase)
+        event = self._maybe_compact_conversation(session_id, force=True)
+        logger.info("Context overflow compaction result sessionId=%s phase=%s compacted=%s", session_id, phase, event is not None)
+        return event is not None
 
     def _request_conversation_summary(
         self,
@@ -983,3 +1046,17 @@ def sanitize_memory_context_text(text: str, max_chars: int, collapse_whitespace:
     if len(sanitized) > max_chars:
         return sanitized[:max_chars].rstrip() + "..."
     return sanitized
+
+
+def is_context_overflow_error(error: RuntimeError) -> bool:
+    message = str(error).lower()
+    needles = (
+        "context length",
+        "context window",
+        "maximum context",
+        "too many tokens",
+        "payload too large",
+        "request too large",
+        "413",
+    )
+    return any(needle in message for needle in needles)

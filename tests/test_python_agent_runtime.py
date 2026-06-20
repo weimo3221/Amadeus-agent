@@ -24,6 +24,7 @@ class FakeAgentRuntime(AgentRuntime):
         tool_decision: dict[str, Any] | None = None,
         deltas: list[str] | None = None,
         tools_config_path: Path | None = None,
+        summary_error: str | None = None,
     ) -> None:
         os.environ["OPENAI_API_KEY"] = "test-key"
         self.decision_messages: list[list[dict[str, Any]]] = []
@@ -31,6 +32,7 @@ class FakeAgentRuntime(AgentRuntime):
         self.tool_decision = tool_decision or {"role": "assistant", "content": "", "tool_calls": []}
         self.deltas = deltas or ["ok"]
         self.summary_requests: list[dict[str, Any]] = []
+        self.summary_error = summary_error
         super().__init__(
             memory_store,
             audio_runtime=None,
@@ -50,6 +52,8 @@ class FakeAgentRuntime(AgentRuntime):
         previous_summary: dict[str, str | int] | None,
         messages: list[dict[str, str | int]],
     ) -> str:
+        if self.summary_error:
+            raise RuntimeError(self.summary_error)
         self.summary_requests.append({
             "previousSummary": previous_summary,
             "messages": json.loads(json.dumps(messages)),
@@ -172,6 +176,33 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(runtime.summary_requests), 1)
         self.assertIn("old message 0", json.dumps(runtime.summary_requests[0]["messages"]))
         self.assertIn("memory.summary.updated", [event.type for event in events])
+
+    def test_manual_compact_force_bypasses_threshold(self) -> None:
+        for index in range(3):
+            self.memory.save("default", "user", f"message {index}")
+        runtime = FakeAgentRuntime(self.memory)
+        runtime.summary_trigger_message_count = 100
+        runtime.summary_keep_recent_messages = 1
+
+        result = runtime.compact_conversation("default", force=True)
+
+        self.assertTrue(result["compacted"])
+        self.assertEqual(result["summary"]["content"], "Summary: older setup is now compacted.")
+
+    def test_summary_failure_sets_auto_cooldown(self) -> None:
+        for index in range(4):
+            self.memory.save("default", "user", f"message {index}")
+        runtime = FakeAgentRuntime(self.memory, summary_error="summary failed")
+        runtime.summary_trigger_message_count = 1
+        runtime.summary_keep_recent_messages = 1
+        runtime.summary_failure_cooldown_seconds = 60
+
+        first = runtime._maybe_compact_conversation("default")
+        second = runtime._maybe_compact_conversation("default")
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertIn("default", runtime._summary_failure_until)
 
     def test_allow_tool_executes_without_permission_request(self) -> None:
         runtime = FakeAgentRuntime(

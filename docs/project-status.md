@@ -317,7 +317,8 @@ Started.
 - Stable long-term memory is implemented with bounded Markdown files under `data/memory/`.
 - `read_memory` / `update_memory` expose controlled read and add/replace/remove operations for agent facts and user preferences.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.
-- Feed summaries and profile facts into model context.
+- Conversation summaries now track covered message ranges, are injected as reference-only context, and can be refreshed by automatic threshold compaction or manual `POST /memory/compact`.
+- Feed profile facts into model context.
 
 ### Phase 9: Live2D and Audio Harnesses
 

@@ -18,6 +18,11 @@ from amadeus.agent import AgentRuntime, PermissionBroker
 from amadeus.memory import MessageMemoryStore
 
 
+class SummaryRuntime(AgentRuntime):
+    def _request_conversation_summary(self, previous_summary: dict | None, messages: list[dict]) -> str:
+        return "HTTP compacted summary"
+
+
 class PythonRuntimeHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -151,6 +156,22 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertIsNone(payload["summary"])
+
+    def test_memory_compact_triggers_runtime_summary(self) -> None:
+        runtime_server.agent_runtime = SummaryRuntime(
+            runtime_server.memory_store,
+            audio_runtime=None,
+            tools_config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+        runtime_server.agent_runtime.summary_keep_recent_messages = 1
+        for index in range(3):
+            runtime_server.memory_store.save("http-test", "user", f"message {index}")
+
+        payload = self.post_json("/memory/compact", {"sessionId": "http-test", "force": True})
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["compacted"])
+        self.assertEqual(payload["summary"]["content"], "HTTP compacted summary")
 
     def test_tool_execute_search_memory_has_memory_context(self) -> None:
         runtime_server.memory_store.save("default", "user", "Remember the green tea preference")

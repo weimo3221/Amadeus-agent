@@ -56,7 +56,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn.
 - Stable memory is stored as auditable Markdown files under `data/memory/MEMORY.md` and `data/memory/USER.md`, then injected into the frozen system prompt at runtime startup.
 - Each turn prefetches up to three relevant prior session messages and injects them into the API-only current user message as a sanitized `<memory-context>` block; the block is not persisted.
-- Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`; automatic compaction and context assembly will consume this next.
+- Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`, injected as reference-only context, and refreshed by threshold-based compaction or manual `POST /memory/compact`.
 - `search_memory` has a per-tool model-output policy that keeps match metadata while limiting model-context result count and snippet length.
 - `search_files` has a per-tool model-output policy that keeps search metadata while limiting model-context result count and preview length.
 - `read_file` does not use hidden runtime compression. It returns a caller-controlled `startLine` / `lineLimit` text window with line numbers, `totalLines`, and `hasMore` so the model can continue reading explicitly. Non-text files are identified as `image`, `pdf`, `binary`, or `unknown` and return an unsupported response with a next-tool hint.
@@ -113,6 +113,7 @@ http://127.0.0.1:8790
 - `GET /memory/summary?sessionId=default`
 - `POST /memory/messages`
 - `POST /memory/summary`
+- `POST /memory/compact`
 - `POST /memory/reset`
 - `POST /audio/speak`
 - `GET /audio/files/{relativePath}`

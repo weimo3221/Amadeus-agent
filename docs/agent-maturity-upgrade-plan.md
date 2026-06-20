@@ -412,7 +412,7 @@ harnesses:
 
 - 已完成第一片：`messages_fts`、`GET /memory/search`、`search_memory` 工具，以及每轮自动 `<memory-context>` prefetch 注入。
 - 已完成 stable memory 第一片：`data/memory/MEMORY.md`、`data/memory/USER.md`、`read_memory`、`update_memory`。
-- 已完成 conversation summary 存储第一片：SQLite `conversation_summaries`、`GET /memory/summary`、`POST /memory/summary`。
+- 已完成 conversation summary 第一片：SQLite `conversation_summaries`、覆盖范围元数据、`GET /memory/summary`、`POST /memory/summary`、`POST /memory/compact`、阈值触发 compaction、context 注入。
 - 实现 context assembler：
   - system prompt。
   - character persona。
@@ -422,7 +422,7 @@ harnesses:
   - user profile。
   - relevant retrieved memories。
   - tool state/task state。
-- 实现 summary compaction：超过 N 条消息后总结旧上下文。
+- 继续增强 summary compaction：从 message-count 阈值升级到 token-budget 阈值，并补更完整的 provider overflow fallback。
 - 实现 memory write 工具：
   - `memory_add`
   - `memory_replace`

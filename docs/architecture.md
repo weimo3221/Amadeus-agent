@@ -298,6 +298,7 @@ GET /memory/messages
 GET /memory/summary
 POST /memory/messages
 POST /memory/summary
+POST /memory/compact
 POST /memory/reset
 POST /audio/speak
 GET /audio/files/{relativePath}

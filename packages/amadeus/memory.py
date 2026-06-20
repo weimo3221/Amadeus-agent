@@ -59,8 +59,6 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_updated
                   ON conversation_summaries(session_id, updated_at);
-                  CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_covered
-                  ON conversation_summaries(session_id, covered_through_message_id);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -71,6 +69,12 @@ class MessageMemoryStore:
                 """
             )
             self._migrate_conversation_summaries(connection)
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_covered
+                ON conversation_summaries(session_id, covered_through_message_id)
+                """
+            )
             connection.execute("DELETE FROM messages_fts")
             connection.execute(
                 """

@@ -175,6 +175,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_memory_summary_save()
             return
 
+        if self.path == "/memory/compact":
+            self.handle_memory_compact()
+            return
+
         if self.path == "/memory/reset":
             self.handle_memory_reset()
             return
@@ -341,6 +345,25 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 summary["charCount"],
             )
             self.write_json(200, {"ok": True, "summary": summary})
+        except Exception as error:
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_compact(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId", "default")
+            force = body.get("force", True)
+
+            if not isinstance(session_id, str):
+                self.write_json(400, {"ok": False, "error": "sessionId must be a string"})
+                return
+            if not isinstance(force, bool):
+                self.write_json(400, {"ok": False, "error": "force must be a boolean"})
+                return
+
+            result = agent_runtime.compact_conversation(session_id, force=force)
+            logger.info("Handled memory compact sessionId=%s force=%s compacted=%s", session_id, force, result["compacted"])
+            self.write_json(200, {"ok": True, **result})
         except Exception as error:
             self.write_json(500, {"ok": False, "error": str(error)})
 
