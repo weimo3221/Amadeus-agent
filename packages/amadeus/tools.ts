@@ -82,6 +82,45 @@ const searchableExtensions = new Set([
   '.yaml',
   '.yml',
 ])
+const readableTextExtensions = new Set([
+  ...searchableExtensions,
+  '.csv',
+  '.env',
+  '.ini',
+  '.java',
+  '.jsx',
+  '.log',
+  '.rs',
+  '.sh',
+  '.toml',
+  '.xml',
+])
+const imageExtensions = new Set(['.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
+const pdfExtensions = new Set(['.pdf'])
+const binaryExtensions = new Set([
+  '.7z',
+  '.avif',
+  '.db',
+  '.doc',
+  '.docx',
+  '.dylib',
+  '.exe',
+  '.gz',
+  '.ico',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.o',
+  '.parquet',
+  '.ppt',
+  '.pptx',
+  '.sqlite',
+  '.tar',
+  '.wav',
+  '.xls',
+  '.xlsx',
+  '.zip',
+])
 const maxReadFileBytes = 512 * 1024
 const searchTargets = new Set(['all', 'files', 'content'])
 const defaultReadFileChars = 12000
@@ -169,6 +208,45 @@ function diffPreview(path: string, before: string, after: string): { diff: strin
     return { diff, diffTruncated: false }
   }
   return { diff: diff.slice(0, maxPatchDiffChars), diffTruncated: true }
+}
+
+function fileKind(path: string): 'text' | 'image' | 'pdf' | 'binary' | 'unknown' {
+  const extension = extname(path).toLowerCase()
+  if (readableTextExtensions.has(extension)) {
+    return 'text'
+  }
+  if (imageExtensions.has(extension)) {
+    return 'image'
+  }
+  if (pdfExtensions.has(extension)) {
+    return 'pdf'
+  }
+  if (binaryExtensions.has(extension)) {
+    return 'binary'
+  }
+  return 'unknown'
+}
+
+function unsupportedFileResponse(path: string, sizeBytes: number, kind: 'image' | 'pdf' | 'binary' | 'unknown'): string {
+  let hint = 'This file type is not recognized as readable UTF-8 text.'
+  if (kind === 'image') {
+    hint = 'This looks like an image. A future vision/read_image tool should inspect it; read_file only reads UTF-8 text.'
+  }
+  else if (kind === 'pdf') {
+    hint = 'This looks like a PDF. A future pdf_read tool should parse it; read_file only reads UTF-8 text.'
+  }
+  else if (kind === 'binary') {
+    hint = 'This looks like a binary file and cannot be displayed safely as text.'
+  }
+
+  return JSON.stringify({
+    path: relative(repoRoot, path).replace(/\\/g, '/'),
+    sizeBytes,
+    kind,
+    supported: false,
+    error: 'file type is not readable by read_file',
+    hint,
+  })
 }
 
 function searchLocalFiles(args: Record<string, unknown>): string {
@@ -292,8 +370,9 @@ function readLocalFile(args: Record<string, unknown>): string {
     return JSON.stringify({ error: 'path must point to an existing file' })
   }
 
-  if (!searchableExtensions.has(extname(targetPath).toLowerCase())) {
-    return JSON.stringify({ error: 'file type is not readable by this tool' })
+  const kind = fileKind(targetPath)
+  if (kind !== 'text') {
+    return unsupportedFileResponse(targetPath, stats.size, kind)
   }
 
   if (stats.size > maxReadFileBytes) {
@@ -347,6 +426,8 @@ function readLocalFile(args: Record<string, unknown>): string {
   const returnedEndLine = startIndex + returnedLineCount
   return JSON.stringify({
     path: relative(repoRoot, targetPath).replace(/\\/g, '/'),
+    kind: 'text',
+    supported: true,
     sizeBytes: stats.size,
     charCount: content.length,
     totalLines,
@@ -813,7 +894,7 @@ export function createDefaultToolRegistry(options: {
         type: 'function',
         function: {
           name: 'read_file',
-          description: 'Read a small UTF-8 text file inside the project workspace. Use this after search_files when the user needs the contents of a specific project file.',
+          description: 'Read a bounded, line-numbered UTF-8 text window inside the project workspace. For images, PDFs, binaries, and unknown file types, returns a structured unsupported response with kind and hint instead of trying to decode the file.',
           parameters: {
             type: 'object',
             properties: {

@@ -383,6 +383,8 @@ class ToolRegistryTests(unittest.TestCase):
         output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "lineLimit": 2, "maxChars": 200})
 
         self.assertEqual(output["path"], "packages/amadeus/README.md")
+        self.assertEqual(output["kind"], "text")
+        self.assertTrue(output["supported"])
         self.assertIn("# Amadeus Runtime", output["content"])
         self.assertIn("     1 |", output["content"])
         self.assertEqual(output["startLine"], 1)
@@ -407,6 +409,59 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(output["endLine"], 2)
         self.assertEqual(output["lineCount"], 1)
         self.assertTrue(output["content"].startswith("     2 |"))
+
+    def test_read_file_reports_unsupported_image_kind(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-image.png"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        try:
+            output = execute_tool("read_file", {"path": relative_path})
+
+            self.assertEqual(output["path"], relative_path)
+            self.assertEqual(output["kind"], "image")
+            self.assertFalse(output["supported"])
+            self.assertIn("vision", output["hint"])
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_read_file_reports_unsupported_pdf_kind(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-doc.pdf"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_bytes(b"%PDF-1.7\n")
+        try:
+            output = execute_tool("read_file", {"path": relative_path})
+
+            self.assertEqual(output["kind"], "pdf")
+            self.assertFalse(output["supported"])
+            self.assertIn("pdf_read", output["hint"])
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_read_file_reports_unsupported_binary_kind(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-archive.zip"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_bytes(b"PK\x03\x04")
+        try:
+            output = execute_tool("read_file", {"path": relative_path})
+
+            self.assertEqual(output["kind"], "binary")
+            self.assertFalse(output["supported"])
+            self.assertIn("binary", output["hint"])
+        finally:
+            test_path.unlink(missing_ok=True)
+
+    def test_read_file_reports_unsupported_unknown_kind(self) -> None:
+        test_path = Path(__file__).resolve().parents[1] / ".amadeus-test-data.unknownext"
+        relative_path = test_path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        test_path.write_text("plain text but unknown extension", encoding="utf-8")
+        try:
+            output = execute_tool("read_file", {"path": relative_path})
+
+            self.assertEqual(output["kind"], "unknown")
+            self.assertFalse(output["supported"])
+            self.assertIn("not recognized", output["hint"])
+        finally:
+            test_path.unlink(missing_ok=True)
 
     def test_execute_does_not_apply_read_file_result_policy(self) -> None:
         content = "x" * 5000

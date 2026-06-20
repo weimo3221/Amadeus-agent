@@ -12,6 +12,44 @@ DEFAULT_READ_FILE_CHARS = 12000
 MAX_READ_FILE_CHARS = 20000
 DEFAULT_READ_FILE_LINE_LIMIT = 200
 MAX_READ_FILE_LINE_LIMIT = 1000
+READABLE_TEXT_EXTENSIONS = SEARCHABLE_EXTENSIONS | {
+    ".csv",
+    ".env",
+    ".ini",
+    ".java",
+    ".jsx",
+    ".log",
+    ".rs",
+    ".sh",
+    ".toml",
+    ".xml",
+}
+IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
+PDF_EXTENSIONS = {".pdf"}
+BINARY_EXTENSIONS = {
+    ".7z",
+    ".avif",
+    ".db",
+    ".doc",
+    ".docx",
+    ".dylib",
+    ".exe",
+    ".gz",
+    ".ico",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".o",
+    ".parquet",
+    ".ppt",
+    ".pptx",
+    ".sqlite",
+    ".tar",
+    ".wav",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
 
 
 def _normalize_start_line(args: dict[str, Any]) -> int:
@@ -35,6 +73,40 @@ def _normalize_line_limit(args: dict[str, Any]) -> int:
     return DEFAULT_READ_FILE_LINE_LIMIT
 
 
+def _file_kind(path: Path) -> str:
+    suffix = path.suffix.casefold()
+    if suffix in READABLE_TEXT_EXTENSIONS:
+        return "text"
+    if suffix in IMAGE_EXTENSIONS:
+        return "image"
+    if suffix in PDF_EXTENSIONS:
+        return "pdf"
+    if suffix in BINARY_EXTENSIONS:
+        return "binary"
+    return "unknown"
+
+
+def _unsupported_file_response(path: Path, size_bytes: int, kind: str) -> dict[str, Any]:
+    relative_path = path.relative_to(REPO_ROOT).as_posix()
+    if kind == "image":
+        hint = "This looks like an image. A future vision/read_image tool should inspect it; read_file only reads UTF-8 text."
+    elif kind == "pdf":
+        hint = "This looks like a PDF. A future pdf_read tool should parse it; read_file only reads UTF-8 text."
+    elif kind == "binary":
+        hint = "This looks like a binary file and cannot be displayed safely as text."
+    else:
+        hint = "This file type is not recognized as readable UTF-8 text."
+
+    return {
+        "path": relative_path,
+        "sizeBytes": size_bytes,
+        "kind": kind,
+        "supported": False,
+        "error": "file type is not readable by read_file",
+        "hint": hint,
+    }
+
+
 def read_file(args: dict[str, Any]) -> dict[str, Any]:
     requested_path = args.get("path")
     path_text = requested_path.strip() if isinstance(requested_path, str) else ""
@@ -46,13 +118,15 @@ def read_file(args: dict[str, Any]) -> dict[str, Any]:
         return {"error": "path must be inside the project workspace"}
     if not target_path.exists() or not target_path.is_file():
         return {"error": "path must point to an existing file"}
-    if target_path.suffix.casefold() not in SEARCHABLE_EXTENSIONS:
-        return {"error": "file type is not readable by this tool"}
 
     try:
         size_bytes = target_path.stat().st_size
     except OSError:
         return {"error": "could not inspect file"}
+
+    kind = _file_kind(target_path)
+    if kind != "text":
+        return _unsupported_file_response(target_path, size_bytes, kind)
 
     if size_bytes > MAX_READ_FILE_BYTES:
         return {"error": "file is too large to read safely"}
@@ -92,6 +166,8 @@ def read_file(args: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "path": target_path.relative_to(REPO_ROOT).as_posix(),
+        "kind": "text",
+        "supported": True,
         "sizeBytes": size_bytes,
         "charCount": len(content),
         "totalLines": total_lines,
@@ -116,7 +192,7 @@ READ_FILE_TOOL_SPEC = ToolSpec(
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a small UTF-8 text file inside the project workspace. Use this after search_files when the user needs the contents of a specific project file.",
+            "description": "Read a bounded, line-numbered UTF-8 text window inside the project workspace. For images, PDFs, binaries, and unknown file types, returns a structured unsupported response with kind and hint instead of trying to decode the file.",
             "parameters": {
                 "type": "object",
                 "properties": {
