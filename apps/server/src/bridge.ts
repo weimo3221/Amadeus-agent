@@ -2,6 +2,8 @@ import type { RuntimeEvent, ServerRuntimeEvent } from '@amadeus-agent/amadeus/ev
 import type {
   MemoryReviewCandidate,
   MemoryReviewCandidatesPayload,
+  MemoryReviewJob,
+  MemoryReviewJobsPayload,
   MemoryReviewUpdatedPayload,
 } from '@amadeus-agent/amadeus/events'
 
@@ -26,6 +28,11 @@ interface MemoryReviewActionResponse {
   ok?: boolean
   result?: unknown
   error?: string
+}
+
+interface MemoryReviewJobsResponse {
+  ok?: boolean
+  jobs?: unknown
 }
 
 function runtimeEndpoint(runtimeUrl: string, path: string): string {
@@ -159,6 +166,25 @@ function isMemoryReviewCandidate(value: unknown): value is MemoryReviewCandidate
   )
 }
 
+function isMemoryReviewJob(value: unknown): value is MemoryReviewJob {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const job = value as Partial<MemoryReviewJob>
+  return (
+    typeof job.jobId === 'number'
+    && typeof job.sessionId === 'string'
+    && (job.trigger === 'manual' || job.trigger === 'auto' || job.trigger === 'compaction')
+    && (job.status === 'running' || job.status === 'completed' || job.status === 'skipped' || job.status === 'failed')
+    && typeof job.sourceMessageCount === 'number'
+    && typeof job.proposedCandidateCount === 'number'
+    && typeof job.savedCandidateCount === 'number'
+    && typeof job.suppressedCandidateCount === 'number'
+    && typeof job.startedAt === 'string'
+  )
+}
+
 export async function listPythonMemoryReviewCandidates(
   sessionId: string,
   status: MemoryReviewCandidatesPayload['status'] = 'pending',
@@ -188,6 +214,38 @@ export async function listPythonMemoryReviewCandidates(
   }
   catch {
     return { status, candidateCount: 0, candidates: [] }
+  }
+}
+
+export async function listPythonMemoryReviewJobs(
+  sessionId: string,
+  status: MemoryReviewJobsPayload['status'] = 'all',
+  options: PythonBridgeOptions,
+): Promise<MemoryReviewJobsPayload> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  const params = new URLSearchParams({ sessionId, limit: '10' })
+  if (status !== 'all') {
+    params.set('status', status)
+  }
+
+  try {
+    const response = await fetchImpl(runtimeEndpoint(options.runtimeUrl, `/memory/review/jobs?${params.toString()}`), {
+      method: 'GET',
+    })
+    const payload = await response.json().catch(() => undefined) as MemoryReviewJobsResponse | undefined
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.jobs)) {
+      return { status, jobCount: 0, jobs: [] }
+    }
+
+    const jobs = payload.jobs.filter(isMemoryReviewJob)
+    return {
+      status,
+      jobCount: jobs.length,
+      jobs,
+    }
+  }
+  catch {
+    return { status, jobCount: 0, jobs: [] }
   }
 }
 
@@ -231,7 +289,11 @@ async function postPythonMemoryReviewAction(
     if (!response.ok || !payload?.ok) {
       return { error: payload?.error || response.statusText || 'Memory review request failed' }
     }
-    return (payload.result ?? {}) as MemoryReviewUpdatedPayload
+    if (payload.result && typeof payload.result === 'object') {
+      return payload.result as MemoryReviewUpdatedPayload
+    }
+    const { ok: _ok, ...rest } = payload
+    return rest as MemoryReviewUpdatedPayload
   }
   catch (error) {
     return {

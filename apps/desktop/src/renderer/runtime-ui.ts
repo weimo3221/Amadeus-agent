@@ -3,6 +3,7 @@ import type {
   CharacterBehaviorPayload,
   HelloPayload,
   MemoryReviewCandidate,
+  MemoryReviewJob,
   RuntimeEvent,
   ServerRuntimeEvent,
 } from '@amadeus-agent/amadeus/events'
@@ -87,6 +88,8 @@ export class RuntimeUiController {
   private pendingSpeechFallbackTimer: number | undefined
   private currentUtterance: SpeechSynthesisUtterance | undefined
   private availableVoices: SpeechSynthesisVoice[] = []
+  private memoryReviewPendingCount = 0
+  private memoryReviewLastJobText = 'last job: none'
 
   constructor(private readonly options: RuntimeUiControllerOptions) {
     this.sessionId = options.randomUUID()
@@ -237,22 +240,28 @@ export class RuntimeUiController {
       case 'memory.review.candidates':
         this.renderMemoryReviewCandidates(event.payload.candidates)
         break
+      case 'memory.review.jobs':
+        this.updateMemoryReviewJobs(event.payload.jobs)
+        break
       case 'memory.review.updated':
+        if (event.payload.job) {
+          this.memoryReviewLastJobText = formatMemoryReviewJob(event.payload.job)
+        }
         if (event.payload.error) {
-          this.setMemoryReviewStatus(`Memory review failed: ${event.payload.error}`)
+          this.updateMemoryReviewStatus(`Memory review failed: ${event.payload.error}`)
           break
         }
         if (event.payload.accepted) {
-          this.setMemoryReviewStatus('Memory candidate accepted')
+          this.updateMemoryReviewStatus('Memory candidate accepted')
         }
         else if (event.payload.rejected) {
-          this.setMemoryReviewStatus('Memory candidate rejected')
+          this.updateMemoryReviewStatus('Memory candidate rejected')
         }
         else if (event.payload.reviewed) {
-          this.setMemoryReviewStatus(`Memory review generated ${event.payload.candidateCount ?? 0} candidates`)
+          this.updateMemoryReviewStatus(`Memory review generated ${event.payload.candidateCount ?? 0} candidates`)
         }
         else {
-          this.setMemoryReviewStatus(`Memory review skipped: ${event.payload.reason ?? 'not needed'}`)
+          this.updateMemoryReviewStatus(`Memory review skipped: ${event.payload.reason ?? 'not needed'}`)
         }
         this.requestMemoryReviewCandidates()
         break
@@ -338,6 +347,12 @@ export class RuntimeUiController {
     }
   }
 
+  private updateMemoryReviewStatus(prefix?: string): void {
+    const pendingText = `${this.memoryReviewPendingCount} pending`
+    const status = prefix ? `${prefix} | ${pendingText} | ${this.memoryReviewLastJobText}` : `Memory review: ${pendingText} | ${this.memoryReviewLastJobText}`
+    this.setMemoryReviewStatus(status)
+  }
+
   private setToolPermissionPrompt(requestId: string, message: string): void {
     this.pendingToolPermissionRequestId = requestId
     if (this.options.elements.toolPermissionText) {
@@ -386,10 +401,17 @@ export class RuntimeUiController {
     }
 
     memoryReviewList.replaceChildren()
-    this.setMemoryReviewStatus(`Memory review: ${candidates.length} pending`)
+    this.memoryReviewPendingCount = candidates.length
+    this.updateMemoryReviewStatus()
     for (const candidate of candidates.slice(0, 5)) {
       memoryReviewList.append(this.createMemoryReviewCandidateElement(candidate))
     }
+  }
+
+  private updateMemoryReviewJobs(jobs: MemoryReviewJob[]): void {
+    const [latestJob] = jobs
+    this.memoryReviewLastJobText = latestJob ? formatMemoryReviewJob(latestJob) : 'last job: none'
+    this.updateMemoryReviewStatus()
   }
 
   private createMemoryReviewCandidateElement(candidate: MemoryReviewCandidate): HTMLDivElement {
@@ -639,4 +661,12 @@ function formatToolConfigStatus(payload: HelloPayload): string {
     .join(', ')
 
   return `Tools: ${summary || 'none'}`
+}
+
+function formatMemoryReviewJob(job: MemoryReviewJob): string {
+  const countText = job.status === 'completed'
+    ? `${job.savedCandidateCount}/${job.proposedCandidateCount} saved`
+    : job.reason || job.error || 'no detail'
+  const durationText = job.durationMs ? `, ${job.durationMs}ms` : ''
+  return `last job: ${job.status} (${job.trigger}, ${countText}${durationText})`
 }

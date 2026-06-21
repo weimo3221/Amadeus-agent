@@ -4,6 +4,7 @@ import type {
   RuntimeEvent,
   ServerRuntimeEvent,
   MemoryReviewCandidatesPayload,
+  MemoryReviewJobsPayload,
   MemoryReviewUpdatedPayload,
   ToolPermissionState,
 } from '@amadeus-agent/amadeus/events'
@@ -21,6 +22,7 @@ export interface AmadeusBridgeServerOptions {
   resolvePendingToolPermission(requestId: string, approved: boolean): boolean
   forwardToolPermissionToPython(requestId: string, approved: boolean): void | Promise<void>
   listMemoryReviewCandidates?(sessionId: string, status?: MemoryReviewCandidatesPayload['status']): MemoryReviewCandidatesPayload | Promise<MemoryReviewCandidatesPayload>
+  listMemoryReviewJobs?(sessionId: string, status?: MemoryReviewJobsPayload['status']): MemoryReviewJobsPayload | Promise<MemoryReviewJobsPayload>
   runMemoryReview?(sessionId: string, force: boolean): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
   acceptMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
   rejectMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
@@ -100,6 +102,28 @@ async function sendMemoryReviewCandidates(
   send(socket, 'memory.review.candidates', sessionId, payload)
 }
 
+async function sendMemoryReviewJobs(
+  socket: WebSocket,
+  sessionId: string,
+  options: AmadeusBridgeServerOptions,
+  status: MemoryReviewJobsPayload['status'] = 'all',
+): Promise<void> {
+  const payload = await Promise.resolve(options.listMemoryReviewJobs?.(sessionId, status) ?? {
+    status,
+    jobCount: 0,
+    jobs: [],
+  }).catch(() => ({
+    status,
+    jobCount: 0,
+    jobs: [],
+  }))
+  if (socket.readyState !== WebSocket.OPEN) {
+    return
+  }
+
+  send(socket, 'memory.review.jobs', sessionId, payload)
+}
+
 function parseEvent(raw: Buffer): ClientRuntimeEvent | undefined {
   try {
     const data = JSON.parse(raw.toString()) as ClientRuntimeEvent
@@ -131,6 +155,7 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
     const sessionId = options.defaultSessionId
     void sendHello(socket, sessionId, options, options.countPersistedMessages(sessionId))
       .then(() => sendMemoryReviewCandidates(socket, sessionId, options, 'pending'))
+      .then(() => sendMemoryReviewJobs(socket, sessionId, options, 'all'))
       .then(() => sendState(socket, sessionId, 'idle'))
 
     socket.on('message', (raw) => {
@@ -147,12 +172,14 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         options.resetSession(event.sessionId)
         void sendHello(socket, event.sessionId, options, 0)
           .then(() => sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending'))
+          .then(() => sendMemoryReviewJobs(socket, event.sessionId, options, 'all'))
           .then(() => sendState(socket, event.sessionId, 'idle'))
         return
       }
 
       if (event.type === 'memory.review.list') {
         void sendMemoryReviewCandidates(socket, event.sessionId, options, event.payload.status ?? 'pending')
+          .then(() => sendMemoryReviewJobs(socket, event.sessionId, options, 'all'))
         return
       }
 
@@ -164,6 +191,7 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
           .then((payload) => {
             send(socket, 'memory.review.updated', event.sessionId, payload)
             return sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending')
+              .then(() => sendMemoryReviewJobs(socket, event.sessionId, options, 'all'))
           })
         return
       }

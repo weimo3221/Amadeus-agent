@@ -10,6 +10,8 @@ MessageRole = Literal["user", "assistant"]
 StableMemoryTarget = Literal["agent", "user"]
 MemoryItemScope = Literal["user", "agent", "project"]
 MemoryReviewCandidateStatus = Literal["pending", "accepted", "rejected", "superseded"]
+MemoryReviewJobStatus = Literal["running", "completed", "skipped", "failed"]
+MemoryReviewJobTrigger = Literal["manual", "auto", "compaction"]
 CONVERSATION_SUMMARY_LIMIT = 12000
 MEMORY_ITEM_LIMIT = 2000
 MEMORY_REVIEW_REASON_LIMIT = 1000
@@ -92,6 +94,25 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_memory_review_candidates_session_status
                   ON memory_review_candidates(session_id, status, updated_at);
+                  CREATE TABLE IF NOT EXISTS memory_review_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    trigger TEXT NOT NULL CHECK (trigger IN ('manual', 'auto', 'compaction')),
+                    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'skipped', 'failed')),
+                    reason TEXT,
+                    error TEXT,
+                    source_message_start_id INTEGER,
+                    source_message_end_id INTEGER,
+                    source_message_count INTEGER NOT NULL DEFAULT 0,
+                    proposed_candidate_count INTEGER NOT NULL DEFAULT 0,
+                    saved_candidate_count INTEGER NOT NULL DEFAULT 0,
+                    suppressed_candidate_count INTEGER NOT NULL DEFAULT 0,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    duration_ms INTEGER
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_memory_review_jobs_session_started
+                  ON memory_review_jobs(session_id, started_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -811,6 +832,169 @@ class MessageMemoryStore:
 
         return [memory_review_candidate_response(row) for row in rows]
 
+    def start_memory_review_job(self, session_id: str, trigger: str) -> dict[str, str | int]:
+        normalized_session_id = normalize_session_id(session_id)
+        normalized_trigger = normalize_memory_review_job_trigger(trigger)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO memory_review_jobs (
+                  session_id,
+                  trigger,
+                  status,
+                  started_at
+                )
+                VALUES (?, ?, 'running', ?)
+                """,
+                (normalized_session_id, normalized_trigger, now),
+            )
+            job_id = int(cursor.lastrowid)
+            row = self._load_memory_review_job_row(connection, job_id)
+
+        return memory_review_job_response(row)
+
+    def finish_memory_review_job(
+        self,
+        job_id: int,
+        status: str,
+        *,
+        reason: str | None = None,
+        error: str | None = None,
+        source_message_start_id: int | None = None,
+        source_message_end_id: int | None = None,
+        source_message_count: int = 0,
+        proposed_candidate_count: int = 0,
+        saved_candidate_count: int = 0,
+        suppressed_candidate_count: int = 0,
+        duration_ms: int | None = None,
+    ) -> dict[str, str | int]:
+        normalized_id = int(job_id)
+        if normalized_id <= 0:
+            raise ValueError("job_id must be positive")
+        normalized_status = normalize_memory_review_job_status(status)
+        normalized_reason = normalize_optional_text(reason, "reason", max_chars=MEMORY_REVIEW_REASON_LIMIT)
+        normalized_error = normalize_optional_text(error, "error", max_chars=MEMORY_REVIEW_REASON_LIMIT)
+        normalized_start_id = normalize_optional_non_negative_int(source_message_start_id, "source_message_start_id")
+        normalized_end_id = normalize_optional_non_negative_int(source_message_end_id, "source_message_end_id")
+        if normalized_start_id is not None and normalized_end_id is not None and normalized_start_id > normalized_end_id:
+            raise ValueError("source_message_start_id must be less than or equal to source_message_end_id")
+        normalized_duration_ms = normalize_optional_non_negative_int(duration_ms, "duration_ms")
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE memory_review_jobs
+                SET
+                  status = ?,
+                  reason = ?,
+                  error = ?,
+                  source_message_start_id = ?,
+                  source_message_end_id = ?,
+                  source_message_count = ?,
+                  proposed_candidate_count = ?,
+                  saved_candidate_count = ?,
+                  suppressed_candidate_count = ?,
+                  finished_at = ?,
+                  duration_ms = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_status,
+                    normalized_reason,
+                    normalized_error,
+                    normalized_start_id,
+                    normalized_end_id,
+                    max(0, int(source_message_count)),
+                    max(0, int(proposed_candidate_count)),
+                    max(0, int(saved_candidate_count)),
+                    max(0, int(suppressed_candidate_count)),
+                    now,
+                    normalized_duration_ms,
+                    normalized_id,
+                ),
+            )
+            if cursor.rowcount <= 0:
+                raise ValueError("memory review job not found")
+            row = self._load_memory_review_job_row(connection, normalized_id)
+
+        return memory_review_job_response(row)
+
+    def list_memory_review_jobs(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, str | int]]:
+        normalized_session_id = normalize_session_id(session_id) if session_id else None
+        normalized_status = normalize_memory_review_job_status(status) if status else None
+        bounded_limit = max(1, min(200, int(limit)))
+        where = "1 = 1"
+        params: list[object] = []
+        if normalized_session_id:
+            where += " AND session_id = ?"
+            params.append(normalized_session_id)
+        if normalized_status:
+            where += " AND status = ?"
+            params.append(normalized_status)
+        params.append(bounded_limit)
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                  id,
+                  session_id,
+                  trigger,
+                  status,
+                  reason,
+                  error,
+                  source_message_start_id,
+                  source_message_end_id,
+                  source_message_count,
+                  proposed_candidate_count,
+                  saved_candidate_count,
+                  suppressed_candidate_count,
+                  started_at,
+                  finished_at,
+                  duration_ms
+                FROM memory_review_jobs
+                WHERE {where}
+                ORDER BY started_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        return [memory_review_job_response(row) for row in rows]
+
+    def _load_memory_review_job_row(self, connection: sqlite3.Connection, job_id: int) -> sqlite3.Row:
+        return connection.execute(
+            """
+            SELECT
+              id,
+              session_id,
+              trigger,
+              status,
+              reason,
+              error,
+              source_message_start_id,
+              source_message_end_id,
+              source_message_count,
+              proposed_candidate_count,
+              saved_candidate_count,
+              suppressed_candidate_count,
+              started_at,
+              finished_at,
+              duration_ms
+            FROM memory_review_jobs
+            WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+
     def accept_memory_review_candidate(self, candidate_id: int) -> dict[str, object]:
         normalized_id = int(candidate_id)
         if normalized_id <= 0:
@@ -983,6 +1167,13 @@ class MessageMemoryStore:
                 """,
                 (session_id,),
             )
+            connection.execute(
+                """
+                DELETE FROM memory_review_jobs
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
 
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)
@@ -1069,6 +1260,20 @@ def normalize_memory_review_status(status: str) -> MemoryReviewCandidateStatus:
     if normalized in {"pending", "accepted", "rejected", "superseded"}:
         return normalized  # type: ignore[return-value]
     raise ValueError("status must be pending, accepted, rejected, or superseded")
+
+
+def normalize_memory_review_job_status(status: str) -> MemoryReviewJobStatus:
+    normalized = status.strip().lower() if isinstance(status, str) else ""
+    if normalized in {"running", "completed", "skipped", "failed"}:
+        return normalized  # type: ignore[return-value]
+    raise ValueError("status must be running, completed, skipped, or failed")
+
+
+def normalize_memory_review_job_trigger(trigger: str) -> MemoryReviewJobTrigger:
+    normalized = trigger.strip().lower() if isinstance(trigger, str) else ""
+    if normalized in {"manual", "auto", "compaction"}:
+        return normalized  # type: ignore[return-value]
+    raise ValueError("trigger must be manual, auto, or compaction")
 
 
 def normalize_session_id(session_id: str) -> str:
@@ -1167,6 +1372,26 @@ def memory_review_candidate_response(row: sqlite3.Row | tuple[object, ...]) -> d
         "memoryItemId": int(row[9]) if row[9] is not None else 0,
         "createdAt": str(row[10]),
         "updatedAt": str(row[11]),
+    }
+
+
+def memory_review_job_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int]:
+    return {
+        "jobId": int(row[0]),
+        "sessionId": str(row[1]),
+        "trigger": str(row[2]),
+        "status": str(row[3]),
+        "reason": str(row[4]) if row[4] is not None else "",
+        "error": str(row[5]) if row[5] is not None else "",
+        "sourceMessageStartId": int(row[6]) if row[6] is not None else 0,
+        "sourceMessageEndId": int(row[7]) if row[7] is not None else 0,
+        "sourceMessageCount": int(row[8]),
+        "proposedCandidateCount": int(row[9]),
+        "savedCandidateCount": int(row[10]),
+        "suppressedCandidateCount": int(row[11]),
+        "startedAt": str(row[12]),
+        "finishedAt": str(row[13]) if row[13] is not None else "",
+        "durationMs": int(row[14]) if row[14] is not None else 0,
     }
 
 

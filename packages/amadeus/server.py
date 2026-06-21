@@ -182,6 +182,33 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path == "/memory/review/jobs":
+            query = parse_qs(parsed.query)
+            session_id = optional_query_string(query, "sessionId")
+            status = optional_query_string(query, "status")
+            limit = parse_int(query.get("limit", ["20"])[0], 20, 1, 200)
+            jobs = memory_store.list_memory_review_jobs(
+                session_id=session_id,
+                status=status,
+                limit=limit,
+            )
+            logger.info(
+                "Handling memory review jobs list sessionId=%s status=%s count=%s",
+                session_id,
+                status,
+                len(jobs),
+            )
+            self.write_json(200, {
+                "ok": True,
+                "jobs": jobs,
+                "filters": {
+                    "sessionId": session_id,
+                    "status": status,
+                    "limit": limit,
+                },
+            })
+            return
+
         if parsed.path == "/memory/summary":
             query = parse_qs(parsed.query)
             session_id = query.get("sessionId", ["default"])[0]

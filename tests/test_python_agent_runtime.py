@@ -246,6 +246,13 @@ class AgentRuntimeTests(unittest.TestCase):
         items = self.memory.list_memory_items(scope="user")
 
         self.assertTrue(result["reviewed"])
+        self.assertEqual(result["job"]["status"], "completed")
+        self.assertEqual(result["job"]["trigger"], "manual")
+        self.assertEqual(result["job"]["sourceMessageStartId"], first_id)
+        self.assertEqual(result["job"]["sourceMessageEndId"], last_id)
+        self.assertEqual(result["job"]["sourceMessageCount"], 2)
+        self.assertEqual(result["job"]["proposedCandidateCount"], 1)
+        self.assertEqual(result["job"]["savedCandidateCount"], 1)
         self.assertEqual(result["candidateCount"], 1)
         self.assertEqual(len(runtime.memory_review_requests), 1)
         self.assertEqual(len(candidates), 1)
@@ -262,6 +269,8 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertFalse(result["reviewed"])
         self.assertIn("review failed", result["error"])
+        self.assertEqual(result["job"]["status"], "failed")
+        self.assertIn("review failed", result["job"]["error"])
         self.assertEqual(self.memory.list_memory_review_candidates(session_id="default"), [])
 
     def test_run_turn_auto_reviews_memory_after_response(self) -> None:

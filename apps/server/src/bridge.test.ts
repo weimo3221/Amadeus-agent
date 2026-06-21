@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { fetchPythonToolPermissions } from '@amadeus-agent/amadeus/tools'
 
-import { forwardToolPermissionToPython, relayPythonTurn, type SocketLike } from './bridge.js'
+import { forwardToolPermissionToPython, listPythonMemoryReviewJobs, relayPythonTurn, type SocketLike } from './bridge.js'
 
 function streamResponse(chunks: string[], status = 200): Response {
   const encoder = new TextEncoder()
@@ -207,5 +207,64 @@ describe('Python tool list bridge', () => {
       baseUrl: 'http://runtime',
       fetchImpl: malformedFetch,
     }), undefined)
+  })
+})
+
+describe('Python memory review jobs bridge', () => {
+  it('lists memory review jobs from Python', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return new Response(JSON.stringify({
+        ok: true,
+        jobs: [{
+          jobId: 3,
+          sessionId: 'session-1',
+          trigger: 'manual',
+          status: 'completed',
+          reason: '',
+          error: '',
+          sourceMessageStartId: 1,
+          sourceMessageEndId: 2,
+          sourceMessageCount: 2,
+          proposedCandidateCount: 1,
+          savedCandidateCount: 1,
+          suppressedCandidateCount: 0,
+          startedAt: '2026-06-21T00:00:00.000Z',
+          finishedAt: '2026-06-21T00:00:00.100Z',
+          durationMs: 100,
+        }],
+      }), { status: 200 })
+    }
+
+    const payload = await listPythonMemoryReviewJobs('session-1', 'completed', {
+      runtimeUrl: 'http://127.0.0.1:8790/',
+      fetchImpl,
+    })
+
+    assert.equal(calls[0].url, 'http://127.0.0.1:8790/memory/review/jobs?sessionId=session-1&limit=10&status=completed')
+    assert.equal(calls[0].init?.method, 'GET')
+    assert.equal(payload.status, 'completed')
+    assert.equal(payload.jobCount, 1)
+    assert.equal(payload.jobs[0].jobId, 3)
+  })
+
+  it('returns an empty job list when Python jobs payload is unavailable or malformed', async () => {
+    const failingFetch: typeof fetch = async () => {
+      throw new Error('offline')
+    }
+    const malformedFetch: typeof fetch = async () => new Response(JSON.stringify({
+      ok: true,
+      jobs: [{ jobId: 'bad' }],
+    }), { status: 200 })
+
+    assert.deepEqual(await listPythonMemoryReviewJobs('session-1', 'all', {
+      runtimeUrl: 'http://runtime',
+      fetchImpl: failingFetch,
+    }), { status: 'all', jobCount: 0, jobs: [] })
+    assert.deepEqual(await listPythonMemoryReviewJobs('session-1', 'all', {
+      runtimeUrl: 'http://runtime',
+      fetchImpl: malformedFetch,
+    }), { status: 'all', jobCount: 0, jobs: [] })
   })
 })

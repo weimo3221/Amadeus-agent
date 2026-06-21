@@ -7,6 +7,7 @@ import {
   acceptPythonMemoryReviewCandidate,
   forwardToolPermissionToPython,
   listPythonMemoryReviewCandidates,
+  listPythonMemoryReviewJobs,
   rejectPythonMemoryReviewCandidate,
   relayPythonTurn,
   runPythonMemoryReview,
@@ -122,6 +123,9 @@ const { httpServer } = createAmadeusBridgeServer({
   },
   listMemoryReviewCandidates(sessionId, status) {
     return listPythonMemoryReviewCandidates(sessionId, status, { runtimeUrl: pythonRuntimeUrl })
+  },
+  listMemoryReviewJobs(sessionId, status) {
+    return listPythonMemoryReviewJobs(sessionId, status, { runtimeUrl: pythonRuntimeUrl })
   },
   runMemoryReview(sessionId, force) {
     return runPythonMemoryReview(sessionId, force, { runtimeUrl: pythonRuntimeUrl })

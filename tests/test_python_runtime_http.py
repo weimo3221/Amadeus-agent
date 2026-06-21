@@ -234,12 +234,19 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
         reviewed = self.post_json("/memory/review/run", {"sessionId": "http-test", "force": True})
         listed = self.get_json("/memory/review/candidates?sessionId=http-test&status=pending")
+        jobs = self.get_json("/memory/review/jobs?sessionId=http-test&status=completed")
 
         self.assertTrue(reviewed["ok"])
         self.assertTrue(reviewed["reviewed"])
+        self.assertEqual(reviewed["job"]["status"], "completed")
+        self.assertEqual(reviewed["job"]["trigger"], "manual")
         self.assertEqual(reviewed["candidateCount"], 1)
         self.assertEqual(len(listed["candidates"]), 1)
         self.assertEqual(listed["candidates"][0]["content"], "The user prefers HTTP-reviewed direct answers.")
+        self.assertTrue(jobs["ok"])
+        self.assertEqual(len(jobs["jobs"]), 1)
+        self.assertEqual(jobs["jobs"][0]["jobId"], reviewed["jobId"])
+        self.assertEqual(jobs["jobs"][0]["savedCandidateCount"], 1)
         self.assertEqual(self.get_json("/memory/items?scope=user")["items"], [])
 
     def test_memory_summary_roundtrip_over_http(self) -> None:

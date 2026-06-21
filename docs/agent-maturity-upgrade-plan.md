@@ -432,6 +432,7 @@ harnesses:
   - 已完成手动触发第一片：`POST /memory/review/run` 读取最近消息、已有 durable memory 和 pending candidates，只生成 `memory_review_candidates`，不直接写入 `memory_items`。
   - 已完成自动调度第一片：每个 turn 的主回复发出后，按 message-count threshold、success/failure cooldown 和 no-new-message gate 判断是否运行 review。
   - 自动调度不会自动 accept，也不会直接写 durable memory。
+  - 已完成 job observability 第一片：SQLite `memory_review_jobs` 记录每次 manual/auto review 的 trigger、`running` / `completed` / `skipped` / `failed` 状态、skip reason/error、source message range/count、proposed/saved/suppressed candidate counts 和 duration；`GET /memory/review/jobs` 与 WebSocket `memory.review.jobs` 会把最近 job 暴露给桌面端。
   - 严禁保存 API key、临时状态和敏感内容。
 - `session_search` 支持跨会话召回。
 

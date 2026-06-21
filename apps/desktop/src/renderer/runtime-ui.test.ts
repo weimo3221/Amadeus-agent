@@ -303,7 +303,7 @@ describe('Runtime UI controller', () => {
       }],
     }))
 
-    assert.equal(elements.memoryReviewStatus.textContent, 'Memory review: 1 pending')
+    assert.equal(elements.memoryReviewStatus.textContent, 'Memory review: 1 pending | last job: none')
     assert.equal(elements.memoryReviewList.children.length, 1)
 
     const candidate = elements.memoryReviewList.children[0]

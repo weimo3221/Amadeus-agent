@@ -55,6 +55,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'tool.audit', ToolAuditPayload>
   | RuntimeEvent<'tool.permission.request', ToolPermissionRequestPayload>
   | RuntimeEvent<'memory.review.candidates', MemoryReviewCandidatesPayload>
+  | RuntimeEvent<'memory.review.jobs', MemoryReviewJobsPayload>
   | RuntimeEvent<'memory.review.updated', MemoryReviewUpdatedPayload>
   | RuntimeEvent<'error', ErrorPayload>
 
@@ -164,6 +165,30 @@ export interface MemoryReviewCandidatesPayload {
   candidates: MemoryReviewCandidate[]
 }
 
+export interface MemoryReviewJob {
+  jobId: number
+  sessionId: string
+  trigger: 'manual' | 'auto' | 'compaction'
+  status: 'running' | 'completed' | 'skipped' | 'failed'
+  reason?: string | null
+  error?: string | null
+  sourceMessageStartId?: number | null
+  sourceMessageEndId?: number | null
+  sourceMessageCount: number
+  proposedCandidateCount: number
+  savedCandidateCount: number
+  suppressedCandidateCount: number
+  startedAt: string
+  finishedAt?: string | null
+  durationMs?: number | null
+}
+
+export interface MemoryReviewJobsPayload {
+  status: MemoryReviewJob['status'] | 'all'
+  jobCount: number
+  jobs: MemoryReviewJob[]
+}
+
 export interface MemoryReviewUpdatedPayload {
   reviewed?: boolean
   sessionId?: string
@@ -178,4 +203,6 @@ export interface MemoryReviewUpdatedPayload {
   item?: unknown
   error?: string
   reason?: string
+  jobId?: number
+  job?: MemoryReviewJob
 }

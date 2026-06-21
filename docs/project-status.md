@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-20
+Last updated: 2026-06-21
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -142,7 +142,6 @@ Fallback path today:
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
-- Persist richer background review job state for observability and retry.
 - Harden the Python-owned ToolRuntime with richer context propagation and richer no-progress policies where needed.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
@@ -328,7 +327,9 @@ Started.
 - Background memory review runner can now be triggered with `POST /memory/review/run` or automatically after a completed turn when the threshold/cooldown gates allow it; it asks the provider to propose candidates from recent messages and only writes pending `memory_review_candidates`, never durable `memory_items`.
 - Rejected memory review candidates suppress later identical suggestions for the same session/scope/content.
 - Desktop now exposes the human review loop: it lists pending candidates, lets the user trigger review manually, and sends Accept / Reject actions over the WebSocket bridge.
-- Next: persist richer background review job state.
+- Memory review job observability is now persisted in SQLite `memory_review_jobs`: every manual/automatic review records `running`, `completed`, `skipped`, or `failed` state, trigger, skip reason/error, source message range/count, proposed/saved/suppressed candidate counts, and duration.
+- Python exposes `GET /memory/review/jobs`, the TypeScript bridge relays it as `memory.review.jobs`, and the desktop memory review panel shows the latest job summary next to the pending candidate count.
+- Next: add token-budget-aware summary compaction and stronger memory safety filters.
 
 ### Phase 9: Live2D and Audio Harnesses
 

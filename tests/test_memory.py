@@ -222,6 +222,47 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(pending, [])
         self.assertEqual(len(rejected), 1)
 
+    def test_memory_review_jobs_can_be_recorded_and_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            job = memory.start_memory_review_job("session-1", "manual")
+            finished = memory.finish_memory_review_job(
+                int(job["jobId"]),
+                "completed",
+                source_message_start_id=2,
+                source_message_end_id=5,
+                source_message_count=4,
+                proposed_candidate_count=3,
+                saved_candidate_count=2,
+                suppressed_candidate_count=1,
+                duration_ms=123,
+            )
+            jobs = memory.list_memory_review_jobs(session_id="session-1")
+
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual(finished["trigger"], "manual")
+        self.assertEqual(finished["sourceMessageStartId"], 2)
+        self.assertEqual(finished["sourceMessageEndId"], 5)
+        self.assertEqual(finished["sourceMessageCount"], 4)
+        self.assertEqual(finished["proposedCandidateCount"], 3)
+        self.assertEqual(finished["savedCandidateCount"], 2)
+        self.assertEqual(finished["suppressedCandidateCount"], 1)
+        self.assertEqual(finished["durationMs"], 123)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["jobId"], job["jobId"])
+
+    def test_memory_review_jobs_record_skipped_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            job = memory.start_memory_review_job("session-1", "auto")
+            finished = memory.finish_memory_review_job(int(job["jobId"]), "skipped", reason="below_threshold")
+            skipped = memory.list_memory_review_jobs(status="skipped")
+
+        self.assertEqual(finished["status"], "skipped")
+        self.assertEqual(finished["reason"], "below_threshold")
+        self.assertEqual(len(skipped), 1)
+
     def test_replace_memory_item_updates_active_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

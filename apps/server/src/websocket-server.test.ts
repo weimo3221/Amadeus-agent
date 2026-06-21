@@ -293,6 +293,30 @@ describe('WebSocket Python-first integration', () => {
           }],
         }
       },
+      listMemoryReviewJobs(sessionId, status = 'all') {
+        calls.push(`jobs:${sessionId}:${status}`)
+        return {
+          status,
+          jobCount: 1,
+          jobs: [{
+            jobId: 9,
+            sessionId,
+            trigger: 'manual',
+            status: 'completed',
+            reason: '',
+            error: '',
+            sourceMessageStartId: 1,
+            sourceMessageEndId: 2,
+            sourceMessageCount: 2,
+            proposedCandidateCount: 1,
+            savedCandidateCount: 1,
+            suppressedCandidateCount: 0,
+            startedAt: '2026-06-21T00:00:00.000Z',
+            finishedAt: '2026-06-21T00:00:00.100Z',
+            durationMs: 100,
+          }],
+        }
+      },
       runMemoryReview(sessionId, force) {
         calls.push(`run:${sessionId}:${force}`)
         return { reviewed: true, sessionId, candidateCount: 1, candidates: [] }
@@ -330,8 +354,11 @@ describe('WebSocket Python-first integration', () => {
     }))
     await delay(25)
     const candidatesEvent = receivedEvents.find((event) => event.type === 'memory.review.candidates')
+    const jobsEvent = receivedEvents.find((event) => event.type === 'memory.review.jobs')
     assert.ok(candidatesEvent)
+    assert.ok(jobsEvent)
     assert.equal((candidatesEvent.payload as { candidateCount: number }).candidateCount, 1)
+    assert.equal((jobsEvent.payload as { jobCount: number }).jobCount, 1)
 
     socket.send(JSON.stringify({
       id: 'client-event-review-run',
@@ -361,6 +388,7 @@ describe('WebSocket Python-first integration', () => {
     await delay(25)
 
     assert.ok(calls.includes('list:default:pending'))
+    assert.ok(calls.includes('jobs:default:all'))
     assert.ok(calls.includes('run:default:true'))
     assert.ok(calls.includes('accept:7'))
     assert.ok(calls.includes('reject:7'))
