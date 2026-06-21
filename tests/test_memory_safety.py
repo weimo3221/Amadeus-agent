@@ -24,6 +24,21 @@ class MemorySafetyTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertTrue(decision.reason.startswith("secret:"))
 
+    def test_safety_logs_do_not_include_candidate_content(self) -> None:
+        secret_scope = "project OPENAI_API_KEY=sk-scope-secret-secret-secret"
+        secret_content = "The project API key is OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz."
+
+        with self.assertLogs("amadeus.memory_safety", level="INFO") as logs:
+            decision = evaluate_memory_candidate(secret_scope, secret_content)
+
+        self.assertFalse(decision.allowed)
+        log_text = "\n".join(logs.output)
+        self.assertIn("reason=secret:", log_text)
+        self.assertIn("contentChars=", log_text)
+        self.assertNotIn("OPENAI_API_KEY", log_text)
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", log_text)
+        self.assertNotIn("sk-scope-secret-secret-secret", log_text)
+
     def test_blocks_temporary_debug_state_candidates(self) -> None:
         decision = evaluate_memory_candidate(
             "project",

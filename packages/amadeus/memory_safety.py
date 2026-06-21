@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
+
+logger = logging.getLogger(__name__)
 
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)),
@@ -64,36 +67,92 @@ class MemorySafetyDecision:
 
 
 def evaluate_memory_candidate(scope: str, content: str, reason: str | None = None) -> MemorySafetyDecision:
+    normalized_scope = scope.strip().lower()
+    safe_scope = normalized_scope if normalized_scope in {"user", "agent", "project"} else "invalid"
+    scope_chars = len(scope)
+    content_chars = len(content)
+    reason_chars = len(reason or "")
+    logger.info(
+        "Evaluating memory review candidate safety scope=%s scopeChars=%s contentChars=%s reasonChars=%s",
+        safe_scope,
+        scope_chars,
+        content_chars,
+        reason_chars,
+    )
+
     text = "\n".join(part for part in [scope, content, reason or ""] if part).strip()
     if not text:
+        logger.info("Rejecting memory review candidate safety reason=empty_candidate scope=%s scopeChars=%s", safe_scope, scope_chars)
         return MemorySafetyDecision(False, "empty_candidate")
 
     secret_reason = detect_secret_reason(text)
     if secret_reason:
+        logger.info(
+            "Rejecting memory review candidate safety reason=%s scope=%s contentChars=%s reasonChars=%s",
+            secret_reason,
+            safe_scope,
+            content_chars,
+            reason_chars,
+        )
         return MemorySafetyDecision(False, secret_reason)
 
     debug_reason = detect_temporary_debug_reason(text)
     if debug_reason:
+        logger.info(
+            "Rejecting memory review candidate safety reason=%s scope=%s contentChars=%s reasonChars=%s",
+            debug_reason,
+            safe_scope,
+            content_chars,
+            reason_chars,
+        )
         return MemorySafetyDecision(False, debug_reason)
 
     uncertain_reason = detect_uncertain_claim_reason(text)
     if uncertain_reason:
+        logger.info(
+            "Rejecting memory review candidate safety reason=%s scope=%s contentChars=%s reasonChars=%s",
+            uncertain_reason,
+            safe_scope,
+            content_chars,
+            reason_chars,
+        )
         return MemorySafetyDecision(False, uncertain_reason)
 
     local_path_reason = detect_local_path_reason(text)
     if local_path_reason:
+        logger.info(
+            "Rejecting memory review candidate safety reason=%s scope=%s contentChars=%s reasonChars=%s",
+            local_path_reason,
+            safe_scope,
+            content_chars,
+            reason_chars,
+        )
         return MemorySafetyDecision(False, local_path_reason)
 
     scope_reason = detect_scope_mismatch_reason(scope, content, reason)
     if scope_reason:
+        logger.info(
+            "Rejecting memory review candidate safety reason=%s scope=%s contentChars=%s reasonChars=%s",
+            scope_reason,
+            safe_scope,
+            content_chars,
+            reason_chars,
+        )
         return MemorySafetyDecision(False, scope_reason)
 
+    logger.info(
+        "Accepted memory review candidate safety scope=%s contentChars=%s reasonChars=%s",
+        safe_scope,
+        content_chars,
+        reason_chars,
+    )
     return MemorySafetyDecision(True)
 
 
 def detect_secret_reason(text: str) -> str | None:
     for reason, pattern in SECRET_PATTERNS:
         if pattern.search(text):
+            logger.info("Detected secret-like memory candidate pattern=%s textChars=%s", reason, len(text))
             return f"secret:{reason}"
     return None
 
@@ -101,6 +160,7 @@ def detect_secret_reason(text: str) -> str | None:
 def detect_temporary_debug_reason(text: str) -> str | None:
     for reason, pattern in TEMPORARY_DEBUG_PATTERNS:
         if pattern.search(text):
+            logger.info("Detected temporary debug memory candidate pattern=%s textChars=%s", reason, len(text))
             return f"temporary_debug:{reason}"
     return None
 
@@ -108,6 +168,7 @@ def detect_temporary_debug_reason(text: str) -> str | None:
 def detect_uncertain_claim_reason(text: str) -> str | None:
     for reason, pattern in UNCERTAIN_CLAIM_PATTERNS:
         if pattern.search(text):
+            logger.info("Detected uncertain memory candidate pattern=%s textChars=%s", reason, len(text))
             return f"uncertain_claim:{reason}"
     return None
 
@@ -115,6 +176,7 @@ def detect_uncertain_claim_reason(text: str) -> str | None:
 def detect_local_path_reason(text: str) -> str | None:
     for reason, pattern in LOCAL_PATH_PATTERNS:
         if pattern.search(text):
+            logger.info("Detected local path memory candidate pattern=%s textChars=%s", reason, len(text))
             return f"local_path:{reason}"
     return None
 
@@ -122,30 +184,46 @@ def detect_local_path_reason(text: str) -> str | None:
 def detect_scope_mismatch_reason(scope: str, content: str, reason: str | None = None) -> str | None:
     normalized_scope = scope.strip().lower()
     if normalized_scope not in {"user", "agent", "project"}:
+        logger.info("Detected invalid memory candidate scope scopeChars=%s", len(scope))
         return "scope:invalid"
 
     text = "\n".join(part for part in [content, reason or ""] if part).strip()
     if not text:
+        logger.info("Skipping memory candidate scope classification due to empty text scope=%s", normalized_scope)
         return None
 
     user_signal = first_scope_signal(text, USER_SCOPE_PATTERNS)
     project_signal = first_scope_signal(text, PROJECT_SCOPE_PATTERNS)
     agent_signal = first_scope_signal(text, AGENT_SCOPE_PATTERNS)
+    logger.info(
+        "Classified memory candidate scope signals scope=%s userSignal=%s projectSignal=%s agentSignal=%s textChars=%s",
+        normalized_scope,
+        user_signal or "",
+        project_signal or "",
+        agent_signal or "",
+        len(text),
+    )
 
     if normalized_scope == "user":
         if agent_signal and not user_signal:
+            logger.info("Detected memory candidate scope mismatch scope=user expected=agent signal=%s", agent_signal)
             return f"scope:user_contains_agent:{agent_signal}"
         if project_signal and not user_signal:
+            logger.info("Detected memory candidate scope mismatch scope=user expected=project signal=%s", project_signal)
             return f"scope:user_contains_project:{project_signal}"
     elif normalized_scope == "agent":
         if user_signal and not agent_signal:
+            logger.info("Detected memory candidate scope mismatch scope=agent expected=user signal=%s", user_signal)
             return f"scope:agent_contains_user:{user_signal}"
         if project_signal and not agent_signal:
+            logger.info("Detected memory candidate scope mismatch scope=agent expected=project signal=%s", project_signal)
             return f"scope:agent_contains_project:{project_signal}"
     elif normalized_scope == "project":
         if user_signal and not project_signal:
+            logger.info("Detected memory candidate scope mismatch scope=project expected=user signal=%s", user_signal)
             return f"scope:project_contains_user:{user_signal}"
         if agent_signal and not project_signal:
+            logger.info("Detected memory candidate scope mismatch scope=project expected=agent signal=%s", agent_signal)
             return f"scope:project_contains_agent:{agent_signal}"
 
     return None
