@@ -329,7 +329,8 @@ Started.
 - Desktop now exposes the human review loop: it lists pending candidates, lets the user trigger review manually, and sends Accept / Reject actions over the WebSocket bridge.
 - Memory review job observability is now persisted in SQLite `memory_review_jobs`: every manual/automatic review records `running`, `completed`, `skipped`, or `failed` state, trigger, skip reason/error, source message range/count, proposed/saved/suppressed candidate counts, and duration.
 - Python exposes `GET /memory/review/jobs`, the TypeScript bridge relays it as `memory.review.jobs`, and the desktop memory review panel shows the latest job summary next to the pending candidate count.
-- Next: add token-budget-aware summary compaction and stronger memory safety filters.
+- Summary compaction is now token-budget-aware: runtime estimates context tokens before provider calls and after turns, triggers summary compaction when `AMADEUS_CONTEXT_MAX_TOKENS` pressure is high, dynamically reduces the recent-message keep window, and retries once after provider context-overflow errors.
+- Next: add stronger memory safety filters before review candidates are saved.
 
 ### Phase 9: Live2D and Audio Harnesses
 

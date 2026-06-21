@@ -35,8 +35,12 @@ MEMORY_PREFETCH_SNIPPET_CHARS = 280
 CONVERSATION_SUMMARY_CONTEXT_CHARS = 4000
 MEMORY_ITEMS_CONTEXT_LIMIT = 8
 MEMORY_ITEM_CONTEXT_CHARS = 500
+CONTEXT_MAX_TOKENS = 24000
+CONTEXT_COMPACTION_TRIGGER_RATIO = 0.85
+CONTEXT_RECENT_MESSAGE_TARGET_RATIO = 0.45
 SUMMARY_TRIGGER_MESSAGE_COUNT = 40
 SUMMARY_KEEP_RECENT_MESSAGES = 20
+SUMMARY_MIN_KEEP_RECENT_MESSAGES = 4
 SUMMARY_SOURCE_MAX_MESSAGES = 120
 SUMMARY_FAILURE_COOLDOWN_SECONDS = 300
 MEMORY_REVIEW_SOURCE_MAX_MESSAGES = 40
@@ -62,6 +66,14 @@ class AgentEvent:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "payload": self.payload,
         }
+
+
+@dataclass(frozen=True)
+class ContextBudgetReport:
+    estimated_tokens: int
+    max_tokens: int
+    trigger_tokens: int
+    over_budget: bool
 
 
 @dataclass(frozen=True)
@@ -160,8 +172,22 @@ class AgentRuntime:
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
+        self.context_max_tokens = parse_positive_int_env("AMADEUS_CONTEXT_MAX_TOKENS", CONTEXT_MAX_TOKENS)
+        self.context_compaction_trigger_ratio = parse_float_env(
+            "AMADEUS_CONTEXT_COMPACTION_TRIGGER_RATIO",
+            CONTEXT_COMPACTION_TRIGGER_RATIO,
+            minimum=0.1,
+            maximum=1.0,
+        )
+        self.context_recent_message_target_ratio = parse_float_env(
+            "AMADEUS_CONTEXT_RECENT_MESSAGE_TARGET_RATIO",
+            CONTEXT_RECENT_MESSAGE_TARGET_RATIO,
+            minimum=0.1,
+            maximum=0.9,
+        )
         self.summary_trigger_message_count = SUMMARY_TRIGGER_MESSAGE_COUNT
         self.summary_keep_recent_messages = SUMMARY_KEEP_RECENT_MESSAGES
+        self.summary_min_keep_recent_messages = SUMMARY_MIN_KEEP_RECENT_MESSAGES
         self.summary_source_max_messages = SUMMARY_SOURCE_MAX_MESSAGES
         self.summary_failure_cooldown_seconds = SUMMARY_FAILURE_COOLDOWN_SECONDS
         self._summary_failure_until: dict[str, float] = {}
@@ -197,13 +223,14 @@ class AgentRuntime:
 
         turn_id = str(uuid4())
         logger.info("Starting agent turn sessionId=%s turnId=%s userTextChars=%s", session_id, turn_id, len(normalized_text))
-        history = self._load_history(session_id)
-        history.append({
-            "role": "user",
-            "content": self._inject_memory_context(session_id, normalized_text),
-        })
+        history = self._load_turn_history(session_id, normalized_text)
+        budget_summary_event = self._maybe_compact_for_context_budget(session_id, history, phase="turn_start")
+        if budget_summary_event:
+            history = self._load_turn_history(session_id, normalized_text)
         self.memory_store.save(session_id, "user", normalized_text)
         yield AgentEvent("memory.updated", {"memoryMessages": self.memory_store.count(session_id)})
+        if budget_summary_event:
+            yield budget_summary_event
 
         yield AgentEvent("assistant.state", {"state": "thinking"})
         yield AgentEvent("character.behavior", {
@@ -217,11 +244,7 @@ class AgentRuntime:
             tool_decision = self._request_tool_decision(history)
         except RuntimeError as error:
             if self._handle_context_overflow(session_id, "tool_decision", error):
-                history = self._load_history(session_id)
-                history.append({
-                    "role": "user",
-                    "content": self._inject_memory_context(session_id, normalized_text),
-                })
+                history = self._load_turn_history(session_id, normalized_text, current_user_already_saved=True)
                 try:
                     tool_decision = self._request_tool_decision(history)
                 except RuntimeError as retry_error:
@@ -263,11 +286,7 @@ class AgentRuntime:
                 yield AgentEvent("assistant.delta", {"text": delta})
         except RuntimeError as error:
             if self._handle_context_overflow(session_id, "final_response", error):
-                history = self._load_history(session_id)
-                history.append({
-                    "role": "user",
-                    "content": self._inject_memory_context(session_id, normalized_text),
-                })
+                history = self._load_turn_history(session_id, normalized_text, current_user_already_saved=True)
                 assistant_text = ""
                 try:
                     for delta in self._stream_final_response(history):
@@ -594,6 +613,24 @@ class AgentRuntime:
         )
         return messages
 
+    def _load_turn_history(
+        self,
+        session_id: str,
+        user_text: str,
+        *,
+        current_user_already_saved: bool = False,
+    ) -> list[dict[str, Any]]:
+        history = self._load_history(session_id)
+        if current_user_already_saved and len(history) > 1:
+            last_message = history[-1]
+            if last_message.get("role") == "user" and last_message.get("content") == user_text:
+                history = history[:-1]
+        history.append({
+            "role": "user",
+            "content": self._inject_memory_context(session_id, user_text),
+        })
+        return history
+
     def _assemble_system_context(
         self,
         summary: dict[str, str | int] | None,
@@ -645,7 +682,100 @@ class AgentRuntime:
         lines.append("</memory-items>")
         return "\n".join(lines) if len(lines) > 3 else ""
 
-    def _maybe_compact_conversation(self, session_id: str, force: bool = False) -> AgentEvent | None:
+    def _maybe_compact_for_context_budget(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        phase: str,
+    ) -> AgentEvent | None:
+        report = self._context_budget_report(messages)
+        logger.info(
+            "Checked context budget sessionId=%s phase=%s estimatedTokens=%s triggerTokens=%s maxTokens=%s overBudget=%s",
+            session_id,
+            phase,
+            report.estimated_tokens,
+            report.trigger_tokens,
+            report.max_tokens,
+            report.over_budget,
+        )
+        if not report.over_budget:
+            return None
+
+        keep_recent_messages = self._budget_keep_recent_message_count(session_id)
+        logger.info(
+            "Forcing summary compaction for context budget sessionId=%s phase=%s keepRecent=%s estimatedTokens=%s triggerTokens=%s",
+            session_id,
+            phase,
+            keep_recent_messages,
+            report.estimated_tokens,
+            report.trigger_tokens,
+        )
+        return self._maybe_compact_conversation(
+            session_id,
+            force=True,
+            keep_recent_messages=keep_recent_messages,
+            reason=f"context_budget:{phase}",
+        )
+
+    def _context_budget_report(self, messages: list[dict[str, Any]]) -> ContextBudgetReport:
+        max_tokens = max(1, int(self.context_max_tokens))
+        trigger_tokens = max(1, int(max_tokens * self.context_compaction_trigger_ratio))
+        estimated_tokens = estimate_messages_tokens(messages)
+        return ContextBudgetReport(
+            estimated_tokens=estimated_tokens,
+            max_tokens=max_tokens,
+            trigger_tokens=trigger_tokens,
+            over_budget=estimated_tokens > trigger_tokens,
+        )
+
+    def _budget_keep_recent_message_count(self, session_id: str) -> int:
+        target_tokens = max(1, int(self.context_max_tokens * self.context_recent_message_target_ratio))
+        previous_summary = self.memory_store.load_conversation_summary(session_id)
+        covered_through_id = int(previous_summary.get("coveredThroughMessageId", 0)) if previous_summary else 0
+        uncovered_messages = self.memory_store.load_detailed(
+            session_id,
+            after_message_id=covered_through_id or None,
+            limit=self.summary_source_max_messages + self.summary_keep_recent_messages + 1,
+        )
+        if not uncovered_messages:
+            return self.summary_keep_recent_messages
+
+        max_keep = min(self.summary_keep_recent_messages, len(uncovered_messages))
+        min_keep = min(max(0, self.summary_min_keep_recent_messages), max_keep)
+        kept_tokens = 0
+        keep_count = 0
+        for message in reversed(uncovered_messages):
+            message_tokens = estimate_message_tokens({
+                "role": message.get("role", ""),
+                "content": message.get("content", ""),
+            })
+            if keep_count >= min_keep and kept_tokens + message_tokens > target_tokens:
+                break
+            keep_count += 1
+            kept_tokens += message_tokens
+            if keep_count >= max_keep:
+                break
+
+        keep_count = max(min_keep, keep_count)
+        logger.info(
+            "Selected budget-aware summary keep window sessionId=%s keepRecent=%s targetTokens=%s keptTokens=%s uncoveredMessages=%s",
+            session_id,
+            keep_count,
+            target_tokens,
+            kept_tokens,
+            len(uncovered_messages),
+        )
+        return keep_count
+
+    def _maybe_compact_conversation(
+        self,
+        session_id: str,
+        force: bool = False,
+        *,
+        keep_recent_messages: int | None = None,
+        reason: str = "threshold",
+    ) -> AgentEvent | None:
         cooldown_until = self._summary_failure_until.get(session_id, 0)
         now = perf_counter()
         if not force and cooldown_until > now:
@@ -657,32 +787,44 @@ class AgentRuntime:
             return None
 
         total_messages = self.memory_store.count(session_id)
-        if not force and total_messages <= self.summary_trigger_message_count:
+        budget_report = self._context_budget_report(self._load_history(session_id)) if not force else None
+        should_compact_for_budget = bool(budget_report and budget_report.over_budget)
+        if not force and total_messages <= self.summary_trigger_message_count and not should_compact_for_budget:
             logger.info(
-                "Skipping summary compaction below threshold sessionId=%s messageCount=%s threshold=%s",
+                "Skipping summary compaction below thresholds sessionId=%s messageCount=%s threshold=%s estimatedTokens=%s triggerTokens=%s",
                 session_id,
                 total_messages,
                 self.summary_trigger_message_count,
+                budget_report.estimated_tokens if budget_report else None,
+                budget_report.trigger_tokens if budget_report else None,
             )
             return None
 
         previous_summary = self.memory_store.load_conversation_summary(session_id)
         covered_through_id = int(previous_summary.get("coveredThroughMessageId", 0)) if previous_summary else 0
+        if keep_recent_messages is None and should_compact_for_budget:
+            keep_recent_messages = self._budget_keep_recent_message_count(session_id)
+            reason = "context_budget:auto"
+        effective_keep_recent_messages = max(
+            0,
+            int(keep_recent_messages) if keep_recent_messages is not None else self.summary_keep_recent_messages,
+        )
         uncovered_messages = self.memory_store.load_detailed(
             session_id,
             after_message_id=covered_through_id or None,
-            limit=self.summary_source_max_messages + self.summary_keep_recent_messages + 1,
+            limit=self.summary_source_max_messages + effective_keep_recent_messages + 1,
         )
-        if len(uncovered_messages) <= self.summary_keep_recent_messages:
+        if len(uncovered_messages) <= effective_keep_recent_messages:
             logger.info(
-                "Skipping summary compaction no compactable window sessionId=%s uncoveredMessages=%s keepRecent=%s",
+                "Skipping summary compaction no compactable window sessionId=%s uncoveredMessages=%s keepRecent=%s reason=%s",
                 session_id,
                 len(uncovered_messages),
-                self.summary_keep_recent_messages,
+                effective_keep_recent_messages,
+                reason,
             )
             return None
 
-        compactable_messages = uncovered_messages[:-self.summary_keep_recent_messages]
+        compactable_messages = uncovered_messages[:-effective_keep_recent_messages] if effective_keep_recent_messages else uncovered_messages
         if len(compactable_messages) > self.summary_source_max_messages:
             compactable_messages = compactable_messages[-self.summary_source_max_messages:]
         source_start_id = int(compactable_messages[0]["id"])
@@ -714,20 +856,33 @@ class AgentRuntime:
         )
         self._summary_failure_until.pop(session_id, None)
         logger.info(
-            "Saved automatic conversation summary sessionId=%s summaryId=%s sourceStartId=%s sourceEndId=%s coveredMessageCount=%s",
+            "Saved conversation summary sessionId=%s summaryId=%s sourceStartId=%s sourceEndId=%s coveredMessageCount=%s reason=%s keepRecent=%s",
             session_id,
             summary["summaryId"],
             source_start_id,
             source_end_id,
             summary["coveredMessageCount"],
+            reason,
+            effective_keep_recent_messages,
         )
         return AgentEvent("memory.summary.updated", {"summary": summary})
 
     def _handle_context_overflow(self, session_id: str, phase: str, error: RuntimeError) -> bool:
         if not is_context_overflow_error(error):
             return False
-        logger.info("Provider context overflow detected sessionId=%s phase=%s; forcing summary compaction", session_id, phase)
-        event = self._maybe_compact_conversation(session_id, force=True)
+        keep_recent_messages = self._budget_keep_recent_message_count(session_id)
+        logger.info(
+            "Provider context overflow detected sessionId=%s phase=%s; forcing summary compaction keepRecent=%s",
+            session_id,
+            phase,
+            keep_recent_messages,
+        )
+        event = self._maybe_compact_conversation(
+            session_id,
+            force=True,
+            keep_recent_messages=keep_recent_messages,
+            reason=f"provider_overflow:{phase}",
+        )
         logger.info("Context overflow compaction result sessionId=%s phase=%s compacted=%s", session_id, phase, event is not None)
         return event is not None
 
@@ -1376,6 +1531,47 @@ def sanitize_memory_context_text(text: str, max_chars: int, collapse_whitespace:
     if len(sanitized) > max_chars:
         return sanitized[:max_chars].rstrip() + "..."
     return sanitized
+
+
+def estimate_message_tokens(message: dict[str, Any]) -> int:
+    content = message.get("content", "")
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False)
+    role = str(message.get("role", ""))
+    tool_calls = message.get("tool_calls")
+    tool_call_chars = len(json.dumps(tool_calls, ensure_ascii=False)) if tool_calls else 0
+    # Conservative tokenizer-free estimate: most supported providers use BPE-like
+    # tokenization where English averages near 4 chars/token, while CJK can be
+    # closer to 1 char/token. The 2 chars/token heuristic intentionally errs high.
+    return max(1, (len(role) + len(content) + tool_call_chars + 1) // 2) + 8
+
+
+def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    return sum(estimate_message_tokens(message) for message in messages)
+
+
+def parse_positive_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def parse_float_env(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return default
+    if parsed < minimum or parsed > maximum:
+        return default
+    return parsed
 
 
 def parse_json_object_from_text(text: str) -> dict[str, Any]:

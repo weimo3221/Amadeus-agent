@@ -83,6 +83,19 @@ class FakeAgentRuntime(AgentRuntime):
         return self.memory_review_response
 
 
+class OverflowOnceRuntime(FakeAgentRuntime):
+    def __init__(self, memory_store: MessageMemoryStore) -> None:
+        self.tool_decision_attempts = 0
+        super().__init__(memory_store, deltas=["recovered"])
+
+    def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        self.decision_messages.append(json.loads(json.dumps(messages)))
+        self.tool_decision_attempts += 1
+        if self.tool_decision_attempts == 1:
+            raise RuntimeError("maximum context length exceeded")
+        return self.tool_decision
+
+
 class AgentRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -212,6 +225,30 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("old message 0", json.dumps(runtime.summary_requests[0]["messages"]))
         self.assertIn("memory.summary.updated", [event.type for event in events])
 
+    def test_turn_compacts_old_messages_when_context_budget_is_over_threshold(self) -> None:
+        for index in range(6):
+            self.memory.save("default", "user" if index % 2 == 0 else "assistant", f"large old message {index} " + ("x" * 600))
+        runtime = FakeAgentRuntime(self.memory, deltas=["final"])
+        runtime.summary_trigger_message_count = 100
+        runtime.summary_keep_recent_messages = 5
+        runtime.summary_min_keep_recent_messages = 1
+        runtime.context_max_tokens = 500
+        runtime.context_compaction_trigger_ratio = 0.5
+        runtime.context_recent_message_target_ratio = 0.3
+
+        events = list(runtime.run_turn("default", "new request", lambda _request: False))
+        summary = self.memory.load_conversation_summary("default")
+        decision_messages = runtime.decision_messages[-1]
+        serialized_decision = json.dumps(decision_messages)
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertGreaterEqual(summary["coveredThroughMessageId"], 5)
+        self.assertGreaterEqual(len(runtime.summary_requests), 1)
+        self.assertIn("large old message 0", json.dumps(runtime.summary_requests[0]["messages"]))
+        self.assertNotIn("large old message 0", serialized_decision)
+        self.assertIn("memory.summary.updated", [event.type for event in events])
+
     def test_manual_compact_force_bypasses_threshold(self) -> None:
         for index in range(3):
             self.memory.save("default", "user", f"message {index}")
@@ -223,6 +260,27 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result["compacted"])
         self.assertEqual(result["summary"]["content"], "Summary: older setup is now compacted.")
+
+    def test_provider_context_overflow_compacts_and_retries_without_duplicate_current_user(self) -> None:
+        for index in range(3):
+            self.memory.save("default", "user", f"overflow old message {index}")
+        runtime = OverflowOnceRuntime(self.memory)
+        runtime.summary_keep_recent_messages = 1
+        runtime.summary_min_keep_recent_messages = 1
+
+        events = list(runtime.run_turn("default", "overflow now", lambda _request: False))
+        summary = self.memory.load_conversation_summary("default")
+        retry_messages = runtime.decision_messages[-1]
+        current_user_messages = [
+            message
+            for message in retry_messages
+            if message["role"] == "user" and "overflow now" in message["content"]
+        ]
+
+        self.assertIsNotNone(summary)
+        self.assertEqual(runtime.tool_decision_attempts, 2)
+        self.assertEqual(len(current_user_messages), 1)
+        self.assertIn("assistant.message", [event.type for event in events])
 
     def test_memory_review_runner_saves_candidates_without_promoting(self) -> None:
         first_id = self.memory.save("default", "user", "Please keep responses direct.")
