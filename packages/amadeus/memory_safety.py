@@ -38,6 +38,24 @@ LOCAL_PATH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("generated_artifact", re.compile(r"(?:^|[\s'\"`])(?:[^/\s'\"`]+/)*(?:tmp|temp|cache|generated|artifacts?)/(?:[^/\s'\"`]+)", re.IGNORECASE)),
 )
 
+USER_SCOPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("user_preference", re.compile(r"\b(?:the user|user)\s+(?:prefers?|likes?|wants?|asked|requested|expects?|uses?|works?|needs?)\b", re.IGNORECASE)),
+    ("user_identity", re.compile(r"\b(?:the user's|user's)\s+(?:name|role|team|language|preference|style|workflow|habit)\b", re.IGNORECASE)),
+    ("chinese_user", re.compile(r"(?:用户|使用者).{0,12}(?:偏好|喜欢|希望|要求|习惯|使用|正在|需要)")),
+)
+
+PROJECT_SCOPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("project_fact", re.compile(r"\b(?:the project|project|repo|repository|codebase|runtime|package|module|config|endpoint|api|database|schema|table)\b", re.IGNORECASE)),
+    ("implementation_fact", re.compile(r"\b(?:implements?|implemented|stores?|loads?|exposes?|uses?|supports?|persists?|configured|wired)\b", re.IGNORECASE)),
+    ("chinese_project", re.compile(r"(?:项目|仓库|代码库|运行时|配置|接口|模块).{0,16}(?:使用|实现|支持|存储|加载|暴露|配置)")),
+)
+
+AGENT_SCOPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("agent_behavior", re.compile(r"\b(?:the agent|agent|assistant|amadeus)\s+(?:should|must|needs? to|will|prefers?|asks?|responds?|uses?)\b", re.IGNORECASE)),
+    ("assistant_behavior", re.compile(r"\b(?:respond|reply|ask before|confirm before|avoid|use concise|provide updates|explain)\b", re.IGNORECASE)),
+    ("chinese_agent", re.compile(r"(?:agent|助手|助理|模型).{0,16}(?:应该|必须|需要|回复|询问|确认|避免|使用)")),
+)
+
 
 @dataclass(frozen=True)
 class MemorySafetyDecision:
@@ -65,6 +83,10 @@ def evaluate_memory_candidate(scope: str, content: str, reason: str | None = Non
     local_path_reason = detect_local_path_reason(text)
     if local_path_reason:
         return MemorySafetyDecision(False, local_path_reason)
+
+    scope_reason = detect_scope_mismatch_reason(scope, content, reason)
+    if scope_reason:
+        return MemorySafetyDecision(False, scope_reason)
 
     return MemorySafetyDecision(True)
 
@@ -94,4 +116,43 @@ def detect_local_path_reason(text: str) -> str | None:
     for reason, pattern in LOCAL_PATH_PATTERNS:
         if pattern.search(text):
             return f"local_path:{reason}"
+    return None
+
+
+def detect_scope_mismatch_reason(scope: str, content: str, reason: str | None = None) -> str | None:
+    normalized_scope = scope.strip().lower()
+    if normalized_scope not in {"user", "agent", "project"}:
+        return "scope:invalid"
+
+    text = "\n".join(part for part in [content, reason or ""] if part).strip()
+    if not text:
+        return None
+
+    user_signal = first_scope_signal(text, USER_SCOPE_PATTERNS)
+    project_signal = first_scope_signal(text, PROJECT_SCOPE_PATTERNS)
+    agent_signal = first_scope_signal(text, AGENT_SCOPE_PATTERNS)
+
+    if normalized_scope == "user":
+        if agent_signal and not user_signal:
+            return f"scope:user_contains_agent:{agent_signal}"
+        if project_signal and not user_signal:
+            return f"scope:user_contains_project:{project_signal}"
+    elif normalized_scope == "agent":
+        if user_signal and not agent_signal:
+            return f"scope:agent_contains_user:{user_signal}"
+        if project_signal and not agent_signal:
+            return f"scope:agent_contains_project:{project_signal}"
+    elif normalized_scope == "project":
+        if user_signal and not project_signal:
+            return f"scope:project_contains_user:{user_signal}"
+        if agent_signal and not project_signal:
+            return f"scope:project_contains_agent:{agent_signal}"
+
+    return None
+
+
+def first_scope_signal(text: str, patterns: tuple[tuple[str, re.Pattern[str]], ...]) -> str | None:
+    for reason, pattern in patterns:
+        if pattern.search(text):
+            return reason
     return None

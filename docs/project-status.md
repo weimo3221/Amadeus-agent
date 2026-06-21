@@ -326,13 +326,13 @@ Started.
 - Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, while `memory_add`, `memory_replace`, and `memory_forget` mutate one durable fact only through the `ask` permission path.
 - Memory review candidates now provide a human-controlled promotion queue: `GET/POST /memory/review/candidates` manages pending candidates, `POST /memory/review/accept` promotes one into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory.
 - Background memory review runner can now be triggered with `POST /memory/review/run` or automatically after a completed turn when the threshold/cooldown gates allow it; it asks the provider to propose candidates from recent messages and only writes pending `memory_review_candidates`, never durable `memory_items`.
-- Memory review safety filters now block secret-like content, temporary debug/run state, uncertain claims, and overly specific local/cache/generated paths before candidates are persisted.
+- Memory review safety filters now block secret-like content, temporary debug/run state, uncertain claims, overly specific local/cache/generated paths, and obvious `user` / `agent` / `project` scope mismatches before candidates are persisted.
 - Rejected memory review candidates suppress later identical suggestions for the same session/scope/content.
 - Desktop now exposes the human review loop: it lists pending candidates, lets the user trigger review manually, and sends Accept / Reject actions over the WebSocket bridge.
 - Memory review job observability is now persisted in SQLite `memory_review_jobs`: every manual/automatic review records `running`, `completed`, `skipped`, or `failed` state, trigger, skip reason/error, source message range/count, proposed/saved/suppressed candidate counts, and duration.
 - Python exposes `GET /memory/review/jobs`, the TypeScript bridge relays it as `memory.review.jobs`, and the desktop memory review panel shows the latest job summary next to the pending candidate count.
 - Summary compaction is now token-budget-aware: runtime estimates context tokens before provider calls and after turns, loads its defaults from `configs/runtime.yaml`, supports explicit HTTP reload and environment overrides such as `AMADEUS_CONTEXT_MAX_TOKENS`, dynamically reduces the recent-message keep window, and retries once after provider context-overflow errors.
-- Next: add memory review scope classification checks for `user` / `agent` / `project` candidates.
+- Next: close Phase 8 with small operational polish, then start Phase 9 Live2D/audio harness work.
 
 ### Phase 9: Live2D and Audio Harnesses
 

@@ -418,6 +418,44 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["content"], "The user prefers concise Chinese progress updates.")
 
+    def test_memory_review_runner_suppresses_scope_mismatches(self) -> None:
+        self.memory.save("default", "user", "Please keep updates concise.")
+        self.memory.save("default", "assistant", "The project exposes POST /runtime/config/reload.")
+        runtime = FakeAgentRuntime(
+            self.memory,
+            memory_review_response=[
+                {
+                    "scope": "project",
+                    "content": "The user prefers concise Chinese progress updates.",
+                    "confidence": 0.8,
+                    "reason": "The user explicitly requested concise updates.",
+                },
+                {
+                    "scope": "user",
+                    "content": "The project exposes POST /runtime/config/reload for dynamic config reload.",
+                    "confidence": 0.8,
+                    "reason": "This is a project runtime capability.",
+                },
+                {
+                    "scope": "project",
+                    "content": "The project exposes POST /runtime/config/reload for dynamic config reload.",
+                    "confidence": 0.8,
+                    "reason": "This is a project runtime capability.",
+                },
+            ],
+        )
+
+        result = runtime.review_memory("default", force=True)
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+
+        self.assertTrue(result["reviewed"])
+        self.assertEqual(result["proposedCandidateCount"], 3)
+        self.assertEqual(result["candidateCount"], 1)
+        self.assertEqual(result["suppressedCandidateCount"], 2)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["scope"], "project")
+        self.assertEqual(candidates[0]["content"], "The project exposes POST /runtime/config/reload for dynamic config reload.")
+
     def test_memory_review_runner_reports_provider_failure_without_candidates(self) -> None:
         self.memory.save("default", "user", "Remember nothing yet.")
         runtime = FakeAgentRuntime(self.memory, memory_review_error="review failed")
