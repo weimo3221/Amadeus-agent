@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -134,9 +135,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
                 "The user prefers concise updates.",
                 confidence=0.8,
                 reason="User explicitly requested concise status updates.",
-                  scope_reason="This is a stable user preference.",
-                  safety_labels=["explicit", "non_secret", "correct scope", "explicit"],
-                  retention_type="stable_preference",
+                scope_reason="This is a stable user preference.",
+                safety_labels=["explicit", "non_secret", "correct scope", "explicit"],
+                retention_type="stable_preference",
                 source_message_start_id=2,
                 source_message_end_id=4,
             )
@@ -160,6 +161,88 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(pending[0]["retentionType"], "stable_preference")
         self.assertEqual(pending[0]["sourceMessageStartId"], 2)
         self.assertEqual(pending[0]["sourceMessageEndId"], 4)
+
+    def test_memory_review_candidate_migration_preserves_legacy_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "amadeus.sqlite"
+            now = "2026-06-21T00:00:00+00:00"
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE memory_review_candidates (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      session_id TEXT NOT NULL,
+                      scope TEXT NOT NULL CHECK (scope IN ('user', 'agent', 'project')),
+                      content TEXT NOT NULL,
+                      confidence REAL NOT NULL DEFAULT 0.7,
+                      reason TEXT,
+                      source_message_start_id INTEGER,
+                      source_message_end_id INTEGER,
+                      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'superseded')),
+                      memory_item_id INTEGER,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO memory_review_candidates (
+                      session_id,
+                      scope,
+                      content,
+                      confidence,
+                      reason,
+                      source_message_start_id,
+                      source_message_end_id,
+                      status,
+                      created_at,
+                      updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        "legacy-session",
+                        "user",
+                        "The user prefers migration-safe memory.",
+                        0.75,
+                        "Legacy candidate reason.",
+                        3,
+                        5,
+                        now,
+                        now,
+                    ),
+                )
+
+            memory = MessageMemoryStore(database_path)
+            with sqlite3.connect(database_path) as connection:
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(memory_review_candidates)").fetchall()
+                }
+            candidates = memory.list_memory_review_candidates(session_id="legacy-session", status="pending")
+            accepted = memory.accept_memory_review_candidate(int(candidates[0]["candidateId"]))
+            items = memory.list_memory_items(scope="user")
+
+        self.assertIn("scope_reason", columns)
+        self.assertIn("safety_labels", columns)
+        self.assertIn("retention_type", columns)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["content"], "The user prefers migration-safe memory.")
+        self.assertEqual(candidates[0]["confidence"], 0.75)
+        self.assertEqual(candidates[0]["reason"], "Legacy candidate reason.")
+        self.assertEqual(candidates[0]["scopeReason"], "")
+        self.assertEqual(candidates[0]["safetyLabels"], [])
+        self.assertEqual(candidates[0]["retentionType"], "long_term")
+        self.assertEqual(candidates[0]["sourceMessageStartId"], 3)
+        self.assertEqual(candidates[0]["sourceMessageEndId"], 5)
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["candidate"]["status"], "accepted")
+        self.assertEqual(accepted["candidate"]["scopeReason"], "")
+        self.assertEqual(accepted["candidate"]["safetyLabels"], [])
+        self.assertEqual(accepted["candidate"]["retentionType"], "long_term")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["content"], "The user prefers migration-safe memory.")
 
     def test_accept_memory_review_candidate_promotes_to_memory_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
