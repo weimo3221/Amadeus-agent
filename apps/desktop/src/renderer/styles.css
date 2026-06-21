@@ -249,6 +249,72 @@ button:hover {
   height: 20px;
 }
 
+.memory-review {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.32);
+}
+
+.memory-review-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.memory-review-header span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(226, 232, 240, 0.68);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-review-header button,
+.memory-review-actions button {
+  height: 20px;
+  min-width: 48px;
+}
+
+.memory-review-list {
+  display: grid;
+  gap: 4px;
+  max-height: 92px;
+  overflow: auto;
+}
+
+.memory-review-candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px;
+  border-radius: 7px;
+  background: rgba(30, 41, 59, 0.64);
+}
+
+.memory-review-content {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(248, 250, 252, 0.78);
+  font-size: 11px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-review-actions {
+  display: flex;
+  gap: 4px;
+}
+
 #chat-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

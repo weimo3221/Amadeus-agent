@@ -2,6 +2,7 @@ import type {
   AssistantState,
   CharacterBehaviorPayload,
   HelloPayload,
+  MemoryReviewCandidate,
   RuntimeEvent,
   ServerRuntimeEvent,
 } from '@amadeus-agent/amadeus/events'
@@ -53,6 +54,9 @@ export interface RuntimeUiElements {
   toolPermissionText: HTMLSpanElement | null
   toolAllowButton: HTMLButtonElement | null
   toolDenyButton: HTMLButtonElement | null
+  memoryReviewStatus: HTMLSpanElement | null
+  memoryReviewRunButton: HTMLButtonElement | null
+  memoryReviewList: HTMLDivElement | null
   voiceStatus: HTMLDivElement | null
   resetSessionButton: HTMLButtonElement | null
 }
@@ -147,6 +151,16 @@ export class RuntimeUiController {
       this.respondToToolPermission(false)
     })
 
+    elements.memoryReviewRunButton?.addEventListener('click', () => {
+      if (!this.socket || this.socket.readyState !== WEB_SOCKET_OPEN) {
+        this.setMemoryReviewStatus('Memory review unavailable: disconnected')
+        return
+      }
+
+      this.setMemoryReviewStatus('Memory review running...')
+      this.sendEvent('memory.review.run', { force: true })
+    })
+
     elements.chatForm?.addEventListener('submit', (event) => {
       event.preventDefault()
       const text = elements.chatInput?.value.trim()
@@ -215,9 +229,32 @@ export class RuntimeUiController {
         this.setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
         this.setToolConfigStatus(formatToolConfigStatus(event.payload))
         this.setConnection('Connected', true)
+        this.requestMemoryReviewCandidates()
         break
       case 'memory.updated':
         this.setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
+        break
+      case 'memory.review.candidates':
+        this.renderMemoryReviewCandidates(event.payload.candidates)
+        break
+      case 'memory.review.updated':
+        if (event.payload.error) {
+          this.setMemoryReviewStatus(`Memory review failed: ${event.payload.error}`)
+          break
+        }
+        if (event.payload.accepted) {
+          this.setMemoryReviewStatus('Memory candidate accepted')
+        }
+        else if (event.payload.rejected) {
+          this.setMemoryReviewStatus('Memory candidate rejected')
+        }
+        else if (event.payload.reviewed) {
+          this.setMemoryReviewStatus(`Memory review generated ${event.payload.candidateCount ?? 0} candidates`)
+        }
+        else {
+          this.setMemoryReviewStatus(`Memory review skipped: ${event.payload.reason ?? 'not needed'}`)
+        }
+        this.requestMemoryReviewCandidates()
         break
       case 'assistant.delta':
         this.pendingAssistantText += event.payload.text
@@ -295,6 +332,12 @@ export class RuntimeUiController {
     }
   }
 
+  private setMemoryReviewStatus(message: string): void {
+    if (this.options.elements.memoryReviewStatus) {
+      this.options.elements.memoryReviewStatus.textContent = message
+    }
+  }
+
   private setToolPermissionPrompt(requestId: string, message: string): void {
     this.pendingToolPermissionRequestId = requestId
     if (this.options.elements.toolPermissionText) {
@@ -326,6 +369,62 @@ export class RuntimeUiController {
     })
     this.setToolStatus(approved ? 'Tool permission approved' : 'Tool permission denied')
     this.clearToolPermissionPrompt()
+  }
+
+  private requestMemoryReviewCandidates(): void {
+    if (!this.socket || this.socket.readyState !== WEB_SOCKET_OPEN) {
+      return
+    }
+
+    this.sendEvent('memory.review.list', { status: 'pending' })
+  }
+
+  private renderMemoryReviewCandidates(candidates: MemoryReviewCandidate[]): void {
+    const { memoryReviewList } = this.options.elements
+    if (!memoryReviewList) {
+      return
+    }
+
+    memoryReviewList.replaceChildren()
+    this.setMemoryReviewStatus(`Memory review: ${candidates.length} pending`)
+    for (const candidate of candidates.slice(0, 5)) {
+      memoryReviewList.append(this.createMemoryReviewCandidateElement(candidate))
+    }
+  }
+
+  private createMemoryReviewCandidateElement(candidate: MemoryReviewCandidate): HTMLDivElement {
+    const item = document.createElement('div')
+    item.className = 'memory-review-candidate'
+
+    const content = document.createElement('div')
+    content.className = 'memory-review-content'
+    content.textContent = `${candidate.scope} ${Math.round(candidate.confidence * 100)}%: ${candidate.content}`
+    content.title = candidate.reason || candidate.content
+
+    const actions = document.createElement('div')
+    actions.className = 'memory-review-actions'
+
+    const acceptButton = document.createElement('button')
+    acceptButton.type = 'button'
+    acceptButton.textContent = 'Accept'
+    acceptButton.addEventListener('click', () => {
+      this.setMemoryReviewStatus('Accepting memory candidate...')
+      this.sendEvent('memory.review.accept', { candidateId: candidate.candidateId })
+    })
+
+    const rejectButton = document.createElement('button')
+    rejectButton.type = 'button'
+    rejectButton.textContent = 'Reject'
+    rejectButton.addEventListener('click', () => {
+      this.setMemoryReviewStatus('Rejecting memory candidate...')
+      this.sendEvent('memory.review.reject', { candidateId: candidate.candidateId })
+    })
+
+    actions.append(acceptButton)
+    actions.append(rejectButton)
+    item.append(content)
+    item.append(actions)
+    return item
   }
 
   private appendMessage(role: 'user' | 'assistant', text: string): HTMLDivElement | undefined {

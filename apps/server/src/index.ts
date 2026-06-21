@@ -3,7 +3,14 @@ import {
   type ToolPermissionState,
 } from '@amadeus-agent/amadeus/tools'
 
-import { forwardToolPermissionToPython, relayPythonTurn } from './bridge.js'
+import {
+  acceptPythonMemoryReviewCandidate,
+  forwardToolPermissionToPython,
+  listPythonMemoryReviewCandidates,
+  rejectPythonMemoryReviewCandidate,
+  relayPythonTurn,
+  runPythonMemoryReview,
+} from './bridge.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
@@ -112,6 +119,18 @@ const { httpServer } = createAmadeusBridgeServer({
   },
   forwardToolPermissionToPython(requestId, approved) {
     return forwardToolPermissionToPython(requestId, approved, { runtimeUrl: pythonRuntimeUrl })
+  },
+  listMemoryReviewCandidates(sessionId, status) {
+    return listPythonMemoryReviewCandidates(sessionId, status, { runtimeUrl: pythonRuntimeUrl })
+  },
+  runMemoryReview(sessionId, force) {
+    return runPythonMemoryReview(sessionId, force, { runtimeUrl: pythonRuntimeUrl })
+  },
+  acceptMemoryReviewCandidate(candidateId) {
+    return acceptPythonMemoryReviewCandidate(candidateId, { runtimeUrl: pythonRuntimeUrl })
+  },
+  rejectMemoryReviewCandidate(candidateId) {
+    return rejectPythonMemoryReviewCandidate(candidateId, { runtimeUrl: pythonRuntimeUrl })
   },
   streamChat,
 })

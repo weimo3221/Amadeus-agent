@@ -142,7 +142,7 @@ Fallback path today:
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
-- Add desktop UI review affordances for pending memory review candidates.
+- Persist richer background review job state for observability and retry.
 - Harden the Python-owned ToolRuntime with richer context propagation and richer no-progress policies where needed.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/model.py`
@@ -327,7 +327,8 @@ Started.
 - Memory review candidates now provide a human-controlled promotion queue: `GET/POST /memory/review/candidates` manages pending candidates, `POST /memory/review/accept` promotes one into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory.
 - Background memory review runner can now be triggered with `POST /memory/review/run` or automatically after a completed turn when the threshold/cooldown gates allow it; it asks the provider to propose candidates from recent messages and only writes pending `memory_review_candidates`, never durable `memory_items`.
 - Rejected memory review candidates suppress later identical suggestions for the same session/scope/content.
-- Next: add desktop UI review affordances and persist richer background review job state.
+- Desktop now exposes the human review loop: it lists pending candidates, lets the user trigger review manually, and sends Accept / Reject actions over the WebSocket bridge.
+- Next: persist richer background review job state.
 
 ### Phase 9: Live2D and Audio Harnesses
 

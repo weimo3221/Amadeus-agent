@@ -1,4 +1,9 @@
 import type { RuntimeEvent, ServerRuntimeEvent } from '@amadeus-agent/amadeus/events'
+import type {
+  MemoryReviewCandidate,
+  MemoryReviewCandidatesPayload,
+  MemoryReviewUpdatedPayload,
+} from '@amadeus-agent/amadeus/events'
 
 import { randomUUID } from 'node:crypto'
 
@@ -9,6 +14,18 @@ export interface SocketLike {
 export interface PythonBridgeOptions {
   runtimeUrl: string
   fetchImpl?: typeof fetch
+}
+
+interface MemoryReviewCandidatesResponse {
+  ok?: boolean
+  candidates?: unknown
+  candidateCount?: number
+}
+
+interface MemoryReviewActionResponse {
+  ok?: boolean
+  result?: unknown
+  error?: string
 }
 
 function runtimeEndpoint(runtimeUrl: string, path: string): string {
@@ -118,5 +135,107 @@ export async function forwardToolPermissionToPython(
   catch {
     // The legacy TypeScript tool loop may own this request, or the Python turn
     // may have already timed out. Either way, there is nothing else to do here.
+  }
+}
+
+function isMemoryReviewCandidate(value: unknown): value is MemoryReviewCandidate {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const candidate = value as Partial<MemoryReviewCandidate>
+  return (
+    typeof candidate.candidateId === 'number'
+    && typeof candidate.sessionId === 'string'
+    && (candidate.scope === 'user' || candidate.scope === 'agent' || candidate.scope === 'project')
+    && typeof candidate.content === 'string'
+    && typeof candidate.confidence === 'number'
+    && (
+      candidate.status === 'pending'
+      || candidate.status === 'accepted'
+      || candidate.status === 'rejected'
+      || candidate.status === 'superseded'
+    )
+  )
+}
+
+export async function listPythonMemoryReviewCandidates(
+  sessionId: string,
+  status: MemoryReviewCandidatesPayload['status'] = 'pending',
+  options: PythonBridgeOptions,
+): Promise<MemoryReviewCandidatesPayload> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  const params = new URLSearchParams({ sessionId, limit: '20' })
+  if (status !== 'all') {
+    params.set('status', status)
+  }
+
+  try {
+    const response = await fetchImpl(runtimeEndpoint(options.runtimeUrl, `/memory/review/candidates?${params.toString()}`), {
+      method: 'GET',
+    })
+    const payload = await response.json().catch(() => undefined) as MemoryReviewCandidatesResponse | undefined
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.candidates)) {
+      return { status, candidateCount: 0, candidates: [] }
+    }
+
+    const candidates = payload.candidates.filter(isMemoryReviewCandidate)
+    return {
+      status,
+      candidateCount: candidates.length,
+      candidates,
+    }
+  }
+  catch {
+    return { status, candidateCount: 0, candidates: [] }
+  }
+}
+
+export async function runPythonMemoryReview(
+  sessionId: string,
+  force: boolean,
+  options: PythonBridgeOptions,
+): Promise<MemoryReviewUpdatedPayload> {
+  return postPythonMemoryReviewAction('/memory/review/run', { sessionId, force }, options)
+}
+
+export async function acceptPythonMemoryReviewCandidate(
+  candidateId: number,
+  options: PythonBridgeOptions,
+): Promise<MemoryReviewUpdatedPayload> {
+  return postPythonMemoryReviewAction('/memory/review/accept', { candidateId }, options)
+}
+
+export async function rejectPythonMemoryReviewCandidate(
+  candidateId: number,
+  options: PythonBridgeOptions,
+): Promise<MemoryReviewUpdatedPayload> {
+  return postPythonMemoryReviewAction('/memory/review/reject', { candidateId }, options)
+}
+
+async function postPythonMemoryReviewAction(
+  path: string,
+  body: Record<string, unknown>,
+  options: PythonBridgeOptions,
+): Promise<MemoryReviewUpdatedPayload> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  try {
+    const response = await fetchImpl(runtimeEndpoint(options.runtimeUrl, path), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+    const payload = await response.json().catch(() => undefined) as MemoryReviewActionResponse | undefined
+    if (!response.ok || !payload?.ok) {
+      return { error: payload?.error || response.statusText || 'Memory review request failed' }
+    }
+    return (payload.result ?? {}) as MemoryReviewUpdatedPayload
+  }
+  catch (error) {
+    return {
+      error: error instanceof Error ? error.message : 'Memory review request failed',
+    }
   }
 }

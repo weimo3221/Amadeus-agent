@@ -35,6 +35,9 @@ const toolPermission = document.querySelector<HTMLDivElement>('#tool-permission'
 const toolPermissionText = document.querySelector<HTMLSpanElement>('#tool-permission-text')
 const toolAllowButton = document.querySelector<HTMLButtonElement>('#tool-allow-button')
 const toolDenyButton = document.querySelector<HTMLButtonElement>('#tool-deny-button')
+const memoryReviewStatus = document.querySelector<HTMLSpanElement>('#memory-review-status')
+const memoryReviewRunButton = document.querySelector<HTMLButtonElement>('#memory-review-run-button')
+const memoryReviewList = document.querySelector<HTMLDivElement>('#memory-review-list')
 const voiceStatus = document.querySelector<HTMLDivElement>('#voice-status')
 const resetSessionButton = document.querySelector<HTMLButtonElement>('#reset-session-button')
 const debugState = document.querySelector<HTMLSelectElement>('#debug-state')
@@ -507,6 +510,9 @@ const runtimeUi = new RuntimeUiController({
     toolPermissionText,
     toolAllowButton,
     toolDenyButton,
+    memoryReviewStatus,
+    memoryReviewRunButton,
+    memoryReviewList,
     voiceStatus,
     resetSessionButton,
   },

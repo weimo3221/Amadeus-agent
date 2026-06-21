@@ -47,6 +47,10 @@ async function openWebSocket(url: string): Promise<WebSocket> {
   return socket
 }
 
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function waitForEvent(
   socket: WebSocket,
   predicate: (event: RuntimeEvent<string, unknown>) => boolean,
@@ -261,5 +265,107 @@ describe('WebSocket Python-first integration', () => {
       requestId: 'permission-1',
       approved: true,
     })
+  })
+
+  it('handles memory review list, run, accept, and reject events', async (t) => {
+    const calls: string[] = []
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      countPersistedMessages: () => 2,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      resolvePendingToolPermission: () => false,
+      forwardToolPermissionToPython: () => {},
+      listMemoryReviewCandidates(sessionId, status = 'pending') {
+        calls.push(`list:${sessionId}:${status}`)
+        return {
+          status,
+          candidateCount: 1,
+          candidates: [{
+            candidateId: 7,
+            sessionId,
+            scope: 'project',
+            content: 'Memory candidates require human approval.',
+            confidence: 0.9,
+            status: 'pending',
+            memoryItemId: 0,
+          }],
+        }
+      },
+      runMemoryReview(sessionId, force) {
+        calls.push(`run:${sessionId}:${force}`)
+        return { reviewed: true, sessionId, candidateCount: 1, candidates: [] }
+      },
+      acceptMemoryReviewCandidate(candidateId) {
+        calls.push(`accept:${candidateId}`)
+        return { accepted: true }
+      },
+      rejectMemoryReviewCandidate(candidateId) {
+        calls.push(`reject:${candidateId}`)
+        return { rejected: true }
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws`)
+    t.after(() => {
+      closeWebSocket(socket)
+    })
+    const receivedEvents: Array<RuntimeEvent<string, unknown>> = []
+    socket.on('message', (raw: Buffer) => {
+      receivedEvents.push(JSON.parse(raw.toString()) as RuntimeEvent<string, unknown>)
+    })
+    socket.send(JSON.stringify({
+      id: 'client-event-review-list',
+      type: 'memory.review.list',
+      sessionId: 'default',
+      timestamp: '2026-06-19T00:00:00.000Z',
+      payload: { status: 'pending' },
+    }))
+    await delay(25)
+    const candidatesEvent = receivedEvents.find((event) => event.type === 'memory.review.candidates')
+    assert.ok(candidatesEvent)
+    assert.equal((candidatesEvent.payload as { candidateCount: number }).candidateCount, 1)
+
+    socket.send(JSON.stringify({
+      id: 'client-event-review-run',
+      type: 'memory.review.run',
+      sessionId: 'default',
+      timestamp: '2026-06-19T00:00:00.000Z',
+      payload: { force: true },
+    }))
+    await delay(25)
+
+    socket.send(JSON.stringify({
+      id: 'client-event-review-accept',
+      type: 'memory.review.accept',
+      sessionId: 'default',
+      timestamp: '2026-06-19T00:00:00.000Z',
+      payload: { candidateId: 7 },
+    }))
+    await delay(25)
+
+    socket.send(JSON.stringify({
+      id: 'client-event-review-reject',
+      type: 'memory.review.reject',
+      sessionId: 'default',
+      timestamp: '2026-06-19T00:00:00.000Z',
+      payload: { candidateId: 7 },
+    }))
+    await delay(25)
+
+    assert.ok(calls.includes('list:default:pending'))
+    assert.ok(calls.includes('run:default:true'))
+    assert.ok(calls.includes('accept:7'))
+    assert.ok(calls.includes('reject:7'))
+    assert.ok(receivedEvents.some((event) => event.type === 'memory.review.updated' && (event.payload as { reviewed?: boolean }).reviewed === true))
+    assert.ok(receivedEvents.some((event) => event.type === 'memory.review.updated' && (event.payload as { accepted?: boolean }).accepted === true))
+    assert.ok(receivedEvents.some((event) => event.type === 'memory.review.updated' && (event.payload as { rejected?: boolean }).rejected === true))
   })
 })

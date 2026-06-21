@@ -220,6 +220,9 @@ function createHarness() {
     toolPermissionText: new FakeElement(),
     toolAllowButton: new FakeElement(),
     toolDenyButton: new FakeElement(),
+    memoryReviewStatus: new FakeElement(),
+    memoryReviewRunButton: new FakeElement(),
+    memoryReviewList: new FakeElement(),
     voiceStatus: new FakeElement(),
     resetSessionButton: new FakeElement(),
   }
@@ -269,6 +272,68 @@ describe('Runtime UI controller', () => {
     assert.equal(elements.providerLabel.textContent, 'deepseek-v4-flash')
     assert.equal(elements.memoryStatus.textContent, 'Memory: 7 messages')
     assert.equal(elements.toolConfigStatus.textContent, 'Tools: get_current_time allow, roll_dice off')
+    assert.equal(socket.sent.at(-1)?.type, 'memory.review.list')
+  })
+
+  it('renders memory review candidates and sends accept or reject actions', () => {
+    const { controller, elements, socket } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'deepseek-v4-flash',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
+    socket.emitServerEvent(makeEvent('memory.review.candidates', {
+      status: 'pending',
+      candidateCount: 1,
+      candidates: [{
+        candidateId: 42,
+        sessionId: 'session-1',
+        scope: 'project',
+        content: 'Memory review candidates require human approval.',
+        confidence: 0.92,
+        reason: 'Project policy.',
+        sourceMessageStartId: 1,
+        sourceMessageEndId: 2,
+        status: 'pending',
+        memoryItemId: 0,
+      }],
+    }))
+
+    assert.equal(elements.memoryReviewStatus.textContent, 'Memory review: 1 pending')
+    assert.equal(elements.memoryReviewList.children.length, 1)
+
+    const candidate = elements.memoryReviewList.children[0]
+    const actions = candidate.children[1]
+    actions.children[0].click()
+    actions.children[1].click()
+
+    assert.equal(socket.sent.at(-2)?.type, 'memory.review.accept')
+    assert.deepEqual(socket.sent.at(-2)?.payload, { candidateId: 42 })
+    assert.equal(socket.sent.at(-1)?.type, 'memory.review.reject')
+    assert.deepEqual(socket.sent.at(-1)?.payload, { candidateId: 42 })
+  })
+
+  it('runs manual memory review from the review panel', () => {
+    const { controller, elements, socket } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'deepseek-v4-flash',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
+
+    elements.memoryReviewRunButton.click()
+
+    assert.equal(elements.memoryReviewStatus.textContent, 'Memory review running...')
+    assert.equal(socket.sent.at(-1)?.type, 'memory.review.run')
+    assert.deepEqual(socket.sent.at(-1)?.payload, { force: true })
   })
 
   it('renders assistant deltas and schedules speech fallback for assistant.message', () => {

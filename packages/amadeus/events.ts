@@ -37,6 +37,10 @@ export type ClientRuntimeEvent =
   | RuntimeEvent<'user.message', UserMessagePayload>
   | RuntimeEvent<'session.reset', Record<string, never>>
   | RuntimeEvent<'tool.permission.response', ToolPermissionResponsePayload>
+  | RuntimeEvent<'memory.review.list', MemoryReviewListRequestPayload>
+  | RuntimeEvent<'memory.review.run', MemoryReviewRunRequestPayload>
+  | RuntimeEvent<'memory.review.accept', MemoryReviewCandidateActionPayload>
+  | RuntimeEvent<'memory.review.reject', MemoryReviewCandidateActionPayload>
 
 export type ServerRuntimeEvent =
   | RuntimeEvent<'server.hello', HelloPayload>
@@ -50,6 +54,8 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'tool.finished', ToolFinishedPayload>
   | RuntimeEvent<'tool.audit', ToolAuditPayload>
   | RuntimeEvent<'tool.permission.request', ToolPermissionRequestPayload>
+  | RuntimeEvent<'memory.review.candidates', MemoryReviewCandidatesPayload>
+  | RuntimeEvent<'memory.review.updated', MemoryReviewUpdatedPayload>
   | RuntimeEvent<'error', ErrorPayload>
 
 export interface UserMessagePayload {
@@ -121,4 +127,55 @@ export interface ToolPermissionResponsePayload {
 
 export interface MemoryUpdatedPayload {
   memoryMessages: number
+}
+
+export interface MemoryReviewCandidate {
+  candidateId: number
+  sessionId: string
+  scope: 'user' | 'agent' | 'project'
+  content: string
+  confidence: number
+  reason?: string | null
+  sourceMessageStartId?: number | null
+  sourceMessageEndId?: number | null
+  status: 'pending' | 'accepted' | 'rejected' | 'superseded'
+  memoryItemId?: number | null
+  createdAt?: string
+  updatedAt?: string
+  duplicate?: boolean
+  suppressed?: boolean
+}
+
+export interface MemoryReviewListRequestPayload {
+  status?: MemoryReviewCandidate['status']
+}
+
+export interface MemoryReviewRunRequestPayload {
+  force?: boolean
+}
+
+export interface MemoryReviewCandidateActionPayload {
+  candidateId: number
+}
+
+export interface MemoryReviewCandidatesPayload {
+  status: MemoryReviewCandidate['status'] | 'all'
+  candidateCount: number
+  candidates: MemoryReviewCandidate[]
+}
+
+export interface MemoryReviewUpdatedPayload {
+  reviewed?: boolean
+  sessionId?: string
+  sourceMessageCount?: number
+  proposedCandidateCount?: number
+  candidateCount?: number
+  suppressedCandidateCount?: number
+  candidates?: MemoryReviewCandidate[]
+  accepted?: boolean
+  rejected?: boolean
+  candidate?: MemoryReviewCandidate
+  item?: unknown
+  error?: string
+  reason?: string
 }

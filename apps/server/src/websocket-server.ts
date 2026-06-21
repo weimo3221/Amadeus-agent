@@ -3,6 +3,8 @@ import type {
   ClientRuntimeEvent,
   RuntimeEvent,
   ServerRuntimeEvent,
+  MemoryReviewCandidatesPayload,
+  MemoryReviewUpdatedPayload,
   ToolPermissionState,
 } from '@amadeus-agent/amadeus/events'
 
@@ -18,6 +20,10 @@ export interface AmadeusBridgeServerOptions {
   resetSession(sessionId: string): void
   resolvePendingToolPermission(requestId: string, approved: boolean): boolean
   forwardToolPermissionToPython(requestId: string, approved: boolean): void | Promise<void>
+  listMemoryReviewCandidates?(sessionId: string, status?: MemoryReviewCandidatesPayload['status']): MemoryReviewCandidatesPayload | Promise<MemoryReviewCandidatesPayload>
+  runMemoryReview?(sessionId: string, force: boolean): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
+  acceptMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
+  rejectMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
   streamChat(socket: WebSocket, sessionId: string, text: string): void | Promise<void>
 }
 
@@ -72,6 +78,28 @@ async function sendHello(
   })
 }
 
+async function sendMemoryReviewCandidates(
+  socket: WebSocket,
+  sessionId: string,
+  options: AmadeusBridgeServerOptions,
+  status: MemoryReviewCandidatesPayload['status'] = 'pending',
+): Promise<void> {
+  const payload = await Promise.resolve(options.listMemoryReviewCandidates?.(sessionId, status) ?? {
+    status,
+    candidateCount: 0,
+    candidates: [],
+  }).catch(() => ({
+    status,
+    candidateCount: 0,
+    candidates: [],
+  }))
+  if (socket.readyState !== WebSocket.OPEN) {
+    return
+  }
+
+  send(socket, 'memory.review.candidates', sessionId, payload)
+}
+
 function parseEvent(raw: Buffer): ClientRuntimeEvent | undefined {
   try {
     const data = JSON.parse(raw.toString()) as ClientRuntimeEvent
@@ -102,6 +130,7 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
   wss.on('connection', (socket) => {
     const sessionId = options.defaultSessionId
     void sendHello(socket, sessionId, options, options.countPersistedMessages(sessionId))
+      .then(() => sendMemoryReviewCandidates(socket, sessionId, options, 'pending'))
       .then(() => sendState(socket, sessionId, 'idle'))
 
     socket.on('message', (raw) => {
@@ -117,7 +146,50 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
       if (event.type === 'session.reset') {
         options.resetSession(event.sessionId)
         void sendHello(socket, event.sessionId, options, 0)
+          .then(() => sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending'))
           .then(() => sendState(socket, event.sessionId, 'idle'))
+        return
+      }
+
+      if (event.type === 'memory.review.list') {
+        void sendMemoryReviewCandidates(socket, event.sessionId, options, event.payload.status ?? 'pending')
+        return
+      }
+
+      if (event.type === 'memory.review.run') {
+        void Promise.resolve(options.runMemoryReview?.(event.sessionId, event.payload.force ?? true) ?? {
+          reviewed: false,
+          error: 'memory review is unavailable',
+        })
+          .then((payload) => {
+            send(socket, 'memory.review.updated', event.sessionId, payload)
+            return sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending')
+          })
+        return
+      }
+
+      if (event.type === 'memory.review.accept') {
+        void Promise.resolve(options.acceptMemoryReviewCandidate?.(event.payload.candidateId) ?? {
+          accepted: false,
+          error: 'memory review is unavailable',
+        })
+          .then((payload) => {
+            send(socket, 'memory.review.updated', event.sessionId, payload)
+            sendHello(socket, event.sessionId, options, options.countPersistedMessages(event.sessionId)).catch(() => {})
+            return sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending')
+          })
+        return
+      }
+
+      if (event.type === 'memory.review.reject') {
+        void Promise.resolve(options.rejectMemoryReviewCandidate?.(event.payload.candidateId) ?? {
+          rejected: false,
+          error: 'memory review is unavailable',
+        })
+          .then((payload) => {
+            send(socket, 'memory.review.updated', event.sessionId, payload)
+            return sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending')
+          })
         return
       }
 
