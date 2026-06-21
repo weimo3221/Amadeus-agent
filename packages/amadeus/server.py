@@ -509,6 +509,9 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             content = body.get("content")
             confidence = body.get("confidence", 0.7)
             reason = body.get("reason")
+            scope_reason = body.get("scopeReason")
+            safety_labels = body.get("safetyLabels")
+            retention_type = body.get("retentionType")
             source_message_start_id = body.get("sourceMessageStartId")
             source_message_end_id = body.get("sourceMessageEndId")
 
@@ -520,6 +523,18 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 return
             if reason is not None and not isinstance(reason, str):
                 self.write_json(400, {"ok": False, "error": "reason must be a string"})
+                return
+            if scope_reason is not None and not isinstance(scope_reason, str):
+                self.write_json(400, {"ok": False, "error": "scopeReason must be a string"})
+                return
+            if safety_labels is not None and (
+                not isinstance(safety_labels, list)
+                or any(not isinstance(label, str) for label in safety_labels)
+            ):
+                self.write_json(400, {"ok": False, "error": "safetyLabels must be an array of strings"})
+                return
+            if retention_type is not None and not isinstance(retention_type, str):
+                self.write_json(400, {"ok": False, "error": "retentionType must be a string"})
                 return
             if source_message_start_id is not None and not isinstance(source_message_start_id, int):
                 self.write_json(400, {"ok": False, "error": "sourceMessageStartId must be an integer"})
@@ -534,6 +549,9 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 content,
                 confidence=float(confidence),
                 reason=reason,
+                scope_reason=scope_reason,
+                safety_labels=safety_labels,
+                retention_type=retention_type,
                 source_message_start_id=source_message_start_id,
                 source_message_end_id=source_message_end_id,
             )

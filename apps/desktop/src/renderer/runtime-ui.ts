@@ -420,8 +420,14 @@ export class RuntimeUiController {
 
     const content = document.createElement('div')
     content.className = 'memory-review-content'
-    content.textContent = `${candidate.scope} ${Math.round(candidate.confidence * 100)}%: ${candidate.content}`
-    content.title = candidate.reason || candidate.content
+    const labels = candidate.safetyLabels?.length ? ` [${candidate.safetyLabels.join(', ')}]` : ''
+    const retention = candidate.retentionType ? ` ${candidate.retentionType}` : ''
+    content.textContent = `${candidate.scope}${retention} ${Math.round(candidate.confidence * 100)}%${labels}: ${candidate.content}`
+    content.title = [
+      candidate.reason,
+      candidate.scopeReason ? `Scope: ${candidate.scopeReason}` : undefined,
+      candidate.content,
+    ].filter(Boolean).join('\n')
 
     const actions = document.createElement('div')
     actions.className = 'memory-review-actions'

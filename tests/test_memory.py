@@ -134,6 +134,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
                 "The user prefers concise updates.",
                 confidence=0.8,
                 reason="User explicitly requested concise status updates.",
+                  scope_reason="This is a stable user preference.",
+                  safety_labels=["explicit", "non_secret", "correct scope", "explicit"],
+                  retention_type="stable_preference",
                 source_message_start_id=2,
                 source_message_end_id=4,
             )
@@ -152,6 +155,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(pending[0]["scope"], "user")
         self.assertEqual(pending[0]["confidence"], 0.8)
         self.assertEqual(pending[0]["reason"], "User explicitly requested concise status updates.")
+        self.assertEqual(pending[0]["scopeReason"], "This is a stable user preference.")
+        self.assertEqual(pending[0]["safetyLabels"], ["explicit", "non_secret", "correct_scope"])
+        self.assertEqual(pending[0]["retentionType"], "stable_preference")
         self.assertEqual(pending[0]["sourceMessageStartId"], 2)
         self.assertEqual(pending[0]["sourceMessageEndId"], 4)
 
@@ -163,6 +169,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
                 "project",
                 "Amadeus uses Python-first runtime.",
                 confidence=0.85,
+                scope_reason="This is a durable project fact.",
+                safety_labels=["explicit", "correct_scope"],
+                retention_type="durable_project_fact",
                 source_message_end_id=9,
             )
             result = memory.accept_memory_review_candidate(int(candidate["candidateId"]))
@@ -172,6 +181,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertFalse(result["duplicateMemoryItem"])
         self.assertEqual(result["candidate"]["status"], "accepted")
+        self.assertEqual(result["candidate"]["scopeReason"], "This is a durable project fact.")
+        self.assertEqual(result["candidate"]["safetyLabels"], ["explicit", "correct_scope"])
+        self.assertEqual(result["candidate"]["retentionType"], "durable_project_fact")
         self.assertEqual(result["item"]["content"], "Amadeus uses Python-first runtime.")
         self.assertEqual(result["item"]["sourceSessionId"], "session-1")
         self.assertEqual(result["item"]["sourceMessageId"], 9)

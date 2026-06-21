@@ -137,6 +137,9 @@ export interface MemoryReviewCandidate {
   content: string
   confidence: number
   reason?: string | null
+  scopeReason?: string | null
+  safetyLabels?: string[]
+  retentionType?: 'long_term' | 'stable_preference' | 'durable_project_fact' | 'agent_instruction'
   sourceMessageStartId?: number | null
   sourceMessageEndId?: number | null
   status: 'pending' | 'accepted' | 'rejected' | 'superseded'

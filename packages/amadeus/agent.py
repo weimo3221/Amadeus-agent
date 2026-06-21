@@ -634,6 +634,12 @@ class AgentRuntime:
             if not isinstance(confidence, (int, float)):
                 confidence = 0.7
             reason = proposed.get("reason") if isinstance(proposed.get("reason"), str) else None
+            scope_reason = proposed.get("scopeReason") if isinstance(proposed.get("scopeReason"), str) else None
+            safety_labels_raw = proposed.get("safetyLabels")
+            safety_labels = [
+                label for label in safety_labels_raw if isinstance(label, str)
+            ] if isinstance(safety_labels_raw, list) else None
+            retention_type = proposed.get("retentionType") if isinstance(proposed.get("retentionType"), str) else None
             source_start = proposed.get("sourceMessageStartId")
             source_end = proposed.get("sourceMessageEndId")
             source_start_id = source_start if isinstance(source_start, int) else None
@@ -657,6 +663,9 @@ class AgentRuntime:
                     content,
                     confidence=float(confidence),
                     reason=reason,
+                    scope_reason=scope_reason,
+                    safety_labels=safety_labels,
+                    retention_type=retention_type,
                     source_message_start_id=source_start_id,
                     source_message_end_id=source_end_id,
                 )
@@ -1066,6 +1075,10 @@ class AgentRuntime:
                         "Return strict JSON only, with no Markdown. "
                         "Only propose stable user preferences, agent operating facts, project facts, or durable decisions explicitly supported by the messages. "
                         "Do not propose transient task progress, raw transcripts, secrets, credentials, API keys, private tokens, guesses, or sensitive personal data. "
+                        "Classify each candidate into exactly one scope: user for stable user preferences or user-specific facts, "
+                        "agent for durable operating instructions about how the assistant should behave, "
+                        "and project for durable facts or decisions about the current codebase/project. "
+                        "Perform safety self-checks before emitting candidates; omit unsafe candidates instead of labeling them for later storage. "
                         "Do not duplicate existing memory or pending candidates."
                     ),
                 },
@@ -1079,8 +1092,14 @@ class AgentRuntime:
                         + ("\n".join(pending_lines) if pending_lines else "None")
                         + "\n\nRecent messages:\n"
                         + "\n".join(transcript_lines)
+                        + "\n\nCandidate schema rules:\n"
+                        + "- scope must be one of user, agent, project.\n"
+                        + "- scopeReason must briefly explain why the selected scope is correct.\n"
+                        + "- retentionType must be one of long_term, stable_preference, durable_project_fact, agent_instruction.\n"
+                        + "- safetyLabels must be an array of short labels describing completed checks, e.g. explicit, non_secret, non_transient, non_sensitive, non_speculative, correct_scope.\n"
+                        + "- If a fact is uncertain, temporary, secret-bearing, path-only, or not clearly durable, do not emit it.\n"
                         + "\n\nReturn JSON in this exact shape:\n"
-                        '{"candidates":[{"scope":"user|agent|project","content":"concise durable fact","confidence":0.0,"reason":"why this is durable","sourceMessageStartId":1,"sourceMessageEndId":2}]}'
+                        '{"candidates":[{"scope":"user|agent|project","content":"concise durable fact","confidence":0.0,"reason":"why this is durable","scopeReason":"why this scope is correct","safetyLabels":["explicit","non_secret","non_transient","correct_scope"],"retentionType":"long_term|stable_preference|durable_project_fact|agent_instruction","sourceMessageStartId":1,"sourceMessageEndId":2}]}'
                     ),
                 },
             ],

@@ -151,12 +151,23 @@ function isMemoryReviewCandidate(value: unknown): value is MemoryReviewCandidate
   }
 
   const candidate = value as Partial<MemoryReviewCandidate>
+    const hasValidRetentionType = candidate.retentionType === undefined
+      || candidate.retentionType === 'long_term'
+      || candidate.retentionType === 'stable_preference'
+      || candidate.retentionType === 'durable_project_fact'
+      || candidate.retentionType === 'agent_instruction'
   return (
     typeof candidate.candidateId === 'number'
     && typeof candidate.sessionId === 'string'
     && (candidate.scope === 'user' || candidate.scope === 'agent' || candidate.scope === 'project')
     && typeof candidate.content === 'string'
     && typeof candidate.confidence === 'number'
+      && (candidate.scopeReason === undefined || candidate.scopeReason === null || typeof candidate.scopeReason === 'string')
+      && (candidate.safetyLabels === undefined || (
+        Array.isArray(candidate.safetyLabels)
+        && candidate.safetyLabels.every((label) => typeof label === 'string')
+      ))
+      && hasValidRetentionType
     && (
       candidate.status === 'pending'
       || candidate.status === 'accepted'

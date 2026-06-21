@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,11 +11,15 @@ MessageRole = Literal["user", "assistant"]
 StableMemoryTarget = Literal["agent", "user"]
 MemoryItemScope = Literal["user", "agent", "project"]
 MemoryReviewCandidateStatus = Literal["pending", "accepted", "rejected", "superseded"]
+MemoryReviewRetentionType = Literal["long_term", "stable_preference", "durable_project_fact", "agent_instruction"]
 MemoryReviewJobStatus = Literal["running", "completed", "skipped", "failed"]
 MemoryReviewJobTrigger = Literal["manual", "auto", "compaction"]
+MemoryReviewCandidatePayload = dict[str, str | int | float | bool | list[str]]
 CONVERSATION_SUMMARY_LIMIT = 12000
 MEMORY_ITEM_LIMIT = 2000
 MEMORY_REVIEW_REASON_LIMIT = 1000
+MEMORY_REVIEW_LABEL_LIMIT = 64
+MEMORY_REVIEW_MAX_SAFETY_LABELS = 8
 STABLE_MEMORY_FILES: dict[str, str] = {
     "agent": "MEMORY.md",
     "user": "USER.md",
@@ -85,6 +90,9 @@ class MessageMemoryStore:
                     content TEXT NOT NULL,
                     confidence REAL NOT NULL DEFAULT 0.7,
                     reason TEXT,
+                    scope_reason TEXT,
+                    safety_labels TEXT,
+                    retention_type TEXT,
                     source_message_start_id INTEGER,
                     source_message_end_id INTEGER,
                     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'superseded')),
@@ -123,6 +131,7 @@ class MessageMemoryStore:
                 """
             )
             self._migrate_conversation_summaries(connection)
+            self._migrate_memory_review_candidates(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_covered
@@ -149,6 +158,20 @@ class MessageMemoryStore:
             "source_message_end_id": "ALTER TABLE conversation_summaries ADD COLUMN source_message_end_id INTEGER",
             "covered_through_message_id": "ALTER TABLE conversation_summaries ADD COLUMN covered_through_message_id INTEGER",
             "model": "ALTER TABLE conversation_summaries ADD COLUMN model TEXT",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                connection.execute(statement)
+
+    def _migrate_memory_review_candidates(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(memory_review_candidates)").fetchall()
+        }
+        migrations = {
+            "scope_reason": "ALTER TABLE memory_review_candidates ADD COLUMN scope_reason TEXT",
+            "safety_labels": "ALTER TABLE memory_review_candidates ADD COLUMN safety_labels TEXT",
+            "retention_type": "ALTER TABLE memory_review_candidates ADD COLUMN retention_type TEXT",
         }
         for column, statement in migrations.items():
             if column not in columns:
@@ -656,14 +679,20 @@ class MessageMemoryStore:
         *,
         confidence: float = 0.7,
         reason: str | None = None,
+        scope_reason: str | None = None,
+        safety_labels: list[str] | tuple[str, ...] | None = None,
+        retention_type: str | None = None,
         source_message_start_id: int | None = None,
         source_message_end_id: int | None = None,
-    ) -> dict[str, str | int | float | bool]:
+    ) -> MemoryReviewCandidatePayload:
         normalized_session_id = normalize_session_id(session_id)
         normalized_scope = normalize_memory_item_scope(scope)
         normalized_content = normalize_memory_item_content(content)
         normalized_confidence = normalize_confidence(confidence)
         normalized_reason = normalize_optional_text(reason, "reason", max_chars=MEMORY_REVIEW_REASON_LIMIT)
+        normalized_scope_reason = normalize_optional_text(scope_reason, "scope_reason", max_chars=MEMORY_REVIEW_REASON_LIMIT)
+        normalized_safety_labels = normalize_memory_review_safety_labels(safety_labels)
+        normalized_retention_type = normalize_memory_review_retention_type(retention_type)
         normalized_start_id = normalize_optional_non_negative_int(source_message_start_id, "source_message_start_id")
         normalized_end_id = normalize_optional_non_negative_int(source_message_end_id, "source_message_end_id")
         if normalized_start_id is not None and normalized_end_id is not None and normalized_start_id > normalized_end_id:
@@ -680,6 +709,9 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
@@ -708,6 +740,9 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
@@ -734,13 +769,16 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
                   created_at,
                   updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
                     normalized_session_id,
@@ -748,6 +786,9 @@ class MessageMemoryStore:
                     normalized_content,
                     normalized_confidence,
                     normalized_reason,
+                    normalized_scope_reason,
+                    json.dumps(normalized_safety_labels, ensure_ascii=False),
+                    normalized_retention_type,
                     normalized_start_id,
                     normalized_end_id,
                     now,
@@ -765,6 +806,9 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
@@ -788,7 +832,7 @@ class MessageMemoryStore:
         status: str | None = None,
         scope: str | None = None,
         limit: int = 50,
-    ) -> list[dict[str, str | int | float | bool]]:
+    ) -> list[MemoryReviewCandidatePayload]:
         normalized_session_id = normalize_session_id(session_id) if session_id else None
         normalized_status = normalize_memory_review_status(status) if status else None
         normalized_scope = normalize_memory_item_scope(scope) if scope else None
@@ -816,6 +860,9 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
@@ -1010,6 +1057,9 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
@@ -1074,6 +1124,9 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
@@ -1117,6 +1170,9 @@ class MessageMemoryStore:
                   content,
                   confidence,
                   reason,
+                  scope_reason,
+                  safety_labels,
+                  retention_type,
                   source_message_start_id,
                   source_message_end_id,
                   status,
@@ -1338,6 +1394,59 @@ def normalize_optional_text(value: str | None, field_name: str, max_chars: int) 
     return normalized
 
 
+def normalize_memory_review_safety_labels(value: list[str] | tuple[str, ...] | None) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("safety_labels must be a list of strings")
+
+    labels: list[str] = []
+    seen: set[str] = set()
+    for raw_label in value:
+        if not isinstance(raw_label, str):
+            raise ValueError("safety_labels must be a list of strings")
+        label = raw_label.strip().lower().replace(" ", "_")
+        if not label:
+            continue
+        if "\x00" in label:
+            raise ValueError("safety_labels must be UTF-8 text")
+        if len(label) > MEMORY_REVIEW_LABEL_LIMIT:
+            raise ValueError(f"safety_labels entries must be at most {MEMORY_REVIEW_LABEL_LIMIT} characters")
+        if label not in seen:
+            labels.append(label)
+            seen.add(label)
+        if len(labels) > MEMORY_REVIEW_MAX_SAFETY_LABELS:
+            raise ValueError(f"safety_labels must include at most {MEMORY_REVIEW_MAX_SAFETY_LABELS} labels")
+    return labels
+
+
+def normalize_memory_review_retention_type(value: str | None) -> MemoryReviewRetentionType:
+    if value is None:
+        return "long_term"
+    normalized = value.strip().lower()
+    allowed: set[MemoryReviewRetentionType] = {
+        "long_term",
+        "stable_preference",
+        "durable_project_fact",
+        "agent_instruction",
+    }
+    if normalized not in allowed:
+        raise ValueError("retention_type must be long_term, stable_preference, durable_project_fact, or agent_instruction")
+    return normalized  # type: ignore[return-value]
+
+
+def parse_memory_review_safety_labels(raw: object) -> list[str]:
+    if raw is None:
+        return []
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [label for label in parsed if isinstance(label, str)]
+
+
 def memory_item_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | float | bool]:
     deleted_at = row[8]
     content = str(row[2])
@@ -1356,7 +1465,7 @@ def memory_item_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str
     }
 
 
-def memory_review_candidate_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | float | bool]:
+def memory_review_candidate_response(row: sqlite3.Row | tuple[object, ...]) -> MemoryReviewCandidatePayload:
     content = str(row[3])
     return {
         "candidateId": int(row[0]),
@@ -1366,12 +1475,15 @@ def memory_review_candidate_response(row: sqlite3.Row | tuple[object, ...]) -> d
         "charCount": len(content),
         "confidence": float(row[4]),
         "reason": str(row[5]) if row[5] is not None else "",
-        "sourceMessageStartId": int(row[6]) if row[6] is not None else 0,
-        "sourceMessageEndId": int(row[7]) if row[7] is not None else 0,
-        "status": str(row[8]),
-        "memoryItemId": int(row[9]) if row[9] is not None else 0,
-        "createdAt": str(row[10]),
-        "updatedAt": str(row[11]),
+        "scopeReason": str(row[6]) if row[6] is not None else "",
+        "safetyLabels": parse_memory_review_safety_labels(row[7]),
+        "retentionType": str(row[8]) if row[8] is not None else "long_term",
+        "sourceMessageStartId": int(row[9]) if row[9] is not None else 0,
+        "sourceMessageEndId": int(row[10]) if row[10] is not None else 0,
+        "status": str(row[11]),
+        "memoryItemId": int(row[12]) if row[12] is not None else 0,
+        "createdAt": str(row[13]),
+        "updatedAt": str(row[14]),
     }
 
 

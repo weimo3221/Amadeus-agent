@@ -354,6 +354,9 @@ class AgentRuntimeTests(unittest.TestCase):
                     "content": "The user prefers direct responses.",
                     "confidence": 0.8,
                     "reason": "The user explicitly asked for direct responses.",
+                      "scopeReason": "This is a stable user preference.",
+                      "safetyLabels": ["explicit", "non_secret", "non_transient", "correct_scope"],
+                      "retentionType": "stable_preference",
                     "sourceMessageStartId": first_id,
                     "sourceMessageEndId": last_id,
                 }
@@ -376,6 +379,9 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(runtime.memory_review_requests), 1)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["content"], "The user prefers direct responses.")
+        self.assertEqual(candidates[0]["scopeReason"], "This is a stable user preference.")
+        self.assertEqual(candidates[0]["safetyLabels"], ["explicit", "non_secret", "non_transient", "correct_scope"])
+        self.assertEqual(candidates[0]["retentionType"], "stable_preference")
         self.assertEqual(candidates[0]["sourceMessageStartId"], first_id)
         self.assertEqual(candidates[0]["sourceMessageEndId"], last_id)
         self.assertEqual(items, [])

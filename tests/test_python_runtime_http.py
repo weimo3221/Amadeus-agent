@@ -206,6 +206,9 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             "content": "The user prefers direct answers.",
             "confidence": 0.8,
             "reason": "The user asked for direct answers.",
+              "scopeReason": "This is a stable user preference.",
+              "safetyLabels": ["explicit", "non_secret", "correct_scope"],
+              "retentionType": "stable_preference",
             "sourceMessageStartId": 2,
             "sourceMessageEndId": 4,
         })
@@ -233,6 +236,9 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(saved["ok"])
         self.assertFalse(saved["duplicate"])
         self.assertEqual(saved["candidate"]["status"], "pending")
+        self.assertEqual(saved["candidate"]["scopeReason"], "This is a stable user preference.")
+        self.assertEqual(saved["candidate"]["safetyLabels"], ["explicit", "non_secret", "correct_scope"])
+        self.assertEqual(saved["candidate"]["retentionType"], "stable_preference")
         self.assertEqual(saved["candidate"]["reason"], "The user asked for direct answers.")
         self.assertTrue(duplicate["duplicate"])
         self.assertEqual(duplicate["candidate"]["candidateId"], saved["candidate"]["candidateId"])
