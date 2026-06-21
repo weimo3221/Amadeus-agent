@@ -380,6 +380,44 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(candidates[0]["sourceMessageEndId"], last_id)
         self.assertEqual(items, [])
 
+    def test_memory_review_runner_suppresses_unsafe_candidates(self) -> None:
+        self.memory.save("default", "user", "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz was used in this run.")
+        self.memory.save("default", "assistant", "pytest failed temporarily; rerun npm test after the patch.")
+        runtime = FakeAgentRuntime(
+            self.memory,
+            memory_review_response=[
+                {
+                    "scope": "project",
+                    "content": "The project API key is OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz.",
+                    "confidence": 0.9,
+                    "reason": "The key appeared in the conversation.",
+                },
+                {
+                    "scope": "project",
+                    "content": "The current run has a pytest failure and should rerun npm test.",
+                    "confidence": 0.7,
+                    "reason": "This is a temporary debug state.",
+                },
+                {
+                    "scope": "user",
+                    "content": "The user prefers concise Chinese progress updates.",
+                    "confidence": 0.8,
+                    "reason": "The user explicitly requested concise updates.",
+                },
+            ],
+        )
+
+        result = runtime.review_memory("default", force=True)
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+
+        self.assertTrue(result["reviewed"])
+        self.assertEqual(result["proposedCandidateCount"], 3)
+        self.assertEqual(result["candidateCount"], 1)
+        self.assertEqual(result["suppressedCandidateCount"], 2)
+        self.assertEqual(result["job"]["suppressedCandidateCount"], 2)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["content"], "The user prefers concise Chinese progress updates.")
+
     def test_memory_review_runner_reports_provider_failure_without_candidates(self) -> None:
         self.memory.save("default", "user", "Remember nothing yet.")
         runtime = FakeAgentRuntime(self.memory, memory_review_error="review failed")

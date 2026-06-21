@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
 from amadeus.memory import MessageMemoryStore
+from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.tool_runtime import (
     DEFAULT_TOOLS_CONFIG_PATH,
     ToolAuditLog,
@@ -637,6 +638,17 @@ class AgentRuntime:
             source_end = proposed.get("sourceMessageEndId")
             source_start_id = source_start if isinstance(source_start, int) else None
             source_end_id = source_end if isinstance(source_end, int) else None
+            safety_decision = evaluate_memory_candidate(scope, content, reason)
+            if not safety_decision.allowed:
+                suppressed_candidate_count += 1
+                logger.info(
+                    "Suppressed unsafe memory review candidate sessionId=%s scope=%s reason=%s contentChars=%s",
+                    session_id,
+                    scope,
+                    safety_decision.reason,
+                    len(content),
+                )
+                continue
 
             try:
                 candidate = self.memory_store.save_memory_review_candidate(

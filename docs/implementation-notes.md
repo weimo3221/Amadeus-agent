@@ -32,6 +32,7 @@ The Python runtime now separates concrete tool implementations from runtime tool
 - `amadeus.tool_runtime.audit`: tool audit events plus SQLite persistence and filtered query APIs for started/finished/denied/blocked/failed decisions.
 - `amadeus.tool_runtime.guardrails`: per-turn guardrails for repeated failed calls, repeated completed calls, and semantic no-progress patterns such as empty/same searches, repeated read windows, repeated patch failures, and repeated write failures.
 - `amadeus.agent`: conversation loop, permission requests, event streaming, memory writes, and coordination with the tool runtime.
+- `amadeus.memory_safety`: pre-persistence safety checks for memory review candidates, currently blocking secret-like content and temporary debug/run state before anything reaches the human review queue.
 - `configs/runtime.yaml`: runtime memory/context defaults for token-budget compaction, summary windows/cooldowns, and memory review limits. Environment variables are still allowed as deployment overrides, and `POST /runtime/config/reload` reapplies the YAML-backed effective config without restarting.
 - `packages/amadeus/tools.ts`: TypeScript bridge types and Python tool HTTP clients only. It intentionally does not mirror concrete tool handlers or schemas; server diagnostics should call Python `/tools/list`.
 
