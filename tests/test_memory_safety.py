@@ -6,7 +6,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.memory_safety import evaluate_memory_candidate
+from amadeus.memory_safety import (
+    detect_local_path_reason,
+    detect_uncertain_claim_reason,
+    evaluate_memory_candidate,
+)
 
 
 class MemorySafetyTests(unittest.TestCase):
@@ -27,6 +31,50 @@ class MemorySafetyTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertTrue(decision.reason.startswith("temporary_debug:"))
+
+    def test_blocks_uncertain_english_claims(self) -> None:
+        decision = evaluate_memory_candidate(
+            "user",
+            "The user might prefer shorter answers.",
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "uncertain_claim:speculative_modal")
+
+    def test_blocks_uncertain_chinese_claims(self) -> None:
+        decision = evaluate_memory_candidate(
+            "project",
+            "项目可能需要切换到另一个 provider。",
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "uncertain_claim:chinese_speculation")
+
+    def test_blocks_temporary_local_paths(self) -> None:
+        decision = evaluate_memory_candidate(
+            "project",
+            "The failing cache file is /var/folders/zz/example/cache.json.",
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "local_path:tmp_path")
+
+    def test_blocks_generated_or_cache_paths(self) -> None:
+        self.assertEqual(
+            detect_local_path_reason("The artifact lives in node_modules/.cache/vite/index.js."),
+            "local_path:project_cache_path",
+        )
+        self.assertEqual(
+            detect_local_path_reason("The local checkout is /Users/bytedance/Desktop/learning/Amadeus-agent."),
+            "local_path:home_path",
+        )
+        self.assertEqual(
+            detect_local_path_reason("The generated file is tmp/run-123/output.json."),
+            "local_path:generated_artifact",
+        )
+
+    def test_uncertain_claim_detector_ignores_committed_facts(self) -> None:
+        self.assertIsNone(detect_uncertain_claim_reason("The project uses Python-first AgentRuntime."))
 
     def test_allows_durable_preference_candidate(self) -> None:
         decision = evaluate_memory_candidate(

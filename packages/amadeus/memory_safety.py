@@ -24,6 +24,20 @@ TEMPORARY_DEBUG_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("temporary_wording", re.compile(r"\b(?:temporary|temporarily|one[- ]?off|for now|current run|this run|right now|at the moment)\b", re.IGNORECASE)),
 )
 
+UNCERTAIN_CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("speculative_modal", re.compile(r"\b(?:may|might|maybe|perhaps|possibly|probably|likely|seems?|appears?|looks like)\b", re.IGNORECASE)),
+    ("uncertain_phrase", re.compile(r"\b(?:not sure|unclear|unknown|guess|assume|assumption|hypothesis|speculat(?:e|ion|ive))\b", re.IGNORECASE)),
+    ("chinese_speculation", re.compile(r"(?:可能|也许|大概|似乎|看起来|猜测|推测|不确定|不清楚|假设|应该是|疑似)")),
+)
+
+LOCAL_PATH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("tmp_path", re.compile(r"(?:^|[\s'\"`])(?:/tmp|/private/tmp|/var/folders|/var/tmp)(?:/|[\s'\"`]|$)", re.IGNORECASE)),
+    ("home_cache_path", re.compile(r"(?:^|[\s'\"`])/(?:Users|home)/[^/\s'\"`]+/(?:Library/Caches|\.cache|\.npm|\.pnpm-store|\.yarn|\.cargo|\.venv|venv)(?:/|[\s'\"`]|$)", re.IGNORECASE)),
+    ("home_path", re.compile(r"(?:^|[\s'\"`])/(?:Users|home)/[^/\s'\"`]+/(?:Desktop|Documents|Downloads|Workspace|work|projects|repos|src|tmp)(?:/|[\s'\"`]|$)", re.IGNORECASE)),
+    ("project_cache_path", re.compile(r"(?:^|[\s'\"`])(?:\.?/)?(?:node_modules|\.next|dist|build|coverage|\.pytest_cache|__pycache__|\.mypy_cache|\.ruff_cache)(?:/|[\s'\"`]|$)", re.IGNORECASE)),
+    ("generated_artifact", re.compile(r"(?:^|[\s'\"`])(?:[^/\s'\"`]+/)*(?:tmp|temp|cache|generated|artifacts?)/(?:[^/\s'\"`]+)", re.IGNORECASE)),
+)
+
 
 @dataclass(frozen=True)
 class MemorySafetyDecision:
@@ -44,6 +58,14 @@ def evaluate_memory_candidate(scope: str, content: str, reason: str | None = Non
     if debug_reason:
         return MemorySafetyDecision(False, debug_reason)
 
+    uncertain_reason = detect_uncertain_claim_reason(text)
+    if uncertain_reason:
+        return MemorySafetyDecision(False, uncertain_reason)
+
+    local_path_reason = detect_local_path_reason(text)
+    if local_path_reason:
+        return MemorySafetyDecision(False, local_path_reason)
+
     return MemorySafetyDecision(True)
 
 
@@ -58,4 +80,18 @@ def detect_temporary_debug_reason(text: str) -> str | None:
     for reason, pattern in TEMPORARY_DEBUG_PATTERNS:
         if pattern.search(text):
             return f"temporary_debug:{reason}"
+    return None
+
+
+def detect_uncertain_claim_reason(text: str) -> str | None:
+    for reason, pattern in UNCERTAIN_CLAIM_PATTERNS:
+        if pattern.search(text):
+            return f"uncertain_claim:{reason}"
+    return None
+
+
+def detect_local_path_reason(text: str) -> str | None:
+    for reason, pattern in LOCAL_PATH_PATTERNS:
+        if pattern.search(text):
+            return f"local_path:{reason}"
     return None
