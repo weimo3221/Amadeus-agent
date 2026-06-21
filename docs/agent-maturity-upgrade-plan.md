@@ -425,7 +425,7 @@ harnesses:
     - user profile / structured memory items。
   - relevant retrieved memories。
   - tool state/task state。
-- 已完成 token-budget-aware summary compaction 第一片：runtime 使用 tokenizer-free 估算检查 context budget，可通过 `AMADEUS_CONTEXT_MAX_TOKENS`、`AMADEUS_CONTEXT_COMPACTION_TRIGGER_RATIO` 和 `AMADEUS_CONTEXT_RECENT_MESSAGE_TARGET_RATIO` 调整；预算压力会强制总结旧消息并动态缩小 recent-message keep window，provider context overflow 会触发一次 compact-and-retry fallback。
+- 已完成 token-budget-aware summary compaction 第一片：runtime 使用 tokenizer-free 估算检查 context budget，默认值集中在 `configs/runtime.yaml`，并仍可通过 `AMADEUS_CONTEXT_MAX_TOKENS`、`AMADEUS_CONTEXT_COMPACTION_TRIGGER_RATIO` 和 `AMADEUS_CONTEXT_RECENT_MESSAGE_TARGET_RATIO` 覆盖；预算压力会强制总结旧消息并动态缩小 recent-message keep window，provider context overflow 会触发一次 compact-and-retry fallback。
 - 继续扩展 explicit structured memory 工具：
   - 已完成：`search_memory_items`、`memory_add`、`memory_replace`、`memory_forget`。
 - 实现 background memory review runner：

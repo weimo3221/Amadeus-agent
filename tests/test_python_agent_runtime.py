@@ -24,6 +24,7 @@ class FakeAgentRuntime(AgentRuntime):
         tool_decision: dict[str, Any] | None = None,
         deltas: list[str] | None = None,
         tools_config_path: Path | None = None,
+        runtime_config_path: Path | None = None,
         summary_error: str | None = None,
         memory_review_response: list[dict[str, Any]] | None = None,
         memory_review_error: str | None = None,
@@ -42,6 +43,7 @@ class FakeAgentRuntime(AgentRuntime):
             memory_store,
             audio_runtime=None,
             tools_config_path=tools_config_path or Path(tempfile.mkdtemp()) / "missing-tools.yaml",
+            runtime_config_path=runtime_config_path or Path(tempfile.mkdtemp()) / "missing-runtime.yaml",
         )
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -137,6 +139,65 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("Python-first AgentRuntime", runtime.system_prompt)
         self.assertIn("<stable_memory target=\"user\"", runtime.system_prompt)
         self.assertIn("concise Chinese", runtime.system_prompt)
+
+    def test_runtime_config_file_sets_context_summary_and_review_limits(self) -> None:
+        config_path = Path(self.tmpdir.name) / "runtime.yaml"
+        config_path.write_text(
+            "\n".join([
+                "context:",
+                "  maxTokens: 1234",
+                "  compactionTriggerRatio: 0.75",
+                "  recentMessageTargetRatio: 0.35",
+                "summary:",
+                "  triggerMessageCount: 9",
+                "  keepRecentMessages: 5",
+                "  minKeepRecentMessages: 2",
+                "  sourceMaxMessages: 17",
+                "  failureCooldownSeconds: 33",
+                "memoryReview:",
+                "  triggerMessageCount: 4",
+                "  sourceMaxMessages: 6",
+                "  existingMemoryLimit: 7",
+                "  pendingLimit: 8",
+                "  maxCandidates: 3",
+                "  successCooldownSeconds: 44",
+                "  failureCooldownSeconds: 55",
+            ]),
+            encoding="utf-8",
+        )
+
+        runtime = FakeAgentRuntime(self.memory, runtime_config_path=config_path)
+
+        self.assertEqual(runtime.context_max_tokens, 1234)
+        self.assertEqual(runtime.context_compaction_trigger_ratio, 0.75)
+        self.assertEqual(runtime.context_recent_message_target_ratio, 0.35)
+        self.assertEqual(runtime.summary_trigger_message_count, 9)
+        self.assertEqual(runtime.summary_keep_recent_messages, 5)
+        self.assertEqual(runtime.summary_min_keep_recent_messages, 2)
+        self.assertEqual(runtime.summary_source_max_messages, 17)
+        self.assertEqual(runtime.summary_failure_cooldown_seconds, 33)
+        self.assertEqual(runtime.memory_review_trigger_message_count, 4)
+        self.assertEqual(runtime.memory_review_source_max_messages, 6)
+        self.assertEqual(runtime.memory_review_existing_memory_limit, 7)
+        self.assertEqual(runtime.memory_review_pending_limit, 8)
+        self.assertEqual(runtime.memory_review_max_candidates, 3)
+        self.assertEqual(runtime.memory_review_success_cooldown_seconds, 44)
+        self.assertEqual(runtime.memory_review_failure_cooldown_seconds, 55)
+
+    def test_runtime_config_env_overrides_file_values(self) -> None:
+        config_path = Path(self.tmpdir.name) / "runtime.yaml"
+        config_path.write_text("context:\n  maxTokens: 1234\n", encoding="utf-8")
+        previous = os.environ.get("AMADEUS_CONTEXT_MAX_TOKENS")
+        os.environ["AMADEUS_CONTEXT_MAX_TOKENS"] = "4321"
+        try:
+            runtime = FakeAgentRuntime(self.memory, runtime_config_path=config_path)
+        finally:
+            if previous is None:
+                os.environ.pop("AMADEUS_CONTEXT_MAX_TOKENS", None)
+            else:
+                os.environ["AMADEUS_CONTEXT_MAX_TOKENS"] = previous
+
+        self.assertEqual(runtime.context_max_tokens, 4321)
 
     def test_memory_prefetch_injects_context_into_current_user_message_only(self) -> None:
         self.memory.save("default", "user", "My notebook color is blue.")

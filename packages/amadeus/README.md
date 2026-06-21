@@ -35,6 +35,10 @@ These files exist as future module boundaries, but are not yet the main active i
 
 Active tools are defined under `tools/` as Python handlers plus OpenAI-compatible `ToolSpec` metadata. Effective enablement and permission state are loaded from `../../configs/tools.yaml`.
 
+## Runtime Configuration
+
+Runtime memory/context tuning is loaded from `../../configs/runtime.yaml`. This file controls token-budget compaction, summary thresholds and cooldowns, and background memory review limits. Environment variables remain the deployment override layer, so values such as `AMADEUS_CONTEXT_MAX_TOKENS` take precedence over the YAML file.
+
 | Tool | Permission | What it does |
 | --- | --- | --- |
 | `get_current_time` | `allow` | Returns the current date/time for a requested IANA timezone. It defaults to `Asia/Shanghai` and falls back to UTC for invalid timezones. |

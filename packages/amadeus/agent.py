@@ -23,13 +23,12 @@ from amadeus.tool_runtime import (
     ToolContext,
     ToolLoopGuardrail,
     ToolRegistry,
-    parse_bool,
-    parse_tools_config,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_CONFIG_PATH = DEFAULT_TOOLS_CONFIG_PATH
+RUNTIME_CONFIG_PATH = REPO_ROOT / "configs" / "runtime.yaml"
 MEMORY_PREFETCH_LIMIT = 3
 MEMORY_PREFETCH_SNIPPET_CHARS = 280
 CONVERSATION_SUMMARY_CONTEXT_CHARS = 4000
@@ -161,6 +160,7 @@ class AgentRuntime:
         memory_store: MessageMemoryStore,
         audio_runtime: AudioRuntime | None = None,
         tools_config_path: Path = TOOLS_CONFIG_PATH,
+        runtime_config_path: Path = RUNTIME_CONFIG_PATH,
     ) -> None:
         load_dotenv()
         self.memory_store = memory_store
@@ -172,36 +172,87 @@ class AgentRuntime:
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
-        self.context_max_tokens = parse_positive_int_env("AMADEUS_CONTEXT_MAX_TOKENS", CONTEXT_MAX_TOKENS)
+        runtime_config = parse_runtime_config(runtime_config_path)
+        context_config = runtime_config.get("context", {})
+        summary_config = runtime_config.get("summary", {})
+        memory_review_config = runtime_config.get("memoryReview", {})
+        self.context_max_tokens = parse_positive_int_env(
+            "AMADEUS_CONTEXT_MAX_TOKENS",
+            parse_positive_int_value(context_config.get("maxTokens"), CONTEXT_MAX_TOKENS),
+        )
         self.context_compaction_trigger_ratio = parse_float_env(
             "AMADEUS_CONTEXT_COMPACTION_TRIGGER_RATIO",
-            CONTEXT_COMPACTION_TRIGGER_RATIO,
+            parse_float_value(context_config.get("compactionTriggerRatio"), CONTEXT_COMPACTION_TRIGGER_RATIO, minimum=0.1, maximum=1.0),
             minimum=0.1,
             maximum=1.0,
         )
         self.context_recent_message_target_ratio = parse_float_env(
             "AMADEUS_CONTEXT_RECENT_MESSAGE_TARGET_RATIO",
-            CONTEXT_RECENT_MESSAGE_TARGET_RATIO,
+            parse_float_value(context_config.get("recentMessageTargetRatio"), CONTEXT_RECENT_MESSAGE_TARGET_RATIO, minimum=0.1, maximum=0.9),
             minimum=0.1,
             maximum=0.9,
         )
-        self.summary_trigger_message_count = SUMMARY_TRIGGER_MESSAGE_COUNT
-        self.summary_keep_recent_messages = SUMMARY_KEEP_RECENT_MESSAGES
-        self.summary_min_keep_recent_messages = SUMMARY_MIN_KEEP_RECENT_MESSAGES
-        self.summary_source_max_messages = SUMMARY_SOURCE_MAX_MESSAGES
-        self.summary_failure_cooldown_seconds = SUMMARY_FAILURE_COOLDOWN_SECONDS
+        self.summary_trigger_message_count = parse_positive_int_env(
+            "AMADEUS_SUMMARY_TRIGGER_MESSAGE_COUNT",
+            parse_positive_int_value(summary_config.get("triggerMessageCount"), SUMMARY_TRIGGER_MESSAGE_COUNT),
+        )
+        self.summary_keep_recent_messages = parse_positive_int_env(
+            "AMADEUS_SUMMARY_KEEP_RECENT_MESSAGES",
+            parse_positive_int_value(summary_config.get("keepRecentMessages"), SUMMARY_KEEP_RECENT_MESSAGES),
+        )
+        self.summary_min_keep_recent_messages = parse_non_negative_int_env(
+            "AMADEUS_SUMMARY_MIN_KEEP_RECENT_MESSAGES",
+            parse_non_negative_int_value(summary_config.get("minKeepRecentMessages"), SUMMARY_MIN_KEEP_RECENT_MESSAGES),
+        )
+        self.summary_source_max_messages = parse_positive_int_env(
+            "AMADEUS_SUMMARY_SOURCE_MAX_MESSAGES",
+            parse_positive_int_value(summary_config.get("sourceMaxMessages"), SUMMARY_SOURCE_MAX_MESSAGES),
+        )
+        self.summary_failure_cooldown_seconds = parse_positive_int_env(
+            "AMADEUS_SUMMARY_FAILURE_COOLDOWN_SECONDS",
+            parse_positive_int_value(summary_config.get("failureCooldownSeconds"), SUMMARY_FAILURE_COOLDOWN_SECONDS),
+        )
         self._summary_failure_until: dict[str, float] = {}
-        self.memory_review_trigger_message_count = MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT
-        self.memory_review_success_cooldown_seconds = MEMORY_REVIEW_SUCCESS_COOLDOWN_SECONDS
-        self.memory_review_failure_cooldown_seconds = MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS
+        self.memory_review_trigger_message_count = parse_positive_int_env(
+            "AMADEUS_MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT",
+            parse_positive_int_value(memory_review_config.get("triggerMessageCount"), MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT),
+        )
+        self.memory_review_source_max_messages = parse_positive_int_env(
+            "AMADEUS_MEMORY_REVIEW_SOURCE_MAX_MESSAGES",
+            parse_positive_int_value(memory_review_config.get("sourceMaxMessages"), MEMORY_REVIEW_SOURCE_MAX_MESSAGES),
+        )
+        self.memory_review_existing_memory_limit = parse_positive_int_env(
+            "AMADEUS_MEMORY_REVIEW_EXISTING_MEMORY_LIMIT",
+            parse_positive_int_value(memory_review_config.get("existingMemoryLimit"), MEMORY_REVIEW_EXISTING_MEMORY_LIMIT),
+        )
+        self.memory_review_pending_limit = parse_positive_int_env(
+            "AMADEUS_MEMORY_REVIEW_PENDING_LIMIT",
+            parse_positive_int_value(memory_review_config.get("pendingLimit"), MEMORY_REVIEW_PENDING_LIMIT),
+        )
+        self.memory_review_max_candidates = parse_positive_int_env(
+            "AMADEUS_MEMORY_REVIEW_MAX_CANDIDATES",
+            parse_positive_int_value(memory_review_config.get("maxCandidates"), MEMORY_REVIEW_MAX_CANDIDATES),
+        )
+        self.memory_review_success_cooldown_seconds = parse_positive_int_env(
+            "AMADEUS_MEMORY_REVIEW_SUCCESS_COOLDOWN_SECONDS",
+            parse_positive_int_value(memory_review_config.get("successCooldownSeconds"), MEMORY_REVIEW_SUCCESS_COOLDOWN_SECONDS),
+        )
+        self.memory_review_failure_cooldown_seconds = parse_positive_int_env(
+            "AMADEUS_MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS",
+            parse_positive_int_value(memory_review_config.get("failureCooldownSeconds"), MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS),
+        )
         self._memory_review_cooldown_until: dict[str, float] = {}
         self._memory_review_last_message_id: dict[str, int] = {}
         logger.info(
-            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s memoryDb=%s",
+            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s runtimeConfig=%s memoryDb=%s contextMaxTokens=%s summaryTrigger=%s memoryReviewTrigger=%s",
             self.model,
             self.base_url,
             tools_config_path,
+            runtime_config_path,
             memory_store.database_path,
+            self.context_max_tokens,
+            self.summary_trigger_message_count,
+            self.memory_review_trigger_message_count,
         )
 
     def run_turn(
@@ -487,7 +538,7 @@ class AgentRuntime:
                 reason="no_new_messages",
             )
 
-        messages = self.memory_store.load_detailed(session_id, limit=MEMORY_REVIEW_SOURCE_MAX_MESSAGES)
+        messages = self.memory_store.load_detailed(session_id, limit=self.memory_review_source_max_messages)
         if not messages:
             logger.info("Skipping memory review because session has no messages sessionId=%s", session_id)
             return finish_job(
@@ -502,11 +553,11 @@ class AgentRuntime:
                 reason="no_messages",
             )
 
-        existing_items = self.memory_store.list_memory_items(limit=MEMORY_REVIEW_EXISTING_MEMORY_LIMIT)
+        existing_items = self.memory_store.list_memory_items(limit=self.memory_review_existing_memory_limit)
         pending_candidates = self.memory_store.list_memory_review_candidates(
             session_id=session_id,
             status="pending",
-            limit=MEMORY_REVIEW_PENDING_LIMIT,
+            limit=self.memory_review_pending_limit,
         )
 
         try:
@@ -529,7 +580,7 @@ class AgentRuntime:
 
         saved_candidates = []
         suppressed_candidate_count = 0
-        for proposed in proposed_candidates[:MEMORY_REVIEW_MAX_CANDIDATES]:
+        for proposed in proposed_candidates[:self.memory_review_max_candidates]:
             if not isinstance(proposed, dict):
                 continue
             scope = proposed.get("scope")
@@ -1550,6 +1601,79 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     return sum(estimate_message_tokens(message) for message in messages)
 
 
+def parse_runtime_config(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    config: dict[str, dict[str, Any]] = {}
+    current_section: str | None = None
+    for raw_line in lines:
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+        trimmed = line.strip()
+        if indent == 0 and trimmed.endswith(":"):
+            current_section = trimmed[:-1]
+            config[current_section] = {}
+            continue
+
+        if indent != 2 or not current_section or ":" not in trimmed:
+            continue
+
+        key, raw_value = trimmed.split(":", 1)
+        config[current_section][key.strip()] = parse_scalar_config_value(raw_value.strip())
+
+    return config
+
+
+def parse_scalar_config_value(value: str) -> Any:
+    if value == "":
+        return ""
+    if value in {"true", "false"}:
+        return value == "true"
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value.strip('"').strip("'")
+
+
+def parse_positive_int_value(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def parse_non_negative_int_value(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def parse_float_value(value: Any, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum or parsed > maximum:
+        return default
+    return parsed
+
+
 def parse_positive_int_env(name: str, default: int) -> int:
     raw_value = os.environ.get(name)
     if raw_value is None:
@@ -1559,6 +1683,17 @@ def parse_positive_int_env(name: str, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def parse_non_negative_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def parse_float_env(name: str, default: float, *, minimum: float, maximum: float) -> float:

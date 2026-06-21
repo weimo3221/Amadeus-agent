@@ -1,0 +1,21 @@
+context:
+  # Conservative tokenizer-free budget used before provider calls.
+  maxTokens: 24000
+  compactionTriggerRatio: 0.85
+  recentMessageTargetRatio: 0.45
+
+summary:
+  triggerMessageCount: 40
+  keepRecentMessages: 20
+  minKeepRecentMessages: 4
+  sourceMaxMessages: 120
+  failureCooldownSeconds: 300
+
+memoryReview:
+  triggerMessageCount: 12
+  sourceMaxMessages: 40
+  existingMemoryLimit: 40
+  pendingLimit: 40
+  maxCandidates: 8
+  successCooldownSeconds: 600
+  failureCooldownSeconds: 300
