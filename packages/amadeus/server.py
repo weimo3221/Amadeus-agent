@@ -244,6 +244,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         self.write_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:
+        if self.path == "/runtime/config/reload":
+            self.handle_runtime_config_reload()
+            return
+
         if self.path == "/agent/turn":
             self.handle_agent_turn()
             return
@@ -301,6 +305,18 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             return
 
         self.write_json(404, {"ok": False, "error": "not_found"})
+
+    def handle_runtime_config_reload(self) -> None:
+        try:
+            result = agent_runtime.reload_runtime_config()
+            logger.info(
+                "Handled runtime config reload runtimeConfig=%s",
+                result.get("runtimeConfig"),
+            )
+            self.write_json(200, {"ok": True, **result})
+        except Exception as error:
+            logger.info("Runtime config reload failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_agent_turn(self) -> None:
         try:

@@ -61,7 +61,7 @@ Fallback path today:
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
-- `configs/runtime.yaml` is loaded at startup and controls runtime memory/context tuning such as token-budget compaction, summary thresholds, and memory review limits; environment variables can still override these values for deployment.
+- `configs/runtime.yaml` controls runtime memory/context tuning such as token-budget compaction, summary thresholds, and memory review limits; it is loaded at startup and can be explicitly reloaded with `POST /runtime/config/reload`, while environment variables can still override these values for deployment.
 - Desktop diagnostics show the Python runtime tool permission state through the server bridge.
 - `packages/amadeus/tools.ts` now only keeps TypeScript tool types plus Python `/tools/list` and `/tools/execute` bridge helpers; it no longer mirrors the concrete tool registry or local tool handlers.
 - Python `/agent/turn` is wired as the preferred turn path.
@@ -330,7 +330,7 @@ Started.
 - Desktop now exposes the human review loop: it lists pending candidates, lets the user trigger review manually, and sends Accept / Reject actions over the WebSocket bridge.
 - Memory review job observability is now persisted in SQLite `memory_review_jobs`: every manual/automatic review records `running`, `completed`, `skipped`, or `failed` state, trigger, skip reason/error, source message range/count, proposed/saved/suppressed candidate counts, and duration.
 - Python exposes `GET /memory/review/jobs`, the TypeScript bridge relays it as `memory.review.jobs`, and the desktop memory review panel shows the latest job summary next to the pending candidate count.
-- Summary compaction is now token-budget-aware: runtime estimates context tokens before provider calls and after turns, loads its defaults from `configs/runtime.yaml`, supports environment overrides such as `AMADEUS_CONTEXT_MAX_TOKENS`, dynamically reduces the recent-message keep window, and retries once after provider context-overflow errors.
+- Summary compaction is now token-budget-aware: runtime estimates context tokens before provider calls and after turns, loads its defaults from `configs/runtime.yaml`, supports explicit HTTP reload and environment overrides such as `AMADEUS_CONTEXT_MAX_TOKENS`, dynamically reduces the recent-message keep window, and retries once after provider context-overflow errors.
 - Next: add stronger memory safety filters before review candidates are saved.
 
 ### Phase 9: Live2D and Audio Harnesses

@@ -52,12 +52,14 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.previous_permission_broker = runtime_server.permission_broker
 
         database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
+        self.runtime_config_path = Path(self.tmpdir.name) / "runtime.yaml"
         memory_store = MessageMemoryStore(database_path)
         runtime_server.memory_store = memory_store
         runtime_server.agent_runtime = AgentRuntime(
             memory_store,
             audio_runtime=None,
             tools_config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+            runtime_config_path=self.runtime_config_path,
         )
         runtime_server.permission_broker = PermissionBroker()
 
@@ -125,6 +127,28 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         payload = self.post_json("/tools/permission", {"requestId": "missing", "approved": True})
 
         self.assertEqual(payload, {"ok": True, "resolved": False})
+
+    def test_runtime_config_reload_applies_updated_yaml(self) -> None:
+        previous = os.environ.get("AMADEUS_CONTEXT_MAX_TOKENS")
+        os.environ.pop("AMADEUS_CONTEXT_MAX_TOKENS", None)
+        self.runtime_config_path.write_text(
+            "context:\n  maxTokens: 3456\nsummary:\n  triggerMessageCount: 7\n",
+            encoding="utf-8",
+        )
+        try:
+            payload = self.post_json("/runtime/config/reload", {})
+        finally:
+            if previous is None:
+                os.environ.pop("AMADEUS_CONTEXT_MAX_TOKENS", None)
+            else:
+                os.environ["AMADEUS_CONTEXT_MAX_TOKENS"] = previous
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["runtimeConfig"], str(self.runtime_config_path))
+        self.assertEqual(payload["config"]["context"]["maxTokens"], 3456)
+        self.assertEqual(payload["config"]["summary"]["triggerMessageCount"], 7)
+        self.assertEqual(runtime_server.agent_runtime.context_max_tokens, 3456)
+        self.assertEqual(runtime_server.agent_runtime.summary_trigger_message_count, 7)
 
     def test_agent_turn_streams_missing_api_key_error_as_ndjson(self) -> None:
         os.environ["OPENAI_API_KEY"] = ""

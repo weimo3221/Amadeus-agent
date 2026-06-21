@@ -39,6 +39,8 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 
 Runtime memory/context tuning is loaded from `../../configs/runtime.yaml`. This file controls token-budget compaction, summary thresholds and cooldowns, and background memory review limits. Environment variables remain the deployment override layer, so values such as `AMADEUS_CONTEXT_MAX_TOKENS` take precedence over the YAML file.
 
+The Python runtime reads this file on startup. After editing it, call `POST /runtime/config/reload` to apply the new values without restarting; the response includes the effective config snapshot.
+
 | Tool | Permission | What it does |
 | --- | --- | --- |
 | `get_current_time` | `allow` | Returns the current date/time for a requested IANA timezone. It defaults to `Asia/Shanghai` and falls back to UTC for invalid timezones. |

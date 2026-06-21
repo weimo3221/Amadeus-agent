@@ -172,7 +172,22 @@ class AgentRuntime:
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
-        runtime_config = parse_runtime_config(runtime_config_path)
+        self.runtime_config_path = runtime_config_path
+        self._load_runtime_config(reason="startup")
+        self._summary_failure_until: dict[str, float] = {}
+        self._memory_review_cooldown_until: dict[str, float] = {}
+        self._memory_review_last_message_id: dict[str, int] = {}
+        logger.info(
+            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s runtimeConfig=%s memoryDb=%s",
+            self.model,
+            self.base_url,
+            tools_config_path,
+            runtime_config_path,
+            memory_store.database_path,
+        )
+
+    def _load_runtime_config(self, *, reason: str) -> dict[str, dict[str, int | float]]:
+        runtime_config = parse_runtime_config(self.runtime_config_path)
         context_config = runtime_config.get("context", {})
         summary_config = runtime_config.get("summary", {})
         memory_review_config = runtime_config.get("memoryReview", {})
@@ -212,7 +227,6 @@ class AgentRuntime:
             "AMADEUS_SUMMARY_FAILURE_COOLDOWN_SECONDS",
             parse_positive_int_value(summary_config.get("failureCooldownSeconds"), SUMMARY_FAILURE_COOLDOWN_SECONDS),
         )
-        self._summary_failure_until: dict[str, float] = {}
         self.memory_review_trigger_message_count = parse_positive_int_env(
             "AMADEUS_MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT",
             parse_positive_int_value(memory_review_config.get("triggerMessageCount"), MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT),
@@ -241,21 +255,22 @@ class AgentRuntime:
             "AMADEUS_MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS",
             parse_positive_int_value(memory_review_config.get("failureCooldownSeconds"), MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS),
         )
-        self._memory_review_cooldown_until: dict[str, float] = {}
-        self._memory_review_last_message_id: dict[str, int] = {}
+        snapshot = self._runtime_config_snapshot()
         logger.info(
-            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s runtimeConfig=%s memoryDb=%s",
-            self.model,
-            self.base_url,
-            tools_config_path,
-            runtime_config_path,
-            memory_store.database_path,
+            "Loaded runtime memory configuration runtimeConfig=%s reason=%s effectiveConfig=%s",
+            self.runtime_config_path,
+            reason,
+            json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
         )
-        logger.info(
-            "Loaded runtime memory configuration runtimeConfig=%s effectiveConfig=%s",
-            runtime_config_path,
-            json.dumps(self._runtime_config_snapshot(), ensure_ascii=False, sort_keys=True),
-        )
+
+        return snapshot
+
+    def reload_runtime_config(self) -> dict[str, Any]:
+        logger.info("Reloading runtime memory configuration runtimeConfig=%s", self.runtime_config_path)
+        return {
+            "runtimeConfig": str(self.runtime_config_path),
+            "config": self._load_runtime_config(reason="reload"),
+        }
 
     def run_turn(
         self,
