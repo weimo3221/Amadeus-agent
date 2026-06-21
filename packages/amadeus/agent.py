@@ -244,15 +244,17 @@ class AgentRuntime:
         self._memory_review_cooldown_until: dict[str, float] = {}
         self._memory_review_last_message_id: dict[str, int] = {}
         logger.info(
-            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s runtimeConfig=%s memoryDb=%s contextMaxTokens=%s summaryTrigger=%s memoryReviewTrigger=%s",
+            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s runtimeConfig=%s memoryDb=%s",
             self.model,
             self.base_url,
             tools_config_path,
             runtime_config_path,
             memory_store.database_path,
-            self.context_max_tokens,
-            self.summary_trigger_message_count,
-            self.memory_review_trigger_message_count,
+        )
+        logger.info(
+            "Loaded runtime memory configuration runtimeConfig=%s effectiveConfig=%s",
+            runtime_config_path,
+            json.dumps(self._runtime_config_snapshot(), ensure_ascii=False, sort_keys=True),
         )
 
     def run_turn(
@@ -428,6 +430,31 @@ class AgentRuntime:
             "compacted": event is not None,
             "event": event.to_runtime_event(session_id) if event else None,
             "summary": event.payload["summary"] if event else self.memory_store.load_conversation_summary(session_id),
+        }
+
+    def _runtime_config_snapshot(self) -> dict[str, dict[str, int | float]]:
+        return {
+            "context": {
+                "maxTokens": self.context_max_tokens,
+                "compactionTriggerRatio": self.context_compaction_trigger_ratio,
+                "recentMessageTargetRatio": self.context_recent_message_target_ratio,
+            },
+            "summary": {
+                "triggerMessageCount": self.summary_trigger_message_count,
+                "keepRecentMessages": self.summary_keep_recent_messages,
+                "minKeepRecentMessages": self.summary_min_keep_recent_messages,
+                "sourceMaxMessages": self.summary_source_max_messages,
+                "failureCooldownSeconds": self.summary_failure_cooldown_seconds,
+            },
+            "memoryReview": {
+                "triggerMessageCount": self.memory_review_trigger_message_count,
+                "sourceMaxMessages": self.memory_review_source_max_messages,
+                "existingMemoryLimit": self.memory_review_existing_memory_limit,
+                "pendingLimit": self.memory_review_pending_limit,
+                "maxCandidates": self.memory_review_max_candidates,
+                "successCooldownSeconds": self.memory_review_success_cooldown_seconds,
+                "failureCooldownSeconds": self.memory_review_failure_cooldown_seconds,
+            },
         }
 
     def review_memory(self, session_id: str, force: bool = True) -> dict[str, Any]:
