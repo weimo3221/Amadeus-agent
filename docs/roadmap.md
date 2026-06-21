@@ -8,6 +8,16 @@ This file is the forward-looking plan. For live implementation status, use `docs
 - Some foundation work from later phases may land early if it helps the current migration.
 - When roadmap wording and current code disagree, trust `docs/project-status.md`.
 
+## Current Execution Plan
+
+The next implementation pass should proceed in this order:
+
+1. Done: extract the model/provider boundary out of `packages/amadeus/agent.py` into `packages/amadeus/model.py`, keeping the current OpenAI-compatible behavior unchanged.
+2. Done: add the first minimal harness boundary under `packages/amadeus/harness` plus `configs/harnesses.yaml`, starting with state-to-Live2D behavior mapping rather than a broad framework.
+3. Done: add a real Python TTS provider behind `packages/amadeus/audio.py`, with the first target being a narrow GPT-SoVITS adapter that emits `audio.tts-ready` when it can produce a wav file.
+4. Done: move the default Live2D model to a local `models/live2d` bundle so desktop startup and E2E coverage do not depend on a remote test URL.
+5. Keep ToolRuntime and Memory v2 in consolidation mode: extend them only for real gaps found while implementing model, harness, audio, and desktop flows.
+
 ## Phase 0: Project Skeleton
 
 Goal: establish the repository structure, startup docs, and initial config surfaces.
@@ -131,9 +141,9 @@ Target deliverables:
 
 Notes:
 
-- This phase is partially delivered already.
+- This phase is functionally delivered for the current MVP.
 - The current preferred path is Python-first.
-- The remaining work is cleanup and parity confidence, not first implementation from scratch.
+- The remaining work is cleanup, provider/model boundary extraction, and continued bridge shrinkage, not first implementation from scratch.
 
 ## Phase 7: ToolRuntime and Guardrails
 
@@ -149,8 +159,8 @@ Target deliverables:
 
 Notes:
 
-- Some prerequisite work is already done: tool registry, config loading, permission metadata, and practical ask tools.
-- This phase is not complete until the guardrail/audit/runtime layer exists formally.
+- The main runtime layer now exists: registry/config loading, permission metadata, structured results, timeout/cancellation, audit persistence, output policies, and repeated-failure/no-progress guardrails are implemented.
+- Remaining work is late hardening driven by new tools and real usage, such as richer context propagation, better diagnostics, and additional per-tool result/no-progress policies.
 
 ## Phase 8: Memory v2
 
@@ -168,6 +178,11 @@ Target deliverables:
 - Token-budget-aware summary compaction with dynamic recent-message retention and provider overflow compact-and-retry fallback.
 - Context assembler that combines persona, summaries, profile, retrieved memory, recent messages, task state, and harness prompt fragments.
 
+Current status:
+
+- Core Memory v2 mechanics are now implemented: SQLite FTS retrieval, stable Markdown memory, structured memory facts, explicit memory tools, review candidates, accept/reject flows, automatic review gates, runtime memory config, schema metadata, and memory safety filters.
+- Remaining work is consolidation: context assembly quality, summary/profile policy, compact-and-retry confidence, review quality tuning, and diagnostics for retrieval/proposal decisions.
+
 ## Phase 9: Live2D and Audio Harnesses
 
 Goal: make Amadeus' Live2D/audio strengths installable runtime harnesses.
@@ -180,6 +195,12 @@ Target deliverables:
 - Audio harness for TTS provider selection, fallback, cache, ASR contracts, and lipsync cues.
 - Desktop capability events for Live2D/audio.
 - Playback feedback events from desktop to runtime.
+
+Current status:
+
+- First slice is implemented: `packages/amadeus/harness` exists with a base contract, registry, Live2D harness, and `configs/harnesses.yaml`.
+- The Python agent now emits `assistant.state` and lets the Live2D harness add `character.behavior` events for state-to-expression/motion mapping.
+- Remaining work is to grow this into the full harness layer: audio harness, desktop capability events, playback feedback, richer Live2D commands, and eventual lipsync cues.
 
 ## Phase 10: Skills
 

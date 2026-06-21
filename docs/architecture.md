@@ -150,11 +150,12 @@ packages/amadeus
 - `memory.py`: active SQLite-backed message history.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, and repeated-call guardrails.
-- `audio.py`: active TTS/audio interface, but default runtime uses `NoopTtsProvider`.
-- `server.py`: active HTTP runtime surface.
-- `model.py`: future provider abstraction boundary; not yet the active model call path.
+- `audio.py`: active TTS/audio interface with default `NoopTtsProvider` plus a config-gated GPT-SoVITS HTTP provider that can cache generated audio under the local audio library.
+- `server.py`: active Python HTTP runtime surface, including local audio file serving and local Live2D model config/static asset serving for direct runtime use.
+- `model.py`: active first-pass OpenAI-compatible provider boundary for `configs/providers.yaml` plus environment-backed provider config, JSON chat-completion requests, stream parsing, and classified provider error normalization.
+- `harness/`: active first-pass harness boundary with a registry and Live2D harness that maps `assistant.state` events to `character.behavior`.
 - `skills.py`: future reusable behavior boundary; currently placeholder only.
-- `live2d.py`: future character command boundary; currently placeholder dataclasses only.
+- `live2d.py`: active local Live2D model library boundary plus character command dataclasses.
 
 Live2D and audio are not the agent brain. They are device interfaces that the Python runtime can command, while the actual rendering/playback remains in desktop-side adapters.
 
@@ -222,6 +223,7 @@ Current note:
 
 - This package is not yet the real implementation package.
 - The current working Live2D adapter logic is still embedded in `apps/desktop/src/renderer/main.ts`.
+- Local model storage is active under `models/live2d`. The Node bridge server serves the configured model to the desktop through `/live2d/config` and `/live2d/models/...` on `8788`; the Python runtime has the same local library boundary for later direct runtime use.
 
 ### packages/amadeus/audio.py
 

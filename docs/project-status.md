@@ -10,7 +10,9 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 
 ## Current Snapshot
 
-Amadeus is now a working desktop MVP with a Python-first turn path.
+Amadeus is now a working desktop MVP with a Python-first turn path and a mostly landed runtime reliability foundation.
+
+The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, and Memory v2 has its core storage/review/context pieces in place. The next large product step is to turn the remaining placeholder runtime boundaries into real modules and start the Live2D/audio harness layer.
 
 ### Current Runtime Flow
 
@@ -112,6 +114,22 @@ Fallback path today:
 - The legacy TypeScript fallback loop has been removed.
   - Python runtime failures now produce an explicit desktop error
   - `apps/server` no longer owns provider calls, tool execution, memory writes, or audio trigger logic for user turns
+- First-pass Python model/provider boundary is active.
+  - `packages/amadeus/model.py` now owns OpenAI-compatible provider config from `configs/providers.yaml` plus environment variables, JSON chat-completion requests, stream parsing, and classified provider error normalization.
+  - Provider errors now preserve kind, HTTP status, body, retry-after, provider, and model metadata for later retry/fallback decisions.
+  - `packages/amadeus/agent.py` still owns turn orchestration, tool decisions, summaries, memory review, and final response timing.
+- First-pass harness boundary is active.
+  - `packages/amadeus/harness` now provides a base contract, registry, and Live2D harness.
+  - `configs/harnesses.yaml` controls the initial Live2D harness.
+  - The Live2D harness maps `assistant.state` events into `character.behavior` events instead of keeping that mapping hardcoded in the agent loop.
+- Local Live2D model storage is active.
+  - Local models live under `models/live2d`, with `hiyori-free` as the current default and `hiyori-pro` available for switching.
+  - `configs/harnesses.yaml` selects the active model by id/path.
+  - The Node bridge server serves `/live2d/config` and `/live2d/models/...` on `8788`, so the desktop renderer can resolve the configured local model through the same server it already uses for WebSocket traffic before falling back to the remote test model.
+- First-pass real TTS provider boundary is active.
+  - `packages/amadeus/audio.py` now includes a config-gated GPT-SoVITS HTTP provider.
+  - The default `tts.default` remains `disabled`, so runtime behavior stays on `NoopTtsProvider` unless explicitly configured.
+  - Binary audio responses are cached under the local audio library and surfaced through the existing `audio.tts-ready` event path.
 - Phase 7 ToolRuntime first slice is in place.
   - Python tool registry/config loading now lives under `packages/amadeus/tool_runtime`.
   - Agent tool execution dispatches through `ToolRegistry` instead of direct helpers.
@@ -143,9 +161,9 @@ Fallback path today:
 - Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
-- Harden the Python-owned ToolRuntime with richer context propagation and richer no-progress policies where needed.
+- Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
+- Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
 - Turn placeholder runtime boundaries into real modules where needed:
-  - `packages/amadeus/model.py`
   - `packages/amadeus/skills.py`
   - `packages/amadeus/live2d.py`
   - `packages/live2d-stage`
@@ -214,9 +232,25 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 
 ### Phase 6: Python Runtime Ownership
 
-The second vertical slice is complete: Python runtime parity tests, Python HTTP handler tests, TypeScript bridge relay tests, server-level WebSocket integration tests, and desktop renderer harness tests are in place, and `npm test` now runs them.
+Status: functionally landed; cleanup remains.
 
-Phase 7 is in progress. The first vertical slice is complete: Python tool registry/config loading has been extracted into `packages/amadeus/tool_runtime`, and the Python agent loop now applies repeated-failure and no-progress guardrails during tool execution.
+The second vertical slice is complete: Python runtime parity tests, Python HTTP handler tests, TypeScript bridge relay tests, server-level WebSocket integration tests, and desktop renderer harness tests are in place, and `npm test` now runs them. The remaining work is mainly shrinking TypeScript bridge scaffolding and extracting provider/model boundaries out of `agent.py`, not proving the Python-first path from scratch.
+
+### Phase 7: ToolRuntime and Guardrails
+
+Status: mostly landed; late hardening remains.
+
+The foundation is now substantially implemented: Python tool registry/config loading has been extracted into `packages/amadeus/tool_runtime`, tool execution returns structured `ToolResult` metadata, audit records persist to SQLite, timeout/cancellation paths are covered, model-context output policies are in place for high-volume tools, and the Python agent loop applies repeated-failure and semantic no-progress guardrails during tool execution.
+
+Remaining Phase 7 work should be treated as incremental hardening: richer context propagation, better diagnostics on top of audit records, and new no-progress/result policies as additional tools are added.
+
+### Phase 8: Memory v2
+
+Status: core system landed; consolidation remains.
+
+Memory v2 is no longer just planned. Stable Markdown memory, SQLite-backed message history and FTS retrieval, structured memory facts, explicit memory tools, memory review candidates, accept/reject flows, automatic review gates, runtime memory config, schema metadata, and safety filters are in place.
+
+Remaining Phase 8 work is about making the memory behavior mature in practice: a clearer context assembler, better summary/profile/retrieval policy, provider overflow compact-and-retry confidence, review quality tuning, and enough diagnostics to understand why a fact was retrieved, proposed, accepted, rejected, or suppressed.
 
 ## Completed Subphase
 
