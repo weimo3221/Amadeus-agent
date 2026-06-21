@@ -1,21 +1,54 @@
 context:
-  # Conservative tokenizer-free budget used before provider calls.
+  # Estimated maximum context budget before a provider call.
+  # This is tokenizer-free and intentionally conservative; env override:
+  # AMADEUS_CONTEXT_MAX_TOKENS.
   maxTokens: 24000
+
+  # Trigger summary compaction when estimated context tokens exceed
+  # maxTokens * compactionTriggerRatio. Lower values compact earlier.
   compactionTriggerRatio: 0.85
+
+  # Fraction of maxTokens reserved for recent raw messages after compaction.
+  # Lower values keep fewer recent messages and rely more on summaries.
   recentMessageTargetRatio: 0.45
 
 summary:
+  # Run automatic summary compaction after this many stored messages, unless
+  # context budget pressure triggers compaction earlier.
   triggerMessageCount: 40
+
+  # Default number of latest raw messages to keep outside the summary.
   keepRecentMessages: 20
+
+  # Hard lower bound for recent raw messages kept during budget-driven
+  # compaction. Set to 0 only if fully summary-first behavior is acceptable.
   minKeepRecentMessages: 4
+
+  # Maximum older messages sent to the provider when generating one summary.
   sourceMaxMessages: 120
+
+  # Cooldown after a summary-generation failure, in seconds.
   failureCooldownSeconds: 300
 
 memoryReview:
+  # Automatic memory review starts after this many session messages, subject to
+  # cooldown and no-new-message gates. Manual review ignores this threshold.
   triggerMessageCount: 12
+
+  # Recent messages included as evidence for proposing memory candidates.
   sourceMaxMessages: 40
+
+  # Existing durable memory facts included so the reviewer can avoid duplicates.
   existingMemoryLimit: 40
+
+  # Pending candidates included so the reviewer can avoid proposing duplicates.
   pendingLimit: 40
+
+  # Maximum proposed candidates saved into the human review queue per run.
   maxCandidates: 8
+
+  # Cooldown after a successful automatic review, in seconds.
   successCooldownSeconds: 600
+
+  # Cooldown after a failed automatic review, in seconds.
   failureCooldownSeconds: 300
