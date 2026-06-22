@@ -143,6 +143,10 @@ export interface MemoryContextUsedPayload {
   sourceCounts: Record<string, number>
   sourceCount: number
   coveredThroughMessageId: number
+  sessionId: string
+  turnId: string
+  phase: 'turn_start' | 'tool_decision_retry' | 'final_response_retry' | string
+  timestamp: string
   sources: MemoryContextSource[]
 }
 

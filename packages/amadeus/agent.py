@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,7 @@ CONTEXT_MEMORY_ITEM_LIMIT = 8
 CONTEXT_MEMORY_ITEM_CHARS = 500
 CONTEXT_RETRIEVAL_LIMIT = 3
 CONTEXT_RETRIEVAL_SNIPPET_CHARS = 280
+CONTEXT_DIAGNOSTICS_LIMIT = 20
 SUMMARY_TRIGGER_MESSAGE_COUNT = 40
 SUMMARY_KEEP_RECENT_MESSAGES = 20
 SUMMARY_MIN_KEEP_RECENT_MESSAGES = 4
@@ -181,6 +183,9 @@ class AgentRuntime:
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
         self.context_assembler = ContextAssembler(self.memory_store, self.system_prompt)
+        self.context_diagnostics_limit = CONTEXT_DIAGNOSTICS_LIMIT
+        self._context_diagnostics_by_session: dict[str, deque[dict[str, Any]]] = {}
+        self._context_diagnostics_lock = threading.Lock()
         self.runtime_config_path = runtime_config_path
         self._load_runtime_config(reason="startup")
         self._summary_failure_until: dict[str, float] = {}
@@ -253,6 +258,11 @@ class AgentRuntime:
             "AMADEUS_CONTEXT_RETRIEVAL_SNIPPET_CHARS",
             parse_positive_int_value(context_config.get("retrievalSnippetChars"), CONTEXT_RETRIEVAL_SNIPPET_CHARS),
         )
+        self.context_diagnostics_limit = parse_positive_int_env(
+            "AMADEUS_CONTEXT_DIAGNOSTICS_LIMIT",
+            parse_positive_int_value(context_config.get("diagnosticsLimit"), CONTEXT_DIAGNOSTICS_LIMIT),
+        )
+        self._resize_context_diagnostics_buffers(self.context_diagnostics_limit)
         self.context_assembler = ContextAssembler(
             self.memory_store,
             self.system_prompt,
@@ -354,7 +364,7 @@ class AgentRuntime:
             history, context_diagnostics = self._load_turn_history(session_id, normalized_text)
         self.memory_store.save(session_id, "user", normalized_text)
         yield AgentEvent("memory.updated", {"memoryMessages": self.memory_store.count(session_id)})
-        yield AgentEvent("memory.context.used", context_diagnostics)
+        yield self._memory_context_used_event(session_id, turn_id, context_diagnostics)
         if budget_summary_event:
             yield budget_summary_event
 
@@ -365,7 +375,7 @@ class AgentRuntime:
         except RuntimeError as error:
             if self._handle_context_overflow(session_id, "tool_decision", error):
                 history, context_diagnostics = self._load_turn_history(session_id, normalized_text, current_user_already_saved=True)
-                yield AgentEvent("memory.context.used", context_diagnostics)
+                yield self._memory_context_used_event(session_id, turn_id, context_diagnostics, phase="tool_decision_retry")
                 try:
                     tool_decision = self._request_tool_decision(history)
                 except RuntimeError as retry_error:
@@ -402,7 +412,7 @@ class AgentRuntime:
         except RuntimeError as error:
             if self._handle_context_overflow(session_id, "final_response", error):
                 history, context_diagnostics = self._load_turn_history(session_id, normalized_text, current_user_already_saved=True)
-                yield AgentEvent("memory.context.used", context_diagnostics)
+                yield self._memory_context_used_event(session_id, turn_id, context_diagnostics, phase="final_response_retry")
                 assistant_text = ""
                 try:
                     for delta in self._stream_final_response(history):
@@ -481,6 +491,12 @@ class AgentRuntime:
             limit=limit,
         )
 
+    def memory_context_diagnostics(self, session_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        bounded_limit = self.context_diagnostics_limit if limit is None else max(1, min(self.context_diagnostics_limit, int(limit)))
+        with self._context_diagnostics_lock:
+            records = list(self._context_diagnostics_by_session.get(session_id, ()))
+        return json.loads(json.dumps(records[-bounded_limit:]))
+
     def compact_conversation(self, session_id: str, force: bool = True) -> dict[str, Any]:
         event = self._maybe_compact_conversation(session_id, force=force)
         return {
@@ -488,6 +504,50 @@ class AgentRuntime:
             "event": event.to_runtime_event(session_id) if event else None,
             "summary": event.payload["summary"] if event else self.memory_store.load_conversation_summary(session_id),
         }
+
+    def _memory_context_used_event(
+        self,
+        session_id: str,
+        turn_id: str,
+        diagnostics: dict[str, Any],
+        *,
+        phase: str = "turn_start",
+    ) -> AgentEvent:
+        payload = self._context_diagnostics_payload(session_id, turn_id, diagnostics, phase=phase)
+        self._record_context_diagnostics(session_id, payload)
+        return AgentEvent("memory.context.used", payload)
+
+    def _context_diagnostics_payload(
+        self,
+        session_id: str,
+        turn_id: str,
+        diagnostics: dict[str, Any],
+        *,
+        phase: str,
+    ) -> dict[str, Any]:
+        payload = json.loads(json.dumps(diagnostics))
+        payload["sessionId"] = session_id
+        payload["turnId"] = turn_id
+        payload["phase"] = phase
+        payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+        return payload
+
+    def _record_context_diagnostics(self, session_id: str, payload: dict[str, Any]) -> None:
+        record = json.loads(json.dumps(payload))
+        with self._context_diagnostics_lock:
+            buffer = self._context_diagnostics_by_session.get(session_id)
+            if buffer is None or buffer.maxlen != self.context_diagnostics_limit:
+                buffer = deque(list(buffer or ())[-self.context_diagnostics_limit:], maxlen=self.context_diagnostics_limit)
+                self._context_diagnostics_by_session[session_id] = buffer
+            buffer.append(record)
+
+    def _resize_context_diagnostics_buffers(self, limit: int) -> None:
+        bounded_limit = max(1, int(limit))
+        with self._context_diagnostics_lock:
+            self._context_diagnostics_by_session = {
+                session_id: deque(list(records)[-bounded_limit:], maxlen=bounded_limit)
+                for session_id, records in self._context_diagnostics_by_session.items()
+            }
 
     def _runtime_config_snapshot(self) -> dict[str, dict[str, int | float]]:
         return {
@@ -500,6 +560,7 @@ class AgentRuntime:
                 "memoryItemChars": self.context_memory_item_chars,
                 "retrievalLimit": self.context_retrieval_limit,
                 "retrievalSnippetChars": self.context_retrieval_snippet_chars,
+                "diagnosticsLimit": self.context_diagnostics_limit,
             },
             "summary": {
                 "triggerMessageCount": self.summary_trigger_message_count,

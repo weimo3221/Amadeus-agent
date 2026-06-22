@@ -233,6 +233,10 @@ Current flow:
     },
     "sourceCount": 4,
     "coveredThroughMessageId": 12,
+    "sessionId": "default",
+    "turnId": "turn-uuid",
+    "phase": "turn_start",
+    "timestamp": "2026-06-21T12:00:00+00:00",
     "sources": [
       {
         "kind": "memory_item",
@@ -255,6 +259,7 @@ Current behavior:
 - Summary and accepted structured memory are injected into the temporary system message.
 - FTS retrieval snippets are injected into the temporary current user message as `<memory-context>`.
 - Injected context is API-call-time only and is not written back to SQLite message history.
+- The runtime also stores the most recent `context.diagnosticsLimit` diagnostics per session in an in-memory ring buffer for developer diagnostics. This buffer is not persisted across runtime restarts.
 
 ### audio.tts-ready
 

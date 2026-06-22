@@ -74,7 +74,7 @@ Fallback path today:
   - executes Python tools
   - writes user/assistant messages to SQLite
   - emits desktop-compatible runtime events
-  - emits `memory.context.used` diagnostics for per-turn memory source selection
+  - emits `memory.context.used` diagnostics for per-turn memory source selection and keeps the most recent diagnostics per session in an in-memory ring buffer
   - requests Python audio output after the assistant message
 - Ask-tool permission requests cross the Python runtime boundary:
   - Python emits `tool.permission.request`
@@ -140,7 +140,7 @@ Fallback path today:
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
   - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the frozen system prompt at runtime startup.
-  - `ContextAssembler` now injects summaries, accepted structured memory, and sanitized SQLite FTS retrieval as API-only context, with `memory.context.used` diagnostics.
+  - `ContextAssembler` now injects summaries, accepted structured memory, and sanitized SQLite FTS retrieval as API-only context, with `memory.context.used` diagnostics retained in a per-session in-memory ring buffer.
   - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
   - `search_memory_items` now has a per-tool model-output policy that keeps structured fact metadata while capping model-context item count and content length.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
@@ -251,7 +251,7 @@ Status: core system landed; consolidation remains.
 
 Memory v2 is no longer just planned. Stable Markdown memory, SQLite-backed message history and FTS retrieval, structured memory facts, explicit memory tools, memory review candidates, accept/reject flows, automatic review gates, runtime memory config, schema metadata, and safety filters are in place.
 
-Remaining Phase 8 work is about making the memory behavior mature in practice: better summary/profile/retrieval policy, provider overflow compact-and-retry confidence, review quality tuning, and UI-level diagnostics to understand why a fact was retrieved, proposed, accepted, rejected, or suppressed.
+Remaining Phase 8 work is about making the memory behavior mature in practice: better summary/profile/retrieval policy, provider overflow compact-and-retry confidence, review quality tuning, and lightweight diagnostics endpoints to understand why a fact was retrieved, proposed, accepted, rejected, or suppressed.
 
 ## Completed Subphase
 

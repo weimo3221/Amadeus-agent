@@ -21,6 +21,10 @@ context:
   retrievalLimit: 3
   retrievalSnippetChars: 280
 
+  # Number of recent memory.context.used diagnostics retained per session.
+  # This is an in-memory developer diagnostic buffer, not durable memory.
+  diagnosticsLimit: 20
+
 summary:
   # Run automatic summary compaction after this many stored messages, unless
   # context budget pressure triggers compaction earlier.
