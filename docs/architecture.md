@@ -147,6 +147,7 @@ packages/amadeus
 `packages/amadeus` is the long-term agent brain. Current module status:
 
 - `agent.py`: active conversation loop, tool-use policy, response/event streaming.
+- `context.py`: active API-call-time context assembler for conversation summaries, accepted structured memories, relevant FTS retrieval, source budgets, and diagnostics.
 - `memory.py`: active SQLite-backed message history.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, and repeated-call guardrails.

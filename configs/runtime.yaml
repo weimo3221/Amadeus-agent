@@ -12,6 +12,15 @@ context:
   # Lower values keep fewer recent messages and rely more on summaries.
   recentMessageTargetRatio: 0.45
 
+  # Context assembler budgets for API-call-time memory injection.
+  # These limits control what is injected into the temporary model request,
+  # not what is stored in durable memory.
+  summaryChars: 4000
+  memoryItemLimit: 8
+  memoryItemChars: 500
+  retrievalLimit: 3
+  retrievalSnippetChars: 280
+
 summary:
   # Run automatic summary compaction after this many stored messages, unless
   # context budget pressure triggers compaction earlier.

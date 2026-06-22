@@ -220,6 +220,42 @@ Current flow:
 - Desktop responds with `tool.permission.response`.
 - `apps/server` forwards that response to Python `/tools/permission`.
 
+### memory.context.used
+
+```json
+{
+  "type": "memory.context.used",
+  "payload": {
+    "sourceCounts": {
+      "conversation_summary": 1,
+      "memory_item": 2,
+      "retrieval": 1
+    },
+    "sourceCount": 4,
+    "coveredThroughMessageId": 12,
+    "sources": [
+      {
+        "kind": "memory_item",
+        "sourceId": "7",
+        "contentChars": 86,
+        "reason": "accepted durable structured memory",
+        "metadata": {
+          "scope": "project",
+          "confidence": 0.9
+        }
+      }
+    ]
+  }
+}
+```
+
+Current behavior:
+
+- Python emits this diagnostic after assembling per-turn model context.
+- Summary and accepted structured memory are injected into the temporary system message.
+- FTS retrieval snippets are injected into the temporary current user message as `<memory-context>`.
+- Injected context is API-call-time only and is not written back to SQLite message history.
+
 ### audio.tts-ready
 
 ```json

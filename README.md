@@ -15,7 +15,7 @@ Preferred path today:
 
 1. Desktop sends `user.message` over WebSocket.
 2. `apps/server` relays the turn to Python `POST /agent/turn`.
-3. Python runtime loads memory, performs tool decisions, executes Python tools, streams assistant events, and may emit runtime audio.
+3. Python runtime assembles API-call-time memory context, performs tool decisions, executes Python tools, streams assistant events, and may emit runtime audio.
 4. `apps/server` relays runtime events back to desktop.
 5. Desktop updates chat, permission UI, audio playback, and Live2D behavior.
 

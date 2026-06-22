@@ -69,11 +69,12 @@ Fallback path today:
 - Python `/agent/turn` is wired as the preferred turn path.
 - Python now owns the preferred model/tool/memory/behavior path for a turn:
   - loads OpenAI-compatible provider config from environment or `.env`
-  - assembles recent SQLite message history
+  - assembles API-call-time context from summaries, accepted memory items, recent messages, and relevant FTS retrieval
   - makes the tool-decision call
   - executes Python tools
   - writes user/assistant messages to SQLite
   - emits desktop-compatible runtime events
+  - emits `memory.context.used` diagnostics for per-turn memory source selection
   - requests Python audio output after the assistant message
 - Ask-tool permission requests cross the Python runtime boundary:
   - Python emits `tool.permission.request`
@@ -139,7 +140,7 @@ Fallback path today:
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
   - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the frozen system prompt at runtime startup.
-  - Each turn now prefetches a small sanitized SQLite FTS result set and injects it as an API-only `<memory-context>` block on the current user message.
+  - `ContextAssembler` now injects summaries, accepted structured memory, and sanitized SQLite FTS retrieval as API-only context, with `memory.context.used` diagnostics.
   - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
   - `search_memory_items` now has a per-tool model-output policy that keeps structured fact metadata while capping model-context item count and content length.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
@@ -250,7 +251,7 @@ Status: core system landed; consolidation remains.
 
 Memory v2 is no longer just planned. Stable Markdown memory, SQLite-backed message history and FTS retrieval, structured memory facts, explicit memory tools, memory review candidates, accept/reject flows, automatic review gates, runtime memory config, schema metadata, and safety filters are in place.
 
-Remaining Phase 8 work is about making the memory behavior mature in practice: a clearer context assembler, better summary/profile/retrieval policy, provider overflow compact-and-retry confidence, review quality tuning, and enough diagnostics to understand why a fact was retrieved, proposed, accepted, rejected, or suppressed.
+Remaining Phase 8 work is about making the memory behavior mature in practice: better summary/profile/retrieval policy, provider overflow compact-and-retry confidence, review quality tuning, and UI-level diagnostics to understand why a fact was retrieved, proposed, accepted, rejected, or suppressed.
 
 ## Completed Subphase
 

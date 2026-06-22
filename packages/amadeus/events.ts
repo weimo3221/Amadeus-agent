@@ -45,6 +45,7 @@ export type ClientRuntimeEvent =
 export type ServerRuntimeEvent =
   | RuntimeEvent<'server.hello', HelloPayload>
   | RuntimeEvent<'memory.updated', MemoryUpdatedPayload>
+  | RuntimeEvent<'memory.context.used', MemoryContextUsedPayload>
   | RuntimeEvent<'assistant.delta', AssistantDeltaPayload>
   | RuntimeEvent<'assistant.message', AssistantMessagePayload>
   | RuntimeEvent<'assistant.state', AssistantStatePayload>
@@ -128,6 +129,21 @@ export interface ToolPermissionResponsePayload {
 
 export interface MemoryUpdatedPayload {
   memoryMessages: number
+}
+
+export interface MemoryContextSource {
+  kind: string
+  sourceId: string
+  contentChars: number
+  reason: string
+  metadata?: Record<string, unknown>
+}
+
+export interface MemoryContextUsedPayload {
+  sourceCounts: Record<string, number>
+  sourceCount: number
+  coveredThroughMessageId: number
+  sources: MemoryContextSource[]
 }
 
 export interface MemoryReviewCandidate {

@@ -37,7 +37,7 @@ Active tools are defined under `tools/` as Python handlers plus OpenAI-compatibl
 
 ## Runtime Configuration
 
-Runtime memory/context tuning is loaded from `../../configs/runtime.yaml`. This file controls token-budget compaction, summary thresholds and cooldowns, and background memory review limits. Environment variables remain the deployment override layer, so values such as `AMADEUS_CONTEXT_MAX_TOKENS` take precedence over the YAML file.
+Runtime memory/context tuning is loaded from `../../configs/runtime.yaml`. This file controls token-budget compaction, context assembler budgets, summary thresholds and cooldowns, and background memory review limits. Environment variables remain the deployment override layer, so values such as `AMADEUS_CONTEXT_MAX_TOKENS` take precedence over the YAML file.
 
 The Python runtime reads this file on startup. After editing it, call `POST /runtime/config/reload` to apply the new values without restarting; the response includes the effective config snapshot.
 
@@ -65,7 +65,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Tool execution records duration, stable failure codes, `tool.started` / `tool.finished` events, and persisted `tool.audit` records.
 - Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn.
 - Stable memory is stored as auditable Markdown files under `data/memory/MEMORY.md` and `data/memory/USER.md`, then injected into the frozen system prompt at runtime startup.
-- Each turn prefetches up to three relevant prior session messages and injects them into the API-only current user message as a sanitized `<memory-context>` block; the block is not persisted.
+- `ContextAssembler` builds API-call-time context each turn: conversation summary and accepted structured memories go into the system message, relevant prior session snippets go into a sanitized `<memory-context>` block on the current user message, and a `memory.context.used` event reports which sources were used. These injected blocks are not persisted.
 - Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`, injected as reference-only context, and refreshed by threshold-based compaction or manual `POST /memory/compact`.
 - Structured `memory_items` store durable `user` / `agent` / `project` facts in SQLite, expose explicit HTTP add/list/delete APIs, are searchable through the read-only `search_memory_items` tool, can be added/replaced/forgotten through approval-gated tools, and inject a small active set into model context as reference-only `<memory-items>`.
 - Memory review candidates are persisted in SQLite as a human-controlled queue. `POST /memory/review/run` asks the provider to propose candidates from recent messages, filters secret-like content, temporary debug/run state, uncertain claims, overly specific local/cache/generated paths, and obvious `user` / `agent` / `project` scope mismatches, `GET/POST /memory/review/candidates` lists or creates candidates, `POST /memory/review/accept` promotes a pending candidate into `memory_items`, and `POST /memory/review/reject` rejects it without writing durable memory. Rejected candidates suppress later identical suggestions for the same session/scope/content.
