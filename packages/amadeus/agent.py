@@ -4,8 +4,6 @@ import json
 import logging
 import os
 import threading
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,8 +12,15 @@ from typing import Any, Callable, Iterable
 from uuid import uuid4
 
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
+from amadeus.harness import DEFAULT_HARNESSES_CONFIG_PATH, HarnessContext, HarnessRegistry
 from amadeus.memory import MessageMemoryStore
 from amadeus.memory_safety import evaluate_memory_candidate
+from amadeus.model import (
+    OpenAICompatibleChatModel,
+    first_choice_message,
+    is_context_overflow_error,
+    parse_json_object_from_text,
+)
 from amadeus.tool_runtime import (
     DEFAULT_TOOLS_CONFIG_PATH,
     ToolAuditLog,
@@ -30,6 +35,7 @@ from amadeus.tool_runtime import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_CONFIG_PATH = DEFAULT_TOOLS_CONFIG_PATH
 RUNTIME_CONFIG_PATH = REPO_ROOT / "configs" / "runtime.yaml"
+HARNESSES_CONFIG_PATH = DEFAULT_HARNESSES_CONFIG_PATH
 MEMORY_PREFETCH_LIMIT = 3
 MEMORY_PREFETCH_SNIPPET_CHARS = 280
 CONVERSATION_SUMMARY_CONTEXT_CHARS = 4000
@@ -162,14 +168,14 @@ class AgentRuntime:
         audio_runtime: AudioRuntime | None = None,
         tools_config_path: Path = TOOLS_CONFIG_PATH,
         runtime_config_path: Path = RUNTIME_CONFIG_PATH,
+        harnesses_config_path: Path = HARNESSES_CONFIG_PATH,
     ) -> None:
         load_dotenv()
         self.memory_store = memory_store
         self.audio_runtime = audio_runtime
-        self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com").rstrip("/")
-        self.api_key = os.environ.get("OPENAI_API_KEY", "")
-        self.model = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
+        self.model_client = OpenAICompatibleChatModel()
         self.tool_registry = ToolRegistry(config_path=tools_config_path)
+        self.harness_registry = HarnessRegistry.from_config(harnesses_config_path)
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
@@ -179,13 +185,30 @@ class AgentRuntime:
         self._memory_review_cooldown_until: dict[str, float] = {}
         self._memory_review_last_message_id: dict[str, int] = {}
         logger.info(
-            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s runtimeConfig=%s memoryDb=%s",
+            "Initialized AgentRuntime model=%s baseUrl=%s toolsConfig=%s runtimeConfig=%s harnessesConfig=%s memoryDb=%s",
             self.model,
             self.base_url,
             tools_config_path,
             runtime_config_path,
+            harnesses_config_path,
             memory_store.database_path,
         )
+
+    @property
+    def base_url(self) -> str:
+        return self.model_client.base_url
+
+    @property
+    def api_key(self) -> str:
+        return self.model_client.api_key
+
+    @api_key.setter
+    def api_key(self, value: str) -> None:
+        self.model_client.api_key = value
+
+    @property
+    def model(self) -> str:
+        return self.model_client.model
 
     def _load_runtime_config(self, *, reason: str) -> dict[str, dict[str, int | float]]:
         runtime_config = parse_runtime_config(self.runtime_config_path)
@@ -301,13 +324,7 @@ class AgentRuntime:
         if budget_summary_event:
             yield budget_summary_event
 
-        yield AgentEvent("assistant.state", {"state": "thinking"})
-        yield AgentEvent("character.behavior", {
-            "emotion": "focused",
-            "expression": "serious",
-            "motion": "think",
-            "intensity": 0.6,
-        })
+        yield from self._emit_assistant_state(session_id, turn_id, "thinking")
 
         try:
             tool_decision = self._request_tool_decision(history)
@@ -318,12 +335,12 @@ class AgentRuntime:
                     tool_decision = self._request_tool_decision(history)
                 except RuntimeError as retry_error:
                     logger.info("Tool-decision provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
-                    yield AgentEvent("assistant.state", {"state": "error"})
+                    yield from self._emit_assistant_state(session_id, turn_id, "error")
                     yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
                     return
             else:
                 logger.info("Tool-decision provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
-                yield AgentEvent("assistant.state", {"state": "error"})
+                yield from self._emit_assistant_state(session_id, turn_id, "error")
                 yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
                 return
 
@@ -341,13 +358,7 @@ class AgentRuntime:
                 for event in self._execute_tool_call(session_id, turn_id, tool_call, request_permission, history, guardrail):
                     yield event
 
-        yield AgentEvent("assistant.state", {"state": "speaking"})
-        yield AgentEvent("character.behavior", {
-            "emotion": "neutral",
-            "expression": "smile",
-            "motion": "talk",
-            "intensity": 0.5,
-        })
+        yield from self._emit_assistant_state(session_id, turn_id, "speaking")
         assistant_text = ""
         try:
             for delta in self._stream_final_response(history):
@@ -363,12 +374,12 @@ class AgentRuntime:
                         yield AgentEvent("assistant.delta", {"text": delta})
                 except RuntimeError as retry_error:
                     logger.info("Final response provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
-                    yield AgentEvent("assistant.state", {"state": "error"})
+                    yield from self._emit_assistant_state(session_id, turn_id, "error")
                     yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
                     return
             else:
                 logger.info("Final response provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
-                yield AgentEvent("assistant.state", {"state": "error"})
+                yield from self._emit_assistant_state(session_id, turn_id, "error")
                 yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
                 return
 
@@ -401,13 +412,7 @@ class AgentRuntime:
             else:
                 logger.info("Runtime audio fallback sessionId=%s turnId=%s fallback=%s reason=%s", session_id, turn_id, audio_result.fallback, audio_result.reason)
 
-        yield AgentEvent("assistant.state", {"state": "idle"})
-        yield AgentEvent("character.behavior", {
-            "emotion": "neutral",
-            "expression": "neutral",
-            "motion": "idle",
-            "intensity": 0.4,
-        })
+        yield from self._emit_assistant_state(session_id, turn_id, "idle")
 
     def tool_permission_state(self) -> list[dict[str, Any]]:
         return self.tool_registry.permission_state()
@@ -1034,10 +1039,8 @@ class AgentRuntime:
             "stream": False,
             "temperature": 0,
         }
-        data = self._post_json("/chat/completions", payload)
-        choices = data.get("choices") if isinstance(data.get("choices"), list) else []
-        first = choices[0] if choices and isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
+        data = self.model_client.post_chat_completion(payload)
+        message = first_choice_message(data)
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("summary provider returned empty content")
@@ -1106,10 +1109,8 @@ class AgentRuntime:
             "stream": False,
             "temperature": 0,
         }
-        data = self._post_json("/chat/completions", payload)
-        choices = data.get("choices") if isinstance(data.get("choices"), list) else []
-        first = choices[0] if choices and isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
+        data = self.model_client.post_chat_completion(payload)
+        message = first_choice_message(data)
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("memory review provider returned empty content")
@@ -1171,7 +1172,7 @@ class AgentRuntime:
             sorted(args.keys()),
         )
 
-        yield AgentEvent("assistant.state", {"state": "tool-running"})
+        yield from self._emit_assistant_state(session_id, turn_id, "tool-running")
         yield AgentEvent("tool.started", {
             "toolName": tool_name,
             "displayName": spec.display_name if spec else f"Running {tool_name}",
@@ -1381,11 +1382,8 @@ class AgentRuntime:
             "stream": False,
             "temperature": 0,
         }
-        data = self._post_json("/chat/completions", payload)
-        choices = data.get("choices") if isinstance(data.get("choices"), list) else []
-        first = choices[0] if choices and isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
-        return message
+        data = self.model_client.post_chat_completion(payload)
+        return first_choice_message(data)
 
     def _stream_final_response(self, messages: list[dict[str, Any]]) -> Iterable[str]:
         payload = {
@@ -1394,142 +1392,18 @@ class AgentRuntime:
             "stream": True,
             "temperature": 0.7,
         }
-        request_start = perf_counter()
-        chunk_count = 0
-        content_chars = 0
-        logger.info(
-            "Provider stream request starting path=%s model=%s messageCount=%s timeoutSeconds=%s",
-            "/chat/completions",
-            self.model,
-            len(messages),
-            120,
-        )
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=self._headers(),
-            method="POST",
-        )
+        yield from self.model_client.stream_chat_completion(payload)
 
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                logger.info(
-                    "Provider stream response opened path=%s model=%s status=%s elapsedMs=%s",
-                    "/chat/completions",
-                    self.model,
-                    getattr(response, "status", None),
-                    round((perf_counter() - request_start) * 1000),
-                )
-                for raw_line in response:
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data:"):
-                        continue
-
-                    data = line[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-
-                    try:
-                        payload_data = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-
-                    choices = payload_data.get("choices") if isinstance(payload_data.get("choices"), list) else []
-                    first = choices[0] if choices and isinstance(choices[0], dict) else {}
-                    delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
-                    content = delta.get("content")
-                    if isinstance(content, str) and content:
-                        chunk_count += 1
-                        content_chars += len(content)
-                        yield content
-                logger.info(
-                    "Provider stream request finished path=%s model=%s chunks=%s contentChars=%s elapsedMs=%s",
-                    "/chat/completions",
-                    self.model,
-                    chunk_count,
-                    content_chars,
-                    round((perf_counter() - request_start) * 1000),
-                )
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            logger.info(
-                "Provider stream request failed path=%s model=%s status=%s elapsedMs=%s bodyChars=%s",
-                "/chat/completions",
-                self.model,
-                error.code,
-                round((perf_counter() - request_start) * 1000),
-                len(body),
-            )
-            raise RuntimeError(f"Provider returned {error.code}: {body or error.reason}") from error
-        except OSError as error:
-            logger.info(
-                "Provider stream request failed path=%s model=%s error=%s elapsedMs=%s",
-                "/chat/completions",
-                self.model,
-                error,
-                round((perf_counter() - request_start) * 1000),
-            )
-            raise RuntimeError(str(error)) from error
-
-    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        request_start = perf_counter()
-        serialized_payload = json.dumps(payload).encode("utf-8")
-        logger.info(
-            "Provider JSON request starting path=%s model=%s stream=%s messageCount=%s toolCount=%s payloadBytes=%s timeoutSeconds=%s",
-            path,
-            payload.get("model"),
-            payload.get("stream"),
-            len(payload.get("messages", [])) if isinstance(payload.get("messages"), list) else None,
-            len(payload.get("tools", [])) if isinstance(payload.get("tools"), list) else None,
-            len(serialized_payload),
-            60,
-        )
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=serialized_payload,
-            headers=self._headers(),
-            method="POST",
-        )
-
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                raw_body = response.read().decode("utf-8")
-                logger.info(
-                    "Provider JSON request finished path=%s model=%s status=%s responseChars=%s elapsedMs=%s",
-                    path,
-                    payload.get("model"),
-                    getattr(response, "status", None),
-                    len(raw_body),
-                    round((perf_counter() - request_start) * 1000),
-                )
-                data = json.loads(raw_body)
-                return data if isinstance(data, dict) else {}
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            logger.info(
-                "Provider JSON request failed path=%s model=%s status=%s elapsedMs=%s bodyChars=%s",
-                path,
-                payload.get("model"),
-                error.code,
-                round((perf_counter() - request_start) * 1000),
-                len(body),
-            )
-            raise RuntimeError(f"Provider returned {error.code}: {body or error.reason}") from error
-        except (OSError, json.JSONDecodeError) as error:
-            logger.info(
-                "Provider JSON request failed path=%s model=%s error=%s elapsedMs=%s",
-                path,
-                payload.get("model"),
-                error,
-                round((perf_counter() - request_start) * 1000),
-            )
-            raise RuntimeError(str(error)) from error
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def _emit_assistant_state(self, session_id: str, turn_id: str | None, state: str) -> Iterable[AgentEvent]:
+        event = AgentEvent("assistant.state", {"state": state})
+        yield event
+        context = HarnessContext(session_id=session_id, turn_id=turn_id, runtime_state={"assistantState": state})
+        harness_event = {"type": event.type, "payload": event.payload}
+        for emitted in self.harness_registry.observe_event(context, harness_event):
+            event_type = emitted.get("type")
+            payload = emitted.get("payload")
+            if isinstance(event_type, str) and isinstance(payload, dict):
+                yield AgentEvent(event_type, payload)
 
     def _build_system_prompt(self) -> str:
         prompt_parts = [
@@ -1780,44 +1654,3 @@ def parse_float_env(name: str, default: float, *, minimum: float, maximum: float
     if parsed < minimum or parsed > maximum:
         return default
     return parsed
-
-
-def parse_json_object_from_text(text: str) -> dict[str, Any]:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        stripped = "\n".join(lines).strip()
-
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise RuntimeError("provider returned invalid JSON")
-        try:
-            parsed = json.loads(stripped[start:end + 1])
-        except json.JSONDecodeError as error:
-            raise RuntimeError("provider returned invalid JSON") from error
-
-    if not isinstance(parsed, dict):
-        raise RuntimeError("provider returned JSON that is not an object")
-    return parsed
-
-
-def is_context_overflow_error(error: RuntimeError) -> bool:
-    message = str(error).lower()
-    needles = (
-        "context length",
-        "context window",
-        "maximum context",
-        "too many tokens",
-        "payload too large",
-        "request too large",
-        "413",
-    )
-    return any(needle in message for needle in needles)
