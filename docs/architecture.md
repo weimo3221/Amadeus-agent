@@ -270,6 +270,10 @@ Current desktop to server events:
 user.message
 session.reset
 tool.permission.response
+memory.review.list
+memory.review.run
+memory.review.accept
+memory.review.reject
 ```
 
 Current server to desktop events:
@@ -277,6 +281,7 @@ Current server to desktop events:
 ```text
 server.hello
 memory.updated
+memory.context.used
 assistant.delta
 assistant.message
 assistant.state
@@ -284,7 +289,11 @@ character.behavior
 audio.tts-ready
 tool.started
 tool.finished
+tool.audit
 tool.permission.request
+memory.review.candidates
+memory.review.jobs
+memory.review.updated
 error
 ```
 
@@ -294,22 +303,33 @@ Current bridge to Python runtime endpoints:
 GET /health
 GET /runtime/health
 GET /tools/list
+GET /tools/audit
+POST /runtime/config/reload
 POST /agent/turn
 POST /tools/execute
 POST /tools/permission
 GET /memory/count
 GET /memory/messages
 GET /memory/context/diagnostics
+GET /memory/search
 GET /memory/items
 GET /memory/summary
+GET /memory/review/candidates
+GET /memory/review/jobs
 POST /memory/messages
 POST /memory/items
 POST /memory/items/delete
+POST /memory/review/candidates
+POST /memory/review/accept
+POST /memory/review/reject
+POST /memory/review/run
 POST /memory/summary
 POST /memory/compact
 POST /memory/reset
 POST /audio/speak
 GET /audio/files/{relativePath}
+GET /live2d/config
+GET /live2d/models/{relativePath}
 ```
 
 Planned but not yet implemented as the active current protocol:

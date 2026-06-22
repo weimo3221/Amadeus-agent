@@ -5,8 +5,8 @@ Amadeus Agent is a desktop virtual character agent designed around a Live2D pres
 The project is now in a Python-first migration stage:
 
 - `apps/desktop`: desktop Live2D shell, chat UI, runtime audio playback, and permission UI
-- `apps/server`: TypeScript bridge between the desktop and Python runtime
-- `packages/amadeus`: preferred Python agent turn path, memory, tools, runtime HTTP API, and future model/skills/harness boundaries
+- `apps/server`: TypeScript bridge between the desktop and Python runtime, plus local Live2D/audio static serving for the renderer
+- `packages/amadeus`: preferred Python agent turn path, provider boundary, Memory v2 context assembly, ToolRuntime, audio/Live2D runtime helpers, and runtime HTTP API
 - `packages/live2d-stage`: intended desktop Live2D rendering adapter boundary, not yet the active implementation package
 
 ## Current flow
@@ -18,6 +18,11 @@ Preferred path today:
 3. Python runtime assembles API-call-time memory context, performs tool decisions, executes Python tools, streams assistant events, and may emit runtime audio.
 4. `apps/server` relays runtime events back to desktop.
 5. Desktop updates chat, permission UI, audio playback, and Live2D behavior.
+
+Developer diagnostics:
+
+- `GET /runtime/health` reports structured local health for runtime, model config, memory DB, tools, Live2D, audio, and effective config.
+- `GET /memory/context/diagnostics?sessionId=default&limit=10` reports recent per-session Memory v2 context assembly decisions.
 
 Runtime failure behavior:
 

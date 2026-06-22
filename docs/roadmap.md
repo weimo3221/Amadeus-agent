@@ -16,7 +16,9 @@ The next implementation pass should proceed in this order:
 2. Done: add the first minimal harness boundary under `packages/amadeus/harness` plus `configs/harnesses.yaml`, starting with state-to-Live2D behavior mapping rather than a broad framework.
 3. Done: add a real Python TTS provider behind `packages/amadeus/audio.py`, with the first target being a narrow GPT-SoVITS adapter that emits `audio.tts-ready` when it can produce a wav file.
 4. Done: move the default Live2D model to a local `models/live2d` bundle so desktop startup and E2E coverage do not depend on a remote test URL.
-5. Keep ToolRuntime and Memory v2 in consolidation mode: extend them only for real gaps found while implementing model, harness, audio, and desktop flows.
+5. Done: expose developer diagnostics for recent memory context assembly through `GET /memory/context/diagnostics`.
+6. Done: expose structured local runtime health checks through `GET /runtime/health`.
+7. Keep ToolRuntime and Memory v2 in consolidation mode: extend them only for real gaps found while implementing model, harness, audio, and desktop flows.
 
 ## Phase 0: Project Skeleton
 
@@ -46,8 +48,8 @@ Target deliverables:
 
 Notes:
 
-- The current MVP still loads a remote Live2D test model by default.
-- Moving to a local model bundle under `models/live2d` is still follow-up work.
+- The current default model is local `models/live2d/hiyori-free`.
+- Additional local models can be added under `models/live2d` and selected through `configs/harnesses.yaml` plus the bridge model-switch path.
 
 Reference:
 
@@ -181,7 +183,8 @@ Target deliverables:
 Current status:
 
 - Core Memory v2 mechanics are now implemented: SQLite FTS retrieval, stable Markdown memory, structured memory facts, explicit memory tools, review candidates, accept/reject flows, automatic review gates, runtime memory config, schema metadata, and memory safety filters.
-- Remaining work is consolidation: context assembly quality, summary/profile policy, compact-and-retry confidence, review quality tuning, and diagnostics for retrieval/proposal decisions.
+- Context assembly is now API-call-time only and emits `memory.context.used`; recent diagnostics are retained per session in an in-memory ring buffer and exposed through `GET /memory/context/diagnostics`.
+- Remaining work is consolidation: context assembly quality, summary/profile policy, compact-and-retry confidence, review quality tuning, and operational surfaces discovered through real usage.
 
 ## Phase 9: Live2D and Audio Harnesses
 

@@ -92,6 +92,7 @@ Fallback path today:
   - permission broker resolution behavior is covered
 - Python runtime HTTP handler tests now cover the local sidecar boundary.
   - `/tools/list` exposes effective permission state and enabled schemas
+  - `/runtime/health` exposes structured local health checks for runtime, model config, memory DB, tools, Live2D, audio, and effective config
   - `/tools/permission` returns unresolved for unknown request IDs
   - `/agent/turn` streams missing API key failures as desktop-compatible NDJSON events
 - TypeScript bridge tests now cover the Python-first relay boundary.
@@ -126,7 +127,7 @@ Fallback path today:
 - Local Live2D model storage is active.
   - Local models live under `models/live2d`, with `hiyori-free` as the current default and `hiyori-pro` available for switching.
   - `configs/harnesses.yaml` selects the active model by id/path.
-  - The Node bridge server serves `/live2d/config` and `/live2d/models/...` on `8788`, so the desktop renderer can resolve the configured local model through the same server it already uses for WebSocket traffic before falling back to the remote test model.
+  - The Node bridge server serves `/live2d/config` and `/live2d/models/...` on `8788`, so the desktop renderer resolves the configured local model through the same server it already uses for WebSocket traffic; the remote model path is now only a defensive fallback.
 - First-pass real TTS provider boundary is active.
   - `packages/amadeus/audio.py` now includes a config-gated GPT-SoVITS HTTP provider and a macOS `say` provider.
   - The default `tts.default` is `auto`, preferring GPT-SoVITS when configured and falling back to macOS `say` when available.
@@ -158,15 +159,13 @@ Fallback path today:
 
 - Expand Electron end-to-end coverage beyond the current startup smoke to cover Live2D loading and real user/runtime interactions.
 - Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone.
-- Add a real Python TTS provider so runtime audio becomes the practical default, not only the interface contract.
-- Add a local Live2D model bundle under `models/live2d` so the app does not depend on remote model URLs.
 - Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
 - Turn placeholder runtime boundaries into real modules where needed:
   - `packages/amadeus/skills.py`
-  - `packages/amadeus/live2d.py`
+  - future audio harness module
   - `packages/live2d-stage`
 
 ## Completed
@@ -186,7 +185,7 @@ Status: complete for MVP.
 - Added Electron + Vite desktop app in `apps/desktop`.
 - Implemented transparent frameless window, always-on-top behavior, minimize support, and pin/unpin controls.
 - Added Live2D stage, debug controls, pointer-following, click reaction, and loading timeout.
-- The current model is still loaded from a remote test URL.
+- The current default model is served from the local `models/live2d/hiyori-free` bundle, with `hiyori-pro` available for switching.
 
 ### Phase 2: Local Agent Runtime
 
@@ -308,29 +307,28 @@ What is already done:
 - Server tool diagnostics now query Python `/tools/list`; when Python is unavailable, the desktop gets an explicit disabled `python_runtime_unavailable` tool status instead of a stale TS mirror.
 - `npm test` covers deterministic Python runtime behavior, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, and desktop renderer runtime UI behavior.
 
-What is not done yet:
+Current limitations:
 
 - `apps/server` no longer contains the legacy TypeScript fallback loop or local TypeScript tool registry mirror.
 - Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and an Electron startup smoke. Full Live2D/interaction end-to-end coverage is still missing.
-- The active provider code still lives inline in `packages/amadeus/agent.py`; `model.py` is still a future abstraction boundary.
-- `skills.py` and `live2d.py` are still placeholder boundaries rather than mature runtime modules.
+- `packages/amadeus/model.py` is active as the first-pass provider boundary, but richer provider profile/fallback behavior is still future work.
+- `skills.py` is still a placeholder boundary rather than a mature runtime module; `live2d.py` owns the local model library but not the desktop renderer adapter.
 - `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/main.ts`.
 
 ## Next Recommended Phase
 
-### Phase 7 Continued: ToolRuntime Hardening
+### Runtime/Harness Operational Polish
 
-Goal: turn the first ToolRuntime slice into a production-grade tool execution layer.
+Goal: keep ToolRuntime and Memory v2 in consolidation mode while improving the operational surfaces around the Python runtime, Live2D/audio harnesses, and desktop integration.
 
 Planned tasks:
 
-- Extend `ToolContext` so tools receive audit metadata explicitly. Done: `ToolContext` now carries turn/tool-call ids, tool name, permission request/decision metadata, and audit metadata.
-- Extend cancellation beyond the current cooperative signal if future tools need stronger process-level interruption.
-- Extend audit records with richer query APIs if diagnostics UI needs them. Done: persisted audit records are queryable through `GET /tools/audit`.
-- Extend result preview/compression with more per-tool policies as new high-volume tools are added.
-- Extend no-progress detection with richer semantic policies if needed.
-- Keep expanding Electron end-to-end coverage on the Python path before removing remaining TypeScript bridge scaffolding.
-- Keep GPT-SoVITS provider work parked until its pretrained base models are installed.
+- Keep `GET /runtime/health`, `GET /tools/audit`, memory review jobs, and context diagnostics as developer-facing observability surfaces rather than user-facing memory UI.
+- Extend cancellation beyond the current cooperative signal only if future tools need stronger process-level interruption.
+- Extend result preview/compression and no-progress detection only as new high-volume tools expose real gaps.
+- Add desktop capability/playback feedback so Live2D and audio harnesses can react to actual renderer/audio state.
+- Keep expanding Electron end-to-end coverage on the Python path, especially Live2D loading, model switching, audio playback, and real user/runtime interactions.
+- Keep GPT-SoVITS high-quality voice work parked until its pretrained base models and API configuration are settled.
 
 The broader upgrade plan is documented in `docs/agent-maturity-upgrade-plan.md`.
 
@@ -368,15 +366,16 @@ Started.
 - Memory review job observability is now persisted in SQLite `memory_review_jobs`: every manual/automatic review records `running`, `completed`, `skipped`, or `failed` state, trigger, skip reason/error, source message range/count, proposed/saved/suppressed candidate counts, and duration.
 - Python exposes `GET /memory/review/jobs`, the TypeScript bridge relays it as `memory.review.jobs`, and the desktop memory review panel shows the latest job summary next to the pending candidate count.
 - Summary compaction is now token-budget-aware: runtime estimates context tokens before provider calls and after turns, loads its defaults from `configs/runtime.yaml`, supports explicit HTTP reload and environment overrides such as `AMADEUS_CONTEXT_MAX_TOKENS`, dynamically reduces the recent-message keep window, and retries once after provider context-overflow errors.
-- Next: close Phase 8 with small operational polish, then start Phase 9 Live2D/audio harness work.
+- Next: keep Memory v2 in consolidation mode and move focus to runtime/harness operational polish.
 
 ### Phase 9: Live2D and Audio Harnesses
 
-Not started.
+Started.
 
-- Turn Live2D and audio into installable runtime harnesses instead of ad hoc runtime/renderer coupling.
-- Add `configs/harnesses.yaml`.
-- Add capability feedback from desktop to runtime.
+- First harness slice exists in `packages/amadeus/harness`, with `configs/harnesses.yaml` selecting Live2D behavior/model config.
+- Local Live2D model storage and bridge serving are active through `models/live2d`, `/live2d/config`, and `/live2d/models/...`.
+- Runtime audio provider selection and cache are active through `packages/amadeus/audio.py`, with GPT-SoVITS config support, macOS `say` fallback, `/audio/speak`, and `audio.tts-ready`.
+- Remaining work: audio harness boundary, desktop capability feedback, playback feedback, richer Live2D commands, and audio-driven lipsync.
 
 ### Phase 11: Proactive Agent
 
@@ -401,14 +400,14 @@ Not started.
 
 ## Known Issues
 
-- The desktop app currently uses a remote Live2D test model URL. A local model should be added under `models/live2d`.
+- The desktop app now uses local Live2D model bundles by default; the remote model path should only remain as a defensive fallback.
 - Live2D behavior mapping is currently alias-based and depends on the available motions/expressions in the loaded model.
-- The current Live2D model and Cubism runtime are loaded from remote URLs, so network failures can still prevent the model from appearing.
+- The Live2D Cubism runtime still depends on renderer-side package/runtime availability, so full Live2D startup needs deeper Electron coverage.
 - GPT-SoVITS high-quality voice integration still requires a running GPT-SoVITS API and model assets; until then macOS `say` provides the local practical TTS loop.
 - Lipsync is currently a timed mouth loop, not phoneme-accurate.
 - SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
 - Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and Electron startup smoke behavior. Full Live2D/interaction end-to-end coverage is still missing.
-- Placeholder boundaries still need real implementations or cleanup: `model.py`, `skills.py`, `live2d.py`, and `packages/live2d-stage`.
+- Placeholder or partial boundaries still need real implementations or cleanup: `skills.py`, the future audio harness, richer Live2D adapter packaging, and `packages/live2d-stage`.
 
 ## Useful Commands
 

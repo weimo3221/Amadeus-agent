@@ -25,6 +25,7 @@ Current progress calibration:
 
 - ToolRuntime should be treated as mostly implemented and entering hardening mode. Do not start a second tool execution framework; extend `amadeus.tool_runtime` when new reliability needs appear.
 - Memory v2 should be treated as core-implemented and entering consolidation mode. A first-pass `ContextAssembler` now owns API-call-time summary, structured memory, and FTS retrieval injection plus `memory.context.used` diagnostics; the runtime retains the most recent diagnostics per session in an in-memory ring buffer for developer inspection. The next memory work should focus on summary/profile policy, review quality, overflow behavior, and diagnostics endpoints rather than basic storage primitives.
+- Runtime diagnostics now have two layers: legacy `GET /health` for compatibility and structured `GET /runtime/health` for local health checks across runtime, model config, memory DB, tools, Live2D, audio, and effective runtime config. Keep this endpoint local and deterministic; do not make it call external model or TTS providers.
 - The first runtime harness slice is in place: `packages/amadeus/harness` loads `configs/harnesses.yaml`, and the Live2D harness maps `assistant.state` into `character.behavior`. Continue maturing the model boundary only as needed for additional providers or richer provider-specific response handling.
 - The first practical TTS loop is in place: `packages/amadeus/audio.py` can auto-select GPT-SoVITS when configured, otherwise use macOS `say`/`afconvert` as a local TTS provider, cache generated wav files under the local audio library, and return `audio.tts-ready` through the existing runtime path.
 - Local Live2D model storage is in place: `models/live2d` stores switchable local models, `configs/harnesses.yaml` selects the active model, and the Node bridge server serves `/live2d/config` plus `/live2d/models/...` for the desktop renderer on the same `8788` HTTP origin used by the WebSocket bridge. The Python runtime also has the same local library boundary for later direct runtime use. The default model is now local `hiyori-free`.
@@ -93,11 +94,11 @@ Do not copy the whole project. Pull over only the specific patterns needed for t
 - Keep desktop voice playback as the current practical fallback while the Python audio interface matures.
 - Keep Python as the preferred runtime owner and TypeScript as the bridge owner.
 - Add new Live2D/audio behavior through harnesses, not through ad hoc server conditionals.
-- Add a local Live2D bundle later; the current MVP still loads a remote test model.
+- Keep Live2D model bundles under `models/live2d`; new models should be added through a manifest/model directory plus `configs/harnesses.yaml` selection rather than hardcoded renderer URLs.
 
 ## Harness Config Direction
 
-Add a `configs/harnesses.yaml` file when the first harness implementation lands:
+The first harness implementation and `configs/harnesses.yaml` are already active. The shape is:
 
 ```yaml
 harnesses:

@@ -49,6 +49,15 @@ export interface RuntimeEvent<TType extends string = string, TPayload = unknown>
 }
 ```
 
+### memory.review.*
+
+Desktop can request memory review data and actions through the bridge:
+
+- `memory.review.list`: list pending/recent candidates and jobs.
+- `memory.review.run`: trigger a manual review for the current session.
+- `memory.review.accept`: promote one candidate into durable `memory_items`.
+- `memory.review.reject`: reject one candidate without writing durable memory.
+
 ## Current Server to Desktop Events
 
 ### server.hello
@@ -75,6 +84,10 @@ export interface RuntimeEvent<TType extends string = string, TPayload = unknown>
   }
 }
 ```
+
+### memory.review.candidates / memory.review.jobs / memory.review.updated
+
+The bridge emits memory review state in response to desktop `memory.review.*` requests and after review actions. Candidates are pending proposals only; durable memory is written only after an accept action.
 
 ### assistant.delta
 
@@ -300,23 +313,35 @@ GET /health
 GET /runtime/health
 GET /tools/list
 GET /tools/audit
+POST /runtime/config/reload
 POST /agent/turn
 POST /tools/execute
 POST /tools/permission
 GET /memory/count
 GET /memory/messages
 GET /memory/context/diagnostics
+GET /memory/search
 GET /memory/items
 GET /memory/summary
+GET /memory/review/candidates
+GET /memory/review/jobs
 POST /memory/messages
 POST /memory/items
 POST /memory/items/delete
+POST /memory/review/candidates
+POST /memory/review/accept
+POST /memory/review/reject
+POST /memory/review/run
 POST /memory/summary
 POST /memory/compact
 POST /memory/reset
 POST /audio/speak
 GET /audio/files/{relativePath}
+GET /live2d/config
+GET /live2d/models/{relativePath}
 ```
+
+`GET /runtime/health` is the structured local diagnostics endpoint. It returns an aggregate `status` plus per-subsystem checks for runtime, model config, memory DB, tools, Live2D, audio, and effective runtime config. It intentionally avoids live external provider calls so startup diagnostics stay fast and deterministic.
 
 Python runtime responses from `/agent/turn` are streamed as NDJSON using the same event names where possible.
 

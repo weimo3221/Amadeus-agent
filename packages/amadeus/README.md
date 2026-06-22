@@ -120,6 +120,7 @@ http://127.0.0.1:8790
 - `GET /runtime/health`：structured local health checks for runtime, model config, memory DB, tools, Live2D, audio, and effective config.
 - `GET /tools/list`：Python-owned source for effective tool permission state and enabled schemas.
 - `GET /tools/audit?sessionId=default&toolName=search_files&decision=finished&ok=true&limit=100`：query persisted tool audit records for diagnostics.
+- `POST /runtime/config/reload`：reload effective memory/context runtime config from YAML plus environment overrides.
 - `POST /agent/turn`
 - `POST /tools/execute`：compatibility execution endpoint for direct tool diagnostics; normal turns execute tools inside Python `AgentRuntime`.
 - `POST /tools/permission`
@@ -129,16 +130,24 @@ http://127.0.0.1:8790
 - `GET /memory/search?sessionId=default&query=hello&limit=10`
 - `GET /memory/items?scope=user&query=preference&limit=20`
 - `GET /memory/summary?sessionId=default`
+- `GET /memory/review/candidates?sessionId=default&status=pending&limit=50`
+- `GET /memory/review/jobs?sessionId=default&limit=20`
 - `POST /memory/messages`
 - `POST /memory/items`
 - `POST /memory/items/delete`
+- `POST /memory/review/candidates`
+- `POST /memory/review/accept`
+- `POST /memory/review/reject`
+- `POST /memory/review/run`
 - `POST /memory/summary`
 - `POST /memory/compact`
 - `POST /memory/reset`
 - `POST /audio/speak`
 - `GET /audio/files/{relativePath}`
+- `GET /live2d/config`
+- `GET /live2d/models/{relativePath}`
 
 ## Notes
 
 - `/agent/turn` returns an NDJSON event stream.
-- Current test coverage is centered on `tests/test_python_agent_runtime.py`, which covers deterministic runtime behavior in `AgentRuntime` rather than full HTTP/bridge integration.
+- Python runtime coverage includes deterministic `AgentRuntime` unit tests and local HTTP sidecar tests in `tests/test_python_runtime_http.py`. Full desktop behavior is covered higher up by server/desktop tests.
