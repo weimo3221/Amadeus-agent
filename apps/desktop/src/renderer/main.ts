@@ -434,6 +434,15 @@ function updateModelCapabilitySummary(model: Live2DResolvedModel, capabilities: 
   ].join(' · ')
 }
 
+function currentLive2DCapabilities() {
+  return {
+    available: Boolean(live2dController),
+    modelId: activeLive2DModelId || undefined,
+    expressions: live2dController?.capabilities.expressions ?? [],
+    motions: live2dController?.capabilities.motions ?? [],
+  }
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: number | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -756,6 +765,7 @@ async function loadLive2DModel(modelConfig: Live2DResolvedModel): Promise<void> 
   if (live2dModelSelect && live2dModelSelect.value !== modelConfig.id) {
     live2dModelSelect.value = modelConfig.id
   }
+  runtimeUi.reportDesktopCapabilities()
   void live2dController.applyState('idle')
   setStatus('Live2D ready', false)
 }
@@ -850,6 +860,7 @@ const runtimeUi = new RuntimeUiController({
     applyBehavior: (behavior) => live2dController?.applyBehavior(behavior),
     startMouthLoop: () => live2dController?.startMouthLoop(),
     stopMouthLoop: () => live2dController?.stopMouthLoop(),
+    getCapabilities: () => currentLive2DCapabilities(),
   },
 })
 

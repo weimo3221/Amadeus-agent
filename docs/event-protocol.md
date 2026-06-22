@@ -49,6 +49,65 @@ export interface RuntimeEvent<TType extends string = string, TPayload = unknown>
 }
 ```
 
+### desktop.capabilities
+
+```json
+{
+  "type": "desktop.capabilities",
+  "payload": {
+    "desktop": {
+      "runtime": "electron",
+      "protocolVersion": 1
+    },
+    "live2d": {
+      "available": true,
+      "modelId": "hiyori-free",
+      "expressions": ["smile"],
+      "motions": ["Idle", "TapBody"]
+    },
+    "audio": {
+      "runtimeAudio": true,
+      "speechSynthesis": true,
+      "voiceCount": 12
+    }
+  }
+}
+```
+
+Current behavior:
+
+- Desktop sends this after `server.hello` and again after a Live2D model finishes loading.
+- The bridge observes it as harness feedback. It is not yet forwarded to Python policy code.
+
+### audio.playback-started / audio.playback-ended / audio.playback-error
+
+```json
+{
+  "type": "audio.playback-started",
+  "payload": {
+    "source": "runtime_audio",
+    "audioUrl": "http://127.0.0.1:8790/audio/files/cache/tts.wav"
+  }
+}
+```
+
+```json
+{
+  "type": "audio.playback-error",
+  "payload": {
+    "source": "runtime_audio",
+    "audioUrl": "http://127.0.0.1:8790/audio/files/cache/tts.wav",
+    "reason": "audio_element_error"
+  }
+}
+```
+
+Current behavior:
+
+- Desktop emits playback feedback for runtime audio start, end, and error.
+- On runtime audio error or browser play rejection, desktop falls back to system `speechSynthesis`.
+- These events are the first device-feedback surface for later audio harness and lipsync coordination.
+
 ### memory.review.*
 
 Desktop can request memory review data and actions through the bridge:
@@ -351,14 +410,10 @@ These are discussed elsewhere in the docs but are not part of the current implem
 
 ### Planned desktop to server events
 
-- `desktop.capabilities`
 - `character.capabilities`
 - `audio.capabilities`
 - `desktop.pointer`
 - `desktop.character.click`
-- `audio.playback-started`
-- `audio.playback-ended`
-- `audio.playback-error`
 - `user.voice-start`
 - `user.voice-chunk`
 - `user.voice-end`

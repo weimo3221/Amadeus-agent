@@ -1,6 +1,10 @@
 import type {
+  AudioPlaybackEndedPayload,
+  AudioPlaybackErrorPayload,
+  AudioPlaybackStartedPayload,
   AssistantState,
   CharacterBehaviorPayload,
+  DesktopCapabilitiesPayload,
   HelloPayload,
   MemoryReviewCandidate,
   MemoryReviewJob,
@@ -37,6 +41,7 @@ export interface RuntimeLive2DAdapter {
   applyBehavior(behavior: CharacterBehaviorPayload): Promise<void> | void
   startMouthLoop(): void
   stopMouthLoop(): void
+  getCapabilities?(): DesktopCapabilitiesPayload['live2d']
 }
 
 export interface RuntimeUiElements {
@@ -232,6 +237,7 @@ export class RuntimeUiController {
         this.setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
         this.setToolConfigStatus(formatToolConfigStatus(event.payload))
         this.setConnection('Connected', true)
+        this.reportDesktopCapabilities()
         this.requestMemoryReviewCandidates()
         break
       case 'memory.updated':
@@ -305,6 +311,14 @@ export class RuntimeUiController {
         void this.options.live2d?.applyState('error')
         break
     }
+  }
+
+  reportDesktopCapabilities(): void {
+    if (!this.socket || this.socket.readyState !== WEB_SOCKET_OPEN) {
+      return
+    }
+
+    this.sendEvent('desktop.capabilities', this.buildDesktopCapabilities())
   }
 
   private setStatus(message: string, visible = true): void {
@@ -505,6 +519,27 @@ export class RuntimeUiController {
     this.socket?.send(JSON.stringify(event))
   }
 
+  private buildDesktopCapabilities(): DesktopCapabilitiesPayload {
+    const live2d = this.options.live2d?.getCapabilities?.() ?? {
+      available: false,
+      expressions: [],
+      motions: [],
+    }
+    const voices = this.availableVoices.length ? this.availableVoices : this.refreshVoices()
+    return {
+      desktop: {
+        runtime: 'electron',
+        protocolVersion: 1,
+      },
+      live2d,
+      audio: {
+        runtimeAudio: true,
+        speechSynthesis: Boolean(this.options.speechSynthesis),
+        voiceCount: voices.length,
+      },
+    }
+  }
+
   private refreshVoices(): SpeechSynthesisVoice[] {
     const speechSynthesis = this.options.speechSynthesis
     if (!speechSynthesis) {
@@ -635,12 +670,14 @@ export class RuntimeUiController {
 
     audio.addEventListener('play', () => {
       this.setVoiceStatus('Playing runtime audio')
+      this.sendAudioPlaybackStarted({ source: 'runtime_audio', audioUrl })
       void this.options.live2d?.applyState('speaking')
       this.options.live2d?.startMouthLoop()
     })
 
     audio.addEventListener('ended', () => {
       this.setVoiceStatus('Voice idle')
+      this.sendAudioPlaybackEnded({ source: 'runtime_audio', audioUrl })
       this.options.live2d?.stopMouthLoop()
       void this.options.live2d?.applyState('idle')
       this.currentAudio = undefined
@@ -648,6 +685,7 @@ export class RuntimeUiController {
 
     audio.addEventListener('error', () => {
       this.setVoiceStatus('Runtime audio failed; using system voice')
+      this.sendAudioPlaybackError({ source: 'runtime_audio', audioUrl, reason: 'audio_element_error' })
       this.options.live2d?.stopMouthLoop()
       this.currentAudio = undefined
       this.speak(this.lastAssistantSpeechText)
@@ -655,9 +693,22 @@ export class RuntimeUiController {
 
     void audio.play().catch(() => {
       this.setVoiceStatus('Runtime audio blocked; using system voice')
+      this.sendAudioPlaybackError({ source: 'runtime_audio', audioUrl, reason: 'play_rejected' })
       this.currentAudio = undefined
       this.speak(this.lastAssistantSpeechText)
     })
+  }
+
+  private sendAudioPlaybackStarted(payload: AudioPlaybackStartedPayload): void {
+    this.sendEvent('audio.playback-started', payload)
+  }
+
+  private sendAudioPlaybackEnded(payload: AudioPlaybackEndedPayload): void {
+    this.sendEvent('audio.playback-ended', payload)
+  }
+
+  private sendAudioPlaybackError(payload: AudioPlaybackErrorPayload): void {
+    this.sendEvent('audio.playback-error', payload)
   }
 }
 

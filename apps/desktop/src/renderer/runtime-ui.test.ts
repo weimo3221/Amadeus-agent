@@ -6,6 +6,7 @@ import type { RuntimeEvent, ServerRuntimeEvent } from '@amadeus-agent/amadeus/ev
 import {
   RuntimeUiController,
   type RuntimeAudioLike,
+  type RuntimeLive2DAdapter,
   type RuntimeSocketLike,
   type RuntimeUiElements,
 } from './runtime-ui'
@@ -161,6 +162,12 @@ class FakeAudio implements RuntimeAudioLike {
   pause(): void {
     this.pauseCalls += 1
   }
+
+  emit(type: 'play' | 'ended' | 'error'): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener()
+    }
+  }
 }
 
 class FakeTimers {
@@ -230,6 +237,18 @@ function createHarness() {
   const socket = new FakeSocket()
   const speech = new FakeSpeechSynthesis()
   const audios: FakeAudio[] = []
+  const live2d: RuntimeLive2DAdapter = {
+    applyState: () => {},
+    applyBehavior: () => {},
+    startMouthLoop: () => {},
+    stopMouthLoop: () => {},
+    getCapabilities: () => ({
+      available: true,
+      modelId: 'hiyori-free',
+      expressions: ['smile'],
+      motions: ['Idle'],
+    }),
+  }
   const controller = new RuntimeUiController({
     elements: elements as unknown as RuntimeUiElements,
     wsUrl: 'ws://runtime/ws',
@@ -245,6 +264,7 @@ function createHarness() {
     setTimeout: (handler, timeout) => timers.setTimeout(handler, timeout),
     clearTimeout: (id) => timers.clearTimeout(id),
     speechSynthesis: speech as unknown as FakeSpeechSynthesis,
+    live2d,
   })
 
   controller.bindControls()
@@ -273,6 +293,24 @@ describe('Runtime UI controller', () => {
     assert.equal(elements.memoryStatus.textContent, 'Memory: 7 messages')
     assert.equal(elements.toolConfigStatus.textContent, 'Tools: get_current_time allow, roll_dice off')
     assert.equal(socket.sent.at(-1)?.type, 'memory.review.list')
+    assert.equal(socket.sent.at(-2)?.type, 'desktop.capabilities')
+    assert.deepEqual(socket.sent.at(-2)?.payload, {
+      desktop: {
+        runtime: 'electron',
+        protocolVersion: 1,
+      },
+      live2d: {
+        available: true,
+        modelId: 'hiyori-free',
+        expressions: ['smile'],
+        motions: ['Idle'],
+      },
+      audio: {
+        runtimeAudio: true,
+        speechSynthesis: true,
+        voiceCount: 1,
+      },
+    })
   })
 
   it('renders memory review candidates and sends accept or reject actions', () => {
@@ -417,8 +455,15 @@ describe('Runtime UI controller', () => {
   })
 
   it('uses runtime audio and cancels speechSynthesis fallback after audio.tts-ready', () => {
-    const { controller, elements, timers, speech, audios } = createHarness()
+    const { controller, elements, socket, timers, speech, audios } = createHarness()
 
+    controller.connectAgentRuntime()
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'model',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
     controller.handleServerEvent(makeEvent('assistant.message', { text: 'hello with audio' }))
     controller.handleServerEvent(makeEvent('audio.tts-ready', {
       audioUrl: 'http://runtime/audio.wav',
@@ -432,6 +477,48 @@ describe('Runtime UI controller', () => {
     assert.equal(speech.spoken.length, 0)
     assert.equal(speech.cancelCalls, 1)
     assert.equal(elements.voiceStatus.textContent, 'Playing runtime audio')
+    assert.equal(socket.sent.at(-1)?.type, 'audio.playback-started')
+    assert.deepEqual(socket.sent.at(-1)?.payload, {
+      source: 'runtime_audio',
+      audioUrl: 'http://runtime/audio.wav',
+    })
+  })
+
+  it('reports runtime audio ended and error playback feedback', () => {
+    const { controller, socket, audios } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'model',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
+    controller.handleServerEvent(makeEvent('assistant.message', { text: 'hello with audio' }))
+    controller.handleServerEvent(makeEvent('audio.tts-ready', {
+      audioUrl: 'http://runtime/audio.wav',
+      durationMs: 1000,
+    }))
+    audios[0].emit('ended')
+
+    assert.equal(socket.sent.at(-1)?.type, 'audio.playback-ended')
+    assert.deepEqual(socket.sent.at(-1)?.payload, {
+      source: 'runtime_audio',
+      audioUrl: 'http://runtime/audio.wav',
+    })
+
+    controller.handleServerEvent(makeEvent('audio.tts-ready', {
+      audioUrl: 'http://runtime/broken.wav',
+      durationMs: 1000,
+    }))
+    audios[1].emit('error')
+
+    assert.equal(socket.sent.at(-1)?.type, 'audio.playback-error')
+    assert.deepEqual(socket.sent.at(-1)?.payload, {
+      source: 'runtime_audio',
+      audioUrl: 'http://runtime/broken.wav',
+      reason: 'audio_element_error',
+    })
   })
 
   it('clears permission prompts and updates tool status on tool.finished', () => {

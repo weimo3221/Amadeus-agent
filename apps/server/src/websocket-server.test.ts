@@ -580,4 +580,95 @@ describe('WebSocket Python-first integration', () => {
     assert.ok(receivedEvents.some((event) => event.type === 'memory.review.updated' && (event.payload as { accepted?: boolean }).accepted === true))
     assert.ok(receivedEvents.some((event) => event.type === 'memory.review.updated' && (event.payload as { rejected?: boolean }).rejected === true))
   })
+
+  it('observes desktop capabilities and audio playback feedback events', async (t) => {
+    const observed: Array<RuntimeEvent<string, unknown>> = []
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      countPersistedMessages: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      resolvePendingToolPermission: () => false,
+      forwardToolPermissionToPython: () => {},
+      observeDesktopFeedback(event) {
+        observed.push(event)
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws`)
+    t.after(() => {
+      closeWebSocket(socket)
+    })
+
+    socket.send(JSON.stringify({
+      id: 'client-capabilities',
+      type: 'desktop.capabilities',
+      sessionId: 'default',
+      timestamp: '2026-06-22T00:00:00.000Z',
+      payload: {
+        desktop: {
+          runtime: 'electron',
+          protocolVersion: 1,
+        },
+        live2d: {
+          available: true,
+          modelId: 'hiyori-free',
+          expressions: ['smile'],
+          motions: ['Idle'],
+        },
+        audio: {
+          runtimeAudio: true,
+          speechSynthesis: true,
+          voiceCount: 1,
+        },
+      },
+    }))
+    socket.send(JSON.stringify({
+      id: 'client-audio-started',
+      type: 'audio.playback-started',
+      sessionId: 'default',
+      timestamp: '2026-06-22T00:00:01.000Z',
+      payload: {
+        source: 'runtime_audio',
+        audioUrl: 'http://runtime/audio.wav',
+      },
+    }))
+    socket.send(JSON.stringify({
+      id: 'client-audio-ended',
+      type: 'audio.playback-ended',
+      sessionId: 'default',
+      timestamp: '2026-06-22T00:00:02.000Z',
+      payload: {
+        source: 'runtime_audio',
+        audioUrl: 'http://runtime/audio.wav',
+      },
+    }))
+    socket.send(JSON.stringify({
+      id: 'client-audio-error',
+      type: 'audio.playback-error',
+      sessionId: 'default',
+      timestamp: '2026-06-22T00:00:03.000Z',
+      payload: {
+        source: 'runtime_audio',
+        audioUrl: 'http://runtime/broken.wav',
+        reason: 'audio_element_error',
+      },
+    }))
+
+    await delay(25)
+
+    assert.deepEqual(observed.map((event) => event.type), [
+      'desktop.capabilities',
+      'audio.playback-started',
+      'audio.playback-ended',
+      'audio.playback-error',
+    ])
+  })
 })

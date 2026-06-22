@@ -37,6 +37,10 @@ export type ClientRuntimeEvent =
   | RuntimeEvent<'user.message', UserMessagePayload>
   | RuntimeEvent<'session.reset', Record<string, never>>
   | RuntimeEvent<'tool.permission.response', ToolPermissionResponsePayload>
+  | RuntimeEvent<'desktop.capabilities', DesktopCapabilitiesPayload>
+  | RuntimeEvent<'audio.playback-started', AudioPlaybackStartedPayload>
+  | RuntimeEvent<'audio.playback-ended', AudioPlaybackEndedPayload>
+  | RuntimeEvent<'audio.playback-error', AudioPlaybackErrorPayload>
   | RuntimeEvent<'memory.review.list', MemoryReviewListRequestPayload>
   | RuntimeEvent<'memory.review.run', MemoryReviewRunRequestPayload>
   | RuntimeEvent<'memory.review.accept', MemoryReviewCandidateActionPayload>
@@ -84,9 +88,43 @@ export interface CharacterBehaviorPayload {
   intensity?: number
 }
 
+export interface DesktopCapabilitiesPayload {
+  desktop: {
+    runtime: 'electron'
+    protocolVersion: number
+  }
+  live2d: {
+    available: boolean
+    modelId?: string
+    expressions: string[]
+    motions: string[]
+  }
+  audio: {
+    runtimeAudio: boolean
+    speechSynthesis: boolean
+    voiceCount: number
+  }
+}
+
 export interface AudioTtsReadyPayload {
   audioUrl: string
   durationMs?: number | null
+}
+
+export interface AudioPlaybackStartedPayload {
+  source: 'runtime_audio' | 'speech_synthesis'
+  audioUrl?: string
+}
+
+export interface AudioPlaybackEndedPayload {
+  source: 'runtime_audio' | 'speech_synthesis'
+  audioUrl?: string
+}
+
+export interface AudioPlaybackErrorPayload {
+  source: 'runtime_audio' | 'speech_synthesis'
+  audioUrl?: string
+  reason: string
 }
 
 export interface ToolStartedPayload {

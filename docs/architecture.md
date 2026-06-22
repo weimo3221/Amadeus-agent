@@ -270,6 +270,10 @@ Current desktop to server events:
 user.message
 session.reset
 tool.permission.response
+desktop.capabilities
+audio.playback-started
+audio.playback-ended
+audio.playback-error
 memory.review.list
 memory.review.run
 memory.review.accept

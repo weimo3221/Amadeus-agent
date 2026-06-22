@@ -33,6 +33,13 @@ export interface AmadeusBridgeServerOptions {
   runMemoryReview?(sessionId: string, force: boolean): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
   acceptMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
   rejectMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
+  observeDesktopFeedback?(event: Extract<ClientRuntimeEvent, {
+    type:
+      | 'desktop.capabilities'
+      | 'audio.playback-started'
+      | 'audio.playback-ended'
+      | 'audio.playback-error'
+  }>): void | Promise<void>
   live2dLibrary?: LocalLive2DModelLibrary
   streamChat(socket: WebSocket, sessionId: string, text: string): void | Promise<void>
 }
@@ -286,6 +293,16 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         }
 
         void options.forwardToolPermissionToPython(event.payload.requestId, event.payload.approved)
+        return
+      }
+
+      if (
+        event.type === 'desktop.capabilities'
+        || event.type === 'audio.playback-started'
+        || event.type === 'audio.playback-ended'
+        || event.type === 'audio.playback-error'
+      ) {
+        void options.observeDesktopFeedback?.(event)
         return
       }
 

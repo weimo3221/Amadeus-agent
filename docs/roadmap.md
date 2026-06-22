@@ -203,7 +203,8 @@ Current status:
 
 - First slice is implemented: `packages/amadeus/harness` exists with a base contract, registry, Live2D harness, and `configs/harnesses.yaml`.
 - The Python agent now emits `assistant.state` and lets the Live2D harness add `character.behavior` events for state-to-expression/motion mapping.
-- Remaining work is to grow this into the full harness layer: audio harness, desktop capability events, playback feedback, richer Live2D commands, and eventual lipsync cues.
+- Desktop now reports `desktop.capabilities` after connection/model load and reports runtime audio playback start/end/error as `audio.playback-*` events to the bridge.
+- Remaining work is to grow this into the full harness layer: Python-side feedback consumption, audio harness, richer Live2D commands, and eventual audio-driven lipsync cues.
 
 ## Phase 10: Skills
 
