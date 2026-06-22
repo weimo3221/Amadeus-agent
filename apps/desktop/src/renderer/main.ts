@@ -12,10 +12,12 @@ import './styles.css'
 window.PIXI = PIXI
 
 const DEFAULT_MODEL_URL = 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json'
+const AGENT_HTTP_URL = import.meta.env.VITE_AGENT_HTTP_URL || 'http://127.0.0.1:8788'
 const CUBISM_CORE_URL = 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js'
 const CUBISM_CORE_TIMEOUT_MS = 8000
 const MOTION_PRIORITY_FORCE = 3
 const LIVE2D_LOAD_TIMEOUT_MS = 15000
+const LIVE2D_CONFIG_TIMEOUT_MS = 2500
 
 const stageElement = document.querySelector<HTMLDivElement>('#live2d-stage')
 const statusElement = document.querySelector<HTMLDivElement>('#stage-status')
@@ -45,6 +47,8 @@ const debugExpression = document.querySelector<HTMLSelectElement>('#debug-expres
 const debugMotion = document.querySelector<HTMLSelectElement>('#debug-motion')
 const debugApply = document.querySelector<HTMLButtonElement>('#debug-apply')
 const debugCapabilities = document.querySelector<HTMLDivElement>('#debug-capabilities')
+const live2dModelStatus = document.querySelector<HTMLSpanElement>('#live2d-model-status')
+const live2dModelSelect = document.querySelector<HTMLSelectElement>('#live2d-model-select')
 
 let pinned = true
 let live2dController: Live2DController | undefined
@@ -83,6 +87,42 @@ interface Live2DInternalsLike {
       definitions?: Array<string | { Name?: string; name?: string }>
     }
   }
+}
+
+interface Live2DRuntimeConfig {
+  ok?: boolean
+  model?: {
+    id?: string
+    path?: string
+    url?: string
+  }
+}
+
+interface Live2DModelListItem {
+  id: string
+  path: string
+  url: string
+  active: boolean
+}
+
+interface Live2DModelsResponse {
+  ok?: boolean
+  models?: Live2DModelListItem[]
+  activeModel?: {
+    id?: string
+    path?: string
+    url?: string
+  }
+}
+
+interface Live2DSelectResponse {
+  ok?: boolean
+  model?: {
+    id?: string
+    path?: string
+    url?: string
+  }
+  error?: string
 }
 
 const MOTION_ALIASES: Record<string, string[]> = {
@@ -384,6 +424,109 @@ async function loadCubismCore(): Promise<void> {
   )
 }
 
+async function resolveLive2DModelUrl(): Promise<string> {
+  if (import.meta.env.VITE_LIVE2D_MODEL_URL) {
+    return import.meta.env.VITE_LIVE2D_MODEL_URL
+  }
+
+  try {
+    setStatus('Resolving Live2D model...')
+    const response = await withTimeout(
+      fetch(`${AGENT_HTTP_URL}/live2d/config`),
+      LIVE2D_CONFIG_TIMEOUT_MS,
+      'Live2D model config loading',
+    )
+    if (!response.ok) {
+      throw new Error(`Live2D config returned ${response.status}`)
+    }
+
+    const config = await response.json() as Live2DRuntimeConfig
+    if (config.ok && config.model?.url) {
+      console.info(`Using configured Live2D model ${config.model.id ?? 'unknown'}: ${config.model.url}`)
+      updateLive2DModelStatus(`Model: ${config.model.id ?? 'unknown'} loading`)
+      return config.model.url
+    }
+  }
+  catch (error) {
+    console.warn('Falling back to remote Live2D model', error)
+    updateLive2DModelStatus('Model: remote fallback')
+  }
+
+  return DEFAULT_MODEL_URL
+}
+
+function updateLive2DModelStatus(text: string): void {
+  if (live2dModelStatus) {
+    live2dModelStatus.textContent = text
+  }
+}
+
+async function loadLive2DModelOptions(): Promise<void> {
+  if (!live2dModelSelect) {
+    return
+  }
+
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/live2d/models`)
+    if (!response.ok) {
+      throw new Error(`Live2D models returned ${response.status}`)
+    }
+
+    const payload = await response.json() as Live2DModelsResponse
+    const models = Array.isArray(payload.models) ? payload.models : []
+    live2dModelSelect.replaceChildren()
+    if (models.length === 0) {
+      live2dModelSelect.append(new Option('no local models', ''))
+      live2dModelSelect.disabled = true
+      updateLive2DModelStatus('Model: none available')
+      return
+    }
+
+    for (const model of models) {
+      live2dModelSelect.append(new Option(model.id, model.id, model.active, model.active))
+    }
+    live2dModelSelect.disabled = false
+    const active = models.find((model) => model.active) ?? models.find((model) => model.id === payload.activeModel?.id)
+    if (active) {
+      live2dModelSelect.value = active.id
+      updateLive2DModelStatus(`Model: ${active.id}`)
+    }
+  }
+  catch (error) {
+    console.warn('Failed to load Live2D model list', error)
+    live2dModelSelect.replaceChildren(new Option('models unavailable', ''))
+    live2dModelSelect.disabled = true
+    updateLive2DModelStatus('Model: list unavailable')
+  }
+}
+
+async function selectLive2DModel(modelId: string): Promise<void> {
+  if (!modelId) {
+    return
+  }
+
+  updateLive2DModelStatus(`Model: switching to ${modelId}`)
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/live2d/select`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId }),
+    })
+    const payload = await response.json().catch(() => undefined) as Live2DSelectResponse | undefined
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `Live2D select returned ${response.status}`)
+    }
+
+    updateLive2DModelStatus(`Model: ${payload.model?.id ?? modelId} selected`)
+    window.location.reload()
+  }
+  catch (error) {
+    console.warn('Failed to switch Live2D model', error)
+    updateLive2DModelStatus(`Model switch failed: ${modelId}`)
+    await loadLive2DModelOptions()
+  }
+}
+
 function setStatus(message: string, visible = true): void {
   if (!statusElement) {
     return
@@ -407,7 +550,8 @@ async function bootLive2D(): Promise<void> {
 
   stageElement.append(app.view as HTMLCanvasElement)
 
-  const modelUrl = import.meta.env.VITE_LIVE2D_MODEL_URL || DEFAULT_MODEL_URL
+  const modelUrl = await resolveLive2DModelUrl()
+  console.info(`Loading Live2D model from ${modelUrl}`)
 
   try {
     await loadCubismCore()
@@ -422,6 +566,10 @@ async function bootLive2D(): Promise<void> {
     app.stage.addChild(model)
     live2dController = new Live2DController(model)
     updateDebugCapabilities(live2dController.capabilities)
+    const selectedId = live2dModelSelect?.value
+    if (selectedId) {
+      updateLive2DModelStatus(`Model: ${selectedId} loaded`)
+    }
 
     const fitModel = (): void => {
       const bounds = stageElement.getBoundingClientRect()
@@ -491,6 +639,11 @@ function bootControls(): void {
     void live2dController?.applyState(state)
     void live2dController?.applyDebugSelection(expression, motion)
   })
+
+  live2dModelSelect?.addEventListener('change', () => {
+    const modelId = live2dModelSelect.value
+    void selectLive2DModel(modelId)
+  })
 }
 
 const runtimeUi = new RuntimeUiController({
@@ -536,4 +689,5 @@ const runtimeUi = new RuntimeUiController({
 bootControls()
 runtimeUi.bindControls()
 runtimeUi.connectAgentRuntime()
+void loadLive2DModelOptions()
 void bootLive2D()

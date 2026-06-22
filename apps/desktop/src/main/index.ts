@@ -95,8 +95,8 @@ function createMainWindow(): BrowserWindow {
     }, 3000)
   })
 
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  if (!isE2eSmoke && process.env.AMADEUS_DESKTOP_DEV === '1') {
+    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173/')
   }
   else {
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))

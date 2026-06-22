@@ -139,6 +139,24 @@ button:hover {
   white-space: nowrap;
 }
 
+.live2d-model-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 140px);
+  align-items: center;
+  gap: 6px;
+}
+
+.live2d-model-row span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(226, 232, 240, 0.82);
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .stage-shell:hover .debug-panel,
 .debug-panel:focus-within {
   opacity: 1;
