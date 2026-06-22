@@ -49,9 +49,15 @@ const debugApply = document.querySelector<HTMLButtonElement>('#debug-apply')
 const debugCapabilities = document.querySelector<HTMLDivElement>('#debug-capabilities')
 const live2dModelStatus = document.querySelector<HTMLSpanElement>('#live2d-model-status')
 const live2dModelSelect = document.querySelector<HTMLSelectElement>('#live2d-model-select')
+const live2dModelRefresh = document.querySelector<HTMLButtonElement>('#live2d-model-refresh')
 
 let pinned = true
 let live2dController: Live2DController | undefined
+let live2dApp: Application | undefined
+let live2dModel: Live2DModelInstance | undefined
+let live2dResizeHandler: (() => void) | undefined
+let live2dLoadToken = 0
+let activeLive2DModelId = ''
 
 interface Live2DCoreModel {
   setParameterValueById: (id: string, value: number) => void
@@ -63,6 +69,25 @@ type Live2DModelInstance = Awaited<ReturnType<Live2DModelConstructor['from']>>
 interface Live2DModelCapabilities {
   expressions: string[]
   motions: string[]
+}
+
+interface Live2DModelManifest {
+  displayName?: string
+  defaults?: {
+    expression?: string
+    motion?: string
+  }
+  aliases?: {
+    expressions?: Record<string, string[]>
+    motions?: Record<string, string[]>
+  }
+}
+
+interface Live2DResolvedModel {
+  id: string
+  path: string
+  url: string
+  manifest?: Live2DModelManifest
 }
 
 interface Live2DSettingsLike {
@@ -91,11 +116,7 @@ interface Live2DInternalsLike {
 
 interface Live2DRuntimeConfig {
   ok?: boolean
-  model?: {
-    id?: string
-    path?: string
-    url?: string
-  }
+  model?: Partial<Live2DResolvedModel>
 }
 
 interface Live2DModelListItem {
@@ -103,6 +124,7 @@ interface Live2DModelListItem {
   path: string
   url: string
   active: boolean
+  manifest?: Live2DModelManifest
 }
 
 interface Live2DModelsResponse {
@@ -112,6 +134,7 @@ interface Live2DModelsResponse {
     id?: string
     path?: string
     url?: string
+    manifest?: Live2DModelManifest
   }
 }
 
@@ -121,6 +144,7 @@ interface Live2DSelectResponse {
     id?: string
     path?: string
     url?: string
+    manifest?: Live2DModelManifest
   }
   error?: string
 }
@@ -147,10 +171,21 @@ class Live2DController {
   private lastMotion = ''
   private lastExpression = ''
   private mouthTimer: number | undefined
+  private readonly expressionAliases: Record<string, string[]>
+  private readonly motionAliases: Record<string, string[]>
   readonly capabilities: Live2DModelCapabilities
 
-  constructor(private readonly model: Live2DModelInstance) {
+  constructor(
+    private readonly model: Live2DModelInstance,
+    private readonly manifest: Live2DModelManifest = {},
+  ) {
+    this.expressionAliases = mergeAliasMap(EXPRESSION_ALIASES, manifest.aliases?.expressions)
+    this.motionAliases = mergeAliasMap(MOTION_ALIASES, manifest.aliases?.motions)
     this.capabilities = this.readCapabilities()
+  }
+
+  dispose(): void {
+    this.stopMouthLoop()
   }
 
   focus(pointerX: number, pointerY: number, width: number, height: number): void {
@@ -188,7 +223,12 @@ class Live2DController {
 
   async applyState(state: AssistantState): Promise<void> {
     if (state === 'idle') {
-      await this.applyBehavior({ emotion: 'neutral', expression: 'neutral', motion: 'idle', intensity: 0.35 })
+      await this.applyBehavior({
+        emotion: 'neutral',
+        expression: this.manifest.defaults?.expression ?? 'neutral',
+        motion: this.manifest.defaults?.motion ?? 'idle',
+        intensity: 0.35,
+      })
       return
     }
 
@@ -227,7 +267,7 @@ class Live2DController {
     }
 
     this.lastExpression = expression
-    const candidates = EXPRESSION_ALIASES[expression] ?? [expression]
+    const candidates = this.expressionAliases[expression] ?? [expression]
 
     for (const candidate of candidates) {
       try {
@@ -268,7 +308,7 @@ class Live2DController {
     }
 
     this.lastMotion = motion
-    const candidates = MOTION_ALIASES[motion] ?? [motion]
+    const candidates = this.motionAliases[motion] ?? [motion]
 
     for (const candidate of candidates) {
       try {
@@ -324,6 +364,19 @@ class Live2DController {
   }
 }
 
+function mergeAliasMap(base: Record<string, string[]>, override: Record<string, string[]> | undefined): Record<string, string[]> {
+  if (!override) {
+    return base
+  }
+
+  return {
+    ...base,
+    ...Object.fromEntries(
+      Object.entries(override).map(([key, values]) => [key, uniqueStrings([...values, ...(base[key] ?? [])])]),
+    ),
+  }
+}
+
 function uniqueStrings(values: Array<string | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value && value.trim()))))
 }
@@ -365,6 +418,20 @@ function updateDebugCapabilities(capabilities: Live2DModelCapabilities): void {
   if (debugCapabilities) {
     debugCapabilities.textContent = `${capabilities.expressions.length} expressions, ${capabilities.motions.length} motion groups`
   }
+}
+
+function updateModelCapabilitySummary(model: Live2DResolvedModel, capabilities: Live2DModelCapabilities): void {
+  if (!debugCapabilities) {
+    return
+  }
+
+  const displayName = model.manifest?.displayName ? `${model.manifest.displayName} (${model.id})` : model.id
+  debugCapabilities.textContent = [
+    displayName,
+    `${capabilities.expressions.length} expressions`,
+    `${capabilities.motions.length} motion groups`,
+    model.path,
+  ].join(' · ')
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -424,9 +491,26 @@ async function loadCubismCore(): Promise<void> {
   )
 }
 
-async function resolveLive2DModelUrl(): Promise<string> {
+function normalizeResolvedModel(model: Partial<Live2DResolvedModel> | undefined): Live2DResolvedModel | undefined {
+  if (!model?.url) {
+    return undefined
+  }
+
+  return {
+    id: model.id || 'unknown',
+    path: model.path || '',
+    url: model.url,
+    manifest: model.manifest,
+  }
+}
+
+async function resolveLive2DModelConfig(): Promise<Live2DResolvedModel> {
   if (import.meta.env.VITE_LIVE2D_MODEL_URL) {
-    return import.meta.env.VITE_LIVE2D_MODEL_URL
+    return {
+      id: 'env',
+      path: '',
+      url: import.meta.env.VITE_LIVE2D_MODEL_URL,
+    }
   }
 
   try {
@@ -441,10 +525,11 @@ async function resolveLive2DModelUrl(): Promise<string> {
     }
 
     const config = await response.json() as Live2DRuntimeConfig
-    if (config.ok && config.model?.url) {
-      console.info(`Using configured Live2D model ${config.model.id ?? 'unknown'}: ${config.model.url}`)
-      updateLive2DModelStatus(`Model: ${config.model.id ?? 'unknown'} loading`)
-      return config.model.url
+    const model = normalizeResolvedModel(config.model)
+    if (config.ok && model) {
+      console.info(`Using configured Live2D model ${model.id}: ${model.url}`)
+      updateLive2DModelStatus(`Model: ${model.id} loading`)
+      return model
     }
   }
   catch (error) {
@@ -452,7 +537,11 @@ async function resolveLive2DModelUrl(): Promise<string> {
     updateLive2DModelStatus('Model: remote fallback')
   }
 
-  return DEFAULT_MODEL_URL
+  return {
+    id: 'remote-fallback',
+    path: '',
+    url: DEFAULT_MODEL_URL,
+  }
 }
 
 function updateLive2DModelStatus(text: string): void {
@@ -467,6 +556,7 @@ async function loadLive2DModelOptions(): Promise<void> {
   }
 
   try {
+    live2dModelRefresh?.setAttribute('disabled', 'true')
     const response = await fetch(`${AGENT_HTTP_URL}/live2d/models`)
     if (!response.ok) {
       throw new Error(`Live2D models returned ${response.status}`)
@@ -483,7 +573,8 @@ async function loadLive2DModelOptions(): Promise<void> {
     }
 
     for (const model of models) {
-      live2dModelSelect.append(new Option(model.id, model.id, model.active, model.active))
+      const label = model.manifest?.displayName ? `${model.manifest.displayName} (${model.id})` : model.id
+      live2dModelSelect.append(new Option(label, model.id, model.active, model.active))
     }
     live2dModelSelect.disabled = false
     const active = models.find((model) => model.active) ?? models.find((model) => model.id === payload.activeModel?.id)
@@ -498,6 +589,9 @@ async function loadLive2DModelOptions(): Promise<void> {
     live2dModelSelect.disabled = true
     updateLive2DModelStatus('Model: list unavailable')
   }
+  finally {
+    live2dModelRefresh?.removeAttribute('disabled')
+  }
 }
 
 async function selectLive2DModel(modelId: string): Promise<void> {
@@ -505,7 +599,14 @@ async function selectLive2DModel(modelId: string): Promise<void> {
     return
   }
 
+  if (modelId === activeLive2DModelId) {
+    updateLive2DModelStatus(`Model: ${modelId} already loaded`)
+    return
+  }
+
+  const previousModelId = activeLive2DModelId
   updateLive2DModelStatus(`Model: switching to ${modelId}`)
+  live2dModelSelect?.setAttribute('disabled', 'true')
   try {
     const response = await fetch(`${AGENT_HTTP_URL}/live2d/select`, {
       method: 'POST',
@@ -517,14 +618,38 @@ async function selectLive2DModel(modelId: string): Promise<void> {
       throw new Error(payload?.error || `Live2D select returned ${response.status}`)
     }
 
-    updateLive2DModelStatus(`Model: ${payload.model?.id ?? modelId} selected`)
-    window.location.reload()
+    const selectedModel = normalizeResolvedModel(payload.model)
+    if (!selectedModel) {
+      throw new Error('Live2D select response did not include a model URL')
+    }
+
+    await loadLive2DModel(selectedModel)
+    await loadLive2DModelOptions()
   }
   catch (error) {
     console.warn('Failed to switch Live2D model', error)
     updateLive2DModelStatus(`Model switch failed: ${modelId}`)
+    if (previousModelId && previousModelId !== modelId) {
+      await persistLive2DModelSelection(previousModelId).catch(() => undefined)
+    }
     await loadLive2DModelOptions()
   }
+  finally {
+    live2dModelSelect?.removeAttribute('disabled')
+  }
+}
+
+async function persistLive2DModelSelection(modelId: string): Promise<Live2DResolvedModel | undefined> {
+  const response = await fetch(`${AGENT_HTTP_URL}/live2d/select`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelId }),
+  })
+  const payload = await response.json().catch(() => undefined) as Live2DSelectResponse | undefined
+  if (!response.ok || !payload?.ok) {
+    return undefined
+  }
+  return normalizeResolvedModel(payload.model)
 }
 
 function setStatus(message: string, visible = true): void {
@@ -541,68 +666,106 @@ async function bootLive2D(): Promise<void> {
     return
   }
 
-  const app = new Application({
+  live2dApp = new Application({
     resizeTo: stageElement,
     autoStart: true,
     antialias: true,
     backgroundAlpha: 0,
   })
 
-  stageElement.append(app.view as HTMLCanvasElement)
-
-  const modelUrl = await resolveLive2DModelUrl()
-  console.info(`Loading Live2D model from ${modelUrl}`)
+  stageElement.append(live2dApp.view as HTMLCanvasElement)
+  stageElement.addEventListener('pointermove', (event) => {
+    const rect = stageElement.getBoundingClientRect()
+    live2dController?.focus(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height)
+  })
+  stageElement.addEventListener('click', () => {
+    void live2dController?.applyBehavior({
+      emotion: 'curious',
+      expression: 'curious',
+      motion: 'TapBody',
+      intensity: 0.6,
+    })
+  })
 
   try {
-    await loadCubismCore()
-    const { Live2DModel } = await import('pixi-live2d-display/cubism4')
-    setStatus('Loading Live2D model...')
-    const model = await withTimeout(
-      Live2DModel.from(modelUrl),
-      LIVE2D_LOAD_TIMEOUT_MS,
-      'Live2D model loading',
-    )
-    model.anchor.set(0.5, 0.5)
-    app.stage.addChild(model)
-    live2dController = new Live2DController(model)
-    updateDebugCapabilities(live2dController.capabilities)
-    const selectedId = live2dModelSelect?.value
-    if (selectedId) {
-      updateLive2DModelStatus(`Model: ${selectedId} loaded`)
-    }
-
-    const fitModel = (): void => {
-      const bounds = stageElement.getBoundingClientRect()
-      const scale = Math.min(bounds.width / model.width, bounds.height / model.height) * 0.92
-      model.scale.set(scale)
-      model.x = bounds.width / 2
-      model.y = bounds.height / 2
-    }
-
-    fitModel()
-    window.addEventListener('resize', fitModel)
-
-    stageElement.addEventListener('pointermove', (event) => {
-      const rect = stageElement.getBoundingClientRect()
-      live2dController?.focus(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height)
-    })
-
-    stageElement.addEventListener('click', () => {
-      void live2dController?.applyBehavior({
-        emotion: 'curious',
-        expression: 'curious',
-        motion: 'TapBody',
-        intensity: 0.6,
-      })
-    })
-
-    void live2dController.applyState('idle')
-    setStatus('Live2D ready', false)
+    await loadLive2DModel(await resolveLive2DModelConfig())
   }
   catch (error) {
     console.error(error)
     const message = error instanceof Error ? error.message : 'Unknown Live2D loading error'
     setStatus(`Live2D failed: ${message}`)
+  }
+}
+
+async function loadLive2DModel(modelConfig: Live2DResolvedModel): Promise<void> {
+  if (!stageElement || !live2dApp) {
+    return
+  }
+
+  const loadToken = live2dLoadToken + 1
+  live2dLoadToken = loadToken
+  updateLive2DModelStatus(`Model: ${modelConfig.id} loading`)
+  setStatus(`Loading Live2D model: ${modelConfig.id}`)
+  console.info(`Loading Live2D model ${modelConfig.id} from ${modelConfig.url}`)
+
+  await loadCubismCore()
+  const { Live2DModel } = await import('pixi-live2d-display/cubism4')
+  const nextModel = await withTimeout(
+    Live2DModel.from(modelConfig.url),
+    LIVE2D_LOAD_TIMEOUT_MS,
+    'Live2D model loading',
+  )
+  if (loadToken !== live2dLoadToken) {
+    destroyLive2DModel(nextModel)
+    return
+  }
+
+  nextModel.anchor.set(0.5, 0.5)
+  const previousModel = live2dModel
+  const previousController = live2dController
+  const previousResizeHandler = live2dResizeHandler
+
+  live2dApp.stage.addChild(nextModel)
+  live2dModel = nextModel
+  live2dController = new Live2DController(nextModel, modelConfig.manifest)
+  activeLive2DModelId = modelConfig.id
+
+  const fitModel = (): void => {
+    const bounds = stageElement.getBoundingClientRect()
+    const scale = Math.min(bounds.width / nextModel.width, bounds.height / nextModel.height) * 0.92
+    nextModel.scale.set(scale)
+    nextModel.x = bounds.width / 2
+    nextModel.y = bounds.height / 2
+  }
+  live2dResizeHandler = fitModel
+  fitModel()
+  window.addEventListener('resize', fitModel)
+
+  if (previousResizeHandler) {
+    window.removeEventListener('resize', previousResizeHandler)
+  }
+  if (previousModel) {
+    live2dApp.stage.removeChild(previousModel)
+    previousController?.dispose()
+    destroyLive2DModel(previousModel)
+  }
+
+  updateDebugCapabilities(live2dController.capabilities)
+  updateModelCapabilitySummary(modelConfig, live2dController.capabilities)
+  updateLive2DModelStatus(`Model: ${modelConfig.id} loaded`)
+  if (live2dModelSelect && live2dModelSelect.value !== modelConfig.id) {
+    live2dModelSelect.value = modelConfig.id
+  }
+  void live2dController.applyState('idle')
+  setStatus('Live2D ready', false)
+}
+
+function destroyLive2DModel(model: Live2DModelInstance): void {
+  try {
+    ;(model as unknown as { destroy: (options?: unknown) => void }).destroy({ children: true })
+  }
+  catch {
+    // Destroy is best-effort; Pixi can retain shared textures for later model reloads.
   }
 }
 
@@ -643,6 +806,10 @@ function bootControls(): void {
   live2dModelSelect?.addEventListener('change', () => {
     const modelId = live2dModelSelect.value
     void selectLive2DModel(modelId)
+  })
+
+  live2dModelRefresh?.addEventListener('click', () => {
+    void loadLive2DModelOptions()
   })
 }
 
