@@ -150,7 +150,7 @@ packages/amadeus
 - `memory.py`: active SQLite-backed message history.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, and repeated-call guardrails.
-- `audio.py`: active TTS/audio interface with default `NoopTtsProvider` plus a config-gated GPT-SoVITS HTTP provider that can cache generated audio under the local audio library.
+- `audio.py`: active TTS/audio interface with an `auto` provider selector, config-gated GPT-SoVITS HTTP provider, and macOS `say` provider that can cache generated wav audio under the local audio library.
 - `server.py`: active Python HTTP runtime surface, including local audio file serving and local Live2D model config/static asset serving for direct runtime use.
 - `model.py`: active first-pass OpenAI-compatible provider boundary for `configs/providers.yaml` plus environment-backed provider config, JSON chat-completion requests, stream parsing, and classified provider error normalization.
 - `harness/`: active first-pass harness boundary with a registry and Live2D harness that maps `assistant.state` events to `character.behavior`.
@@ -238,8 +238,8 @@ Current behavior:
 
 - Desktop-side playback remains the adapter concern.
 - The runtime emits `audio.tts-ready` only when Python audio returns a real `audioUrl`.
-- If Python audio cannot generate a file yet, the desktop falls back to `speechSynthesis`.
-- The default runtime configuration still uses `NoopTtsProvider`, so Python audio is wired but not yet the practical default output path.
+- If Python audio cannot generate a file, the desktop falls back to `speechSynthesis`.
+- The default runtime configuration uses `tts.default: auto`: GPT-SoVITS is preferred when `GPT_SOVITS_BASE_URL` is configured, otherwise macOS uses `say`/`afconvert` as the local practical default.
 
 ### packages/amadeus/tools.ts
 

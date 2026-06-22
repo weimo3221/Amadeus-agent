@@ -80,8 +80,8 @@ Fallback path today:
   - the TypeScript bridge relays it to desktop
   - desktop sends `tool.permission.response`
   - the bridge forwards it back to Python `/tools/permission`
-- Python audio interface is wired for the first pass, and desktop prefers runtime-provided audio when it receives `audio.tts-ready`.
-- Desktop still has Electron/browser `speechSynthesis` fallback and currently uses it most of the time because the Python audio runtime still defaults to `NoopTtsProvider` until a real TTS provider is configured.
+- Python audio interface now has a practical default on macOS: runtime TTS auto-selects GPT-SoVITS when configured, otherwise uses local `say`/`afconvert` and emits `audio.tts-ready`.
+- Desktop still keeps Electron/browser `speechSynthesis` fallback for provider failures or unsupported platforms.
 - Python runtime parity tests are now wired through `npm test`.
   - missing API key returns a structured runtime error
   - simple turns persist user and assistant messages
@@ -127,9 +127,9 @@ Fallback path today:
   - `configs/harnesses.yaml` selects the active model by id/path.
   - The Node bridge server serves `/live2d/config` and `/live2d/models/...` on `8788`, so the desktop renderer can resolve the configured local model through the same server it already uses for WebSocket traffic before falling back to the remote test model.
 - First-pass real TTS provider boundary is active.
-  - `packages/amadeus/audio.py` now includes a config-gated GPT-SoVITS HTTP provider.
-  - The default `tts.default` remains `disabled`, so runtime behavior stays on `NoopTtsProvider` unless explicitly configured.
-  - Binary audio responses are cached under the local audio library and surfaced through the existing `audio.tts-ready` event path.
+  - `packages/amadeus/audio.py` now includes a config-gated GPT-SoVITS HTTP provider and a macOS `say` provider.
+  - The default `tts.default` is `auto`, preferring GPT-SoVITS when configured and falling back to macOS `say` when available.
+  - Binary/generated audio responses are cached under the local audio library and surfaced through the existing `audio.tts-ready` event path.
 - Phase 7 ToolRuntime first slice is in place.
   - Python tool registry/config loading now lives under `packages/amadeus/tool_runtime`.
   - Agent tool execution dispatches through `ToolRegistry` instead of direct helpers.
@@ -402,8 +402,7 @@ Not started.
 - The desktop app currently uses a remote Live2D test model URL. A local model should be added under `models/live2d`.
 - Live2D behavior mapping is currently alias-based and depends on the available motions/expressions in the loaded model.
 - The current Live2D model and Cubism runtime are loaded from remote URLs, so network failures can still prevent the model from appearing.
-- TTS currently falls back to browser/Electron `speechSynthesis` in normal practice because the Python audio runtime still defaults to `NoopTtsProvider`.
-- GPT-SoVITS integration is blocked until required pretrained base models are downloaded into `D:\OtherProject\LearningLLM\GPT-SoVITS\GPT_SoVITS\pretrained_models`.
+- GPT-SoVITS high-quality voice integration still requires a running GPT-SoVITS API and model assets; until then macOS `say` provides the local practical TTS loop.
 - Lipsync is currently a timed mouth loop, not phoneme-accurate.
 - SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
 - Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and Electron startup smoke behavior. Full Live2D/interaction end-to-end coverage is still missing.

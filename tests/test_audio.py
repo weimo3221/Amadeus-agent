@@ -16,6 +16,8 @@ from amadeus.audio import (
     GptSovitsConfig,
     GptSovitsTtsProvider,
     LocalAudioLibrary,
+    MacOsSayConfig,
+    MacOsSayTtsProvider,
     NoopTtsProvider,
     create_tts_provider_from_config,
 )
@@ -87,6 +89,87 @@ class AudioProviderTests(unittest.TestCase):
         self.assertEqual(provider.config.base_url, "http://127.0.0.1:9880")
         self.assertEqual(provider.config.timeout_seconds, 12)
         self.assertEqual(provider.config.text_lang, "zh")
+
+    def test_create_tts_provider_auto_uses_macos_say_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "providers.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "tts:",
+                    "  default: auto",
+                    "  providers:",
+                    "    auto:",
+                    "      type: auto",
+                    "    macos_say:",
+                    "      type: macos_say",
+                    "      voice: Samantha",
+                    "      rate: 180",
+                    "      timeoutSeconds: 7",
+                ]),
+                encoding="utf-8",
+            )
+            library = LocalAudioLibrary(root / "audio", "http://localhost:8790")
+
+            with patch.object(MacOsSayTtsProvider, "is_available", return_value=True):
+                provider = create_tts_provider_from_config(library, config_path)
+
+        self.assertIsInstance(provider, MacOsSayTtsProvider)
+        self.assertEqual(provider.config.voice, "Samantha")
+        self.assertEqual(provider.config.rate, 180)
+        self.assertEqual(provider.config.timeout_seconds, 7)
+
+    def test_create_tts_provider_auto_prefers_gpt_sovits_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "providers.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "tts:",
+                    "  default: auto",
+                    "  providers:",
+                    "    auto:",
+                    "      type: auto",
+                    "    gpt_sovits:",
+                    "      type: gpt_sovits",
+                    "      baseUrl: http://127.0.0.1:9880",
+                ]),
+                encoding="utf-8",
+            )
+            library = LocalAudioLibrary(root / "audio", "http://localhost:8790")
+
+            with patch.object(MacOsSayTtsProvider, "is_available", return_value=True):
+                provider = create_tts_provider_from_config(library, config_path)
+
+        self.assertIsInstance(provider, GptSovitsTtsProvider)
+        self.assertEqual(provider.config.base_url, "http://127.0.0.1:9880")
+
+    def test_macos_say_provider_generates_wav_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+            provider = MacOsSayTtsProvider(MacOsSayConfig(voice="Samantha", rate=180), library)
+
+            def fake_run(command: list[str], **_: object) -> None:
+                if command[0] == "say":
+                    Path(command[command.index("-o") + 1]).write_bytes(b"AIFF")
+                    return
+                if command[0] == "afconvert":
+                    Path(command[-1]).write_bytes(b"RIFFfake-wav")
+                    return
+                raise AssertionError(f"unexpected command: {command}")
+
+            with patch.object(MacOsSayTtsProvider, "is_available", return_value=True):
+                with patch("subprocess.run", side_effect=fake_run) as run:
+                    result = provider.synthesize(AudioOutputCommand(text="hello", format="wav"))
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result.provider, "macos_say")
+            self.assertTrue(result.audio_url.startswith("http://localhost:8790/audio/files/cache/tts-"))
+            cached_files = list((Path(tmpdir) / "audio" / "cache").glob("*.wav"))
+            self.assertEqual(len(cached_files), 1)
+            self.assertEqual(cached_files[0].read_bytes(), b"RIFFfake-wav")
+            self.assertEqual(run.call_count, 2)
 
     def test_gpt_sovits_provider_writes_binary_audio_to_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

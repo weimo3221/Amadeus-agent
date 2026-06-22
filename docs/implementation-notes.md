@@ -26,7 +26,7 @@ Current progress calibration:
 - ToolRuntime should be treated as mostly implemented and entering hardening mode. Do not start a second tool execution framework; extend `amadeus.tool_runtime` when new reliability needs appear.
 - Memory v2 should be treated as core-implemented and entering consolidation mode. The next memory work should focus on context assembly quality, summary/profile policy, review quality, overflow behavior, and diagnostics rather than basic storage primitives.
 - The first runtime harness slice is in place: `packages/amadeus/harness` loads `configs/harnesses.yaml`, and the Live2D harness maps `assistant.state` into `character.behavior`. Continue maturing the model boundary only as needed for additional providers or richer provider-specific response handling.
-- The first real TTS provider slice is in place: `packages/amadeus/audio.py` can construct a config-gated GPT-SoVITS HTTP provider from `configs/providers.yaml`, cache binary audio responses under the local audio library, and return `audio.tts-ready` through the existing runtime path. The default remains disabled/noop unless `tts.default` is changed.
+- The first practical TTS loop is in place: `packages/amadeus/audio.py` can auto-select GPT-SoVITS when configured, otherwise use macOS `say`/`afconvert` as a local TTS provider, cache generated wav files under the local audio library, and return `audio.tts-ready` through the existing runtime path.
 - Local Live2D model storage is in place: `models/live2d` stores switchable local models, `configs/harnesses.yaml` selects the active model, and the Node bridge server serves `/live2d/config` plus `/live2d/models/...` for the desktop renderer on the same `8788` HTTP origin used by the WebSocket bridge. The Python runtime also has the same local library boundary for later direct runtime use. The default model is now local `hiyori-free`.
 - The next large architectural gap is completing the runtime/harness layer: audio harnesses, richer Live2D commands, desktop capability events, playback feedback, and later skills/tasks.
 
@@ -133,9 +133,9 @@ packages/amadeus/assets/audio/
 
 - `voices/`: fixed character voice clips, such as greetings or short reactions. These do not provide arbitrary text speech.
 - `sfx/`: UI and character sound effects.
-- `cache/`: generated TTS output when a real TTS engine is added.
+- `cache/`: generated TTS output from GPT-SoVITS, macOS `say`, or later providers. This directory is runtime cache and is gitignored.
 
-The desktop app should play the `audioUrl` emitted by the runtime when one exists. If no Python TTS provider can generate audio for the requested text, the desktop falls back to `speechSynthesis`.
+The desktop app plays the `audioUrl` emitted by the runtime when one exists. If no Python TTS provider can generate audio for the requested text, the desktop falls back to `speechSynthesis`. On macOS, the default `auto` TTS config should produce real runtime audio through `say` without requiring an external service.
 
 When runtime audio is played in the future, the desktop should report playback feedback:
 

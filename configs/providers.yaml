@@ -8,10 +8,17 @@ llm:
       streaming: true
 
 tts:
-  default: disabled
+  default: auto
   providers:
+    auto:
+      type: auto
     disabled:
       type: none
+    macos_say:
+      type: macos_say
+      voice: ${MACOS_SAY_VOICE}
+      rate: ${MACOS_SAY_RATE}
+      timeoutSeconds: 30
     gpt_sovits:
       type: gpt_sovits
       baseUrl: ${GPT_SOVITS_BASE_URL}

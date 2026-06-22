@@ -3,6 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
+import shutil
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -61,6 +65,13 @@ class GptSovitsConfig:
     ref_audio_path: str = ""
     timeout_seconds: int = 60
     streaming_mode: bool = False
+
+
+@dataclass(frozen=True)
+class MacOsSayConfig:
+    voice: str = ""
+    rate: int | None = None
+    timeout_seconds: int = 30
 
 
 class GptSovitsTtsProvider:
@@ -163,6 +174,70 @@ class GptSovitsTtsProvider:
         return output_path
 
 
+class MacOsSayTtsProvider:
+    name = "macos_say"
+
+    def __init__(self, config: MacOsSayConfig, library: "LocalAudioLibrary") -> None:
+        self.config = config
+        self.library = library
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return (
+            platform.system() == "Darwin"
+            and shutil.which("say") is not None
+            and shutil.which("afconvert") is not None
+        )
+
+    def synthesize(self, command: AudioOutputCommand) -> AudioOutputResult | None:
+        if not self.is_available():
+            return None
+
+        normalized_text = command.text.strip()
+        if not normalized_text:
+            return None
+
+        voice = (command.voice or self.config.voice).strip()
+        rate = self.config.rate
+        cache_path = self._cache_path(normalized_text, voice, rate)
+        if not cache_path.exists():
+            self._generate_wav(normalized_text, voice, rate, cache_path)
+
+        return AudioOutputResult(
+            audio_url=self.library.public_url(cache_path),
+            duration_ms=None,
+            provider=self.name,
+        )
+
+    def _cache_path(self, text: str, voice: str, rate: int | None) -> Path:
+        cache_key = hashlib.sha256(
+            json.dumps({
+                "provider": self.name,
+                "text": text,
+                "voice": voice,
+                "rate": rate,
+                "format": "wav",
+            }, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:24]
+        return self.library.cache_dir / f"tts-{cache_key}.wav"
+
+    def _generate_wav(self, text: str, voice: str, rate: int | None, output_path: Path) -> None:
+        with tempfile.TemporaryDirectory(prefix="amadeus-say-") as tmpdir:
+            aiff_path = Path(tmpdir) / "speech.aiff"
+            say_command = ["say", "-o", str(aiff_path)]
+            if voice:
+                say_command.extend(["-v", voice])
+            if rate is not None:
+                say_command.extend(["-r", str(rate)])
+            say_command.append(text)
+            subprocess.run(say_command, check=True, timeout=self.config.timeout_seconds)
+            subprocess.run(
+                ["afconvert", "-f", "WAVE", "-d", "LEI16", str(aiff_path), str(output_path)],
+                check=True,
+                timeout=self.config.timeout_seconds,
+            )
+
+
 class LocalAudioLibrary:
     def __init__(self, root_dir: Path, public_base_url: str) -> None:
         self.root_dir = root_dir.resolve()
@@ -224,22 +299,52 @@ def create_tts_provider_from_config(
     provider_config = providers.get(default_provider) if isinstance(providers.get(default_provider), dict) else {}
     provider_type = str(provider_config.get("type") or default_provider)
 
+    if provider_type == "auto":
+        gpt_config = providers.get("gpt_sovits") if isinstance(providers.get("gpt_sovits"), dict) else {}
+        if str(gpt_config.get("baseUrl") or os.environ.get("GPT_SOVITS_BASE_URL") or "").strip():
+            return _create_gpt_sovits_provider(gpt_config, library)
+
+        macos_config = providers.get("macos_say") if isinstance(providers.get("macos_say"), dict) else {}
+        if MacOsSayTtsProvider.is_available():
+            return _create_macos_say_provider(macos_config, library)
+
+        return NoopTtsProvider()
+
     if provider_type in {"none", "disabled"}:
         return NoopTtsProvider()
 
     if provider_type in {"gpt_sovits", "gpt-sovits", "gptsovits"}:
-        return GptSovitsTtsProvider(
-            GptSovitsConfig(
-                base_url=str(provider_config.get("baseUrl") or os.environ.get("GPT_SOVITS_BASE_URL") or "").rstrip("/"),
-                endpoint=str(provider_config.get("endpoint") or "/tts"),
-                text_lang=str(provider_config.get("textLang") or os.environ.get("GPT_SOVITS_TEXT_LANG") or "auto"),
-                prompt_lang=str(provider_config.get("promptLang") or os.environ.get("GPT_SOVITS_PROMPT_LANG") or "auto"),
-                prompt_text=str(provider_config.get("promptText") or os.environ.get("GPT_SOVITS_PROMPT_TEXT") or ""),
-                ref_audio_path=str(provider_config.get("refAudioPath") or os.environ.get("GPT_SOVITS_REF_AUDIO_PATH") or ""),
-                timeout_seconds=int(provider_config.get("timeoutSeconds") or os.environ.get("GPT_SOVITS_TIMEOUT_SECONDS") or 60),
-                streaming_mode=parse_bool_value(provider_config.get("streamingMode"), False),
-            ),
-            library,
-        )
+        return _create_gpt_sovits_provider(provider_config, library)
+
+    if provider_type in {"macos_say", "macos-say", "say"}:
+        return _create_macos_say_provider(provider_config, library)
 
     return NoopTtsProvider()
+
+
+def _create_gpt_sovits_provider(provider_config: dict[str, Any], library: LocalAudioLibrary) -> GptSovitsTtsProvider:
+    return GptSovitsTtsProvider(
+        GptSovitsConfig(
+            base_url=str(provider_config.get("baseUrl") or os.environ.get("GPT_SOVITS_BASE_URL") or "").rstrip("/"),
+            endpoint=str(provider_config.get("endpoint") or "/tts"),
+            text_lang=str(provider_config.get("textLang") or os.environ.get("GPT_SOVITS_TEXT_LANG") or "auto"),
+            prompt_lang=str(provider_config.get("promptLang") or os.environ.get("GPT_SOVITS_PROMPT_LANG") or "auto"),
+            prompt_text=str(provider_config.get("promptText") or os.environ.get("GPT_SOVITS_PROMPT_TEXT") or ""),
+            ref_audio_path=str(provider_config.get("refAudioPath") or os.environ.get("GPT_SOVITS_REF_AUDIO_PATH") or ""),
+            timeout_seconds=int(provider_config.get("timeoutSeconds") or os.environ.get("GPT_SOVITS_TIMEOUT_SECONDS") or 60),
+            streaming_mode=parse_bool_value(provider_config.get("streamingMode"), False),
+        ),
+        library,
+    )
+
+
+def _create_macos_say_provider(provider_config: dict[str, Any], library: LocalAudioLibrary) -> MacOsSayTtsProvider:
+    raw_rate = provider_config.get("rate") or os.environ.get("MACOS_SAY_RATE") or ""
+    return MacOsSayTtsProvider(
+        MacOsSayConfig(
+            voice=str(provider_config.get("voice") or os.environ.get("MACOS_SAY_VOICE") or ""),
+            rate=int(raw_rate) if str(raw_rate).strip() else None,
+            timeout_seconds=int(provider_config.get("timeoutSeconds") or os.environ.get("MACOS_SAY_TIMEOUT_SECONDS") or 30),
+        ),
+        library,
+    )

@@ -92,7 +92,7 @@ Target deliverables:
 
 Notes:
 
-- Current MVP voice playback still relies primarily on desktop `speechSynthesis` fallback.
+- Current MVP voice playback uses runtime audio on macOS through `tts.default: auto`, with desktop `speechSynthesis` retained as fallback.
 - Current lipsync is a timed mouth loop, not amplitude-driven or phoneme-aware.
 
 ## Phase 5: Memory and Tools
