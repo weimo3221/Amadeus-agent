@@ -77,7 +77,7 @@ export interface RuntimeEvent<TType extends string = string, TPayload = unknown>
 Current behavior:
 
 - Desktop sends this after `server.hello` and again after a Live2D model finishes loading.
-- The bridge observes it as harness feedback. It is not yet forwarded to Python policy code.
+- The bridge forwards it to Python `/runtime/feedback`, where `HarnessFeedbackPolicy` records it for runtime policy.
 
 ### audio.playback-started / audio.playback-ended / audio.playback-error
 
@@ -370,9 +370,11 @@ Current active endpoints used by the bridge/runtime:
 ```text
 GET /health
 GET /runtime/health
+GET /runtime/feedback
 GET /tools/list
 GET /tools/audit
 POST /runtime/config/reload
+POST /runtime/feedback
 POST /agent/turn
 POST /tools/execute
 POST /tools/permission
@@ -401,6 +403,8 @@ GET /live2d/models/{relativePath}
 ```
 
 `GET /runtime/health` is the structured local diagnostics endpoint. It returns an aggregate `status` plus per-subsystem checks for runtime, model config, memory DB, tools, Live2D, audio, and effective runtime config. It intentionally avoids live external provider calls so startup diagnostics stay fast and deterministic.
+
+`POST /runtime/feedback` records desktop capability and runtime audio playback feedback into the Python-side harness policy. `GET /runtime/feedback?sessionId=default` returns the latest per-session snapshot, including normalized `desktopCapabilities`, `audioPlayback`, and recent feedback events.
 
 Python runtime responses from `/agent/turn` are streamed as NDJSON using the same event names where possible.
 

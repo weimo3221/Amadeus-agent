@@ -13,7 +13,7 @@ Local TypeScript bridge for the desktop app.
 - relays streamed NDJSON runtime events back to desktop
 - forwards desktop `tool.permission.response` events to Python `POST /tools/permission`
 - proxies memory review list/run/accept/reject events to the Python runtime
-- observes desktop capability and audio playback feedback events for future harness policy
+- forwards desktop capability and audio playback feedback events to Python `/runtime/feedback`
 
 ## Responsibilities today
 

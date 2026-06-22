@@ -306,9 +306,11 @@ Current bridge to Python runtime endpoints:
 ```text
 GET /health
 GET /runtime/health
+GET /runtime/feedback
 GET /tools/list
 GET /tools/audit
 POST /runtime/config/reload
+POST /runtime/feedback
 POST /agent/turn
 POST /tools/execute
 POST /tools/permission

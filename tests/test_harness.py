@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.harness import HarnessContext, HarnessRegistry, Live2DHarness, parse_harnesses_config
+from amadeus.harness import HarnessContext, HarnessFeedbackPolicy, HarnessRegistry, Live2DHarness, parse_harnesses_config
 
 
 class HarnessTests(unittest.TestCase):
@@ -75,6 +75,56 @@ class HarnessTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_harness_feedback_policy_tracks_capabilities_and_audio_state(self) -> None:
+        policy = HarnessFeedbackPolicy(event_limit=2)
+
+        capabilities = policy.record_feedback(
+            "session-1",
+            "desktop.capabilities",
+            {
+                "desktop": {"runtime": "electron", "protocolVersion": 1},
+                "live2d": {
+                    "available": True,
+                    "modelId": "hiyori-free",
+                    "expressions": ["smile", 1],
+                    "motions": ["Idle"],
+                },
+                "audio": {
+                    "runtimeAudio": True,
+                    "speechSynthesis": True,
+                    "voiceCount": 3,
+                },
+            },
+            timestamp="2026-06-22T00:00:00.000Z",
+        )
+
+        self.assertEqual(capabilities["desktopCapabilities"]["live2d"]["modelId"], "hiyori-free")
+        self.assertEqual(capabilities["desktopCapabilities"]["live2d"]["expressions"], ["smile"])
+        self.assertEqual(policy.client_capabilities("session-1")["audio"]["voiceCount"], 3)
+
+        playing = policy.record_feedback(
+            "session-1",
+            "audio.playback-started",
+            {"source": "runtime_audio", "audioUrl": "http://runtime/audio.wav"},
+            timestamp="2026-06-22T00:00:01.000Z",
+        )
+        self.assertEqual(playing["audioPlayback"]["status"], "playing")
+        self.assertEqual(policy.runtime_state("session-1")["audioPlayback"]["status"], "playing")
+
+        failed = policy.record_feedback(
+            "session-1",
+            "audio.playback-error",
+            {"source": "runtime_audio", "audioUrl": "http://runtime/audio.wav", "reason": "audio_element_error"},
+            timestamp="2026-06-22T00:00:02.000Z",
+        )
+        self.assertEqual(failed["audioPlayback"]["status"], "error")
+        self.assertEqual(failed["audioPlayback"]["reason"], "audio_element_error")
+        self.assertEqual(failed["recentEventCount"], 2)
+        self.assertEqual([event["type"] for event in failed["recentEvents"]], [
+            "audio.playback-started",
+            "audio.playback-error",
+        ])
 
 
 if __name__ == "__main__":

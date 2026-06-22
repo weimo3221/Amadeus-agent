@@ -29,8 +29,8 @@ Current progress calibration:
 - The first runtime harness slice is in place: `packages/amadeus/harness` loads `configs/harnesses.yaml`, and the Live2D harness maps `assistant.state` into `character.behavior`. Continue maturing the model boundary only as needed for additional providers or richer provider-specific response handling.
 - The first practical TTS loop is in place: `packages/amadeus/audio.py` can auto-select GPT-SoVITS when configured, otherwise use macOS `say`/`afconvert` as a local TTS provider, cache generated wav files under the local audio library, and return `audio.tts-ready` through the existing runtime path.
 - Local Live2D model storage is in place: `models/live2d` stores switchable local models, `configs/harnesses.yaml` selects the active model, and the Node bridge server serves `/live2d/config` plus `/live2d/models/...` for the desktop renderer on the same `8788` HTTP origin used by the WebSocket bridge. The Python runtime also has the same local library boundary for later direct runtime use. The default model is now local `hiyori-free`.
-- First-pass desktop feedback is in place: the renderer sends `desktop.capabilities` after connection/model load and emits `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` for runtime audio. The bridge observes these events as harness feedback; Python policy consumption remains future work.
-- The next large architectural gap is completing the runtime/harness layer: Python consumption of desktop feedback, audio harnesses, richer Live2D commands, audio-driven lipsync, and later skills/tasks.
+- First-pass desktop feedback is in place end to end: the renderer sends `desktop.capabilities` after connection/model load and emits `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` for runtime audio; the bridge forwards them to Python `POST /runtime/feedback`; Python `HarnessFeedbackPolicy` stores the latest per-session desktop capabilities, audio playback state, and recent feedback events for harness policy.
+- The next large architectural gap is completing the runtime/harness layer: using stored feedback to drive audio harness decisions, richer Live2D commands, audio-driven lipsync, and later skills/tasks.
 
 Live2D and audio should be treated as installable harnesses. They can contribute prompt fragments and observe runtime events, but the actual rendering and playback stay in the desktop adapter.
 
@@ -147,7 +147,7 @@ audio.playback-ended
 audio.playback-error
 ```
 
-This feedback loop is now available at the bridge layer. The remaining work is to let Python audio/Live2D harness policy consume it for real speaking state and lipsync instead of relying only on a timed mouth loop.
+This feedback loop is now available in Python through `HarnessFeedbackPolicy` and `GET /runtime/feedback`. The remaining work is to use it for real speaking-state reconciliation and lipsync instead of relying only on a timed mouth loop.
 
 Fixed wav/mp3 files are useful for sound effects and canned reactions, but they are not a replacement for TTS. Arbitrary assistant replies require a provider such as GPT-SoVITS, Bert-VITS2, ChatTTS, Piper, OpenAI TTS, Azure Speech, or another engine behind `amadeus/audio.py`.
 

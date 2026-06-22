@@ -6,6 +6,7 @@ import {
 import {
   acceptPythonMemoryReviewCandidate,
   forwardToolPermissionToPython,
+  forwardRuntimeFeedbackToPython,
   listPythonMemoryReviewCandidates,
   listPythonMemoryReviewJobs,
   rejectPythonMemoryReviewCandidate,
@@ -141,6 +142,9 @@ const { httpServer } = createAmadeusBridgeServer({
   rejectMemoryReviewCandidate(candidateId) {
     return rejectPythonMemoryReviewCandidate(candidateId, { runtimeUrl: pythonRuntimeUrl })
   },
+  observeDesktopFeedback(event) {
+    return forwardRuntimeFeedbackToPython(event, { runtimeUrl: pythonRuntimeUrl })
+  },
   live2dLibrary,
   streamChat,
 })
@@ -151,4 +155,3 @@ httpServer.listen(port, host, () => {
   console.log(`Model ${model}`)
   console.log(`SQLite memory ${databasePath}`)
 })
-

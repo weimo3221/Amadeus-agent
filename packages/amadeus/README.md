@@ -118,9 +118,11 @@ http://127.0.0.1:8790
 
 - `GET /health`
 - `GET /runtime/health`：structured local health checks for runtime, model config, memory DB, tools, Live2D, audio, and effective config.
+- `GET /runtime/feedback?sessionId=default`：query the Python-side harness feedback snapshot for desktop capabilities and audio playback state.
 - `GET /tools/list`：Python-owned source for effective tool permission state and enabled schemas.
 - `GET /tools/audit?sessionId=default&toolName=search_files&decision=finished&ok=true&limit=100`：query persisted tool audit records for diagnostics.
 - `POST /runtime/config/reload`：reload effective memory/context runtime config from YAML plus environment overrides.
+- `POST /runtime/feedback`：record desktop capability and runtime audio playback feedback for Python-side harness policy.
 - `POST /agent/turn`
 - `POST /tools/execute`：compatibility execution endpoint for direct tool diagnostics; normal turns execute tools inside Python `AgentRuntime`.
 - `POST /tools/permission`

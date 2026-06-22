@@ -1,4 +1,4 @@
-import type { RuntimeEvent, ServerRuntimeEvent } from '@amadeus-agent/amadeus/events'
+import type { ClientRuntimeEvent, RuntimeEvent, ServerRuntimeEvent } from '@amadeus-agent/amadeus/events'
 import type {
   MemoryReviewCandidate,
   MemoryReviewCandidatesPayload,
@@ -142,6 +142,36 @@ export async function forwardToolPermissionToPython(
   catch {
     // The legacy TypeScript tool loop may own this request, or the Python turn
     // may have already timed out. Either way, there is nothing else to do here.
+  }
+}
+
+export async function forwardRuntimeFeedbackToPython(
+  event: Extract<ClientRuntimeEvent, {
+    type:
+      | 'desktop.capabilities'
+      | 'audio.playback-started'
+      | 'audio.playback-ended'
+      | 'audio.playback-error'
+  }>,
+  options: PythonBridgeOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  try {
+    await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/runtime/feedback'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: event.sessionId,
+        type: event.type,
+        timestamp: event.timestamp,
+        payload: event.payload,
+      }),
+    })
+  }
+  catch {
+    // Feedback is diagnostic/policy input. Dropping it must not interrupt chat.
   }
 }
 

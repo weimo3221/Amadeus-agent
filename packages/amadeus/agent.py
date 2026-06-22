@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
 from amadeus.context import ContextAssembler, ContextAssemblerConfig
-from amadeus.harness import DEFAULT_HARNESSES_CONFIG_PATH, HarnessContext, HarnessRegistry
+from amadeus.harness import DEFAULT_HARNESSES_CONFIG_PATH, HarnessContext, HarnessFeedbackPolicy, HarnessRegistry
 from amadeus.memory import MessageMemoryStore
 from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.model import (
@@ -179,6 +179,7 @@ class AgentRuntime:
         self.model_client = OpenAICompatibleChatModel()
         self.tool_registry = ToolRegistry(config_path=tools_config_path)
         self.harness_registry = HarnessRegistry.from_config(harnesses_config_path)
+        self.harness_feedback_policy = HarnessFeedbackPolicy()
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.system_prompt = self._build_system_prompt()
@@ -216,6 +217,24 @@ class AgentRuntime:
     @property
     def model(self) -> str:
         return self.model_client.model
+
+    def observe_harness_feedback(
+        self,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        timestamp: str | None = None,
+    ) -> dict[str, Any]:
+        return self.harness_feedback_policy.record_feedback(
+            session_id,
+            event_type,
+            payload,
+            timestamp=timestamp,
+        )
+
+    def harness_feedback_snapshot(self, session_id: str) -> dict[str, Any]:
+        return self.harness_feedback_policy.snapshot(session_id)
 
     def _load_runtime_config(self, *, reason: str) -> dict[str, dict[str, int | float]]:
         runtime_config = parse_runtime_config(self.runtime_config_path)
@@ -1443,7 +1462,14 @@ class AgentRuntime:
     def _emit_assistant_state(self, session_id: str, turn_id: str | None, state: str) -> Iterable[AgentEvent]:
         event = AgentEvent("assistant.state", {"state": state})
         yield event
-        context = HarnessContext(session_id=session_id, turn_id=turn_id, runtime_state={"assistantState": state})
+        runtime_state = {"assistantState": state}
+        runtime_state.update(self.harness_feedback_policy.runtime_state(session_id))
+        context = HarnessContext(
+            session_id=session_id,
+            turn_id=turn_id,
+            runtime_state=runtime_state,
+            client_capabilities=self.harness_feedback_policy.client_capabilities(session_id),
+        )
         harness_event = {"type": event.type, "payload": event.payload}
         for emitted in self.harness_registry.observe_event(context, harness_event):
             event_type = emitted.get("type")

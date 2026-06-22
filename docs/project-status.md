@@ -93,11 +93,13 @@ Fallback path today:
 - Python runtime HTTP handler tests now cover the local sidecar boundary.
   - `/tools/list` exposes effective permission state and enabled schemas
   - `/runtime/health` exposes structured local health checks for runtime, model config, memory DB, tools, Live2D, audio, and effective config
+  - `/runtime/feedback` records and returns Python-side harness feedback for desktop capabilities and audio playback state
   - `/tools/permission` returns unresolved for unknown request IDs
   - `/agent/turn` streams missing API key failures as desktop-compatible NDJSON events
 - TypeScript bridge tests now cover the Python-first relay boundary.
   - `/agent/turn` NDJSON events are relayed to the desktop socket
   - `/tools/list` tool permissions are read from the Python runtime for server diagnostics
+  - desktop capability and audio playback feedback events are forwarded to Python `/runtime/feedback`
   - Python runtime connection failures return `false` from the relay so the caller can decide whether to report an error or use the explicit fallback
   - malformed Python events emit desktop-compatible `error` events without dropping later valid events
   - unresolved permission responses are forwarded to Python `/tools/permission`
@@ -329,7 +331,7 @@ Planned tasks:
 - Keep `GET /runtime/health`, `GET /tools/audit`, memory review jobs, and context diagnostics as developer-facing observability surfaces rather than user-facing memory UI.
 - Extend cancellation beyond the current cooperative signal only if future tools need stronger process-level interruption.
 - Extend result preview/compression and no-progress detection only as new high-volume tools expose real gaps.
-- Feed desktop capability/playback feedback into Python harness policy so Live2D and audio can react to actual renderer/audio state.
+- Use Python-side harness feedback state to drive Live2D/audio policy decisions so they can react to actual renderer/audio state.
 - Keep expanding Electron end-to-end coverage on the Python path, especially Live2D loading, model switching, audio playback, and real user/runtime interactions.
 - Keep GPT-SoVITS high-quality voice work parked until its pretrained base models and API configuration are settled.
 
@@ -378,8 +380,8 @@ Started.
 - First harness slice exists in `packages/amadeus/harness`, with `configs/harnesses.yaml` selecting Live2D behavior/model config.
 - Local Live2D model storage and bridge serving are active through `models/live2d`, `/live2d/config`, and `/live2d/models/...`.
 - Runtime audio provider selection and cache are active through `packages/amadeus/audio.py`, with GPT-SoVITS config support, macOS `say` fallback, `/audio/speak`, and `audio.tts-ready`.
-- Desktop capability and runtime audio playback feedback now reach the bridge as `desktop.capabilities` and `audio.playback-*` events.
-- Remaining work: Python-side feedback consumption, audio harness boundary, richer Live2D commands, and audio-driven lipsync.
+- Desktop capability and runtime audio playback feedback now reach Python through `POST /runtime/feedback` and are stored by `HarnessFeedbackPolicy`.
+- Remaining work: audio harness boundary, richer Live2D commands, feedback-driven speaking-state reconciliation, and audio-driven lipsync.
 
 ### Phase 11: Proactive Agent
 

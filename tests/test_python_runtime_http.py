@@ -215,6 +215,48 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertFalse(payload["checks"]["config"]["runtimeConfigExists"])
         self.assertEqual(payload["checks"]["config"]["harnessesConfig"], str(self.harnesses_config_path))
 
+    def test_runtime_feedback_records_desktop_capabilities_and_audio_state(self) -> None:
+        capabilities = self.post_json("/runtime/feedback", {
+            "sessionId": "feedback-session",
+            "type": "desktop.capabilities",
+            "timestamp": "2026-06-22T00:00:00.000Z",
+            "payload": {
+                "desktop": {"runtime": "electron", "protocolVersion": 1},
+                "live2d": {
+                    "available": True,
+                    "modelId": "hiyori-free",
+                    "expressions": ["smile"],
+                    "motions": ["Idle"],
+                },
+                "audio": {
+                    "runtimeAudio": True,
+                    "speechSynthesis": True,
+                    "voiceCount": 2,
+                },
+            },
+        })
+
+        self.assertTrue(capabilities["ok"])
+        self.assertEqual(capabilities["feedback"]["desktopCapabilities"]["live2d"]["modelId"], "hiyori-free")
+
+        playback = self.post_json("/runtime/feedback", {
+            "sessionId": "feedback-session",
+            "type": "audio.playback-started",
+            "timestamp": "2026-06-22T00:00:01.000Z",
+            "payload": {
+                "source": "runtime_audio",
+                "audioUrl": "http://runtime/audio.wav",
+            },
+        })
+
+        self.assertEqual(playback["feedback"]["audioPlayback"]["status"], "playing")
+        self.assertEqual(playback["feedback"]["audioPlayback"]["audioUrl"], "http://runtime/audio.wav")
+
+        snapshot = self.get_json("/runtime/feedback?sessionId=feedback-session")
+        self.assertEqual(snapshot["feedback"]["sessionId"], "feedback-session")
+        self.assertEqual(snapshot["feedback"]["recentEventCount"], 2)
+        self.assertEqual(snapshot["feedback"]["recentEvents"][-1]["type"], "audio.playback-started")
+
     def test_agent_turn_streams_missing_api_key_error_as_ndjson(self) -> None:
         os.environ["OPENAI_API_KEY"] = ""
         runtime_server.agent_runtime.api_key = ""

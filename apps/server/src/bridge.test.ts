@@ -3,7 +3,13 @@ import assert from 'node:assert/strict'
 
 import { fetchPythonToolPermissions } from '@amadeus-agent/amadeus/tools'
 
-import { forwardToolPermissionToPython, listPythonMemoryReviewJobs, relayPythonTurn, type SocketLike } from './bridge.js'
+import {
+  forwardRuntimeFeedbackToPython,
+  forwardToolPermissionToPython,
+  listPythonMemoryReviewJobs,
+  relayPythonTurn,
+  type SocketLike,
+} from './bridge.js'
 
 function streamResponse(chunks: string[], status = 200): Response {
   const encoder = new TextEncoder()
@@ -148,6 +154,74 @@ describe('Python tool permission forwarding', () => {
     }
 
     await assert.doesNotReject(() => forwardToolPermissionToPython('request-1', false, {
+      runtimeUrl: 'http://runtime',
+      fetchImpl,
+    }))
+  })
+})
+
+describe('Python runtime feedback forwarding', () => {
+  it('forwards desktop feedback events to Python /runtime/feedback', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }
+
+    await forwardRuntimeFeedbackToPython({
+      id: 'feedback-1',
+      type: 'audio.playback-started',
+      sessionId: 'session-1',
+      timestamp: '2026-06-22T00:00:00.000Z',
+      payload: {
+        source: 'runtime_audio',
+        audioUrl: 'http://runtime/audio.wav',
+      },
+    }, {
+      runtimeUrl: 'http://127.0.0.1:8790/',
+      fetchImpl,
+    })
+
+    assert.equal(calls[0].url, 'http://127.0.0.1:8790/runtime/feedback')
+    assert.equal(calls[0].init?.method, 'POST')
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+      sessionId: 'session-1',
+      type: 'audio.playback-started',
+      timestamp: '2026-06-22T00:00:00.000Z',
+      payload: {
+        source: 'runtime_audio',
+        audioUrl: 'http://runtime/audio.wav',
+      },
+    })
+  })
+
+  it('swallows Python runtime feedback failures', async () => {
+    const fetchImpl: typeof fetch = async () => {
+      throw new Error('offline')
+    }
+
+    await assert.doesNotReject(() => forwardRuntimeFeedbackToPython({
+      id: 'feedback-1',
+      type: 'desktop.capabilities',
+      sessionId: 'session-1',
+      timestamp: '2026-06-22T00:00:00.000Z',
+      payload: {
+        desktop: {
+          runtime: 'electron',
+          protocolVersion: 1,
+        },
+        live2d: {
+          available: false,
+          expressions: [],
+          motions: [],
+        },
+        audio: {
+          runtimeAudio: true,
+          speechSynthesis: true,
+          voiceCount: 0,
+        },
+      },
+    }, {
       runtimeUrl: 'http://runtime',
       fetchImpl,
     }))

@@ -66,6 +66,18 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, build_runtime_health())
             return
 
+        if parsed.path == "/runtime/feedback":
+            query = parse_qs(parsed.query)
+            session_id = query.get("sessionId", ["default"])[0]
+            snapshot = agent_runtime.harness_feedback_snapshot(session_id)
+            logger.info(
+                "Handling runtime feedback snapshot sessionId=%s recentEventCount=%s",
+                session_id,
+                snapshot.get("recentEventCount"),
+            )
+            self.write_json(200, {"ok": True, "feedback": snapshot})
+            return
+
         if parsed.path == "/tools/list":
             logger.info("Handling tools list request")
             self.write_json(200, {
@@ -288,6 +300,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_runtime_config_reload()
             return
 
+        if self.path == "/runtime/feedback":
+            self.handle_runtime_feedback()
+            return
+
         if self.path == "/agent/turn":
             self.handle_agent_turn()
             return
@@ -356,6 +372,42 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, **result})
         except Exception as error:
             logger.info("Runtime config reload failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_runtime_feedback(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId", "default")
+            event_type = body.get("type")
+            payload = body.get("payload")
+            timestamp = body.get("timestamp")
+
+            if not isinstance(session_id, str) or not isinstance(event_type, str) or not isinstance(payload, dict):
+                self.write_json(400, {"ok": False, "error": "sessionId, type, and payload must be provided"})
+                return
+            if timestamp is not None and not isinstance(timestamp, str):
+                self.write_json(400, {"ok": False, "error": "timestamp must be a string when provided"})
+                return
+
+            snapshot = agent_runtime.observe_harness_feedback(
+                session_id,
+                event_type,
+                payload,
+                timestamp=timestamp,
+            )
+            logger.info(
+                "Handled runtime feedback sessionId=%s type=%s audioStatus=%s live2dAvailable=%s",
+                session_id,
+                event_type,
+                snapshot.get("audioPlayback", {}).get("status"),
+                (snapshot.get("desktopCapabilities") or {}).get("live2d", {}).get("available"),
+            )
+            self.write_json(200, {"ok": True, "feedback": snapshot})
+        except ValueError as error:
+            logger.info("Rejecting unsupported runtime feedback error=%s", error)
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Runtime feedback handling failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_agent_turn(self) -> None:
@@ -881,6 +933,7 @@ def build_runtime_health() -> dict[str, Any]:
         "tools": tools_health_check(),
         "live2d": live2d_health_check(),
         "audio": audio_health_check(),
+        "harnessFeedback": harness_feedback_health_check(),
         "config": config_health_check(),
     }
     status = aggregate_health_status(checks)
@@ -1011,6 +1064,16 @@ def audio_health_check() -> dict[str, Any]:
         "cacheDir": str(audio_library.cache_dir),
         "ttsProvider": provider_name,
         "ttsEnabled": provider_name != "none",
+    }
+
+
+def harness_feedback_health_check() -> dict[str, Any]:
+    snapshot = agent_runtime.harness_feedback_snapshot("default")
+    return {
+        "status": "ok",
+        "defaultSessionAudioStatus": snapshot.get("audioPlayback", {}).get("status"),
+        "defaultSessionLive2DAvailable": (snapshot.get("desktopCapabilities") or {}).get("live2d", {}).get("available"),
+        "defaultSessionRecentEventCount": snapshot.get("recentEventCount"),
     }
 
 
