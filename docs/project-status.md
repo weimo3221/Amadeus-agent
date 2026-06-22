@@ -357,6 +357,7 @@ Started.
 - `read_memory` / `update_memory` expose controlled read and add/replace/remove operations for agent facts and user preferences.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.
 - Conversation summaries now track covered message ranges, are injected as reference-only context, and can be refreshed by automatic threshold compaction or manual `POST /memory/compact`.
+- Python exposes recent in-memory context assembler diagnostics through `GET /memory/context/diagnostics`, scoped by session and bounded by `context.diagnosticsLimit`.
 - Structured `memory_items` now persist durable `user` / `agent` / `project` facts, expose `GET /memory/items`, `POST /memory/items`, and `POST /memory/items/delete`, and inject the active top items into model context.
 - Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, while `memory_add`, `memory_replace`, and `memory_forget` mutate one durable fact only through the `ask` permission path.
 - Memory review candidates now provide a human-controlled promotion queue: `GET/POST /memory/review/candidates` manages pending candidates, `POST /memory/review/accept` promotes one into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory.

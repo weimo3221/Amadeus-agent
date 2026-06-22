@@ -124,6 +124,7 @@ http://127.0.0.1:8790
 - `POST /tools/permission`
 - `GET /memory/count?sessionId=default`
 - `GET /memory/messages?sessionId=default&limit=40`
+- `GET /memory/context/diagnostics?sessionId=default&limit=10`：query recent in-memory context assembler diagnostics for developer inspection.
 - `GET /memory/search?sessionId=default&query=hello&limit=10`
 - `GET /memory/items?scope=user&query=preference&limit=20`
 - `GET /memory/summary?sessionId=default`

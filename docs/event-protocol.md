@@ -304,6 +304,7 @@ POST /tools/execute
 POST /tools/permission
 GET /memory/count
 GET /memory/messages
+GET /memory/context/diagnostics
 GET /memory/items
 GET /memory/summary
 POST /memory/messages

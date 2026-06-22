@@ -124,6 +124,29 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, "messages": memory_store.load(session_id, limit)})
             return
 
+        if parsed.path == "/memory/context/diagnostics":
+            query = parse_qs(parsed.query)
+            session_id = query.get("sessionId", ["default"])[0]
+            limit = parse_int(query.get("limit", [str(agent_runtime.context_diagnostics_limit)])[0], agent_runtime.context_diagnostics_limit, 1, 200)
+            diagnostics = agent_runtime.memory_context_diagnostics(session_id, limit=limit)
+            logger.info(
+                "Handling memory context diagnostics sessionId=%s limit=%s count=%s",
+                session_id,
+                limit,
+                len(diagnostics),
+            )
+            self.write_json(200, {
+                "ok": True,
+                "sessionId": session_id,
+                "diagnostics": diagnostics,
+                "count": len(diagnostics),
+                "filters": {
+                    "sessionId": session_id,
+                    "limit": limit,
+                },
+            })
+            return
+
         if parsed.path == "/memory/items":
             query = parse_qs(parsed.query)
             scope = optional_query_string(query, "scope")

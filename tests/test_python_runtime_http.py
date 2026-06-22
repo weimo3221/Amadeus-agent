@@ -214,6 +214,81 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["sessionId"], "http-test")
         self.assertIn("blue", payload["results"][0]["content"])
 
+    def test_memory_context_diagnostics_returns_recent_runtime_ring_buffer(self) -> None:
+        runtime_server.agent_runtime._memory_context_used_event(
+            "http-test",
+            "turn-1",
+            {
+                "sourceCounts": {"memory_item": 1},
+                "sourceCount": 1,
+                "coveredThroughMessageId": 0,
+                "sources": [{
+                    "kind": "memory_item",
+                    "sourceId": "1",
+                    "contentChars": 32,
+                    "reason": "accepted durable structured memory",
+                    "metadata": {"scope": "project"},
+                }],
+            },
+        )
+        runtime_server.agent_runtime._memory_context_used_event(
+            "http-test",
+            "turn-2",
+            {
+                "sourceCounts": {"retrieval": 1},
+                "sourceCount": 1,
+                "coveredThroughMessageId": 0,
+                "sources": [{
+                    "kind": "retrieval",
+                    "sourceId": "2",
+                    "contentChars": 24,
+                    "reason": "FTS match for current user message",
+                    "metadata": {"role": "assistant"},
+                }],
+            },
+        )
+        runtime_server.agent_runtime._memory_context_used_event(
+            "other-session",
+            "turn-other",
+            {
+                "sourceCounts": {"retrieval": 1},
+                "sourceCount": 1,
+                "coveredThroughMessageId": 0,
+                "sources": [],
+            },
+        )
+
+        payload = self.get_json("/memory/context/diagnostics?sessionId=http-test&limit=1")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sessionId"], "http-test")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["filters"], {"sessionId": "http-test", "limit": 1})
+        self.assertEqual(payload["diagnostics"][0]["turnId"], "turn-2")
+        self.assertEqual(payload["diagnostics"][0]["sessionId"], "http-test")
+        self.assertEqual(payload["diagnostics"][0]["phase"], "turn_start")
+        self.assertIn("timestamp", payload["diagnostics"][0])
+        self.assertEqual(payload["diagnostics"][0]["sourceCounts"], {"retrieval": 1})
+
+    def test_memory_context_diagnostics_defaults_to_default_session(self) -> None:
+        runtime_server.agent_runtime._memory_context_used_event(
+            "default",
+            "default-turn",
+            {
+                "sourceCounts": {},
+                "sourceCount": 0,
+                "coveredThroughMessageId": 0,
+                "sources": [],
+            },
+        )
+
+        payload = self.get_json("/memory/context/diagnostics")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sessionId"], "default")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["diagnostics"][0]["turnId"], "default-turn")
+
     def test_memory_items_roundtrip_and_delete_over_http(self) -> None:
         saved = self.post_json("/memory/items", {
             "scope": "user",
