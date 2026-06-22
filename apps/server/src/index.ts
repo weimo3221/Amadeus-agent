@@ -12,6 +12,7 @@ import {
   relayPythonTurn,
   runPythonMemoryReview,
 } from './bridge.js'
+import { LocalLive2DModelLibrary } from './live2d.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
@@ -29,12 +30,16 @@ config({ path: resolve(rootDir, '.env') })
 
 const host = process.env.AMADEUS_SERVER_HOST || '127.0.0.1'
 const port = Number(process.env.AMADEUS_SERVER_PORT || 8788)
+const serverBaseUrl = process.env.AMADEUS_SERVER_URL || `http://${host}:${port}`
 const model = process.env.OPENAI_MODEL || 'deepseek-v4-flash'
 const pythonRuntimeUrl = process.env.AMADEUS_PYTHON_RUNTIME_URL || process.env.AMADEUS_PYTHON_TOOLS_URL || 'http://127.0.0.1:8790'
 const defaultSessionId = 'default'
 const dataDir = resolve(rootDir, 'data')
 const databasePath = resolve(dataDir, 'amadeus.sqlite')
+const live2dRoot = process.env.AMADEUS_LIVE2D_ROOT || resolve(rootDir, 'models/live2d')
+const harnessesConfigPath = resolve(rootDir, 'configs/harnesses.yaml')
 const pendingToolPermissions = new Map<string, (approved: boolean) => void>()
+const live2dLibrary = new LocalLive2DModelLibrary(live2dRoot, serverBaseUrl, harnessesConfigPath)
 
 const pythonToolsUnavailable: ToolPermissionState[] = [{
   name: 'python_runtime_unavailable',
@@ -136,6 +141,7 @@ const { httpServer } = createAmadeusBridgeServer({
   rejectMemoryReviewCandidate(candidateId) {
     return rejectPythonMemoryReviewCandidate(candidateId, { runtimeUrl: pythonRuntimeUrl })
   },
+  live2dLibrary,
   streamChat,
 })
 

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus import server as runtime_server
 from amadeus.agent import AgentRuntime, PermissionBroker
+from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.memory import MessageMemoryStore
 
 
@@ -50,9 +51,15 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.previous_memory_store = runtime_server.memory_store
         self.previous_agent_runtime = runtime_server.agent_runtime
         self.previous_permission_broker = runtime_server.permission_broker
+        self.previous_live2d_library = runtime_server.live2d_library
 
         database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
         self.runtime_config_path = Path(self.tmpdir.name) / "runtime.yaml"
+        live2d_root = Path(self.tmpdir.name) / "live2d"
+        live2d_model_dir = live2d_root / "hiyori-free"
+        live2d_model_dir.mkdir(parents=True)
+        (live2d_model_dir / "hiyori_free_t08.model3.json").write_text('{"Version":3}', encoding="utf-8")
+        (live2d_model_dir / "hiyori_free_t08.moc3").write_bytes(b"moc")
         memory_store = MessageMemoryStore(database_path)
         runtime_server.memory_store = memory_store
         runtime_server.agent_runtime = AgentRuntime(
@@ -62,6 +69,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             runtime_config_path=self.runtime_config_path,
         )
         runtime_server.permission_broker = PermissionBroker()
+        runtime_server.live2d_library = LocalLive2DModelLibrary(live2d_root, "http://runtime")
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), runtime_server.RuntimeRequestHandler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -75,6 +83,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.memory_store = self.previous_memory_store
         runtime_server.agent_runtime = self.previous_agent_runtime
         runtime_server.permission_broker = self.previous_permission_broker
+        runtime_server.live2d_library = self.previous_live2d_library
 
         if self.previous_api_key is None:
             os.environ.pop("OPENAI_API_KEY", None)
@@ -122,6 +131,24 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         schema_names = {entry["function"]["name"] for entry in payload["schemas"]}
         self.assertIn("get_current_time", tool_names)
         self.assertIn("get_current_time", schema_names)
+
+    def test_live2d_config_returns_current_model_url(self) -> None:
+        payload = self.get_json("/live2d/config")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["model"]["id"], "hiyori-free")
+        self.assertEqual(payload["model"]["path"], "hiyori-free/hiyori_free_t08.model3.json")
+        self.assertTrue(payload["model"]["url"].endswith("/live2d/models/hiyori-free/hiyori_free_t08.model3.json"))
+
+    def test_live2d_model_file_serves_local_assets(self) -> None:
+        with urlopen(self.url("/live2d/models/hiyori-free/hiyori_free_t08.model3.json"), timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+            self.assertEqual(json.loads(response.read().decode("utf-8")), {"Version": 3})
+
+        with urlopen(self.url("/live2d/models/hiyori-free/hiyori_free_t08.moc3"), timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"moc")
 
     def test_tool_permission_unknown_request_returns_unresolved(self) -> None:
         payload = self.post_json("/tools/permission", {"requestId": "missing", "approved": True})

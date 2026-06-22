@@ -20,7 +20,8 @@ sys.path.insert(0, str(PACKAGES_DIR))
 
 from amadeus.memory import MessageMemoryStore
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
-from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary
+from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary, create_tts_provider_from_config
+from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.tool_runtime import ToolContext
 from amadeus.tools import list_tools
 
@@ -29,13 +30,15 @@ HOST = os.environ.get("AMADEUS_PYTHON_RUNTIME_HOST", os.environ.get("AMADEUS_PYT
 PORT = int(os.environ.get("AMADEUS_PYTHON_RUNTIME_PORT", os.environ.get("AMADEUS_PYTHON_TOOLS_PORT", "8790")))
 DATABASE_PATH = Path(os.environ.get("AMADEUS_MEMORY_DB", str(REPO_ROOT / "data" / "amadeus.sqlite")))
 AUDIO_ROOT = Path(os.environ.get("AMADEUS_AUDIO_ROOT", str(RUNTIME_DIR / "assets" / "audio")))
+LIVE2D_ROOT = Path(os.environ.get("AMADEUS_LIVE2D_ROOT", str(REPO_ROOT / "models" / "live2d")))
 PUBLIC_BASE_URL = os.environ.get("AMADEUS_PYTHON_RUNTIME_URL", f"http://{HOST}:{PORT}")
 LOG_LEVEL = os.environ.get("AMADEUS_LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger(__name__)
 
 memory_store = MessageMemoryStore(DATABASE_PATH)
 audio_library = LocalAudioLibrary(AUDIO_ROOT, PUBLIC_BASE_URL)
-audio_runtime = AudioRuntime(audio_library)
+live2d_library = LocalLive2DModelLibrary(LIVE2D_ROOT, PUBLIC_BASE_URL)
+audio_runtime = AudioRuntime(audio_library, create_tts_provider_from_config(audio_library))
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
 
@@ -239,6 +242,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path.startswith("/audio/files/"):
             self.handle_audio_file(parsed.path.removeprefix("/audio/files/"))
+            return
+
+        if parsed.path == "/live2d/config":
+            self.handle_live2d_config()
+            return
+
+        if parsed.path.startswith("/live2d/models/"):
+            self.handle_live2d_model_file(parsed.path.removeprefix("/live2d/models/"))
             return
 
         self.write_json(404, {"ok": False, "error": "not_found"})
@@ -737,6 +748,32 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(404, {"ok": False, "error": "audio_not_found"})
             return
 
+        self.write_file_response(file_path)
+
+    def handle_live2d_config(self) -> None:
+        selection = live2d_library.configured_model()
+        if not selection:
+            self.write_json(404, {"ok": False, "error": "live2d_model_not_configured"})
+            return
+
+        self.write_json(200, {
+            "ok": True,
+            "model": {
+                "id": selection.model_id,
+                "path": selection.relative_path,
+                "url": live2d_library.model_url(selection),
+            },
+        })
+
+    def handle_live2d_model_file(self, relative_path: str) -> None:
+        file_path = live2d_library.resolve_public_path(unquote(relative_path))
+        if not file_path:
+            self.write_json(404, {"ok": False, "error": "live2d_model_file_not_found"})
+            return
+
+        self.write_file_response(file_path)
+
+    def write_file_response(self, file_path: Path) -> None:
         content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         data = file_path.read_bytes()
         self.send_response(200)

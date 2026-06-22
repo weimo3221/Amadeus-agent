@@ -10,8 +10,15 @@ import type {
 } from '@amadeus-agent/amadeus/events'
 
 import { randomUUID } from 'node:crypto'
-import { createServer, type Server as HttpServer } from 'node:http'
+import { createServer, type IncomingMessage, type Server as HttpServer } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
+import {
+  type LocalLive2DModelLibrary,
+  writeLive2DConfig,
+  writeLive2DModels,
+  writeLive2DModelFile,
+  writeLive2DSelection,
+} from './live2d.js'
 
 export interface AmadeusBridgeServerOptions {
   model: string
@@ -26,6 +33,7 @@ export interface AmadeusBridgeServerOptions {
   runMemoryReview?(sessionId: string, force: boolean): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
   acceptMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
   rejectMemoryReviewCandidate?(candidateId: number): MemoryReviewUpdatedPayload | Promise<MemoryReviewUpdatedPayload>
+  live2dLibrary?: LocalLive2DModelLibrary
   streamChat(socket: WebSocket, sessionId: string, text: string): void | Promise<void>
 }
 
@@ -137,11 +145,58 @@ function parseEvent(raw: Buffer): ClientRuntimeEvent | undefined {
   }
 }
 
+async function readRequestJson(request: IncomingMessage): Promise<unknown> {
+  let body = ''
+  for await (const chunk of request) {
+    body += String(chunk)
+  }
+  if (!body.trim()) {
+    return undefined
+  }
+  return JSON.parse(body) as unknown
+}
+
 export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): AmadeusBridgeServer {
   const httpServer = createServer((request, response) => {
-    if (request.url === '/health') {
+    const requestUrl = request.url ?? '/'
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      })
+      response.end()
+      return
+    }
+
+    if (requestUrl === '/health') {
       response.writeHead(200, { 'Content-Type': 'application/json' })
       response.end(JSON.stringify({ ok: true, model: options.model }))
+      return
+    }
+
+    if (requestUrl === '/live2d/config' && options.live2dLibrary) {
+      writeLive2DConfig(response, options.live2dLibrary)
+      return
+    }
+
+    if (requestUrl === '/live2d/models' && request.method === 'GET' && options.live2dLibrary) {
+      writeLive2DModels(response, options.live2dLibrary)
+      return
+    }
+
+    if (requestUrl === '/live2d/select' && request.method === 'POST' && options.live2dLibrary) {
+      void readRequestJson(request)
+        .then((payload) => writeLive2DSelection(response, options.live2dLibrary!, payload))
+        .catch(() => {
+          response.writeHead(400, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({ ok: false, error: 'invalid_json' }))
+        })
+      return
+    }
+
+    if (requestUrl.startsWith('/live2d/models/') && options.live2dLibrary) {
+      writeLive2DModelFile(response, options.live2dLibrary, requestUrl.slice('/live2d/models/'.length))
       return
     }
 

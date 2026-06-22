@@ -3,11 +3,15 @@ import assert from 'node:assert/strict'
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { WebSocket } from 'ws'
 
 import type { RuntimeEvent } from '@amadeus-agent/amadeus/events'
 
 import { forwardToolPermissionToPython, relayPythonTurn } from './bridge.js'
+import { LocalLive2DModelLibrary } from './live2d.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -82,6 +86,154 @@ function closeWebSocket(socket: WebSocket): void {
 }
 
 describe('WebSocket Python-first integration', () => {
+  it('serves local Live2D config and model assets over the bridge HTTP server', async (t) => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'amadeus-live2d-'))
+    const modelDir = join(fixtureRoot, 'models', 'hiyori-free')
+    mkdirSync(modelDir, { recursive: true })
+    writeFileSync(join(modelDir, 'hiyori.model3.json'), '{"Version":3}', 'utf8')
+    writeFileSync(join(modelDir, 'hiyori.moc3'), 'moc', 'utf8')
+    const configPath = join(fixtureRoot, 'harnesses.yaml')
+    writeFileSync(configPath, [
+      'harnesses:',
+      '  live2d:',
+      '    enabled: true',
+      '    model:',
+      '      id: hiyori-free',
+      '      path: hiyori-free/hiyori.model3.json',
+    ].join('\n'), 'utf8')
+
+    const library = new LocalLive2DModelLibrary(join(fixtureRoot, 'models'), 'http://127.0.0.1:0', configPath)
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      countPersistedMessages: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      resolvePendingToolPermission: () => false,
+      forwardToolPermissionToPython: () => {},
+      live2dLibrary: library,
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const configResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/config`)
+    assert.equal(configResponse.status, 200)
+    const configPayload = await configResponse.json() as {
+      ok: boolean
+      model: { id: string; path: string; url: string }
+    }
+    assert.equal(configPayload.ok, true)
+    assert.equal(configPayload.model.id, 'hiyori-free')
+    assert.equal(configPayload.model.path, 'hiyori-free/hiyori.model3.json')
+    assert.equal(configPayload.model.url, 'http://127.0.0.1:0/live2d/models/hiyori-free/hiyori.model3.json')
+
+    const modelResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/models/hiyori-free/hiyori.model3.json`)
+    assert.equal(modelResponse.status, 200)
+    assert.equal(modelResponse.headers.get('access-control-allow-origin'), '*')
+    assert.deepEqual(await modelResponse.json(), { Version: 3 })
+
+    const modelsResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/models`)
+    assert.equal(modelsResponse.status, 200)
+    const modelsPayload = await modelsResponse.json() as {
+      ok: boolean
+      models: Array<{ id: string; path: string; active: boolean }>
+    }
+    assert.equal(modelsPayload.ok, true)
+    assert.equal(modelsPayload.models.length, 1)
+    assert.equal(modelsPayload.models[0].id, 'hiyori-free')
+    assert.equal(modelsPayload.models[0].path, 'hiyori-free/hiyori.model3.json')
+    assert.equal(modelsPayload.models[0].active, true)
+  })
+
+  it('switches local Live2D models and persists harness config', async (t) => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'amadeus-live2d-switch-'))
+    const freeDir = join(fixtureRoot, 'models', 'hiyori-free')
+    const proDir = join(fixtureRoot, 'models', 'hiyori-pro')
+    mkdirSync(freeDir, { recursive: true })
+    mkdirSync(proDir, { recursive: true })
+    writeFileSync(join(freeDir, 'hiyori-free.model3.json'), '{}', 'utf8')
+    writeFileSync(join(proDir, 'hiyori-pro.model3.json'), '{}', 'utf8')
+    const configPath = join(fixtureRoot, 'harnesses.yaml')
+    writeFileSync(configPath, [
+      'harnesses:',
+      '  live2d:',
+      '    enabled: true',
+      '    adapter: desktop-live2d',
+      '    model:',
+      '      id: hiyori-free',
+      '      path: hiyori-free/hiyori-free.model3.json',
+    ].join('\n'), 'utf8')
+
+    const library = new LocalLive2DModelLibrary(join(fixtureRoot, 'models'), 'http://127.0.0.1:0', configPath)
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      countPersistedMessages: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      resolvePendingToolPermission: () => false,
+      forwardToolPermissionToPython: () => {},
+      live2dLibrary: library,
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const response = await fetch(`http://127.0.0.1:${bridgePort}/live2d/select`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId: 'hiyori-pro' }),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json() as { ok: boolean; model: { id: string; path: string } }
+    assert.equal(payload.ok, true)
+    assert.equal(payload.model.id, 'hiyori-pro')
+    assert.equal(payload.model.path, 'hiyori-pro/hiyori-pro.model3.json')
+    const persisted = readFileSync(configPath, 'utf8')
+    assert.match(persisted, /id: hiyori-pro/)
+    assert.match(persisted, /path: hiyori-pro\/hiyori-pro\.model3\.json/)
+  })
+
+  it('allows browser CORS preflight for Live2D model switching', async (t) => {
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      countPersistedMessages: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      resolvePendingToolPermission: () => false,
+      forwardToolPermissionToPython: () => {},
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const response = await fetch(`http://127.0.0.1:${bridgePort}/live2d/select`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:5173',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type',
+      },
+    })
+
+    assert.equal(response.status, 204)
+    assert.equal(response.headers.get('access-control-allow-origin'), '*')
+    assert.match(response.headers.get('access-control-allow-methods') ?? '', /POST/)
+    assert.match(response.headers.get('access-control-allow-headers') ?? '', /Content-Type/i)
+  })
+
   it('sends server.hello with async Python tool permissions', async (t) => {
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',

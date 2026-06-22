@@ -1,0 +1,7 @@
+harnesses:
+  live2d:
+    enabled: true
+    adapter: desktop-live2d
+    model:
+      id: hiyori-pro
+      path: hiyori-pro/hiyori_pro_t11.model3.json
