@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { basename, extname, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import type { ServerResponse } from 'node:http'
 
 const SUPPORTED_LIVE2D_SUFFIXES = new Set([
@@ -28,6 +28,7 @@ export interface Live2DModelConfig {
   id: string
   path: string
   url: string
+  manifest?: Live2DModelManifest
 }
 
 export interface Live2DModelListItem {
@@ -35,6 +36,19 @@ export interface Live2DModelListItem {
   path: string
   url: string
   active: boolean
+  manifest?: Live2DModelManifest
+}
+
+export interface Live2DModelManifest {
+  displayName?: string
+  defaults?: {
+    expression?: string
+    motion?: string
+  }
+  aliases?: {
+    expressions?: Record<string, string[]>
+    motions?: Record<string, string[]>
+  }
 }
 
 interface HarnessLive2DConfig {
@@ -58,6 +72,7 @@ export class LocalLive2DModelLibrary {
           id: config.modelId,
           path: normalized,
           url: this.modelUrl(normalized),
+        manifest: this.readManifest(normalized),
         }
       }
     }
@@ -71,6 +86,7 @@ export class LocalLive2DModelLibrary {
       id: config.modelId,
       path: discovered,
       url: this.modelUrl(discovered),
+      manifest: this.readManifest(discovered),
     }
   }
 
@@ -81,22 +97,25 @@ export class LocalLive2DModelLibrary {
       return []
     }
 
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => {
-        const modelPath = this.findModel(entry.name)
-        if (!modelPath) {
-          return undefined
-        }
-        return {
-          id: entry.name,
-          path: modelPath,
-          url: this.modelUrl(modelPath),
-          active: active?.id === entry.name && active.path === modelPath,
-        }
+    const models: Live2DModelListItem[] = []
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue
+      }
+      const modelPath = this.findModel(entry.name)
+      if (!modelPath) {
+        continue
+      }
+      models.push({
+        id: entry.name,
+        path: modelPath,
+        url: this.modelUrl(modelPath),
+        active: active?.id === entry.name && active.path === modelPath,
+        manifest: this.readManifest(modelPath),
       })
-      .filter((entry): entry is Live2DModelListItem => Boolean(entry))
-      .sort((a, b) => a.id.localeCompare(b.id))
+    }
+
+    return models.sort((a, b) => a.id.localeCompare(b.id))
   }
 
   selectModel(modelId: string): Live2DModelConfig | undefined {
@@ -115,6 +134,7 @@ export class LocalLive2DModelLibrary {
       id: normalizedId,
       path: modelPath,
       url: this.modelUrl(modelPath),
+      manifest: this.readManifest(modelPath),
     }
   }
 
@@ -166,6 +186,30 @@ export class LocalLive2DModelLibrary {
 
   private modelUrl(relativePath: string): string {
     return `${this.publicBaseUrl.replace(/\/$/, '')}/live2d/models/${encodeURI(relativePath)}`
+  }
+
+  private readManifest(relativeModelPath: string): Live2DModelManifest | undefined {
+    const modelDir = dirname(resolve(this.rootDir, relativeModelPath))
+    const candidates = [
+      join(modelDir, 'manifest.json'),
+      join(modelDir, 'manifest.yaml'),
+      join(modelDir, 'manifest.yml'),
+    ]
+    const manifestPath = candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile())
+    if (!manifestPath) {
+      return undefined
+    }
+
+    try {
+      const content = readFileSync(manifestPath, 'utf8')
+      const parsed = manifestPath.endsWith('.json')
+        ? JSON.parse(content) as unknown
+        : parseManifestYaml(content)
+      return normalizeManifest(parsed)
+    }
+    catch {
+      return undefined
+    }
   }
 
   private persistConfiguredModel(modelId: string, modelPath: string): void {
@@ -391,6 +435,113 @@ function updateHarnessLive2DModelConfig(content: string, modelId: string, modelP
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeManifest(value: unknown): Live2DModelManifest | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+
+  const manifest: Live2DModelManifest = {}
+  if (typeof value.displayName === 'string') {
+    manifest.displayName = value.displayName
+  }
+  if (isRecord(value.defaults)) {
+    manifest.defaults = {}
+    if (typeof value.defaults.expression === 'string') {
+      manifest.defaults.expression = value.defaults.expression
+    }
+    if (typeof value.defaults.motion === 'string') {
+      manifest.defaults.motion = value.defaults.motion
+    }
+  }
+  if (isRecord(value.aliases)) {
+    const expressions = normalizeAliasMap(value.aliases.expressions)
+    const motions = normalizeAliasMap(value.aliases.motions)
+    if (expressions || motions) {
+      manifest.aliases = {}
+      if (expressions) {
+        manifest.aliases.expressions = expressions
+      }
+      if (motions) {
+        manifest.aliases.motions = motions
+      }
+    }
+  }
+
+  return Object.keys(manifest).length ? manifest : undefined
+}
+
+function normalizeAliasMap(value: unknown): Record<string, string[]> | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+
+  const aliases: Record<string, string[]> = {}
+  for (const [key, rawAliases] of Object.entries(value)) {
+    const values = Array.isArray(rawAliases)
+      ? rawAliases.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+      : typeof rawAliases === 'string'
+        ? rawAliases.split(',').map((entry) => entry.trim()).filter(Boolean)
+        : []
+    if (values.length) {
+      aliases[key] = values
+    }
+  }
+
+  return Object.keys(aliases).length ? aliases : undefined
+}
+
+function parseManifestYaml(content: string): Record<string, unknown> {
+  const root: Record<string, unknown> = {}
+  let section: string | undefined
+  let subsection: string | undefined
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.split('#', 1)[0].trimEnd()
+    if (!line.trim()) {
+      continue
+    }
+
+    const indent = line.length - line.trimStart().length
+    const trimmed = line.trim()
+    if (indent === 0 && trimmed.includes(':')) {
+      const [key, ...rest] = trimmed.split(':')
+      const value = rest.join(':').trim()
+      section = key.trim()
+      subsection = undefined
+      root[section] = value ? parseManifestScalar(value) : {}
+      continue
+    }
+
+    const sectionValue = section ? root[section] : undefined
+    if (!section || !isRecord(sectionValue) || !trimmed.includes(':')) {
+      continue
+    }
+
+    const [key, ...rest] = trimmed.split(':')
+    const value = rest.join(':').trim()
+    if (indent === 2) {
+      subsection = key.trim()
+      sectionValue[subsection] = value ? parseManifestScalar(value) : {}
+      continue
+    }
+
+    const subsectionValue = subsection ? sectionValue[subsection] : undefined
+    if (indent === 4 && subsection && isRecord(subsectionValue)) {
+      subsectionValue[key.trim()] = parseManifestScalar(value)
+    }
+  }
+
+  return root
+}
+
+function parseManifestScalar(value: string): string | string[] {
+  const parsed = parseYamlScalar(value)
+  if (parsed.startsWith('[') && parsed.endsWith(']')) {
+    return parsed.slice(1, -1).split(',').map((entry) => parseYamlScalar(entry.trim())).filter(Boolean)
+  }
+  return parsed
 }
 
 function findFirstModel3Json(root: string): string | undefined {

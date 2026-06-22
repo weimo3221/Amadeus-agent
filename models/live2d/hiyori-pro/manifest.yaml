@@ -1,0 +1,16 @@
+displayName: Hiyori Pro
+defaults:
+  expression: neutral
+  motion: idle
+aliases:
+  expressions:
+    neutral: [neutral, default, normal]
+    smile: [smile, happy]
+    serious: [serious, focused, angry]
+    confused: [confused, surprised]
+    curious: [curious, surprised]
+  motions:
+    idle: [Idle, idle]
+    think: [TapBody, FlickHead, Idle]
+    talk: [TapBody, Idle]
+    shake_head: [FlickHead, TapBody]

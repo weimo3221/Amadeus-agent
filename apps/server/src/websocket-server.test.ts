@@ -92,6 +92,15 @@ describe('WebSocket Python-first integration', () => {
     mkdirSync(modelDir, { recursive: true })
     writeFileSync(join(modelDir, 'hiyori.model3.json'), '{"Version":3}', 'utf8')
     writeFileSync(join(modelDir, 'hiyori.moc3'), 'moc', 'utf8')
+    writeFileSync(join(modelDir, 'manifest.yaml'), [
+      'displayName: Hiyori Fixture',
+      'defaults:',
+      '  expression: neutral',
+      '  motion: idle',
+      'aliases:',
+      '  motions:',
+      '    talk: [TapBody, Idle]',
+    ].join('\n'), 'utf8')
     const configPath = join(fixtureRoot, 'harnesses.yaml')
     writeFileSync(configPath, [
       'harnesses:',
@@ -124,12 +133,29 @@ describe('WebSocket Python-first integration', () => {
     assert.equal(configResponse.status, 200)
     const configPayload = await configResponse.json() as {
       ok: boolean
-      model: { id: string; path: string; url: string }
+        model: {
+          id: string
+          path: string
+          url: string
+          manifest?: Record<string, unknown>
+        }
     }
     assert.equal(configPayload.ok, true)
     assert.equal(configPayload.model.id, 'hiyori-free')
     assert.equal(configPayload.model.path, 'hiyori-free/hiyori.model3.json')
     assert.equal(configPayload.model.url, 'http://127.0.0.1:0/live2d/models/hiyori-free/hiyori.model3.json')
+    assert.deepEqual(configPayload.model.manifest, {
+      displayName: 'Hiyori Fixture',
+      defaults: {
+        expression: 'neutral',
+        motion: 'idle',
+      },
+      aliases: {
+        motions: {
+          talk: ['TapBody', 'Idle'],
+        },
+      },
+    })
 
     const modelResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/models/hiyori-free/hiyori.model3.json`)
     assert.equal(modelResponse.status, 200)
@@ -140,13 +166,19 @@ describe('WebSocket Python-first integration', () => {
     assert.equal(modelsResponse.status, 200)
     const modelsPayload = await modelsResponse.json() as {
       ok: boolean
-      models: Array<{ id: string; path: string; active: boolean }>
+        models: Array<{
+          id: string
+          path: string
+          active: boolean
+          manifest?: { displayName?: string }
+        }>
     }
     assert.equal(modelsPayload.ok, true)
     assert.equal(modelsPayload.models.length, 1)
     assert.equal(modelsPayload.models[0].id, 'hiyori-free')
     assert.equal(modelsPayload.models[0].path, 'hiyori-free/hiyori.model3.json')
     assert.equal(modelsPayload.models[0].active, true)
+    assert.equal(modelsPayload.models[0].manifest?.displayName, 'Hiyori Fixture')
   })
 
   it('switches local Live2D models and persists harness config', async (t) => {
