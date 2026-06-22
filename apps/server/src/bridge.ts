@@ -35,6 +35,11 @@ interface MemoryReviewJobsResponse {
   jobs?: unknown
 }
 
+interface RuntimeFeedbackResponse {
+  ok?: boolean
+  events?: unknown
+}
+
 function runtimeEndpoint(runtimeUrl: string, path: string): string {
   return `${runtimeUrl.replace(/\/$/, '')}${path}`
 }
@@ -154,10 +159,10 @@ export async function forwardRuntimeFeedbackToPython(
       | 'audio.playback-error'
   }>,
   options: PythonBridgeOptions,
-): Promise<void> {
+): Promise<Array<RuntimeEvent<string, unknown>>> {
   const fetchImpl = options.fetchImpl ?? fetch
   try {
-    await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/runtime/feedback'), {
+    const response = await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/runtime/feedback'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -169,10 +174,32 @@ export async function forwardRuntimeFeedbackToPython(
         payload: event.payload,
       }),
     })
+    const payload = await response.json().catch(() => undefined) as RuntimeFeedbackResponse | undefined
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.events)) {
+      return []
+    }
+    return payload.events.filter(isRuntimeEvent)
   }
   catch {
     // Feedback is diagnostic/policy input. Dropping it must not interrupt chat.
+    return []
   }
+}
+
+function isRuntimeEvent(value: unknown): value is RuntimeEvent<string, unknown> {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const event = value as Partial<RuntimeEvent<string, unknown>>
+  return (
+    typeof event.id === 'string'
+    && typeof event.type === 'string'
+    && typeof event.sessionId === 'string'
+    && typeof event.timestamp === 'string'
+    && typeof event.payload === 'object'
+    && event.payload !== null
+  )
 }
 
 function isMemoryReviewCandidate(value: unknown): value is MemoryReviewCandidate {

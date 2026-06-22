@@ -122,7 +122,7 @@ http://127.0.0.1:8790
 - `GET /tools/list`：Python-owned source for effective tool permission state and enabled schemas.
 - `GET /tools/audit?sessionId=default&toolName=search_files&decision=finished&ok=true&limit=100`：query persisted tool audit records for diagnostics.
 - `POST /runtime/config/reload`：reload effective memory/context runtime config from YAML plus environment overrides.
-- `POST /runtime/feedback`：record desktop capability and runtime audio playback feedback for Python-side harness policy.
+- `POST /runtime/feedback`：record desktop capability and runtime audio playback feedback for Python-side harness policy; may return emitted harness events such as playback-driven `character.behavior`.
 - `POST /agent/turn`
 - `POST /tools/execute`：compatibility execution endpoint for direct tool diagnostics; normal turns execute tools inside Python `AgentRuntime`.
 - `POST /tools/permission`

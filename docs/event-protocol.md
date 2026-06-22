@@ -106,7 +106,9 @@ Current behavior:
 
 - Desktop emits playback feedback for runtime audio start, end, and error.
 - On runtime audio error or browser play rejection, desktop falls back to system `speechSynthesis`.
-- These events are the first device-feedback surface for later audio harness and lipsync coordination.
+- Python records these events through `HarnessFeedbackPolicy`.
+- The Live2D harness maps playback start/end/error into `character.behavior`; the bridge sends those returned behavior events back to the desktop socket.
+- This is still playback-state driven behavior, not amplitude-driven or phoneme-aware lipsync.
 
 ### memory.review.*
 
@@ -404,7 +406,7 @@ GET /live2d/models/{relativePath}
 
 `GET /runtime/health` is the structured local diagnostics endpoint. It returns an aggregate `status` plus per-subsystem checks for runtime, model config, memory DB, tools, Live2D, audio, and effective runtime config. It intentionally avoids live external provider calls so startup diagnostics stay fast and deterministic.
 
-`POST /runtime/feedback` records desktop capability and runtime audio playback feedback into the Python-side harness policy. `GET /runtime/feedback?sessionId=default` returns the latest per-session snapshot, including normalized `desktopCapabilities`, `audioPlayback`, and recent feedback events.
+`POST /runtime/feedback` records desktop capability and runtime audio playback feedback into the Python-side harness policy. It can return harness-emitted runtime events, such as `character.behavior` for playback-driven Live2D state changes. `GET /runtime/feedback?sessionId=default` returns the latest per-session snapshot, including normalized `desktopCapabilities`, `audioPlayback`, and recent feedback events.
 
 Python runtime responses from `/agent/turn` are streamed as NDJSON using the same event names where possible.
 

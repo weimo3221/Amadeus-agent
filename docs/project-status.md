@@ -108,6 +108,7 @@ Fallback path today:
   - streamed Python runtime events are returned to the WebSocket client
   - `tool.permission.response` over WebSocket is forwarded to Python
   - `desktop.capabilities` and `audio.playback-*` feedback events are accepted by the bridge feedback hook
+  - Python-returned feedback harness events such as `character.behavior` are sent back to the desktop socket
 - Desktop renderer harness tests now cover runtime UI behavior.
   - `server.hello` updates model, memory, connection, and tool config diagnostics
   - `desktop.capabilities` is sent after runtime hello and after Live2D model load
@@ -331,7 +332,7 @@ Planned tasks:
 - Keep `GET /runtime/health`, `GET /tools/audit`, memory review jobs, and context diagnostics as developer-facing observability surfaces rather than user-facing memory UI.
 - Extend cancellation beyond the current cooperative signal only if future tools need stronger process-level interruption.
 - Extend result preview/compression and no-progress detection only as new high-volume tools expose real gaps.
-- Use Python-side harness feedback state to drive Live2D/audio policy decisions so they can react to actual renderer/audio state.
+- Use Python-side harness feedback state to drive richer Live2D/audio policy decisions so they can react to actual renderer/audio state.
 - Keep expanding Electron end-to-end coverage on the Python path, especially Live2D loading, model switching, audio playback, and real user/runtime interactions.
 - Keep GPT-SoVITS high-quality voice work parked until its pretrained base models and API configuration are settled.
 
@@ -381,7 +382,8 @@ Started.
 - Local Live2D model storage and bridge serving are active through `models/live2d`, `/live2d/config`, and `/live2d/models/...`.
 - Runtime audio provider selection and cache are active through `packages/amadeus/audio.py`, with GPT-SoVITS config support, macOS `say` fallback, `/audio/speak`, and `audio.tts-ready`.
 - Desktop capability and runtime audio playback feedback now reach Python through `POST /runtime/feedback` and are stored by `HarnessFeedbackPolicy`.
-- Remaining work: audio harness boundary, richer Live2D commands, feedback-driven speaking-state reconciliation, and audio-driven lipsync.
+- Live2D maps `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` into playback-state-driven `character.behavior` events returned to the desktop.
+- Remaining work: audio harness boundary, richer Live2D commands, speaking-state reconciliation, and amplitude/phoneme-driven lipsync.
 
 ### Phase 11: Proactive Agent
 

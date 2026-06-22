@@ -236,6 +236,25 @@ class AgentRuntime:
     def harness_feedback_snapshot(self, session_id: str) -> dict[str, Any]:
         return self.harness_feedback_policy.snapshot(session_id)
 
+    def harness_events_for_feedback(
+        self,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> list[AgentEvent]:
+        context = HarnessContext(
+            session_id=session_id,
+            runtime_state=self.harness_feedback_policy.runtime_state(session_id),
+            client_capabilities=self.harness_feedback_policy.client_capabilities(session_id),
+        )
+        emitted_events: list[AgentEvent] = []
+        for emitted in self.harness_registry.observe_event(context, {"type": event_type, "payload": payload}):
+            emitted_type = emitted.get("type")
+            emitted_payload = emitted.get("payload")
+            if isinstance(emitted_type, str) and isinstance(emitted_payload, dict):
+                emitted_events.append(AgentEvent(emitted_type, emitted_payload))
+        return emitted_events
+
     def _load_runtime_config(self, *, reason: str) -> dict[str, dict[str, int | float]]:
         runtime_config = parse_runtime_config(self.runtime_config_path)
         context_config = runtime_config.get("context", {})

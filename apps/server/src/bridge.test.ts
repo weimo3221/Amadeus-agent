@@ -165,10 +165,24 @@ describe('Python runtime feedback forwarding', () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetchImpl: typeof fetch = async (input, init) => {
       calls.push({ url: String(input), init })
-      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+      return new Response(JSON.stringify({
+        ok: true,
+        events: [{
+          id: 'python-feedback-event',
+          type: 'character.behavior',
+          sessionId: 'session-1',
+          timestamp: '2026-06-22T00:00:00.050Z',
+          payload: {
+            emotion: 'neutral',
+            expression: 'smile',
+            motion: 'talk',
+            intensity: 0.65,
+          },
+        }],
+      }), { status: 200 })
     }
 
-    await forwardRuntimeFeedbackToPython({
+    const events = await forwardRuntimeFeedbackToPython({
       id: 'feedback-1',
       type: 'audio.playback-started',
       sessionId: 'session-1',
@@ -192,6 +206,14 @@ describe('Python runtime feedback forwarding', () => {
         source: 'runtime_audio',
         audioUrl: 'http://runtime/audio.wav',
       },
+    })
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'character.behavior')
+    assert.deepEqual(events[0].payload, {
+      emotion: 'neutral',
+      expression: 'smile',
+      motion: 'talk',
+      intensity: 0.65,
     })
   })
 

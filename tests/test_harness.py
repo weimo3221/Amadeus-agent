@@ -53,6 +53,48 @@ class HarnessTests(unittest.TestCase):
             },
         }])
 
+    def test_live2d_harness_maps_audio_playback_feedback_to_character_behavior(self) -> None:
+        harness = Live2DHarness()
+        context = HarnessContext(
+            session_id="default",
+            client_capabilities={
+                "live2d": {
+                    "available": True,
+                    "modelId": "hiyori-free",
+                    "expressions": ["smile"],
+                    "motions": ["Idle", "TapBody"],
+                },
+            },
+        )
+
+        started = harness.observe_event(context, {
+            "type": "audio.playback-started",
+            "payload": {"source": "runtime_audio", "audioUrl": "http://runtime/audio.wav"},
+        })
+        ended = harness.observe_event(context, {
+            "type": "audio.playback-ended",
+            "payload": {"source": "runtime_audio", "audioUrl": "http://runtime/audio.wav"},
+        })
+        failed = harness.observe_event(context, {
+            "type": "audio.playback-error",
+            "payload": {"source": "runtime_audio", "reason": "audio_element_error"},
+        })
+
+        self.assertEqual(started[0]["payload"]["motion"], "talk")
+        self.assertEqual(started[0]["payload"]["expression"], "smile")
+        self.assertEqual(ended[0]["payload"]["motion"], "idle")
+        self.assertEqual(failed[0]["payload"]["motion"], "shake_head")
+
+    def test_live2d_harness_ignores_audio_feedback_when_live2d_unavailable(self) -> None:
+        harness = Live2DHarness()
+
+        events = harness.observe_event(
+            HarnessContext(session_id="default", client_capabilities={"live2d": {"available": False}}),
+            {"type": "audio.playback-started", "payload": {"source": "runtime_audio"}},
+        )
+
+        self.assertEqual(events, [])
+
     def test_harness_registry_can_disable_live2d(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "harnesses.yaml"

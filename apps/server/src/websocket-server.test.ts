@@ -583,6 +583,7 @@ describe('WebSocket Python-first integration', () => {
 
   it('observes desktop capabilities and audio playback feedback events', async (t) => {
     const observed: Array<RuntimeEvent<string, unknown>> = []
+    const receivedEvents: Array<RuntimeEvent<string, unknown>> = []
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
@@ -593,6 +594,21 @@ describe('WebSocket Python-first integration', () => {
       forwardToolPermissionToPython: () => {},
       observeDesktopFeedback(event) {
         observed.push(event)
+        if (event.type !== 'audio.playback-started') {
+          return []
+        }
+        return [{
+          id: 'feedback-character-event',
+          type: 'character.behavior',
+          sessionId: event.sessionId,
+          timestamp: '2026-06-22T00:00:01.050Z',
+          payload: {
+            emotion: 'neutral',
+            expression: 'smile',
+            motion: 'talk',
+            intensity: 0.65,
+          },
+        }]
       },
       streamChat: () => {},
     })
@@ -605,6 +621,9 @@ describe('WebSocket Python-first integration', () => {
     const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws`)
     t.after(() => {
       closeWebSocket(socket)
+    })
+    socket.on('message', (raw: Buffer) => {
+      receivedEvents.push(JSON.parse(raw.toString()) as RuntimeEvent<string, unknown>)
     })
 
     socket.send(JSON.stringify({
@@ -670,5 +689,9 @@ describe('WebSocket Python-first integration', () => {
       'audio.playback-ended',
       'audio.playback-error',
     ])
+    assert.ok(receivedEvents.some((event) => (
+      event.type === 'character.behavior'
+      && (event.payload as { motion?: string }).motion === 'talk'
+    )))
   })
 })

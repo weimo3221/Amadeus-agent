@@ -39,7 +39,7 @@ export interface AmadeusBridgeServerOptions {
       | 'audio.playback-started'
       | 'audio.playback-ended'
       | 'audio.playback-error'
-  }>): void | Promise<void>
+  }>): Array<RuntimeEvent<string, unknown>> | Promise<Array<RuntimeEvent<string, unknown>>> | void | Promise<void>
   live2dLibrary?: LocalLive2DModelLibrary
   streamChat(socket: WebSocket, sessionId: string, text: string): void | Promise<void>
 }
@@ -302,7 +302,16 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         || event.type === 'audio.playback-ended'
         || event.type === 'audio.playback-error'
       ) {
-        void options.observeDesktopFeedback?.(event)
+        void Promise.resolve(options.observeDesktopFeedback?.(event))
+          .then((events) => {
+            if (!Array.isArray(events) || socket.readyState !== WebSocket.OPEN) {
+              return
+            }
+            for (const emitted of events) {
+              socket.send(JSON.stringify(emitted))
+            }
+          })
+          .catch(() => {})
         return
       }
 

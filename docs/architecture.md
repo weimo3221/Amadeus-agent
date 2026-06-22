@@ -344,7 +344,6 @@ Planned but not yet implemented as the active current protocol:
 - `/agent/message`
 - `audio.tts-fallback`
 - `audio.lipsync-cues`
-- desktop playback feedback events such as `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error`
 
 ## Implementation Principle
 

@@ -395,14 +395,19 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 payload,
                 timestamp=timestamp,
             )
+            events = [
+                event.to_runtime_event(session_id)
+                for event in agent_runtime.harness_events_for_feedback(session_id, event_type, payload)
+            ]
             logger.info(
-                "Handled runtime feedback sessionId=%s type=%s audioStatus=%s live2dAvailable=%s",
+                "Handled runtime feedback sessionId=%s type=%s audioStatus=%s live2dAvailable=%s emittedEvents=%s",
                 session_id,
                 event_type,
                 snapshot.get("audioPlayback", {}).get("status"),
                 (snapshot.get("desktopCapabilities") or {}).get("live2d", {}).get("available"),
+                len(events),
             )
-            self.write_json(200, {"ok": True, "feedback": snapshot})
+            self.write_json(200, {"ok": True, "feedback": snapshot, "events": events})
         except ValueError as error:
             logger.info("Rejecting unsupported runtime feedback error=%s", error)
             self.write_json(400, {"ok": False, "error": str(error)})

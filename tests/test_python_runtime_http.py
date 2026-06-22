@@ -251,6 +251,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
         self.assertEqual(playback["feedback"]["audioPlayback"]["status"], "playing")
         self.assertEqual(playback["feedback"]["audioPlayback"]["audioUrl"], "http://runtime/audio.wav")
+        self.assertEqual(playback["events"][0]["type"], "character.behavior")
+        self.assertEqual(playback["events"][0]["payload"]["motion"], "talk")
 
         snapshot = self.get_json("/runtime/feedback?sessionId=feedback-session")
         self.assertEqual(snapshot["feedback"]["sessionId"], "feedback-session")
