@@ -40,16 +40,19 @@ class Live2DModelSelection:
 
 
 class LocalLive2DModelLibrary:
-    def __init__(self, root_dir: Path, public_base_url: str) -> None:
+    def __init__(
+        self,
+        root_dir: Path,
+        public_base_url: str,
+        config_path: Path = DEFAULT_HARNESSES_CONFIG_PATH,
+    ) -> None:
         self.root_dir = root_dir.resolve()
         self.public_base_url = public_base_url.rstrip("/")
+        self.config_path = config_path
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
-    def configured_model(
-        self,
-        config_path: Path = DEFAULT_HARNESSES_CONFIG_PATH,
-    ) -> Live2DModelSelection | None:
-        config = parse_harnesses_config(config_path)
+    def configured_model(self, config_path: Path | None = None) -> Live2DModelSelection | None:
+        config = parse_harnesses_config(config_path or self.config_path)
         live2d_config = config.get("live2d", {})
         model_config = live2d_config.get("model") if isinstance(live2d_config.get("model"), dict) else {}
         model_id = str(model_config.get("id") or "default")

@@ -55,11 +55,24 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
         database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
         self.runtime_config_path = Path(self.tmpdir.name) / "runtime.yaml"
+        self.harnesses_config_path = Path(self.tmpdir.name) / "harnesses.yaml"
         live2d_root = Path(self.tmpdir.name) / "live2d"
         live2d_model_dir = live2d_root / "hiyori-free"
         live2d_model_dir.mkdir(parents=True)
         (live2d_model_dir / "hiyori_free_t08.model3.json").write_text('{"Version":3}', encoding="utf-8")
         (live2d_model_dir / "hiyori_free_t08.moc3").write_bytes(b"moc")
+        self.harnesses_config_path.write_text(
+            "\n".join([
+                "harnesses:",
+                "  live2d:",
+                "    enabled: true",
+                "    model:",
+                "      id: hiyori-free",
+                "      path: hiyori-free/hiyori_free_t08.model3.json",
+                "",
+            ]),
+            encoding="utf-8",
+        )
         memory_store = MessageMemoryStore(database_path)
         runtime_server.memory_store = memory_store
         runtime_server.agent_runtime = AgentRuntime(
@@ -69,7 +82,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             runtime_config_path=self.runtime_config_path,
         )
         runtime_server.permission_broker = PermissionBroker()
-        runtime_server.live2d_library = LocalLive2DModelLibrary(live2d_root, "http://runtime")
+        runtime_server.live2d_library = LocalLive2DModelLibrary(live2d_root, "http://runtime", self.harnesses_config_path)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), runtime_server.RuntimeRequestHandler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
