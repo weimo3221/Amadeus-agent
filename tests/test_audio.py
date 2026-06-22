@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
+
+from amadeus.audio import (
+    AudioOutputCommand,
+    AudioRuntime,
+    GptSovitsConfig,
+    GptSovitsTtsProvider,
+    LocalAudioLibrary,
+    NoopTtsProvider,
+    create_tts_provider_from_config,
+)
+
+
+class FakeHttpResponse:
+    def __init__(self, body: bytes, content_type: str) -> None:
+        self.body = body
+        self.headers = {"Content-Type": content_type}
+
+    def __enter__(self) -> "FakeHttpResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
+class AudioProviderTests(unittest.TestCase):
+    def test_create_tts_provider_defaults_to_noop_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "providers.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "tts:",
+                    "  default: disabled",
+                    "  providers:",
+                    "    disabled:",
+                    "      type: none",
+                ]),
+                encoding="utf-8",
+            )
+            library = LocalAudioLibrary(root / "audio", "http://localhost:8790")
+
+            provider = create_tts_provider_from_config(library, config_path)
+
+        self.assertIsInstance(provider, NoopTtsProvider)
+
+    def test_create_tts_provider_builds_gpt_sovits_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "providers.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "tts:",
+                    "  default: gpt_sovits",
+                    "  providers:",
+                    "    gpt_sovits:",
+                    "      type: gpt_sovits",
+                    "      baseUrl: http://127.0.0.1:9880",
+                    "      endpoint: /tts",
+                    "      textLang: zh",
+                    "      promptLang: zh",
+                    "      promptText: 你好",
+                    "      refAudioPath: /tmp/ref.wav",
+                    "      timeoutSeconds: 12",
+                    "      streamingMode: false",
+                ]),
+                encoding="utf-8",
+            )
+            library = LocalAudioLibrary(root / "audio", "http://localhost:8790")
+
+            provider = create_tts_provider_from_config(library, config_path)
+
+        self.assertIsInstance(provider, GptSovitsTtsProvider)
+        self.assertEqual(provider.config.base_url, "http://127.0.0.1:9880")
+        self.assertEqual(provider.config.timeout_seconds, 12)
+        self.assertEqual(provider.config.text_lang, "zh")
+
+    def test_gpt_sovits_provider_writes_binary_audio_to_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+            provider = GptSovitsTtsProvider(
+                GptSovitsConfig(base_url="http://127.0.0.1:9880", text_lang="zh", prompt_lang="zh"),
+                library,
+            )
+            response = FakeHttpResponse(b"RIFFfake-wav", "audio/wav")
+
+            with patch("urllib.request.urlopen", return_value=response) as urlopen:
+                result = provider.synthesize(AudioOutputCommand(text="你好", voice="vivian", format="wav"))
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertTrue(result.audio_url.startswith("http://localhost:8790/audio/files/cache/tts-"))
+            self.assertEqual(result.provider, "gpt_sovits")
+            cached_files = list((Path(tmpdir) / "audio" / "cache").glob("*.wav"))
+            self.assertEqual(len(cached_files), 1)
+            self.assertEqual(cached_files[0].read_bytes(), b"RIFFfake-wav")
+            request = urlopen.call_args.args[0]
+            payload = json.loads(request.data.decode("utf-8"))
+            self.assertEqual(payload["text"], "你好")
+            self.assertEqual(payload["voice"], "vivian")
+            self.assertEqual(payload["media_type"], "wav")
+            self.assertFalse(payload["streaming_mode"])
+
+    def test_gpt_sovits_provider_accepts_json_audio_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+            provider = GptSovitsTtsProvider(GptSovitsConfig(base_url="http://127.0.0.1:9880"), library)
+            response = FakeHttpResponse(
+                json.dumps({"audioUrl": "http://127.0.0.1/audio.wav", "durationMs": 123}).encode("utf-8"),
+                "application/json",
+            )
+
+            with patch("urllib.request.urlopen", return_value=response):
+                result = provider.synthesize(AudioOutputCommand(text="hello", format="wav"))
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.audio_url, "http://127.0.0.1/audio.wav")
+        self.assertEqual(result.duration_ms, 123)
+
+    def test_audio_runtime_falls_back_when_provider_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = AudioRuntime(LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790"))
+
+            result = runtime.speak(AudioOutputCommand(text="hello"))
+
+        self.assertEqual(result.reason, "tts_provider_unavailable:none")
+
+
+if __name__ == "__main__":
+    unittest.main()

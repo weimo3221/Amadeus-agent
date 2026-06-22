@@ -12,6 +12,16 @@ tts:
   providers:
     disabled:
       type: none
+    gpt_sovits:
+      type: gpt_sovits
+      baseUrl: ${GPT_SOVITS_BASE_URL}
+      endpoint: /tts
+      textLang: ${GPT_SOVITS_TEXT_LANG}
+      promptLang: ${GPT_SOVITS_PROMPT_LANG}
+      promptText: ${GPT_SOVITS_PROMPT_TEXT}
+      refAudioPath: ${GPT_SOVITS_REF_AUDIO_PATH}
+      timeoutSeconds: 60
+      streamingMode: false
 
 asr:
   default: disabled
