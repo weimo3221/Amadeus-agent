@@ -297,6 +297,7 @@ Current active endpoints used by the bridge/runtime:
 
 ```text
 GET /health
+GET /runtime/health
 GET /tools/list
 GET /tools/audit
 POST /agent/turn

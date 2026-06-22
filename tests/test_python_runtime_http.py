@@ -190,6 +190,31 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(runtime_server.agent_runtime.context_max_tokens, 3456)
         self.assertEqual(runtime_server.agent_runtime.summary_trigger_message_count, 7)
 
+    def test_runtime_health_reports_structured_local_checks(self) -> None:
+        runtime_server.agent_runtime.api_key = "test-key"
+
+        payload = self.get_json("/runtime/health")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "ok")
+        self.assertIn("timestamp", payload)
+        self.assertEqual(payload["checks"]["runtime"]["runtime"], "python")
+        self.assertEqual(payload["checks"]["runtime"]["serverVersion"], "AmadeusPythonRuntime/0.1")
+        self.assertEqual(payload["checks"]["model"]["status"], "ok")
+        self.assertTrue(payload["checks"]["model"]["apiKeyConfigured"])
+        self.assertEqual(payload["checks"]["memory"]["status"], "ok")
+        self.assertEqual(payload["checks"]["memory"]["databasePath"], str(runtime_server.memory_store.database_path))
+        self.assertEqual(payload["checks"]["memory"]["messageCount"], 0)
+        self.assertEqual(payload["checks"]["tools"]["status"], "ok")
+        self.assertGreater(payload["checks"]["tools"]["enabledSchemaCount"], 0)
+        self.assertEqual(payload["checks"]["live2d"]["status"], "ok")
+        self.assertEqual(payload["checks"]["live2d"]["model"]["id"], "hiyori-free")
+        self.assertTrue(payload["checks"]["live2d"]["model"]["fileExists"])
+        self.assertIn(payload["checks"]["audio"]["status"], {"ok", "disabled"})
+        self.assertEqual(payload["checks"]["config"]["runtimeConfig"], str(self.runtime_config_path))
+        self.assertFalse(payload["checks"]["config"]["runtimeConfigExists"])
+        self.assertEqual(payload["checks"]["config"]["harnessesConfig"], str(self.harnesses_config_path))
+
     def test_agent_turn_streams_missing_api_key_error_as_ndjson(self) -> None:
         os.environ["OPENAI_API_KEY"] = ""
         runtime_server.agent_runtime.api_key = ""

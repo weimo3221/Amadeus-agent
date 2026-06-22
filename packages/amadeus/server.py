@@ -61,6 +61,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path == "/runtime/health":
+            logger.info("Handling structured runtime health request")
+            self.write_json(200, build_runtime_health())
+            return
+
         if parsed.path == "/tools/list":
             logger.info("Handling tools list request")
             self.write_json(200, {
@@ -866,6 +871,158 @@ def parse_optional_bool(value: str | None) -> bool | None:
     if value == "false":
         return False
     return None
+
+
+def build_runtime_health() -> dict[str, Any]:
+    checks = {
+        "runtime": runtime_health_check(),
+        "model": model_health_check(),
+        "memory": memory_health_check(),
+        "tools": tools_health_check(),
+        "live2d": live2d_health_check(),
+        "audio": audio_health_check(),
+        "config": config_health_check(),
+    }
+    status = aggregate_health_status(checks)
+    return {
+        "ok": True,
+        "status": status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks": checks,
+    }
+
+
+def aggregate_health_status(checks: dict[str, dict[str, Any]]) -> str:
+    statuses = {str(check.get("status") or "unknown") for check in checks.values()}
+    if "error" in statuses:
+        return "error"
+    if "degraded" in statuses:
+        return "degraded"
+    return "ok"
+
+
+def runtime_health_check() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "runtime": "python",
+        "serverVersion": RuntimeRequestHandler.server_version,
+        "host": HOST,
+        "port": PORT,
+        "publicBaseUrl": PUBLIC_BASE_URL,
+        "repositoryRoot": str(REPO_ROOT),
+    }
+
+
+def model_health_check() -> dict[str, Any]:
+    api_key_configured = bool(agent_runtime.api_key)
+    return {
+        "status": "ok" if api_key_configured else "degraded",
+        "provider": agent_runtime.model_client.provider,
+        "model": agent_runtime.model,
+        "baseUrl": agent_runtime.base_url,
+        "streaming": agent_runtime.model_client.config.streaming,
+        "apiKeyConfigured": api_key_configured,
+    }
+
+
+def memory_health_check() -> dict[str, Any]:
+    try:
+        with memory_store.connect() as connection:
+            message_count = int(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            memory_item_count = int(connection.execute("SELECT COUNT(*) FROM memory_items WHERE deleted_at IS NULL").fetchone()[0])
+            summary_count = int(connection.execute("SELECT COUNT(*) FROM conversation_summaries").fetchone()[0])
+            review_candidate_count = int(connection.execute("SELECT COUNT(*) FROM memory_review_candidates WHERE status = 'pending'").fetchone()[0])
+        return {
+            "status": "ok",
+            "databasePath": str(memory_store.database_path),
+            "databaseExists": memory_store.database_path.exists(),
+            "stableMemoryDir": str(memory_store.stable_memory_dir),
+            "messageCount": message_count,
+            "memoryItemCount": memory_item_count,
+            "summaryCount": summary_count,
+            "pendingReviewCandidateCount": review_candidate_count,
+            "contextDiagnosticsLimit": agent_runtime.context_diagnostics_limit,
+        }
+    except Exception as error:
+        logger.info("Memory health check failed error=%s", error)
+        return {
+            "status": "error",
+            "databasePath": str(memory_store.database_path),
+            "databaseExists": memory_store.database_path.exists(),
+            "error": str(error),
+        }
+
+
+def tools_health_check() -> dict[str, Any]:
+    try:
+        tools = agent_runtime.tool_permission_state()
+        schemas = agent_runtime.enabled_tool_schemas()
+        permission_counts: dict[str, int] = {}
+        for tool in tools:
+            permission = str(tool.get("permission") or "unknown")
+            permission_counts[permission] = permission_counts.get(permission, 0) + 1
+        enabled_count = sum(1 for tool in tools if tool.get("enabled"))
+        return {
+            "status": "ok",
+            "toolCount": len(tools),
+            "enabledToolCount": enabled_count,
+            "enabledSchemaCount": len(schemas),
+            "permissionCounts": permission_counts,
+        }
+    except Exception as error:
+        logger.info("Tools health check failed error=%s", error)
+        return {
+            "status": "error",
+            "error": str(error),
+        }
+
+
+def live2d_health_check() -> dict[str, Any]:
+    selection = live2d_library.configured_model()
+    if not selection:
+        return {
+            "status": "degraded",
+            "rootDir": str(live2d_library.root_dir),
+            "configPath": str(live2d_library.config_path),
+            "configured": False,
+            "error": "live2d_model_not_configured",
+        }
+
+    model_path = live2d_library.resolve_public_path(selection.relative_path)
+    return {
+        "status": "ok" if model_path else "degraded",
+        "rootDir": str(live2d_library.root_dir),
+        "configPath": str(live2d_library.config_path),
+        "configured": True,
+        "model": {
+            "id": selection.model_id,
+            "path": selection.relative_path,
+            "url": live2d_library.model_url(selection),
+            "fileExists": model_path is not None,
+        },
+    }
+
+
+def audio_health_check() -> dict[str, Any]:
+    provider_name = getattr(audio_runtime.tts_provider, "name", "unknown")
+    return {
+        "status": "disabled" if provider_name == "none" else "ok",
+        "audioRoot": str(audio_library.root_dir),
+        "cacheDir": str(audio_library.cache_dir),
+        "ttsProvider": provider_name,
+        "ttsEnabled": provider_name != "none",
+    }
+
+
+def config_health_check() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "runtimeConfig": str(agent_runtime.runtime_config_path),
+        "runtimeConfigExists": agent_runtime.runtime_config_path.exists(),
+        "harnessesConfig": str(live2d_library.config_path),
+        "harnessesConfigExists": live2d_library.config_path.exists(),
+        "effectiveRuntimeConfig": agent_runtime._runtime_config_snapshot(),
+    }
 
 
 def main() -> None:

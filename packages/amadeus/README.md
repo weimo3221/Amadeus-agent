@@ -117,6 +117,7 @@ http://127.0.0.1:8790
 ## Current HTTP API
 
 - `GET /health`
+- `GET /runtime/health`：structured local health checks for runtime, model config, memory DB, tools, Live2D, audio, and effective config.
 - `GET /tools/list`：Python-owned source for effective tool permission state and enabled schemas.
 - `GET /tools/audit?sessionId=default&toolName=search_files&decision=finished&ok=true&limit=100`：query persisted tool audit records for diagnostics.
 - `POST /agent/turn`
