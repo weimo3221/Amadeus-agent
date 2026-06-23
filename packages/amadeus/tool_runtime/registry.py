@@ -22,8 +22,8 @@ TOOL_NAME_ALIASES = {
 VALID_PERMISSIONS = {"allow", "ask", "deny"}
 DEFAULT_MAX_MODEL_OUTPUT_CHARS = 4000
 DEFAULT_OUTPUT_PREVIEW_CHARS = 1000
-LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT = 5
-LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS = 160
+SEARCH_FILES_MODEL_RESULT_LIMIT = 5
+SEARCH_FILES_MODEL_PREVIEW_CHARS = 160
 MEMORY_SEARCH_MODEL_RESULT_LIMIT = 5
 MEMORY_SEARCH_MODEL_PREVIEW_CHARS = 240
 MEMORY_ITEMS_MODEL_RESULT_LIMIT = 8
@@ -364,7 +364,7 @@ def apply_tool_result_policy(
     if not ok:
         return output, None, False
 
-    if tool_name in {"search_files", "local_file_search"}:
+    if tool_name == "search_files":
         return normalize_search_files_output(tool_name, output, preview_chars)
 
     if tool_name == "search_memory":
@@ -385,11 +385,11 @@ def normalize_search_files_output(
     if not isinstance(raw_results, list):
         return output, None, False
 
-    preview_limit = max(1, min(preview_chars, LOCAL_FILE_SEARCH_MODEL_PREVIEW_CHARS))
+    preview_limit = max(1, min(preview_chars, SEARCH_FILES_MODEL_PREVIEW_CHARS))
     model_results: list[dict[str, Any]] = []
-    truncated = len(raw_results) > LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT
+    truncated = len(raw_results) > SEARCH_FILES_MODEL_RESULT_LIMIT
 
-    for raw_result in raw_results[:LOCAL_FILE_SEARCH_MODEL_RESULT_LIMIT]:
+    for raw_result in raw_results[:SEARCH_FILES_MODEL_RESULT_LIMIT]:
         if not isinstance(raw_result, dict):
             model_results.append({"preview": str(raw_result)[:preview_limit]})
             truncated = True

@@ -39,11 +39,6 @@ tools:
     enabled: true
     permission: ask
 
-  local_file_search:
-    enabled: false
-    permission: ask
-    roots: []
-
   read_file:
     enabled: true
     permission: ask

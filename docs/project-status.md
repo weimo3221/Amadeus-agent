@@ -57,7 +57,6 @@ Fallback path today:
 - `memory_add` is registered as an `ask` tool for adding durable structured memory facts after user approval.
 - `memory_replace` and `memory_forget` are registered as `ask` tools for correcting or deleting durable structured memory facts after user approval.
 - `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
-- `local_file_search` remains as a disabled compatibility alias for older tool calls.
 - `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
 - `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
@@ -230,8 +229,7 @@ Status: MVP memory, model-triggered tools, registry, config loading, and permiss
 - Added `allow` / `ask` / `deny` tool permissions.
 - Added inline desktop Allow / Deny prompts.
 - Extracted TypeScript tool metadata and config loading into `packages/amadeus/tools.ts`; this was later replaced by the Python-owned `/tools/list` bridge.
-- Added `local_file_search` as the first practical project-search tool.
-- Added `search_files` as the preferred, better-named replacement with `target: all | files | content`.
+- Added `search_files` as the project-search tool with `target: all | files | content`.
 - Added `read_file` so the agent can inspect a bounded UTF-8 workspace file after finding it.
 - Split Python tool implementations from the old single `tools.py` file into `packages/amadeus/tools/` modules while keeping the `amadeus.tools` import surface stable.
 

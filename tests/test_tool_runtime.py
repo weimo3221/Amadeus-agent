@@ -62,9 +62,8 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["memory_forget"]["permission"], "ask")
         self.assertIn("memory_forget", schema_names)
 
-        self.assertIn("local_file_search", list_tools())
-        self.assertIn("local_file_search", tool_state)
-        self.assertFalse(tool_state["local_file_search"]["enabled"])
+        self.assertNotIn("local_file_search", list_tools())
+        self.assertNotIn("local_file_search", tool_state)
         self.assertNotIn("local_file_search", schema_names)
 
         self.assertIn("read_file", list_tools())
@@ -434,13 +433,6 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.model_output, output)
         self.assertFalse(result.output_truncated)
         self.assertIsNone(result.output_preview)
-
-    def test_local_file_search_alias_still_executes(self) -> None:
-        output = execute_tool("local_file_search", {"query": "README", "maxResults": 1})
-
-        self.assertEqual(output["query"], "README")
-        self.assertEqual(output["target"], "all")
-        self.assertIn("results", output)
 
     def test_search_files_can_search_only_filenames(self) -> None:
         output = execute_tool("search_files", {"query": "README", "target": "files", "maxResults": 3})
@@ -1089,13 +1081,13 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         guardrail = ToolLoopGuardrail(max_failed_repeats=2)
         args = {"query": "missing"}
 
-        self.assertTrue(guardrail.before_call("local_file_search", args).allowed)
-        guardrail.after_call("local_file_search", args, {"error": "not found"}, ok=False)
+        self.assertTrue(guardrail.before_call("search_files", args).allowed)
+        guardrail.after_call("search_files", args, {"error": "not found"}, ok=False)
 
-        self.assertTrue(guardrail.before_call("local_file_search", args).allowed)
-        guardrail.after_call("local_file_search", args, {"error": "not found"}, ok=False)
+        self.assertTrue(guardrail.before_call("search_files", args).allowed)
+        guardrail.after_call("search_files", args, {"error": "not found"}, ok=False)
 
-        decision = guardrail.before_call("local_file_search", args)
+        decision = guardrail.before_call("search_files", args)
         self.assertFalse(decision.allowed)
         self.assertIn("Blocked repeated failing tool call", decision.reason or "")
         self.assertEqual(decision.failure_code, "guardrail_blocked")
@@ -1104,13 +1096,13 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         guardrail = ToolLoopGuardrail(max_completed_repeats=2)
         args = {"query": "same"}
 
-        self.assertTrue(guardrail.before_call("local_file_search", args).allowed)
-        guardrail.after_call("local_file_search", args, {"results": []}, ok=True)
+        self.assertTrue(guardrail.before_call("search_files", args).allowed)
+        guardrail.after_call("search_files", args, {"results": []}, ok=True)
 
-        self.assertTrue(guardrail.before_call("local_file_search", args).allowed)
-        guardrail.after_call("local_file_search", args, {"results": []}, ok=True)
+        self.assertTrue(guardrail.before_call("search_files", args).allowed)
+        guardrail.after_call("search_files", args, {"results": []}, ok=True)
 
-        decision = guardrail.before_call("local_file_search", args)
+        decision = guardrail.before_call("search_files", args)
         self.assertFalse(decision.allowed)
         self.assertIn("empty file search", decision.reason or "")
         self.assertEqual(decision.failure_code, "no_progress_loop")

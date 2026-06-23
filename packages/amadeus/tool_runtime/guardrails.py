@@ -12,7 +12,7 @@ class ToolGuardrailDecision:
     failure_code: str | None = None
 
 
-WORKSPACE_OBSERVING_TOOLS = {"search_files", "local_file_search", "read_file", "patch", "write_file"}
+WORKSPACE_OBSERVING_TOOLS = {"search_files", "read_file", "patch", "write_file"}
 
 
 class ToolLoopGuardrail:
@@ -114,7 +114,7 @@ class ToolLoopGuardrail:
     ) -> tuple[str, str, str] | None:
         semantic_args_signature = self._semantic_args_signature(tool_name, args, workspace_epoch=workspace_epoch)
 
-        if tool_name in {"search_files", "local_file_search"}:
+        if tool_name == "search_files":
             results = result.get("results")
             if ok and isinstance(results, list):
                 if not results:
@@ -222,7 +222,7 @@ class ToolLoopGuardrail:
         *,
         workspace_epoch: int | None = None,
     ) -> str:
-        if tool_name in {"search_files", "local_file_search"}:
+        if tool_name == "search_files":
             return cls._signature(tool_name, {
                 "query": cls._string_arg(args, "query"),
                 "target": cls._string_arg(args, "target", default="all"),

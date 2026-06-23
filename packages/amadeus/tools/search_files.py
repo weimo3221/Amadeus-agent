@@ -107,12 +107,6 @@ def search_files(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def local_file_search(args: dict[str, Any]) -> dict[str, Any]:
-    legacy_args = dict(args)
-    legacy_args.setdefault("target", "all")
-    return search_files(legacy_args)
-
-
 SEARCH_FILES_TOOL_SPEC = ToolSpec(
     name="search_files",
     display_name="Searching local files",
@@ -152,37 +146,3 @@ SEARCH_FILES_TOOL_SPEC = ToolSpec(
     },
 )
 
-
-LOCAL_FILE_SEARCH_TOOL_SPEC = ToolSpec(
-    name="local_file_search",
-    display_name="Searching local files",
-    permission="ask",
-    enabled=False,
-    handler=local_file_search,
-    schema={
-        "type": "function",
-        "function": {
-            "name": "local_file_search",
-            "description": "Legacy alias for search_files. Prefer search_files for new calls.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search text to match in paths or file contents.",
-                    },
-                    "root": {
-                        "type": "string",
-                        "description": "Optional workspace-relative directory to search. Defaults to the project root.",
-                    },
-                    "maxResults": {
-                        "type": "number",
-                        "description": "Maximum results to return. Defaults to 10 and is capped at 30.",
-                    },
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-    },
-)

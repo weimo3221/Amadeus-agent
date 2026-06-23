@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from amadeus.tools.base import ToolSpec
-from amadeus.tools.local_file_search import REPO_ROOT, SEARCHABLE_EXTENSIONS, SKIPPED_SEARCH_DIRS, is_inside
+from amadeus.tools.search_files import REPO_ROOT, SEARCHABLE_EXTENSIONS, SKIPPED_SEARCH_DIRS, is_inside
 
 
 MAX_PATCH_FILE_BYTES = 512 * 1024

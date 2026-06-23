@@ -23,7 +23,7 @@ class ToolSpec:
             count = normalize_positive_int(args.get("count"), 1, 1, 20)
             return f"Allow Amadeus to roll {count} d{sides}?"
 
-        if self.name in {"search_files", "local_file_search"}:
+        if self.name == "search_files":
             query = args.get("query").strip() if isinstance(args.get("query"), str) else "(empty query)"
             root = args.get("root").strip() if isinstance(args.get("root"), str) and args.get("root").strip() else "."
             return f'Allow Amadeus to search local project files under {root} for "{query}"?'

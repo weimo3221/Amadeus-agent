@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from amadeus.tools.base import ToolSpec, normalize_positive_int
-from amadeus.tools.local_file_search import REPO_ROOT, SEARCHABLE_EXTENSIONS, is_inside
+from amadeus.tools.search_files import REPO_ROOT, SEARCHABLE_EXTENSIONS, is_inside
 
 
 MAX_READ_FILE_BYTES = 512 * 1024

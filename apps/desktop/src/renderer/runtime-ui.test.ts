@@ -403,7 +403,7 @@ describe('Runtime UI controller', () => {
 
     controller.handleServerEvent(makeEvent('tool.permission.request', {
       requestId: 'request-allow',
-      toolName: 'local_file_search',
+      toolName: 'search_files',
       displayName: 'Searching local files',
       reason: 'Allow file search?',
     }))
