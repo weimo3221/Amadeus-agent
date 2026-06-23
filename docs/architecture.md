@@ -134,7 +134,7 @@ packages/amadeus
   +--> tool_runtime
   |      +--> effective tool registry
   |      +--> permission/config overlays
-  |      +--> guardrails and audit records
+  |      +--> guardrails, workspace epoch, and audit records
   |
   +--> skills
   +--> harness
@@ -150,7 +150,7 @@ packages/amadeus
 - `context.py`: active API-call-time context assembler for conversation summaries, accepted structured memories, relevant FTS retrieval, source budgets, and diagnostics. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
 - `memory.py`: active SQLite-backed message history.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
-- `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, and repeated-call guardrails.
+- `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, session workspace epoch propagation, and repeated-call guardrails.
 - `audio.py`: active TTS/audio interface with an `auto` provider selector, config-gated GPT-SoVITS HTTP provider, and macOS `say` provider that can cache generated wav audio under the local audio library.
 - `server.py`: active Python HTTP runtime surface, including local audio file serving and local Live2D model config/static asset serving for direct runtime use.
 - `model.py`: active first-pass OpenAI-compatible provider boundary for `configs/providers.yaml` plus environment-backed provider config, JSON chat-completion requests, stream parsing, and classified provider error normalization.

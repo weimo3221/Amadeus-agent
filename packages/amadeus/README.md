@@ -60,10 +60,10 @@ The Python runtime reads this file on startup. After editing it, call `POST /run
 The runtime layer around these tools adds behavior that tool handlers do not need to reimplement:
 
 - `ToolRegistry` loads default specs and applies `configs/tools.yaml`.
-- `ToolContext` carries session id, cwd, optional memory store, turn/tool-call ids, permission decision metadata, audit metadata, timeout, cooperative cancellation, and model-output size limits.
+- `ToolContext` carries session id, cwd, optional memory store, turn/tool-call ids, permission decision metadata, audit metadata, session workspace epoch, timeout, cooperative cancellation, and model-output size limits.
 - `ToolResult` keeps the full tool output separately from the smaller `model_output` written back into model context.
-- Tool execution records duration, stable failure codes, `tool.started` / `tool.finished` events, and persisted `tool.audit` records.
-- Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn.
+- Tool execution records duration, stable failure codes, `tool.started` / `tool.finished` events, and persisted `tool.audit` records. Audit payloads include metadata such as `workspaceEpoch` / `workspaceEpochAfter` for normal `/agent/turn` tool calls.
+- Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn. File-observing signatures for `search_files`, `local_file_search`, `read_file`, `patch`, and `write_file` include the session workspace epoch, so a successful workspace mutation can make the same file read/search meaningful again.
 - Stable memory is stored as auditable Markdown files under `data/memory/MEMORY.md` and `data/memory/USER.md`, then injected into the frozen system prompt at runtime startup.
 - `ContextAssembler` builds API-call-time context each turn: conversation summary and accepted structured memories go into the system message, relevant prior session snippets go into a sanitized `<memory-context>` block on the current user message, and a `memory.context.used` event reports which sources were used. These injected blocks are not persisted. The runtime keeps the most recent `context.diagnosticsLimit` diagnostics per session in an in-memory ring buffer for developer inspection.
 - Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`, injected as reference-only context, and refreshed by threshold-based compaction or manual `POST /memory/compact`.
@@ -77,6 +77,8 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - `read_file` does not use hidden runtime compression. It returns a caller-controlled `startLine` / `lineLimit` text window with line numbers, `totalLines`, and `hasMore` so the model can continue reading explicitly. Non-text files are identified as `image`, `pdf`, `binary`, or `unknown` and return an unsupported response with a next-tool hint.
 - `patch` follows the Hermes-style edit path: exact `oldText` / `newText`, unique-match default, optional `replaceAll`, restricted generated directories, UTF-8 text-only writes, and diff output for review.
 - `write_file` is the whole-file write path: new UTF-8 text files by default, explicit `overwrite=true` for replacement, restricted generated directories, text-extension checks, size limits, parent directory creation inside the workspace, and diff output for review.
+
+`workspace_epoch` is a session-local monotonic counter, not a filesystem hash. It starts at `0` for each runtime session and advances after `patch` or `write_file` succeeds with `changed: true`. The current purpose is guardrail invalidation and diagnostics: repeated file reads/searches are only considered no-progress repeats within the same epoch. Future shell or external mutation tools should conservatively advance the same counter when they can change workspace files.
 
 `local_file_search` is still registered as a disabled compatibility alias for older calls, but new schemas and prompts should use `search_files`.
 

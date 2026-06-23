@@ -12,6 +12,9 @@ class ToolGuardrailDecision:
     failure_code: str | None = None
 
 
+WORKSPACE_OBSERVING_TOOLS = {"search_files", "local_file_search", "read_file", "patch", "write_file"}
+
+
 class ToolLoopGuardrail:
     def __init__(self, max_failed_repeats: int = 2, max_completed_repeats: int = 2) -> None:
         self.max_failed_repeats = max(1, max_failed_repeats)
@@ -22,8 +25,14 @@ class ToolLoopGuardrail:
         self._semantic_completed_signatures: dict[str, int] = {}
         self._semantic_reasons: dict[str, str] = {}
 
-    def before_call(self, tool_name: str, args: dict[str, Any]) -> ToolGuardrailDecision:
-        semantic_args_signature = self._semantic_args_signature(tool_name, args)
+    def before_call(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        workspace_epoch: int | None = None,
+    ) -> ToolGuardrailDecision:
+        semantic_args_signature = self._semantic_args_signature(tool_name, args, workspace_epoch=workspace_epoch)
         semantic_failed_count = self._semantic_failed_signatures.get(semantic_args_signature, 0)
         if semantic_failed_count >= self.max_failed_repeats:
             return ToolGuardrailDecision(
@@ -35,7 +44,7 @@ class ToolLoopGuardrail:
                 failure_code="guardrail_blocked",
             )
 
-        signature = self._signature(tool_name, args)
+        signature = self._call_signature(tool_name, args, workspace_epoch=workspace_epoch)
         failed_count = self._failed_signatures.get(signature, 0)
         if failed_count >= self.max_failed_repeats:
             return ToolGuardrailDecision(
@@ -65,10 +74,18 @@ class ToolLoopGuardrail:
 
         return ToolGuardrailDecision(allowed=True)
 
-    def after_call(self, tool_name: str, args: dict[str, Any], result: dict[str, Any], ok: bool) -> None:
-        signature = self._signature(tool_name, args)
+    def after_call(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+        ok: bool,
+        *,
+        workspace_epoch: int | None = None,
+    ) -> None:
+        signature = self._call_signature(tool_name, args, workspace_epoch=workspace_epoch)
         self._completed_signatures[signature] = self._completed_signatures.get(signature, 0) + 1
-        semantic_observation = self._semantic_observation(tool_name, args, result, ok)
+        semantic_observation = self._semantic_observation(tool_name, args, result, ok, workspace_epoch=workspace_epoch)
         if semantic_observation:
             kind, semantic_signature, reason = semantic_observation
             self._semantic_reasons[semantic_signature] = reason
@@ -92,8 +109,10 @@ class ToolLoopGuardrail:
         args: dict[str, Any],
         result: dict[str, Any],
         ok: bool,
+        *,
+        workspace_epoch: int | None = None,
     ) -> tuple[str, str, str] | None:
-        semantic_args_signature = self._semantic_args_signature(tool_name, args)
+        semantic_args_signature = self._semantic_args_signature(tool_name, args, workspace_epoch=workspace_epoch)
 
         if tool_name in {"search_files", "local_file_search"}:
             results = result.get("results")
@@ -166,6 +185,7 @@ class ToolLoopGuardrail:
                     "startLine": start_line,
                     "lineLimit": line_limit,
                     "maxChars": max_chars,
+                    "workspaceEpoch": workspace_epoch,
                 }),
                 "Blocked repeated read_file window; use a different line window or summarize the current content.",
             )
@@ -176,6 +196,7 @@ class ToolLoopGuardrail:
                 self._signature(tool_name, {
                     "path": self._string_arg(args, "path"),
                     "oldText": self._string_arg(args, "oldText"),
+                    "workspaceEpoch": workspace_epoch,
                 }),
                 "Blocked repeated patch failure for the same file/text; call read_file to verify current contents before patching again.",
             )
@@ -186,6 +207,7 @@ class ToolLoopGuardrail:
                 self._signature(tool_name, {
                     "path": self._string_arg(args, "path"),
                     "overwrite": bool(args.get("overwrite", False)),
+                    "workspaceEpoch": workspace_epoch,
                 }),
                 "Blocked repeated write_file failure for the same path; choose a new path or explicitly set overwrite when intended.",
             )
@@ -193,12 +215,19 @@ class ToolLoopGuardrail:
         return None
 
     @classmethod
-    def _semantic_args_signature(cls, tool_name: str, args: dict[str, Any]) -> str:
+    def _semantic_args_signature(
+        cls,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        workspace_epoch: int | None = None,
+    ) -> str:
         if tool_name in {"search_files", "local_file_search"}:
             return cls._signature(tool_name, {
                 "query": cls._string_arg(args, "query"),
                 "target": cls._string_arg(args, "target", default="all"),
                 "root": cls._string_arg(args, "root", default="."),
+                "workspaceEpoch": workspace_epoch,
             })
 
         if tool_name == "search_memory":
@@ -231,21 +260,33 @@ class ToolLoopGuardrail:
                 "startLine": cls._intish_arg(args, "startLine", default=1),
                 "lineLimit": cls._intish_arg(args, "lineLimit", default=None),
                 "maxChars": cls._intish_arg(args, "maxChars", default=None),
+                "workspaceEpoch": workspace_epoch,
             })
 
         if tool_name == "patch":
             return cls._signature(tool_name, {
                 "path": cls._string_arg(args, "path"),
                 "oldText": cls._string_arg(args, "oldText"),
+                "workspaceEpoch": workspace_epoch,
             })
 
         if tool_name == "write_file":
             return cls._signature(tool_name, {
                 "path": cls._string_arg(args, "path"),
                 "overwrite": bool(args.get("overwrite", False)),
+                "workspaceEpoch": workspace_epoch,
             })
 
         return cls._signature(tool_name, args)
+
+    @classmethod
+    def _call_signature(cls, tool_name: str, args: dict[str, Any], *, workspace_epoch: int | None = None) -> str:
+        if tool_name not in WORKSPACE_OBSERVING_TOOLS:
+            return cls._signature(tool_name, args)
+
+        signature_args = dict(args)
+        signature_args["workspaceEpoch"] = workspace_epoch
+        return cls._signature(tool_name, signature_args)
 
     @staticmethod
     def _string_arg(args: dict[str, Any], key: str, default: str | None = "") -> str | None:

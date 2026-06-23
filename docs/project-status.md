@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-21
+Last updated: 2026-06-23
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -61,6 +61,7 @@ Fallback path today:
 - `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
 - `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
+- `AgentRuntime` maintains a per-session `workspace_epoch` for file-observing tool guardrails; successful `patch` / `write_file` mutations advance the epoch so repeated reads/searches after an edit are not treated as stale duplicates.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
 - `configs/runtime.yaml` controls runtime memory/context tuning such as token-budget compaction, summary thresholds, and memory review limits; it is loaded at startup and can be explicitly reloaded with `POST /runtime/config/reload`, while environment variables can still override these values for deployment.
@@ -142,7 +143,7 @@ Fallback path today:
   - Python tool registry/config loading now lives under `packages/amadeus/tool_runtime`.
   - Agent tool execution dispatches through `ToolRegistry` instead of direct helpers.
   - Tool execution now returns structured `ToolResult` metadata with success state, duration, and stable failure codes.
-  - Tool execution now emits `tool.audit` events and persists audit records to SQLite for started/finished/denied/blocked/failed decisions.
+  - Tool execution now emits `tool.audit` events and persists audit records to SQLite for started/finished/denied/blocked/failed decisions, including metadata such as workspace epoch for normal agent-loop tool calls.
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
@@ -154,8 +155,8 @@ Fallback path today:
   - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression, and reports non-text file kinds without decoding them.
   - `patch` now supports safe single-file UTF-8 text replacement with unique-match default, optional `replaceAll`, generated-directory restrictions, and diff output.
   - `write_file` now supports safe UTF-8 text file creation and explicit whole-file overwrite with generated-directory restrictions, text-extension checks, size limits, parent directory creation, and diff output.
-  - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress, with semantic no-progress policies for repeated empty/same searches, repeated read windows, repeated patch failures, and repeated write failures.
-  - Unit tests cover registry config aliases, cancellation behavior, persisted audit records, result policy behavior, guardrail threshold behavior, semantic no-progress policies, agent-level repeated failure blocking, and agent-level no-progress blocking.
+  - A per-turn `ToolLoopGuardrail` blocks repeated exact failing tool calls and repeated completed calls that do not make progress, with semantic no-progress policies for repeated empty/same searches, repeated read windows, repeated patch failures, and repeated write failures. File-observing signatures include session `workspace_epoch` so successful file edits invalidate stale no-progress counts.
+  - Unit tests cover registry config aliases, cancellation behavior, persisted audit records and metadata, result policy behavior, guardrail threshold behavior, semantic no-progress policies, workspace epoch invalidation, agent-level repeated failure blocking, and agent-level no-progress blocking.
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
@@ -346,7 +347,7 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, semantic no-progress guardrails, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression and reports unsupported non-text file kinds; `patch` and `write_file` provide targeted-edit and whole-file write paths.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, semantic no-progress guardrails, session workspace epoch invalidation for file-observing tools, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression and reports unsupported non-text file kinds; `patch` and `write_file` provide targeted-edit and whole-file write paths.
 - The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and continued tuning of semantic no-progress policies as new tools land.
 
 ### Phase 8: Agent Memory Optimization

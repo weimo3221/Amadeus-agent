@@ -41,6 +41,7 @@ class ToolContext:
     tool_name: str | None = None
     permission_request_id: str | None = None
     permission_decision: str | None = None
+    workspace_epoch: int | None = None
     audit_metadata: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: float | None = 30.0
     cancel_event: threading.Event | None = None

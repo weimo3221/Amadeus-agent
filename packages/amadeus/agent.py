@@ -59,6 +59,7 @@ MEMORY_REVIEW_MAX_CANDIDATES = 8
 MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT = 12
 MEMORY_REVIEW_SUCCESS_COOLDOWN_SECONDS = 600
 MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS = 300
+WORKSPACE_MUTATING_TOOLS = {"patch", "write_file"}
 logger = logging.getLogger(__name__)
 
 
@@ -187,6 +188,8 @@ class AgentRuntime:
         self.context_diagnostics_limit = CONTEXT_DIAGNOSTICS_LIMIT
         self._context_diagnostics_by_session: dict[str, deque[dict[str, Any]]] = {}
         self._context_diagnostics_lock = threading.Lock()
+        self._workspace_epoch_by_session: dict[str, int] = {}
+        self._workspace_epoch_lock = threading.Lock()
         self.runtime_config_path = runtime_config_path
         self._load_runtime_config(reason="startup")
         self._summary_failure_until: dict[str, float] = {}
@@ -534,6 +537,31 @@ class AgentRuntime:
         with self._context_diagnostics_lock:
             records = list(self._context_diagnostics_by_session.get(session_id, ()))
         return json.loads(json.dumps(records[-bounded_limit:]))
+
+    def workspace_epoch(self, session_id: str) -> int:
+        with self._workspace_epoch_lock:
+            return self._workspace_epoch_by_session.get(session_id, 0)
+
+    def _bump_workspace_epoch(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+        tool_name: str,
+        tool_call_id: str | None = None,
+    ) -> int:
+        with self._workspace_epoch_lock:
+            next_epoch = self._workspace_epoch_by_session.get(session_id, 0) + 1
+            self._workspace_epoch_by_session[session_id] = next_epoch
+        logger.info(
+            "Bumped workspace epoch sessionId=%s epoch=%s reason=%s toolName=%s toolCallId=%s",
+            session_id,
+            next_epoch,
+            reason,
+            tool_name,
+            tool_call_id,
+        )
+        return next_epoch
 
     def compact_conversation(self, session_id: str, force: bool = True) -> dict[str, Any]:
         event = self._maybe_compact_conversation(session_id, force=force)
@@ -1255,15 +1283,25 @@ class AgentRuntime:
             tool_name,
             sorted(args.keys()),
         )
+        workspace_epoch = self.workspace_epoch(session_id)
 
         yield from self._emit_assistant_state(session_id, turn_id, "tool-running")
         yield AgentEvent("tool.started", {
             "toolName": tool_name,
             "displayName": spec.display_name if spec else f"Running {tool_name}",
         })
-        yield self._audit_tool(session_id, tool_name, decision="started")
+        yield self._audit_tool(
+            session_id,
+            tool_name,
+            decision="started",
+            metadata={
+                "turnId": turn_id,
+                "toolCallId": tool_call_id,
+                "workspaceEpoch": workspace_epoch,
+            },
+        )
 
-        guardrail_decision = guardrail.before_call(tool_name, args)
+        guardrail_decision = guardrail.before_call(tool_name, args, workspace_epoch=workspace_epoch)
         if not guardrail_decision.allowed:
             logger.info(
                 "Tool call blocked by guardrail sessionId=%s turnId=%s toolCallId=%s toolName=%s failureCode=%s",
@@ -1288,13 +1326,18 @@ class AgentRuntime:
                 ok=False,
                 failure_code=failure_code,
                 detail=result["error"],
+                metadata={
+                    "turnId": turn_id,
+                    "toolCallId": tool_call_id,
+                    "workspaceEpoch": workspace_epoch,
+                },
             )
             return
 
         if not spec:
             logger.info("Tool call failed: unknown tool sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Unknown tool: {tool_name}"}
-            guardrail.after_call(tool_name, args, result, False)
+            guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
             self._record_tool_result(history, tool_call_id, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
@@ -1308,13 +1351,18 @@ class AgentRuntime:
                 ok=False,
                 failure_code="unknown_tool",
                 detail=result["error"],
+                metadata={
+                    "turnId": turn_id,
+                    "toolCallId": tool_call_id,
+                    "workspaceEpoch": workspace_epoch,
+                },
             )
             return
 
         if not spec.enabled:
             logger.info("Tool call denied: disabled tool sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Tool is disabled: {tool_name}"}
-            guardrail.after_call(tool_name, args, result, False)
+            guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
             self._record_tool_result(history, tool_call_id, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
@@ -1328,13 +1376,18 @@ class AgentRuntime:
                 ok=False,
                 failure_code="tool_disabled",
                 detail=result["error"],
+                metadata={
+                    "turnId": turn_id,
+                    "toolCallId": tool_call_id,
+                    "workspaceEpoch": workspace_epoch,
+                },
             )
             return
 
         if spec.permission == "deny":
             logger.info("Tool call denied by policy sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Permission denied for tool: {tool_name}"}
-            guardrail.after_call(tool_name, args, result, False)
+            guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
             self._record_tool_result(history, tool_call_id, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
@@ -1348,6 +1401,11 @@ class AgentRuntime:
                 ok=False,
                 failure_code="permission_denied",
                 detail=result["error"],
+                metadata={
+                    "turnId": turn_id,
+                    "toolCallId": tool_call_id,
+                    "workspaceEpoch": workspace_epoch,
+                },
             )
             return
 
@@ -1380,7 +1438,7 @@ class AgentRuntime:
                     tool_name,
                 )
                 result = {"error": f"Permission denied for tool: {tool_name}"}
-                guardrail.after_call(tool_name, args, result, False)
+                guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
                 self._record_tool_result(history, tool_call_id, result)
                 yield AgentEvent("tool.finished", self._tool_finished_payload(
                     tool_name,
@@ -1394,6 +1452,11 @@ class AgentRuntime:
                     ok=False,
                     failure_code="permission_denied",
                     detail=result["error"],
+                    metadata={
+                        "turnId": turn_id,
+                        "toolCallId": tool_call_id,
+                        "workspaceEpoch": workspace_epoch,
+                    },
                 )
                 return
             permission_decision = "approved"
@@ -1416,6 +1479,7 @@ class AgentRuntime:
                 turn_id=turn_id,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
+                workspace_epoch=workspace_epoch,
                 permission_request_id=permission_request_id,
                 permission_decision=permission_decision,
                 audit_metadata={
@@ -1423,12 +1487,21 @@ class AgentRuntime:
                     "toolCallId": tool_call_id,
                     "permission": spec.permission,
                     "permissionDecision": permission_decision,
+                    "workspaceEpoch": workspace_epoch,
                 },
             ),
         )
-        guardrail.after_call(tool_name, args, result.output, result.ok)
+        guardrail.after_call(tool_name, args, result.output, result.ok, workspace_epoch=workspace_epoch)
+        workspace_epoch_after = workspace_epoch
+        if self._tool_result_mutated_workspace(tool_name, result.output, result.ok):
+            workspace_epoch_after = self._bump_workspace_epoch(
+                session_id,
+                reason="tool_mutation",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            )
         logger.info(
-            "Finished tool call sessionId=%s turnId=%s toolCallId=%s toolName=%s ok=%s failureCode=%s durationMs=%s outputTruncated=%s",
+            "Finished tool call sessionId=%s turnId=%s toolCallId=%s toolName=%s ok=%s failureCode=%s durationMs=%s outputTruncated=%s workspaceEpoch=%s workspaceEpochAfter=%s",
             session_id,
             turn_id,
             tool_call_id,
@@ -1437,6 +1510,8 @@ class AgentRuntime:
             result.failure_code,
             result.duration_ms,
             result.output_truncated,
+            workspace_epoch,
+            workspace_epoch_after,
         )
         self._record_tool_result(history, tool_call_id, result.model_output)
         yield AgentEvent("tool.finished", self._tool_finished_payload(
@@ -1455,6 +1530,13 @@ class AgentRuntime:
             duration_ms=result.duration_ms,
             failure_code=result.failure_code,
             detail=result.output.get("error") if isinstance(result.output.get("error"), str) else None,
+            metadata={
+                "turnId": turn_id,
+                "toolCallId": tool_call_id,
+                "workspaceEpoch": workspace_epoch,
+                "workspaceEpochAfter": workspace_epoch_after,
+                "workspaceMutated": workspace_epoch_after != workspace_epoch,
+            },
         )
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1574,6 +1656,10 @@ class AgentRuntime:
             payload["outputTruncated"] = output_truncated
         return payload
 
+    @staticmethod
+    def _tool_result_mutated_workspace(tool_name: str, output: dict[str, Any], ok: bool) -> bool:
+        return tool_name in WORKSPACE_MUTATING_TOOLS and ok and output.get("changed") is True
+
     def _audit_tool(
         self,
         session_id: str,
@@ -1583,6 +1669,7 @@ class AgentRuntime:
         duration_ms: int | None = None,
         failure_code: str | None = None,
         detail: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AgentEvent:
         record = self.tool_audit_log.append(
             session_id=session_id,
@@ -1592,6 +1679,7 @@ class AgentRuntime:
             duration_ms=duration_ms,
             failure_code=failure_code,
             detail=detail,
+            metadata=metadata,
         )
         self.tool_audit_store.save(record)
         logger.info(

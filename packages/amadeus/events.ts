@@ -151,6 +151,7 @@ export interface ToolAuditPayload {
   durationMs?: number | null
   failureCode?: string | null
   detail?: string | null
+  metadata?: Record<string, unknown> | null
 }
 
 export interface ToolPermissionRequestPayload {

@@ -254,7 +254,14 @@ Note:
     "decision": "finished",
     "ok": true,
     "durationMs": 12,
-    "failureCode": null
+    "failureCode": null,
+    "metadata": {
+      "turnId": "turn-id",
+      "toolCallId": "call-id",
+      "workspaceEpoch": 0,
+      "workspaceEpochAfter": 1,
+      "workspaceMutated": true
+    }
   }
 }
 ```
@@ -271,6 +278,7 @@ Current behavior:
 
 - Python emits audit events during `/agent/turn`.
 - The runtime keeps an in-process audit log for the current runtime instance and persists the same records to SQLite for diagnostics after restart.
+- Audit records may include a `metadata` object. Normal agent-loop tool calls include `turnId`, `toolCallId`, and `workspaceEpoch`; finished file mutation calls also include `workspaceEpochAfter` and `workspaceMutated`.
 - Persisted audit records are queryable through `GET /tools/audit` with optional filters: `sessionId`, `toolName`, `decision`, `ok`, `failureCode`, and `limit`.
 
 ### tool.permission.request

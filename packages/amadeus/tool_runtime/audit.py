@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import logging
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ class ToolAuditRecord:
     duration_ms: int | None = None
     failure_code: str | None = None
     detail: str | None = None
+    metadata: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -40,6 +42,8 @@ class ToolAuditRecord:
             payload["failureCode"] = self.failure_code
         if self.detail is not None:
             payload["detail"] = self.detail
+        if self.metadata is not None:
+            payload["metadata"] = self.metadata
         return payload
 
 
@@ -57,6 +61,7 @@ class ToolAuditLog:
         duration_ms: int | None = None,
         failure_code: str | None = None,
         detail: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ToolAuditRecord:
         record = ToolAuditRecord(
             record_id=str(uuid4()),
@@ -68,6 +73,7 @@ class ToolAuditLog:
             duration_ms=duration_ms,
             failure_code=failure_code,
             detail=detail,
+            metadata=json.loads(json.dumps(metadata)) if metadata is not None else None,
         )
         self._records.append(record)
         logger.info(
@@ -104,7 +110,8 @@ class ToolAuditStore:
                   ok INTEGER,
                   duration_ms INTEGER,
                   failure_code TEXT,
-                  detail TEXT
+                  detail TEXT,
+                  metadata_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_tool_audit_session_timestamp
                 ON tool_audit_records(session_id, timestamp);
@@ -112,6 +119,12 @@ class ToolAuditStore:
                 ON tool_audit_records(tool_name, timestamp);
                 """
             )
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(tool_audit_records)").fetchall()
+            }
+            if "metadata_json" not in columns:
+                connection.execute("ALTER TABLE tool_audit_records ADD COLUMN metadata_json TEXT")
         logger.info("Initialized tool audit store database=%s", self.database_path)
 
     def save(self, record: ToolAuditRecord) -> None:
@@ -127,9 +140,10 @@ class ToolAuditStore:
                   ok,
                   duration_ms,
                   failure_code,
-                  detail
+                  detail,
+                  metadata_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.record_id,
@@ -141,6 +155,7 @@ class ToolAuditStore:
                     record.duration_ms,
                     record.failure_code,
                     record.detail,
+                    json.dumps(record.metadata, ensure_ascii=False, sort_keys=True) if record.metadata is not None else None,
                 ),
             )
         logger.info(
@@ -188,7 +203,7 @@ class ToolAuditStore:
 
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         query = f"""
-            SELECT record_id, timestamp, session_id, tool_name, decision, ok, duration_ms, failure_code, detail
+            SELECT record_id, timestamp, session_id, tool_name, decision, ok, duration_ms, failure_code, detail, metadata_json
             FROM tool_audit_records
             {where_sql}
             ORDER BY rowid DESC
@@ -263,6 +278,14 @@ class ToolAuditStore:
     @staticmethod
     def _row_to_record(row: tuple[Any, ...]) -> ToolAuditRecord:
         ok_value = row[5]
+        metadata = None
+        if len(row) > 9 and row[9] is not None:
+            try:
+                parsed_metadata = json.loads(str(row[9]))
+                if isinstance(parsed_metadata, dict):
+                    metadata = parsed_metadata
+            except json.JSONDecodeError:
+                metadata = None
         return ToolAuditRecord(
             record_id=str(row[0]),
             timestamp=str(row[1]),
@@ -273,4 +296,5 @@ class ToolAuditStore:
             duration_ms=None if row[6] is None else int(row[6]),
             failure_code=None if row[7] is None else str(row[7]),
             detail=None if row[8] is None else str(row[8]),
+            metadata=metadata,
         )

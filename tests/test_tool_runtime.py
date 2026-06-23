@@ -1130,6 +1130,23 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         self.assertEqual(decision.failure_code, "no_progress_loop")
         self.assertIn("empty file search", decision.reason or "")
 
+    def test_workspace_epoch_allows_file_search_after_workspace_change(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"query": "missing", "target": "content"}
+
+        self.assertTrue(guardrail.before_call("search_files", args, workspace_epoch=0).allowed)
+        guardrail.after_call("search_files", args, {"results": []}, ok=True, workspace_epoch=0)
+
+        self.assertTrue(guardrail.before_call("search_files", args, workspace_epoch=0).allowed)
+        guardrail.after_call("search_files", args, {"results": []}, ok=True, workspace_epoch=0)
+
+        blocked = guardrail.before_call("search_files", args, workspace_epoch=0)
+        self.assertFalse(blocked.allowed)
+        self.assertEqual(blocked.failure_code, "no_progress_loop")
+
+        after_mutation = guardrail.before_call("search_files", args, workspace_epoch=1)
+        self.assertTrue(after_mutation.allowed)
+
     def test_blocks_repeated_empty_memory_search_with_specific_reason(self) -> None:
         guardrail = ToolLoopGuardrail(max_completed_repeats=2)
         args = {"query": "preference", "includeAllSessions": False}
@@ -1192,6 +1209,24 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         self.assertEqual(decision.failure_code, "no_progress_loop")
         self.assertIn("read_file window", decision.reason or "")
 
+    def test_workspace_epoch_allows_read_file_after_workspace_change(self) -> None:
+        guardrail = ToolLoopGuardrail(max_completed_repeats=2)
+        args = {"path": "README.md", "startLine": 10, "lineLimit": 20}
+        result = {"path": "README.md", "content": "same", "startLine": 10, "lineLimit": 20}
+
+        self.assertTrue(guardrail.before_call("read_file", args, workspace_epoch=0).allowed)
+        guardrail.after_call("read_file", args, result, ok=True, workspace_epoch=0)
+
+        self.assertTrue(guardrail.before_call("read_file", args, workspace_epoch=0).allowed)
+        guardrail.after_call("read_file", args, result, ok=True, workspace_epoch=0)
+
+        blocked = guardrail.before_call("read_file", args, workspace_epoch=0)
+        self.assertFalse(blocked.allowed)
+        self.assertEqual(blocked.failure_code, "no_progress_loop")
+
+        after_mutation = guardrail.before_call("read_file", args, workspace_epoch=1)
+        self.assertTrue(after_mutation.allowed)
+
     def test_blocks_repeated_patch_failure_by_path_and_old_text(self) -> None:
         guardrail = ToolLoopGuardrail(max_failed_repeats=2)
         first_args = {"path": "README.md", "oldText": "missing", "newText": "one"}
@@ -1236,6 +1271,7 @@ class ToolAuditStoreTests(unittest.TestCase):
                 decision="finished",
                 ok=True,
                 duration_ms=12,
+                metadata={"workspaceEpoch": 3},
             )
 
             store.save(record)
@@ -1248,6 +1284,8 @@ class ToolAuditStoreTests(unittest.TestCase):
         self.assertEqual(loaded[0].decision, "finished")
         self.assertTrue(loaded[0].ok)
         self.assertEqual(loaded[0].duration_ms, 12)
+        self.assertEqual(loaded[0].metadata, {"workspaceEpoch": 3})
+        self.assertEqual(loaded[0].to_payload()["metadata"], {"workspaceEpoch": 3})
 
     def test_filters_audit_records_by_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

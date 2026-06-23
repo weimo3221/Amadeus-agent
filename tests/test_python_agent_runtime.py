@@ -927,6 +927,75 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(tool_audit[-1]["failureCode"], "no_progress_loop")
         self.assertIn("empty file search", tool_audit[-1]["detail"])
 
+    def test_workspace_mutation_advances_epoch_for_file_guardrail(self) -> None:
+        tool_calls = [
+            {
+                "id": "call_read_0",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\",\"startLine\":1,\"lineLimit\":5}"},
+            },
+            {
+                "id": "call_read_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\",\"startLine\":1,\"lineLimit\":5}"},
+            },
+            {
+                "id": "call_write",
+                "type": "function",
+                "function": {"name": "write_file", "arguments": "{\"path\":\"README.md\",\"content\":\"updated\",\"overwrite\":true}"},
+            },
+            {
+                "id": "call_read_2",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\",\"startLine\":1,\"lineLimit\":5}"},
+            },
+        ]
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={"role": "assistant", "content": "", "tool_calls": tool_calls},
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="read_file",
+                    display_name="Read File",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "read_file"}},
+                    handler=lambda args: {
+                        "path": args["path"],
+                        "content": "current",
+                        "startLine": args["startLine"],
+                        "lineLimit": args["lineLimit"],
+                    },
+                ),
+                ToolSpec(
+                    name="write_file",
+                    display_name="Write File",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "write_file"}},
+                    handler=lambda _args: {"path": "README.md", "changed": True},
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+
+        events = list(runtime.run_turn("default", "read then edit then read", lambda _request: False))
+
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual([entry["ok"] for entry in tool_finished], [True, True, True, True])
+        self.assertEqual(runtime.workspace_epoch("default"), 1)
+
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        finished_audit = [entry for entry in tool_audit if entry["decision"] == "finished"]
+        self.assertEqual([entry["metadata"]["workspaceEpoch"] for entry in finished_audit], [0, 0, 0, 1])
+        self.assertEqual(finished_audit[2]["metadata"]["workspaceEpochAfter"], 1)
+        self.assertTrue(finished_audit[2]["metadata"]["workspaceMutated"])
+        persisted = runtime.persisted_tool_audit_records("default")
+        persisted_finished = [record for record in persisted if record.decision == "finished"]
+        self.assertEqual(persisted_finished[2].metadata["workspaceEpochAfter"], 1)
+
 
 class PermissionBrokerTests(unittest.TestCase):
     def test_resolve_unknown_request_returns_false(self) -> None:
