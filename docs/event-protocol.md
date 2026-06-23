@@ -108,6 +108,7 @@ Current behavior:
 - On runtime audio error or browser play rejection, desktop falls back to system `speechSynthesis`.
 - Python records these events through `HarnessFeedbackPolicy`.
 - The Live2D harness maps playback start/end/error into `character.behavior`; the bridge sends those returned behavior events back to the desktop socket.
+- The mapping is configurable through `configs/harnesses.yaml` under `live2d.audioPlaybackBehaviors`.
 - This is still playback-state driven behavior, not amplitude-driven or phoneme-aware lipsync.
 
 ### memory.review.*

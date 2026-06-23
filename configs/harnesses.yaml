@@ -5,3 +5,19 @@ harnesses:
     model:
       id: hiyori-pro
       path: hiyori-pro/hiyori_pro_t11.model3.json
+    audioPlaybackBehaviors:
+      started:
+        emotion: neutral
+        expression: smile
+        motion: talk
+        intensity: 0.65
+      ended:
+        emotion: neutral
+        expression: neutral
+        motion: idle
+        intensity: 0.35
+      error:
+        emotion: confused
+        expression: confused
+        motion: shake_head
+        intensity: 0.55

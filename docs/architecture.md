@@ -154,7 +154,7 @@ packages/amadeus
 - `audio.py`: active TTS/audio interface with an `auto` provider selector, config-gated GPT-SoVITS HTTP provider, and macOS `say` provider that can cache generated wav audio under the local audio library.
 - `server.py`: active Python HTTP runtime surface, including local audio file serving and local Live2D model config/static asset serving for direct runtime use.
 - `model.py`: active first-pass OpenAI-compatible provider boundary for `configs/providers.yaml` plus environment-backed provider config, JSON chat-completion requests, stream parsing, and classified provider error normalization.
-- `harness/`: active first-pass harness boundary with a registry and Live2D harness that maps `assistant.state` events to `character.behavior`.
+- `harness/`: active first-pass harness boundary with a registry and Live2D harness that maps `assistant.state` plus configurable audio playback feedback behaviors to `character.behavior`.
 - `skills.py`: future reusable behavior boundary; currently placeholder only.
 - `live2d.py`: active local Live2D model library boundary plus character command dataclasses.
 

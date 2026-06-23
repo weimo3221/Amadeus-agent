@@ -24,6 +24,14 @@ class HarnessTests(unittest.TestCase):
                     "    model:",
                     "      id: vivian",
                     "      path: models/live2d/vivian/default.model3.json",
+                    "    audioPlaybackBehaviors:",
+                    "      started:",
+                    "        emotion: happy",
+                    "        expression: grin",
+                    "        motion: custom_talk",
+                    "        intensity: 0.9",
+                    "      audio.playback-ended:",
+                    "        motion: custom_idle",
                 ]),
                 encoding="utf-8",
             )
@@ -34,6 +42,9 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(config["live2d"]["adapter"], "desktop-live2d")
         self.assertEqual(config["live2d"]["model"]["id"], "vivian")
         self.assertEqual(config["live2d"]["model"]["path"], "models/live2d/vivian/default.model3.json")
+        self.assertEqual(config["live2d"]["audioPlaybackBehaviors"]["started"]["motion"], "custom_talk")
+        self.assertEqual(config["live2d"]["audioPlaybackBehaviors"]["started"]["intensity"], 0.9)
+        self.assertEqual(config["live2d"]["audioPlaybackBehaviors"]["audio.playback-ended"]["motion"], "custom_idle")
 
     def test_live2d_harness_maps_assistant_state_to_character_behavior(self) -> None:
         harness = Live2DHarness()
@@ -94,6 +105,42 @@ class HarnessTests(unittest.TestCase):
         )
 
         self.assertEqual(events, [])
+
+    def test_harness_registry_reads_configured_audio_playback_behaviors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "harnesses.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "harnesses:",
+                    "  live2d:",
+                    "    enabled: true",
+                    "    audioPlaybackBehaviors:",
+                    "      started:",
+                    "        expression: grin",
+                    "        motion: custom_talk",
+                    "        intensity: 0.9",
+                    "      ended:",
+                    "        motion: custom_idle",
+                ]),
+                encoding="utf-8",
+            )
+
+            registry = HarnessRegistry.from_config(config_path)
+
+        started = registry.observe_event(
+            HarnessContext(session_id="default", client_capabilities={"live2d": {"available": True}}),
+            {"type": "audio.playback-started", "payload": {"source": "runtime_audio"}},
+        )
+        ended = registry.observe_event(
+            HarnessContext(session_id="default", client_capabilities={"live2d": {"available": True}}),
+            {"type": "audio.playback-ended", "payload": {"source": "runtime_audio"}},
+        )
+
+        self.assertEqual(started[0]["payload"]["expression"], "grin")
+        self.assertEqual(started[0]["payload"]["motion"], "custom_talk")
+        self.assertEqual(started[0]["payload"]["intensity"], 0.9)
+        self.assertEqual(ended[0]["payload"]["expression"], "neutral")
+        self.assertEqual(ended[0]["payload"]["motion"], "custom_idle")
 
     def test_harness_registry_can_disable_live2d(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -378,11 +378,11 @@ Started.
 
 Started.
 
-- First harness slice exists in `packages/amadeus/harness`, with `configs/harnesses.yaml` selecting Live2D behavior/model config.
+- First harness slice exists in `packages/amadeus/harness`, with `configs/harnesses.yaml` selecting Live2D model config and playback-state behavior mapping.
 - Local Live2D model storage and bridge serving are active through `models/live2d`, `/live2d/config`, and `/live2d/models/...`.
 - Runtime audio provider selection and cache are active through `packages/amadeus/audio.py`, with GPT-SoVITS config support, macOS `say` fallback, `/audio/speak`, and `audio.tts-ready`.
 - Desktop capability and runtime audio playback feedback now reach Python through `POST /runtime/feedback` and are stored by `HarnessFeedbackPolicy`.
-- Live2D maps `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` into playback-state-driven `character.behavior` events returned to the desktop.
+- Live2D maps `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` into playback-state-driven `character.behavior` events returned to the desktop; these mappings are configurable through `live2d.audioPlaybackBehaviors`.
 - Remaining work: audio harness boundary, richer Live2D commands, speaking-state reconciliation, and amplitude/phoneme-driven lipsync.
 
 ### Phase 11: Proactive Agent

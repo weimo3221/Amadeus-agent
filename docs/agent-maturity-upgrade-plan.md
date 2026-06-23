@@ -228,7 +228,7 @@ class Harness(Protocol):
 
 ### Live2D harness
 
-`Live2DHarness` 应负责把 agent 状态转成 character commands，而不是由 server 硬编码：
+`Live2DHarness` 应负责把 agent 状态和音频播放反馈转成 character commands，而不是由 server 硬编码。播放反馈到表情/动作的第一版映射已放在 `configs/harnesses.yaml` 的 `live2d.audioPlaybackBehaviors` 下：
 
 输入：
 

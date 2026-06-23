@@ -205,7 +205,7 @@ Current status:
 - The Python agent now emits `assistant.state` and lets the Live2D harness add `character.behavior` events for state-to-expression/motion mapping.
 - Desktop now reports `desktop.capabilities` after connection/model load and reports runtime audio playback start/end/error as `audio.playback-*` events to the bridge.
 - Python now receives those feedback events through `POST /runtime/feedback`; `HarnessFeedbackPolicy` stores per-session desktop capabilities, audio playback state, and recent feedback events.
-- Live2D now maps playback start/end/error into `character.behavior` events and the bridge sends those returned events back to desktop.
+- Live2D now maps playback start/end/error into `character.behavior` events and the bridge sends those returned events back to desktop. The mapping is configurable in `configs/harnesses.yaml` through `live2d.audioPlaybackBehaviors`.
 - Remaining work is to grow this into the full harness layer: audio harness, richer Live2D commands, speaking-state reconciliation, and eventual amplitude/phoneme-driven lipsync cues.
 
 ## Phase 10: Skills

@@ -110,6 +110,22 @@ harnesses:
     model:
       id: default
       path: models/live2d/default/default.model3.json
+    audioPlaybackBehaviors:
+      started:
+        emotion: neutral
+        expression: smile
+        motion: talk
+        intensity: 0.65
+      ended:
+        emotion: neutral
+        expression: neutral
+        motion: idle
+        intensity: 0.35
+      error:
+        emotion: confused
+        expression: confused
+        motion: shake_head
+        intensity: 0.55
   audio:
     enabled: true
     tts:
@@ -119,7 +135,7 @@ harnesses:
       mode: timed
 ```
 
-The runtime should load harnesses from this config and expose their effective state in `server.hello` or a later diagnostics event. Desktop-side code should report actual capabilities after model/audio initialization so the runtime can choose behavior that the adapter can execute.
+The runtime loads Live2D model selection and playback-state behavior mapping from this config. `audioPlaybackBehaviors` accepts the short keys `started`, `ended`, and `error` as aliases for `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error`. Missing behavior fields fall back to the Python defaults.
 
 ## Audio Layout
 
