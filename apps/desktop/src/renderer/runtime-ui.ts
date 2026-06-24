@@ -93,6 +93,7 @@ export class RuntimeUiController {
   private pendingToolPermissionRequestId: string | undefined
   private voiceEnabled = true
   private currentAudio: RuntimeAudioLike | undefined
+  private pendingRuntimeCueAudioUrl: string | undefined
   private pendingSpeechFallbackTimer: number | undefined
   private currentUtterance: SpeechSynthesisUtterance | undefined
   private availableVoices: SpeechSynthesisVoice[] = []
@@ -292,6 +293,9 @@ export class RuntimeUiController {
         void this.options.live2d?.applyBehavior(event.payload)
         break
       case 'audio.lipsync-cues':
+        if (event.payload.source === 'runtime_audio' && event.payload.audioUrl) {
+          this.pendingRuntimeCueAudioUrl = event.payload.audioUrl
+        }
         this.options.live2d?.applyLipsyncCues?.(event.payload)
         break
       case 'audio.tts-ready':
@@ -671,16 +675,24 @@ export class RuntimeUiController {
     this.stopRuntimeAudio()
     this.options.speechSynthesis?.cancel()
     this.options.live2d?.stopMouthLoop()
+    if (this.pendingRuntimeCueAudioUrl && this.pendingRuntimeCueAudioUrl !== audioUrl) {
+      this.pendingRuntimeCueAudioUrl = undefined
+    }
 
     const audio = this.options.createAudio(audioUrl)
     this.currentAudio = audio
 
     audio.addEventListener('play', () => {
       this.setVoiceStatus('Playing runtime audio')
-      this.sendAudioPlaybackStarted({ source: 'runtime_audio', audioUrl, durationMs })
+      this.sendAudioPlaybackStarted({
+        source: 'runtime_audio',
+        audioUrl,
+        durationMs,
+        runtimeCuesActive: this.pendingRuntimeCueAudioUrl === audioUrl,
+      })
       void this.options.live2d?.applyState('speaking')
       const startedAudioDrivenLipsync = this.options.live2d?.startRuntimeAudioLipsync?.(audio) ?? false
-      if (!startedAudioDrivenLipsync) {
+      if (!startedAudioDrivenLipsync && this.pendingRuntimeCueAudioUrl !== audioUrl) {
         this.options.live2d?.startMouthLoop()
       }
     })
@@ -691,6 +703,7 @@ export class RuntimeUiController {
       this.options.live2d?.stopMouthLoop()
       void this.options.live2d?.applyState('idle')
       this.currentAudio = undefined
+      this.pendingRuntimeCueAudioUrl = undefined
     })
 
     audio.addEventListener('error', () => {
@@ -698,6 +711,7 @@ export class RuntimeUiController {
       this.sendAudioPlaybackError({ source: 'runtime_audio', audioUrl, reason: 'audio_element_error' })
       this.options.live2d?.stopMouthLoop()
       this.currentAudio = undefined
+      this.pendingRuntimeCueAudioUrl = undefined
       this.speak(this.lastAssistantSpeechText)
     })
 
@@ -705,6 +719,7 @@ export class RuntimeUiController {
       this.setVoiceStatus('Runtime audio blocked; using system voice')
       this.sendAudioPlaybackError({ source: 'runtime_audio', audioUrl, reason: 'play_rejected' })
       this.currentAudio = undefined
+      this.pendingRuntimeCueAudioUrl = undefined
       this.speak(this.lastAssistantSpeechText)
     })
   }

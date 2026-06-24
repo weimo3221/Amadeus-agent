@@ -101,23 +101,17 @@ class Live2DHarness:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if payload.get("source") != "runtime_audio":
             return None
+        if payload.get("runtimeCuesActive") is True:
+            return None
 
         duration_ms = payload.get("durationMs")
         cues: list[dict[str, float | int]] = []
         resolved_duration_ms: int | None = None
         audio_url = payload.get("audioUrl") if isinstance(payload.get("audioUrl"), str) else None
-        if audio_url and self.audio_library is not None:
-            resolved_duration_ms, cues = self.audio_library.lipsync_cues_for_audio_url(
-                audio_url,
-                cue_interval_ms=self.lipsync_cue_interval_ms,
-                max_cues=self.lipsync_max_cues,
-            )
-
-        if not cues:
-            if not isinstance(duration_ms, (int, float)) or duration_ms <= 0:
-                return None
-            resolved_duration_ms = int(duration_ms)
-            cues = self._build_lipsync_cues(resolved_duration_ms)
+        if not isinstance(duration_ms, (int, float)) or duration_ms <= 0:
+            return None
+        resolved_duration_ms = int(duration_ms)
+        cues = self._build_lipsync_cues(resolved_duration_ms)
 
         if not cues:
             return None

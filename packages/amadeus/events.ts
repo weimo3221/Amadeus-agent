@@ -115,6 +115,8 @@ export interface AudioTtsReadyPayload {
 export interface AudioLipsyncCue {
   offsetMs: number
   mouthOpen: number
+  viseme?: string
+  phoneme?: string
 }
 
 export interface AudioLipsyncCuesPayload {
@@ -128,6 +130,7 @@ export interface AudioPlaybackStartedPayload {
   source: 'runtime_audio' | 'speech_synthesis'
   audioUrl?: string
   durationMs?: number | null
+  runtimeCuesActive?: boolean
 }
 
 export interface AudioPlaybackEndedPayload {

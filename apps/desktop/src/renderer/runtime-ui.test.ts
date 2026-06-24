@@ -504,6 +504,7 @@ describe('Runtime UI controller', () => {
       source: 'runtime_audio',
       audioUrl: 'http://runtime/audio.wav',
       durationMs: 1000,
+      runtimeCuesActive: false,
     })
   })
 
@@ -588,6 +589,41 @@ describe('Runtime UI controller', () => {
 
     assert.equal(live2dStats.applyLipsyncCuesCalls, 1)
     assert.equal(live2dStats.lastLipsyncCueCount, 3)
+  })
+
+  it('marks runtime playback as cue-driven when phoneme cues arrive before audio playback', () => {
+    const { controller, socket, live2dStats } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'model',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
+    controller.handleServerEvent(makeEvent('audio.lipsync-cues', {
+      source: 'runtime_audio',
+      audioUrl: 'http://runtime/audio.wav',
+      durationMs: 320,
+      cues: [
+        { offsetMs: 0, mouthOpen: 0.2, viseme: 'E', phoneme: 'e' },
+        { offsetMs: 90, mouthOpen: 0.75, viseme: 'O', phoneme: 'o' },
+      ],
+    }))
+    controller.handleServerEvent(makeEvent('assistant.message', { text: 'hello with audio' }))
+    controller.handleServerEvent(makeEvent('audio.tts-ready', {
+      audioUrl: 'http://runtime/audio.wav',
+      durationMs: 1000,
+    }))
+
+    assert.equal(socket.sent.at(-1)?.type, 'audio.playback-started')
+    assert.deepEqual(socket.sent.at(-1)?.payload, {
+      source: 'runtime_audio',
+      audioUrl: 'http://runtime/audio.wav',
+      durationMs: 1000,
+      runtimeCuesActive: true,
+    })
+    assert.equal(live2dStats.startMouthLoopCalls, 0)
   })
 
   it('clears permission prompts and updates tool status on tool.finished', () => {

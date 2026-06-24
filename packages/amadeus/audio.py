@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -35,12 +36,262 @@ class AudioOutputResult:
     audio_url: str
     duration_ms: int | None = None
     provider: str = "unknown"
+    lipsync_cues: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
 class AudioFallbackResult:
     reason: str
     fallback: str = "speechSynthesis"
+
+
+@dataclass(frozen=True)
+class PhonemeUnit:
+    viseme: str
+    weight: float
+    mouth_open: float
+    symbol: str
+
+
+PHONEME_WORD_PATTERN = re.compile(r"[A-Za-z']+|[0-9]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]|[^\w\s]", re.UNICODE)
+VISEME_MOUTH_OPEN = {
+    "sil": 0.0,
+    "A": 1.0,
+    "E": 0.62,
+    "I": 0.38,
+    "O": 0.84,
+    "U": 0.28,
+    "MBP": 0.1,
+    "FV": 0.24,
+    "L": 0.44,
+    "WQ": 0.26,
+    "R": 0.33,
+    "C": 0.18,
+}
+
+ENGLISH_CLUSTER_VISEMES: list[tuple[str, str]] = [
+    ("tion", "C"),
+    ("sion", "C"),
+    ("ough", "O"),
+    ("eigh", "E"),
+    ("igh", "I"),
+    ("air", "A"),
+    ("ear", "E"),
+    ("oor", "O"),
+    ("ee", "E"),
+    ("ea", "E"),
+    ("oo", "O"),
+    ("ou", "O"),
+    ("ow", "O"),
+    ("oa", "O"),
+    ("ai", "A"),
+    ("ay", "A"),
+    ("au", "O"),
+    ("oi", "O"),
+    ("oy", "O"),
+    ("er", "R"),
+    ("ir", "R"),
+    ("ur", "R"),
+    ("ar", "A"),
+    ("or", "O"),
+    ("th", "C"),
+    ("sh", "C"),
+    ("ch", "C"),
+    ("zh", "C"),
+    ("ph", "FV"),
+    ("wh", "WQ"),
+    ("qu", "WQ"),
+    ("ck", "C"),
+    ("ng", "C"),
+]
+LETTER_VISEMES = {
+    "a": "A",
+    "e": "E",
+    "i": "I",
+    "o": "O",
+    "u": "U",
+    "y": "I",
+    "b": "MBP",
+    "m": "MBP",
+    "p": "MBP",
+    "f": "FV",
+    "v": "FV",
+    "l": "L",
+    "w": "WQ",
+    "q": "WQ",
+    "r": "R",
+}
+VISEME_WEIGHT = {
+    "sil": 0.85,
+    "A": 1.35,
+    "E": 1.2,
+    "I": 1.0,
+    "O": 1.28,
+    "U": 1.0,
+    "MBP": 0.6,
+    "FV": 0.65,
+    "L": 0.72,
+    "WQ": 0.78,
+    "R": 0.82,
+    "C": 0.58,
+}
+
+
+class PhonemeLipsyncPlanner:
+    def build_cues(
+        self,
+        text: str,
+        duration_ms: int,
+        *,
+        audio_envelope: list[float] | None = None,
+        max_cues: int = 96,
+    ) -> list[dict[str, Any]]:
+        normalized_text = text.strip()
+        if not normalized_text or duration_ms <= 0:
+            return []
+
+        units = self._phoneme_units(normalized_text)
+        if not units:
+            return []
+
+        if len(units) > max_cues:
+            units = self._compress_units(units, max_cues=max_cues)
+
+        total_weight = sum(max(0.1, unit.weight) for unit in units)
+        if total_weight <= 0:
+            return []
+
+        cues: list[dict[str, Any]] = []
+        accumulated_ms = 0.0
+        envelope = audio_envelope or []
+        for index, unit in enumerate(units):
+            cue_duration_ms = duration_ms * (max(0.1, unit.weight) / total_weight)
+            envelope_scale = envelope[index] if index < len(envelope) else 1.0
+            mouth_open = self._scaled_mouth_open(unit.mouth_open, envelope_scale)
+            cues.append({
+                "offsetMs": min(duration_ms, round(accumulated_ms)),
+                "mouthOpen": mouth_open,
+                "viseme": unit.viseme,
+                "phoneme": unit.symbol,
+            })
+            accumulated_ms += cue_duration_ms
+
+        cues.append({
+            "offsetMs": duration_ms,
+            "mouthOpen": 0.0,
+            "viseme": "sil",
+            "phoneme": "",
+        })
+        return self._dedupe_cues(cues)
+
+    def _phoneme_units(self, text: str) -> list[PhonemeUnit]:
+        units: list[PhonemeUnit] = []
+        for token in PHONEME_WORD_PATTERN.findall(text):
+            if token.isascii() and any(character.isalpha() for character in token):
+                units.extend(self._english_units(token.lower()))
+                continue
+            if token.isdigit():
+                units.extend(self._digit_units(token))
+                continue
+            if re.fullmatch(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", token):
+                units.extend(self._cjk_units(token))
+                continue
+            units.append(self._unit("sil", 0.75, token))
+        return units
+
+    def _english_units(self, word: str) -> list[PhonemeUnit]:
+        units: list[PhonemeUnit] = []
+        index = 0
+        while index < len(word):
+            matched = False
+            for cluster, viseme in ENGLISH_CLUSTER_VISEMES:
+                if word.startswith(cluster, index):
+                    units.append(self._unit(viseme, VISEME_WEIGHT[viseme], cluster))
+                    index += len(cluster)
+                    matched = True
+                    break
+            if matched:
+                continue
+
+            character = word[index]
+            viseme = LETTER_VISEMES.get(character, "C")
+            weight = VISEME_WEIGHT[viseme]
+            if character in {"'", "-"}:
+                viseme = "sil"
+                weight = 0.4
+            units.append(self._unit(viseme, weight, character))
+            index += 1
+        return units
+
+    def _digit_units(self, digits: str) -> list[PhonemeUnit]:
+        units: list[PhonemeUnit] = []
+        for digit in digits:
+            viseme = {
+                "0": "O",
+                "1": "WQ",
+                "2": "U",
+                "3": "E",
+                "4": "O",
+                "5": "I",
+                "6": "I",
+                "7": "E",
+                "8": "A",
+                "9": "I",
+            }.get(digit, "C")
+            units.append(self._unit(viseme, VISEME_WEIGHT[viseme], digit))
+        return units
+
+    def _cjk_units(self, character: str) -> list[PhonemeUnit]:
+        viseme_cycle = ("A", "E", "I", "O", "U")
+        nucleus = viseme_cycle[ord(character) % len(viseme_cycle)]
+        return [
+            self._unit("C", 0.45, f"{character}:onset"),
+            self._unit(nucleus, 1.05, character),
+        ]
+
+    def _compress_units(self, units: list[PhonemeUnit], *, max_cues: int) -> list[PhonemeUnit]:
+        if len(units) <= max_cues:
+            return units
+
+        bucket_size = max(1, round(len(units) / max_cues))
+        merged: list[PhonemeUnit] = []
+        for index in range(0, len(units), bucket_size):
+            chunk = units[index:index + bucket_size]
+            dominant = max(chunk, key=lambda unit: unit.mouth_open)
+            merged.append(PhonemeUnit(
+                viseme=dominant.viseme,
+                weight=sum(unit.weight for unit in chunk),
+                mouth_open=max(unit.mouth_open for unit in chunk),
+                symbol="+".join(unit.symbol for unit in chunk[:3]),
+            ))
+        return merged[:max_cues]
+
+    def _scaled_mouth_open(self, base_mouth_open: float, envelope_scale: float) -> float:
+        scale = min(1.35, max(0.55, envelope_scale))
+        return round(min(1.0, max(0.0, base_mouth_open * scale)), 4)
+
+    def _dedupe_cues(self, cues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        last_key: tuple[int, float, str] | None = None
+        for cue in cues:
+            key = (
+                int(cue["offsetMs"]),
+                float(cue["mouthOpen"]),
+                str(cue.get("viseme") or ""),
+            )
+            if key == last_key:
+                continue
+            deduped.append(cue)
+            last_key = key
+        return deduped
+
+    def _unit(self, viseme: str, weight: float, symbol: str) -> PhonemeUnit:
+        return PhonemeUnit(
+            viseme=viseme,
+            weight=weight,
+            mouth_open=VISEME_MOUTH_OPEN[viseme],
+            symbol=symbol,
+        )
 
 
 class TtsProvider(Protocol):
@@ -157,11 +408,127 @@ class GptSovitsTtsProvider:
             return None
 
         duration_ms = parsed.get("durationMs") or parsed.get("duration_ms")
+        normalized_duration_ms = self._normalize_duration_ms(duration_ms)
+        lipsync_cues = self._extract_provider_lipsync_cues(parsed, normalized_duration_ms)
+        if normalized_duration_ms is None and lipsync_cues:
+            normalized_duration_ms = max(int(cue["offsetMs"]) for cue in lipsync_cues)
         return AudioOutputResult(
             audio_url=audio_url,
-            duration_ms=duration_ms if isinstance(duration_ms, int) else None,
+            duration_ms=normalized_duration_ms,
             provider=self.name,
+            lipsync_cues=lipsync_cues,
         )
+
+    def _extract_provider_lipsync_cues(
+        self,
+        payload: dict[str, Any],
+        duration_ms: int | None,
+    ) -> list[dict[str, Any]] | None:
+        cue_candidates: list[Any] = []
+        for key in ("lipsyncCues", "lipsync_cues", "cues", "visemes", "phonemes"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                cue_candidates = value
+                break
+
+        lipsync = payload.get("lipsync")
+        if not cue_candidates and isinstance(lipsync, dict):
+            for key in ("cues", "lipsyncCues", "lipsync_cues", "visemes", "phonemes"):
+                value = lipsync.get(key)
+                if isinstance(value, list):
+                    cue_candidates = value
+                    break
+
+        if not cue_candidates:
+            return None
+
+        cues: list[dict[str, Any]] = []
+        for raw_cue in cue_candidates:
+            normalized = self._normalize_provider_cue(raw_cue)
+            if normalized:
+                cues.append(normalized)
+
+        if not cues:
+            return None
+
+        cues.sort(key=lambda cue: int(cue["offsetMs"]))
+        resolved_duration_ms = duration_ms
+        if resolved_duration_ms is None:
+            resolved_duration_ms = max(int(cue["offsetMs"]) for cue in cues)
+        if resolved_duration_ms is not None and int(cues[-1]["offsetMs"]) < resolved_duration_ms:
+            cues.append({
+                "offsetMs": resolved_duration_ms,
+                "mouthOpen": 0.0,
+                "viseme": "sil",
+                "phoneme": "",
+            })
+        return cues
+
+    def _normalize_provider_cue(self, raw_cue: Any) -> dict[str, Any] | None:
+        if not isinstance(raw_cue, dict):
+            return None
+
+        offset_value = self._first_present(
+            raw_cue,
+            "offsetMs",
+            "offset_ms",
+            "timeMs",
+            "time_ms",
+            "startMs",
+            "start_ms",
+            "start",
+        )
+        if not isinstance(offset_value, (int, float)) or offset_value < 0:
+            return None
+
+        viseme = raw_cue.get("viseme")
+        if not isinstance(viseme, str) or not viseme.strip():
+            viseme = "sil"
+        viseme = viseme.strip()
+
+        phoneme = raw_cue.get("phoneme")
+        if not isinstance(phoneme, str):
+            phoneme = ""
+
+        mouth_open_value = self._first_present(
+            raw_cue,
+            "mouthOpen",
+            "mouth_open",
+            "value",
+            "strength",
+            "weight",
+        )
+        mouth_open = self._normalize_provider_mouth_open(mouth_open_value, viseme)
+
+        return {
+            "offsetMs": int(round(offset_value)),
+            "mouthOpen": mouth_open,
+            "viseme": viseme,
+            "phoneme": phoneme,
+        }
+
+    def _normalize_provider_mouth_open(self, raw_value: Any, viseme: str) -> float:
+        if isinstance(raw_value, (int, float)):
+            value = float(raw_value)
+            if value > 1.0:
+                value = value / 100.0
+            return round(min(1.0, max(0.0, value)), 4)
+
+        viseme_key = viseme.upper()
+        if viseme_key in VISEME_MOUTH_OPEN:
+            return round(VISEME_MOUTH_OPEN[viseme_key], 4)
+        return 0.0
+
+    def _normalize_duration_ms(self, raw_duration: Any) -> int | None:
+        if isinstance(raw_duration, (int, float)) and raw_duration >= 0:
+            return int(round(raw_duration))
+        return None
+
+    def _first_present(self, payload: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            if key in payload:
+                return payload[key]
+        return None
 
     def _write_audio_cache(self, text: str, voice: str | None, audio_format: str, response_body: bytes) -> Path:
         cache_key = hashlib.sha256(
@@ -249,6 +616,7 @@ class LocalAudioLibrary:
         self.voices_dir = self.root_dir / "voices"
         self.sfx_dir = self.root_dir / "sfx"
         self.cache_dir = self.root_dir / "cache"
+        self.lipsync_planner = PhonemeLipsyncPlanner()
 
         for path in (self.voices_dir, self.sfx_dir, self.cache_dir):
             path.mkdir(parents=True, exist_ok=True)
@@ -296,16 +664,14 @@ class LocalAudioLibrary:
             return None
         return max(0, round((frame_count / frame_rate) * 1000))
 
-    def lipsync_cues_for_audio_url(
+    def waveform_envelope_for_audio_path(
         self,
-        audio_url: str,
+        file_path: Path,
         *,
-        cue_interval_ms: int,
-        max_cues: int,
-    ) -> tuple[int | None, list[dict[str, float | int]]]:
-        file_path = self.public_file_path(audio_url)
-        if file_path is None or file_path.suffix.lower() != ".wav":
-            return (None, [])
+        cue_count: int,
+    ) -> list[float]:
+        if file_path.suffix.lower() != ".wav" or cue_count <= 0:
+            return []
 
         try:
             with wave.open(str(file_path), "rb") as wav_file:
@@ -314,48 +680,55 @@ class LocalAudioLibrary:
                 channel_count = wav_file.getnchannels()
                 frame_count = wav_file.getnframes()
                 if frame_rate <= 0 or sample_width <= 0 or channel_count <= 0 or frame_count <= 0:
-                    return (None, [])
+                    return []
 
-                duration_ms = max(0, round((frame_count / frame_rate) * 1000))
-                window_ms = max(50, cue_interval_ms)
-                window_frames = max(1, round(frame_rate * (window_ms / 1000)))
-                cues: list[dict[str, float | int]] = []
-                offset_ms = 0
+                window_frames = max(1, round(frame_count / cue_count))
+                envelope: list[float] = []
+                max_amplitude = {
+                    1: 128.0,
+                    2: 32768.0,
+                    3: 8388608.0,
+                    4: 2147483648.0,
+                }.get(sample_width)
+                if max_amplitude is None:
+                    return []
 
-                while len(cues) < max(1, max_cues):
+                while len(envelope) < cue_count:
                     frames = wav_file.readframes(window_frames)
                     if not frames:
                         break
 
                     if channel_count == 2:
-                        frames = tomono(frames, sample_width, 1 / channel_count, 1 / channel_count)
+                        frames = tomono(frames, sample_width, 0.5, 0.5)
                     elif channel_count > 2:
-                        return (duration_ms, [])
+                        return []
 
                     signal_rms = rms(frames, sample_width)
-                    max_amplitude = {
-                        1: 128.0,
-                        2: 32768.0,
-                        3: 8388608.0,
-                        4: 2147483648.0,
-                    }.get(sample_width)
-                    if max_amplitude is None:
-                        return (duration_ms, [])
-
-                    mouth_open = min(1.0, max(0.0, 0.05 + (signal_rms / max_amplitude) * 4.0))
-                    cues.append({
-                        "offsetMs": min(duration_ms, offset_ms),
-                        "mouthOpen": round(mouth_open, 4),
-                    })
-                    offset_ms += window_ms
-
-                if not cues:
-                    return (duration_ms, [])
-                if int(cues[-1]["offsetMs"]) < duration_ms:
-                    cues.append({"offsetMs": duration_ms, "mouthOpen": 0.0})
-                return (duration_ms, cues)
+                    normalized = min(1.0, max(0.0, signal_rms / max_amplitude))
+                    envelope.append(round(0.55 + normalized * 0.8, 4))
+                return envelope
         except (OSError, EOFError, wave.Error):
-            return (None, [])
+            return []
+
+    def phoneme_lipsync_cues_for_audio(
+        self,
+        text: str,
+        duration_ms: int,
+        *,
+        audio_url: str | None = None,
+        max_cues: int,
+    ) -> list[dict[str, Any]]:
+        if duration_ms <= 0:
+            return []
+
+        file_path = self.public_file_path(audio_url) if audio_url else None
+        envelope = self.waveform_envelope_for_audio_path(file_path, cue_count=max_cues) if file_path else []
+        return self.lipsync_planner.build_cues(
+            text,
+            duration_ms,
+            audio_envelope=envelope,
+            max_cues=max_cues,
+        )
 
     @staticmethod
     def _is_inside(path: Path, parent: Path) -> bool:
@@ -370,6 +743,7 @@ class AudioRuntime:
     def __init__(self, library: LocalAudioLibrary, tts_provider: TtsProvider | None = None) -> None:
         self.library = library
         self.tts_provider = tts_provider or NoopTtsProvider()
+        self.lipsync_max_cues = 96
 
     def speak(self, command: AudioOutputCommand) -> AudioOutputResult | AudioFallbackResult:
         normalized_text = command.text.strip()
@@ -378,6 +752,19 @@ class AudioRuntime:
 
         result = self.tts_provider.synthesize(command)
         if result:
+            if result.duration_ms is not None and result.duration_ms > 0:
+                lipsync_cues = result.lipsync_cues or self.library.phoneme_lipsync_cues_for_audio(
+                    normalized_text,
+                    result.duration_ms,
+                    audio_url=result.audio_url,
+                    max_cues=self.lipsync_max_cues,
+                )
+                return AudioOutputResult(
+                    audio_url=result.audio_url,
+                    duration_ms=result.duration_ms,
+                    provider=result.provider,
+                    lipsync_cues=lipsync_cues,
+                )
             return result
 
         return AudioFallbackResult(reason=f"tts_provider_unavailable:{self.tts_provider.name}")

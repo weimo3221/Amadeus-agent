@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.audio import (
     AudioOutputCommand,
+    AudioOutputResult,
     AudioRuntime,
     GptSovitsConfig,
     GptSovitsTtsProvider,
@@ -227,6 +228,62 @@ class AudioProviderTests(unittest.TestCase):
         self.assertEqual(result.audio_url, "http://127.0.0.1/audio.wav")
         self.assertEqual(result.duration_ms, 123)
 
+    def test_gpt_sovits_provider_accepts_provider_native_lipsync_cues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+            provider = GptSovitsTtsProvider(GptSovitsConfig(base_url="http://127.0.0.1:9880"), library)
+            response = FakeHttpResponse(
+                json.dumps({
+                    "audioUrl": "http://127.0.0.1/audio.wav",
+                    "durationMs": 240,
+                    "lipsyncCues": [
+                        {"offsetMs": 0, "viseme": "A", "phoneme": "a", "mouthOpen": 1.0},
+                        {"offsetMs": 120, "viseme": "MBP", "phoneme": "m", "mouthOpen": 0.15},
+                    ],
+                }).encode("utf-8"),
+                "application/json",
+            )
+
+            with patch("urllib.request.urlopen", return_value=response):
+                result = provider.synthesize(AudioOutputCommand(text="am", format="wav"))
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIsNotNone(result.lipsync_cues)
+        assert result.lipsync_cues is not None
+        self.assertEqual(result.lipsync_cues[0]["viseme"], "A")
+        self.assertEqual(result.lipsync_cues[0]["phoneme"], "a")
+        self.assertEqual(result.lipsync_cues[-1]["offsetMs"], 240)
+        self.assertEqual(result.lipsync_cues[-1]["mouthOpen"], 0.0)
+
+    def test_gpt_sovits_provider_accepts_nested_viseme_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+            provider = GptSovitsTtsProvider(GptSovitsConfig(base_url="http://127.0.0.1:9880"), library)
+            response = FakeHttpResponse(
+                json.dumps({
+                    "audio_url": "http://127.0.0.1/audio.wav",
+                    "lipsync": {
+                        "visemes": [
+                            {"time_ms": 0, "viseme": "o"},
+                            {"time_ms": 90, "viseme": "L", "value": 0.4},
+                        ],
+                    },
+                }).encode("utf-8"),
+                "application/json",
+            )
+
+            with patch("urllib.request.urlopen", return_value=response):
+                result = provider.synthesize(AudioOutputCommand(text="ol", format="wav"))
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIsNotNone(result.lipsync_cues)
+        assert result.lipsync_cues is not None
+        self.assertEqual(result.duration_ms, 90)
+        self.assertEqual(result.lipsync_cues[0]["mouthOpen"], 0.84)
+        self.assertEqual(result.lipsync_cues[1]["mouthOpen"], 0.4)
+
     def test_audio_runtime_falls_back_when_provider_returns_none(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime = AudioRuntime(LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790"))
@@ -235,24 +292,54 @@ class AudioProviderTests(unittest.TestCase):
 
         self.assertEqual(result.reason, "tts_provider_unavailable:none")
 
-    def test_local_audio_library_reports_wav_duration_and_lipsync_cues(self) -> None:
+    def test_audio_runtime_prefers_provider_native_lipsync_cues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+
+            class StubProvider:
+                name = "stub"
+
+                def synthesize(self, _command: AudioOutputCommand) -> AudioOutputResult | None:
+                    return AudioOutputResult(
+                        audio_url="http://localhost:8790/audio/files/cache/stub.wav",
+                        duration_ms=180,
+                        provider=self.name,
+                        lipsync_cues=[
+                            {"offsetMs": 0, "mouthOpen": 0.9, "viseme": "A", "phoneme": "a"},
+                            {"offsetMs": 180, "mouthOpen": 0.0, "viseme": "sil", "phoneme": ""},
+                        ],
+                    )
+
+            runtime = AudioRuntime(library, StubProvider())
+
+            result = runtime.speak(AudioOutputCommand(text="hello"))
+
+        self.assertIsInstance(result, AudioOutputResult)
+        assert isinstance(result, AudioOutputResult)
+        assert result.lipsync_cues is not None
+        self.assertEqual(result.lipsync_cues[0]["viseme"], "A")
+        self.assertEqual(result.lipsync_cues[0]["mouthOpen"], 0.9)
+
+    def test_local_audio_library_builds_phoneme_lipsync_cues(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
             wav_path = library.cache_dir / "tts-test.wav"
             write_test_wav(wav_path, [0] * 100 + [22000] * 100 + [4000] * 100, frame_rate=1000)
 
             duration_ms = library.duration_ms(wav_path)
-            resolved_duration_ms, cues = library.lipsync_cues_for_audio_url(
-                library.public_url(wav_path),
-                cue_interval_ms=100,
+            cues = library.phoneme_lipsync_cues_for_audio(
+                "hello world",
+                duration_ms or 0,
+                audio_url=library.public_url(wav_path),
                 max_cues=10,
             )
 
         self.assertEqual(duration_ms, 300)
-        self.assertEqual(resolved_duration_ms, 300)
         self.assertGreaterEqual(len(cues), 3)
-        self.assertLess(float(cues[0]["mouthOpen"]), float(cues[1]["mouthOpen"]))
-        self.assertGreater(float(cues[1]["mouthOpen"]), float(cues[2]["mouthOpen"]))
+        self.assertIn("viseme", cues[0])
+        self.assertIn("phoneme", cues[0])
+        self.assertTrue(any(cue["viseme"] == "O" for cue in cues))
+        self.assertTrue(any(cue["viseme"] == "L" for cue in cues))
 
     def test_macos_say_provider_reports_cached_wav_duration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

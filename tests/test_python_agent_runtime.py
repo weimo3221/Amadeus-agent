@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
+from amadeus.audio import AudioOutputCommand, AudioOutputResult, AudioRuntime, LocalAudioLibrary
 from amadeus.memory import MessageMemoryStore
 from amadeus.tool_runtime import ToolContext, ToolRegistry
 from amadeus.tools import ToolSpec
@@ -25,6 +26,7 @@ class FakeAgentRuntime(AgentRuntime):
         deltas: list[str] | None = None,
         tools_config_path: Path | None = None,
         runtime_config_path: Path | None = None,
+        audio_runtime: AudioRuntime | None = None,
         summary_error: str | None = None,
         memory_review_response: list[dict[str, Any]] | None = None,
         memory_review_error: str | None = None,
@@ -41,7 +43,7 @@ class FakeAgentRuntime(AgentRuntime):
         self.memory_review_error = memory_review_error
         super().__init__(
             memory_store,
-            audio_runtime=None,
+            audio_runtime=audio_runtime,
             tools_config_path=tools_config_path or Path(tempfile.mkdtemp()) / "missing-tools.yaml",
             runtime_config_path=runtime_config_path or Path(tempfile.mkdtemp()) / "missing-runtime.yaml",
         )
@@ -98,6 +100,17 @@ class OverflowOnceRuntime(FakeAgentRuntime):
         return self.tool_decision
 
 
+class StubTtsProvider:
+    name = "stub_tts"
+
+    def synthesize(self, command: AudioOutputCommand) -> AudioOutputResult | None:
+        return AudioOutputResult(
+            audio_url="http://localhost:8790/audio/files/cache/stub.wav",
+            duration_ms=420,
+            provider=self.name,
+        )
+
+
 class AgentRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -128,6 +141,29 @@ class AgentRuntimeTests(unittest.TestCase):
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "Hello there"},
         ])
+
+    def test_turn_emits_runtime_audio_lipsync_cues_from_audio_runtime(self) -> None:
+        audio_library_root = Path(self.tmpdir.name) / "audio"
+        audio_library = LocalAudioLibrary(audio_library_root, "http://localhost:8790")
+        (audio_library.cache_dir / "stub.wav").write_bytes(b"RIFFfake-wav")
+        runtime = FakeAgentRuntime(
+            self.memory,
+            deltas=["Hello", " there"],
+            audio_runtime=AudioRuntime(audio_library, StubTtsProvider()),
+        )
+
+        events = list(runtime.run_turn("default", "hi", lambda _request: False))
+
+        tts_ready = [event.payload for event in events if event.type == "audio.tts-ready"]
+        lipsync = [event.payload for event in events if event.type == "audio.lipsync-cues"]
+        self.assertEqual(len(tts_ready), 1)
+        self.assertEqual(tts_ready[0]["audioUrl"], "http://localhost:8790/audio/files/cache/stub.wav")
+        self.assertEqual(len(lipsync), 1)
+        self.assertEqual(lipsync[0]["source"], "runtime_audio")
+        self.assertEqual(lipsync[0]["audioUrl"], "http://localhost:8790/audio/files/cache/stub.wav")
+        self.assertGreaterEqual(len(lipsync[0]["cues"]), 3)
+        self.assertIn("viseme", lipsync[0]["cues"][0])
+        self.assertIn("phoneme", lipsync[0]["cues"][0])
 
     def test_system_prompt_includes_stable_memory_snapshot(self) -> None:
         self.memory.update_stable_memory("user", "add", content="The user prefers concise Chinese updates.")

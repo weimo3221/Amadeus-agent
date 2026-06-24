@@ -495,6 +495,13 @@ class AgentRuntime:
             audio_result = self.audio_runtime.speak(AudioOutputCommand(text=assistant_text, format="wav"))
             if not isinstance(audio_result, AudioFallbackResult):
                 logger.info("Runtime audio ready sessionId=%s turnId=%s durationMs=%s", session_id, turn_id, audio_result.duration_ms)
+                if audio_result.lipsync_cues:
+                    yield AgentEvent("audio.lipsync-cues", {
+                        "source": "runtime_audio",
+                        "audioUrl": audio_result.audio_url,
+                        "durationMs": audio_result.duration_ms,
+                        "cues": audio_result.lipsync_cues,
+                    })
                 yield AgentEvent("audio.tts-ready", {
                     "audioUrl": audio_result.audio_url,
                     "durationMs": audio_result.duration_ms,

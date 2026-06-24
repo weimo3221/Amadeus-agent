@@ -2,27 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-import wave
 from pathlib import Path
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.audio import LocalAudioLibrary
 from amadeus.harness import HarnessContext, HarnessFeedbackPolicy, HarnessRegistry, Live2DHarness, parse_harnesses_config
-
-
-def write_test_wav(path: Path, amplitudes: list[int], frame_rate: int = 1000) -> None:
-    with wave.open(str(path), "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(frame_rate)
-        frames = bytearray()
-        for amplitude in amplitudes:
-            sample = max(-32768, min(32767, amplitude))
-            frames.extend(int(sample).to_bytes(2, byteorder="little", signed=True))
-        wav_file.writeframes(bytes(frames))
 
 
 class HarnessTests(unittest.TestCase):
@@ -144,32 +130,28 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["type"], "character.behavior")
 
-    def test_live2d_harness_prefers_waveform_lipsync_cues_when_local_audio_is_available(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
-            wav_path = library.cache_dir / "tts-test.wav"
-            write_test_wav(wav_path, [0] * 100 + [22000] * 100 + [2000] * 100, frame_rate=1000)
-            harness = Live2DHarness(audio_library=library, lipsync_cue_interval_ms=100, lipsync_max_cues=10)
-            context = HarnessContext(
-                session_id="default",
-                client_capabilities={"live2d": {"available": True}},
-            )
+    def test_live2d_harness_skips_fallback_cues_when_runtime_cues_are_already_active(self) -> None:
+        harness = Live2DHarness()
+        context = HarnessContext(
+            session_id="default",
+            client_capabilities={"live2d": {"available": True}},
+        )
 
-            events = harness.observe_event(
-                context,
-                {
-                    "type": "audio.playback-started",
-                    "payload": {
-                        "source": "runtime_audio",
-                        "audioUrl": library.public_url(wav_path),
-                        "durationMs": 999,
-                    },
+        events = harness.observe_event(
+            context,
+            {
+                "type": "audio.playback-started",
+                "payload": {
+                    "source": "runtime_audio",
+                    "audioUrl": "http://runtime/audio.wav",
+                    "durationMs": 400,
+                    "runtimeCuesActive": True,
                 },
-            )
+            },
+        )
 
-        self.assertEqual(events[1]["type"], "audio.lipsync-cues")
-        self.assertEqual(events[1]["payload"]["durationMs"], 300)
-        self.assertLess(events[1]["payload"]["cues"][0]["mouthOpen"], events[1]["payload"]["cues"][1]["mouthOpen"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "character.behavior")
 
     def test_harness_registry_reads_configured_audio_playback_behaviors(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
