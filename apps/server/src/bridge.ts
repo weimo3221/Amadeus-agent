@@ -8,6 +8,7 @@ import type {
 } from '@amadeus-agent/amadeus/events'
 
 import { randomUUID } from 'node:crypto'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 
 export interface SocketLike {
   send(data: string): void
@@ -16,6 +17,10 @@ export interface SocketLike {
 export interface PythonBridgeOptions {
   runtimeUrl: string
   fetchImpl?: typeof fetch
+}
+
+export interface PythonLive2DProxyOptions extends PythonBridgeOptions {
+  publicBaseUrl: string
 }
 
 interface MemoryReviewCandidatesResponse {
@@ -30,6 +35,11 @@ interface MemoryReviewActionResponse {
   error?: string
 }
 
+interface MemoryCountResponse {
+  ok?: boolean
+  memoryMessages?: unknown
+}
+
 interface MemoryReviewJobsResponse {
   ok?: boolean
   jobs?: unknown
@@ -40,8 +50,53 @@ interface RuntimeFeedbackResponse {
   events?: unknown
 }
 
+interface Live2DProxyModelLike {
+  path?: unknown
+  url?: unknown
+}
+
 function runtimeEndpoint(runtimeUrl: string, path: string): string {
   return `${runtimeUrl.replace(/\/$/, '')}${path}`
+}
+
+function bridgeLive2DUrl(publicBaseUrl: string, relativePath: string): string {
+  return `${publicBaseUrl.replace(/\/$/, '')}/live2d/models/${encodeURI(relativePath)}`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+async function readIncomingJson(request: IncomingMessage): Promise<unknown> {
+  let body = ''
+  for await (const chunk of request) {
+    body += String(chunk)
+  }
+  if (!body.trim()) {
+    return undefined
+  }
+  return JSON.parse(body) as unknown
+}
+
+function writeJson(response: ServerResponse, status: number, payload: Record<string, unknown>): void {
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  })
+  response.end(JSON.stringify(payload))
+}
+
+function rewriteLive2DModelUrl(value: unknown, publicBaseUrl: string): void {
+  if (!isRecord(value)) {
+    return
+  }
+
+  const model = value as Live2DProxyModelLike
+  if (typeof model.path === 'string' && model.path) {
+    value.url = bridgeLive2DUrl(publicBaseUrl, model.path)
+  }
 }
 
 function makeEvent<TType extends ServerRuntimeEvent['type'], TPayload>(
@@ -150,6 +205,57 @@ export async function forwardToolPermissionToPython(
   }
 }
 
+export async function fetchPythonMemoryCount(
+  sessionId: string,
+  options: PythonBridgeOptions,
+): Promise<number> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  const params = new URLSearchParams({ sessionId })
+  try {
+    const response = await fetchImpl(runtimeEndpoint(options.runtimeUrl, `/memory/count?${params.toString()}`), {
+      method: 'GET',
+    })
+    const payload = await response.json().catch(() => undefined) as MemoryCountResponse | undefined
+    if (!response.ok || !payload?.ok || typeof payload.memoryMessages !== 'number') {
+      return 0
+    }
+    return payload.memoryMessages
+  }
+  catch {
+    return 0
+  }
+}
+
+export async function resetPythonMemory(
+  sessionId: string,
+  options: PythonBridgeOptions,
+): Promise<{ ok: true; memoryMessages: number } | { ok: false; error: string }> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  try {
+    const response = await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/memory/reset'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sessionId }),
+    })
+    const payload = await response.json().catch(() => undefined) as MemoryCountResponse & { error?: string } | undefined
+    if (!response.ok || !payload?.ok || typeof payload.memoryMessages !== 'number') {
+      return {
+        ok: false,
+        error: payload?.error || response.statusText || 'Memory reset request failed',
+      }
+    }
+    return { ok: true, memoryMessages: payload.memoryMessages }
+  }
+  catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Memory reset request failed',
+    }
+  }
+}
+
 export async function forwardRuntimeFeedbackToPython(
   event: Extract<ClientRuntimeEvent, {
     type:
@@ -186,12 +292,122 @@ export async function forwardRuntimeFeedbackToPython(
   }
 }
 
+export async function proxyPythonLive2DRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requestUrl: string,
+  options: PythonLive2DProxyOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+
+  if (request.method === 'GET' && requestUrl === '/live2d/config') {
+    try {
+      const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/live2d/config'), {
+        method: 'GET',
+      })
+      const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+      if (!payload || !isRecord(payload)) {
+        writeJson(response, 502, { ok: false, error: 'live2d_proxy_invalid_response' })
+        return
+      }
+      rewriteLive2DModelUrl(payload.model, options.publicBaseUrl)
+      writeJson(response, runtimeResponse.status, payload)
+      return
+    }
+    catch {
+      writeJson(response, 502, { ok: false, error: 'live2d_proxy_unavailable' })
+      return
+    }
+  }
+
+  if (request.method === 'GET' && requestUrl === '/live2d/models') {
+    try {
+      const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/live2d/models'), {
+        method: 'GET',
+      })
+      const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+      if (!payload || !isRecord(payload)) {
+        writeJson(response, 502, { ok: false, error: 'live2d_proxy_invalid_response' })
+        return
+      }
+      if (Array.isArray(payload.models)) {
+        for (const model of payload.models) {
+          rewriteLive2DModelUrl(model, options.publicBaseUrl)
+        }
+      }
+      rewriteLive2DModelUrl(payload.activeModel, options.publicBaseUrl)
+      writeJson(response, runtimeResponse.status, payload)
+      return
+    }
+    catch {
+      writeJson(response, 502, { ok: false, error: 'live2d_proxy_unavailable' })
+      return
+    }
+  }
+
+  if (request.method === 'POST' && requestUrl === '/live2d/select') {
+    let body: unknown
+    try {
+      body = await readIncomingJson(request)
+    }
+    catch {
+      writeJson(response, 400, { ok: false, error: 'invalid_json' })
+      return
+    }
+
+    try {
+      const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/live2d/select'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body ?? {}),
+      })
+      const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+      if (!payload || !isRecord(payload)) {
+        writeJson(response, 502, { ok: false, error: 'live2d_proxy_invalid_response' })
+        return
+      }
+      rewriteLive2DModelUrl(payload.model, options.publicBaseUrl)
+      writeJson(response, runtimeResponse.status, payload)
+      return
+    }
+    catch {
+      writeJson(response, 502, { ok: false, error: 'live2d_proxy_unavailable' })
+      return
+    }
+  }
+
+  if (request.method === 'GET' && requestUrl.startsWith('/live2d/models/')) {
+    try {
+      const runtimeResponse = await fetchImpl(
+        runtimeEndpoint(options.runtimeUrl, requestUrl),
+        { method: 'GET' },
+      )
+      const body = Buffer.from(await runtimeResponse.arrayBuffer())
+      response.writeHead(runtimeResponse.status, {
+        'Content-Type': runtimeResponse.headers.get('content-type') || 'application/octet-stream',
+        'Content-Length': String(body.length),
+        'Access-Control-Allow-Origin': '*',
+      })
+      response.end(body)
+      return
+    }
+    catch {
+      writeJson(response, 502, { ok: false, error: 'live2d_proxy_unavailable' })
+      return
+    }
+  }
+
+  writeJson(response, 404, { ok: false, error: 'not_found' })
+}
+
 function isRuntimeEvent(value: unknown): value is RuntimeEvent<string, unknown> {
-  if (!value || typeof value !== 'object') {
+  const event = isRecord(value) ? value as Partial<RuntimeEvent<string, unknown>> : undefined
+  if (!event) {
     return false
   }
 
-  const event = value as Partial<RuntimeEvent<string, unknown>>
   return (
     typeof event.id === 'string'
     && typeof event.type === 'string'
@@ -203,7 +419,7 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent<string, unknown> 
 }
 
 function isMemoryReviewCandidate(value: unknown): value is MemoryReviewCandidate {
-  if (!value || typeof value !== 'object') {
+  if (!isRecord(value)) {
     return false
   }
 
@@ -235,7 +451,7 @@ function isMemoryReviewCandidate(value: unknown): value is MemoryReviewCandidate
 }
 
 function isMemoryReviewJob(value: unknown): value is MemoryReviewJob {
-  if (!value || typeof value !== 'object') {
+  if (!isRecord(value)) {
     return false
   }
 

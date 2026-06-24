@@ -289,6 +289,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_live2d_config()
             return
 
+        if parsed.path == "/live2d/models":
+            self.handle_live2d_models()
+            return
+
         if parsed.path.startswith("/live2d/models/"):
             self.handle_live2d_model_file(parsed.path.removeprefix("/live2d/models/"))
             return
@@ -338,6 +342,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/memory/review/reject":
             self.handle_memory_review_reject()
+            return
+
+        if self.path == "/live2d/select":
+            self.handle_live2d_select()
             return
 
         if self.path == "/memory/review/run":
@@ -848,6 +856,51 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "id": selection.model_id,
                 "path": selection.relative_path,
                 "url": live2d_library.model_url(selection),
+                "manifest": live2d_library.read_manifest(selection.relative_path),
+            },
+        })
+
+    def handle_live2d_models(self) -> None:
+        selection = live2d_library.configured_model()
+        active_model = None
+        if selection:
+            active_model = {
+                "id": selection.model_id,
+                "path": selection.relative_path,
+                "url": live2d_library.model_url(selection),
+                "manifest": live2d_library.read_manifest(selection.relative_path),
+            }
+
+        self.write_json(200, {
+            "ok": True,
+            "models": live2d_library.list_models(),
+            "activeModel": active_model,
+        })
+
+    def handle_live2d_select(self) -> None:
+        try:
+            payload = self.read_json_body()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            self.write_json(400, {"ok": False, "error": "invalid_json"})
+            return
+
+        model_id = payload.get("modelId")
+        if not isinstance(model_id, str):
+            self.write_json(400, {"ok": False, "error": "live2d_model_not_found"})
+            return
+
+        selection = live2d_library.select_model(model_id)
+        if not selection:
+            self.write_json(400, {"ok": False, "error": "live2d_model_not_found"})
+            return
+
+        self.write_json(200, {
+            "ok": True,
+            "model": {
+                "id": selection.model_id,
+                "path": selection.relative_path,
+                "url": live2d_library.model_url(selection),
+                "manifest": live2d_library.read_manifest(selection.relative_path),
             },
         })
 

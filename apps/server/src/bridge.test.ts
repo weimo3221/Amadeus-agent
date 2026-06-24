@@ -4,9 +4,11 @@ import assert from 'node:assert/strict'
 import { fetchPythonToolPermissions } from '@amadeus-agent/amadeus/tools'
 
 import {
+  fetchPythonMemoryCount,
   forwardRuntimeFeedbackToPython,
   forwardToolPermissionToPython,
   listPythonMemoryReviewJobs,
+  resetPythonMemory,
   relayPythonTurn,
   type SocketLike,
 } from './bridge.js'
@@ -157,6 +159,97 @@ describe('Python tool permission forwarding', () => {
       runtimeUrl: 'http://runtime',
       fetchImpl,
     }))
+  })
+})
+
+describe('Python memory count bridge', () => {
+  it('reads session message count from Python /memory/count', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return new Response(JSON.stringify({
+        ok: true,
+        memoryMessages: 7,
+      }), { status: 200 })
+    }
+
+    const count = await fetchPythonMemoryCount('session-1', {
+      runtimeUrl: 'http://127.0.0.1:8790/',
+      fetchImpl,
+    })
+
+    assert.equal(calls[0].url, 'http://127.0.0.1:8790/memory/count?sessionId=session-1')
+    assert.equal(calls[0].init?.method, 'GET')
+    assert.equal(count, 7)
+  })
+
+  it('returns zero when Python memory count is unavailable or malformed', async () => {
+    const failingFetch: typeof fetch = async () => {
+      throw new Error('offline')
+    }
+    const malformedFetch: typeof fetch = async () => new Response(JSON.stringify({
+      ok: true,
+      memoryMessages: 'bad',
+    }), { status: 200 })
+
+    assert.equal(await fetchPythonMemoryCount('session-1', {
+      runtimeUrl: 'http://runtime',
+      fetchImpl: failingFetch,
+    }), 0)
+    assert.equal(await fetchPythonMemoryCount('session-1', {
+      runtimeUrl: 'http://runtime',
+      fetchImpl: malformedFetch,
+    }), 0)
+  })
+})
+
+describe('Python memory reset bridge', () => {
+  it('posts session reset to Python /memory/reset', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return new Response(JSON.stringify({
+        ok: true,
+        memoryMessages: 0,
+      }), { status: 200 })
+    }
+
+    const result = await resetPythonMemory('session-1', {
+      runtimeUrl: 'http://127.0.0.1:8790/',
+      fetchImpl,
+    })
+
+    assert.equal(calls[0].url, 'http://127.0.0.1:8790/memory/reset')
+    assert.equal(calls[0].init?.method, 'POST')
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+      sessionId: 'session-1',
+    })
+    assert.deepEqual(result, { ok: true, memoryMessages: 0 })
+  })
+
+  it('returns an error payload when Python memory reset fails', async () => {
+    const failingFetch: typeof fetch = async () => {
+      throw new Error('offline')
+    }
+    const rejectedFetch: typeof fetch = async () => new Response(JSON.stringify({
+      ok: false,
+      error: 'reset failed',
+    }), { status: 500 })
+
+    assert.deepEqual(await resetPythonMemory('session-1', {
+      runtimeUrl: 'http://runtime',
+      fetchImpl: failingFetch,
+    }), {
+      ok: false,
+      error: 'offline',
+    })
+    assert.deepEqual(await resetPythonMemory('session-1', {
+      runtimeUrl: 'http://runtime',
+      fetchImpl: rejectedFetch,
+    }), {
+      ok: false,
+      error: 'reset failed',
+    })
   })
 })
 

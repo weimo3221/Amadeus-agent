@@ -4,7 +4,7 @@ Last updated: 2026-06-22
 
 ## 目标判断
 
-Amadeus 现在已经有一个能跑的桌面 MVP：Electron 透明窗口、本地 Live2D 模型库、WebSocket 事件、OpenAI-compatible 模型调用、SQLite memory、工具调用、工具权限 prompt、Python sidecar、运行时 TTS fallback 都已经打通。当前 preferred turn path 已经迁到 Python：`apps/server` 主要作为 WebSocket/HTTP bridge，`packages/amadeus/agent.py` 负责单轮对话、模型调用、记忆读写、工具决策、工具执行、权限请求和 runtime event streaming。
+Amadeus 现在已经有一个能跑的桌面 MVP：Electron 透明窗口、本地 Live2D 模型库、WebSocket 事件、OpenAI-compatible 模型调用、SQLite memory、工具调用、工具权限 prompt、Python sidecar、运行时 TTS fallback 都已经打通。当前 preferred turn path 已经迁到 Python：`apps/server` 主要作为 WebSocket/HTTP bridge，`packages/amadeus/agent.py` 负责单轮对话、模型调用、记忆读写、工具决策、工具执行、权限请求和 runtime event streaming。连桌面显示的 memory count 和 session reset 也已经改成由 Python runtime 拥有，bridge 只做代理。
 
 它的问题不是“没有功能”，而是核心 agent runtime 仍在从 MVP 走向成熟：provider abstraction、ToolRuntime、Memory v2 context assembly、本地 Live2D/audio 基础已经落地，但 skills、任务调度、subagent、eval、完整 harness 能力和更深的桌面 E2E 仍处在早期或占位状态。
 

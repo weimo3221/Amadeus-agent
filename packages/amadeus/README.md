@@ -149,6 +149,8 @@ http://127.0.0.1:8790
 - `POST /audio/speak`
 - `GET /audio/files/{relativePath}`
 - `GET /live2d/config`
+- `GET /live2d/models`
+- `POST /live2d/select`
 - `GET /live2d/models/{relativePath}`
 
 ## Notes

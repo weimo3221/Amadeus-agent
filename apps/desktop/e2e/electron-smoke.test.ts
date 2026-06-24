@@ -2,14 +2,11 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import type { AddressInfo } from 'node:net'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { createAmadeusBridgeServer } from '../../server/src/websocket-server'
-import { LocalLive2DModelLibrary } from '../../server/src/live2d'
 
 const require = createRequire(import.meta.url)
 const electronBinary = require('electron') as string
@@ -217,10 +214,9 @@ async function startPermissionPromptRuntimeStub(): Promise<{
   const { httpServer, wss } = createAmadeusBridgeServer({
     model: 'e2e-model',
     defaultSessionId: sessionId,
-    countPersistedMessages: () => 0,
+    getMemoryMessageCount: () => 0,
     getToolPermissions: () => [],
     resetSession() {},
-    resolvePendingToolPermission: () => false,
     forwardToolPermissionToPython(requestId, approved) {
       responses.push({ requestId, approved })
     },
@@ -273,10 +269,9 @@ async function startAudioFeedbackRuntimeStub(): Promise<{
   const { httpServer, wss } = createAmadeusBridgeServer({
     model: 'e2e-model',
     defaultSessionId: sessionId,
-    countPersistedMessages: () => 0,
+    getMemoryMessageCount: () => 0,
     getToolPermissions: () => [],
     resetSession() {},
-    resolvePendingToolPermission: () => false,
     forwardToolPermissionToPython() {},
     observeDesktopFeedback(event) {
       if (event.type === 'audio.playback-started' || event.type === 'audio.playback-ended' || event.type === 'audio.playback-error') {
@@ -328,38 +323,90 @@ async function startLive2DRuntimeStub(): Promise<{
   readConfiguredModel: () => string
   close: () => Promise<void>
 }> {
-  const fixtureRoot = mkdtempSync(join(tmpdir(), 'amadeus-electron-live2d-'))
-  const modelsRoot = join(fixtureRoot, 'models')
-  const freeDir = join(modelsRoot, 'hiyori-free')
-  const proDir = join(modelsRoot, 'hiyori-pro')
-  mkdirSync(freeDir, { recursive: true })
-  mkdirSync(proDir, { recursive: true })
-  writeFileSync(join(freeDir, 'hiyori-free.model3.json'), '{"Version":3}', 'utf8')
-  writeFileSync(join(proDir, 'hiyori-pro.model3.json'), '{"Version":3}', 'utf8')
-  writeFileSync(join(freeDir, 'manifest.yaml'), 'displayName: Hiyori Free\n', 'utf8')
-  writeFileSync(join(proDir, 'manifest.yaml'), 'displayName: Hiyori Pro\n', 'utf8')
-
-  const harnessesConfigPath = join(fixtureRoot, 'harnesses.yaml')
-  writeFileSync(harnessesConfigPath, [
-    'harnesses:',
-    '  live2d:',
-    '    enabled: true',
-    '    adapter: desktop-live2d',
-    '    model:',
-    '      id: hiyori-free',
-    '      path: hiyori-free/hiyori-free.model3.json',
-  ].join('\n'), 'utf8')
-
-  const live2dLibrary = new LocalLive2DModelLibrary(modelsRoot, 'http://127.0.0.1:0', harnessesConfigPath)
+  const models = {
+    'hiyori-free': {
+      id: 'hiyori-free',
+      path: 'hiyori-free/hiyori-free.model3.json',
+      manifest: { displayName: 'Hiyori Free' },
+      body: '{"Version":3}',
+    },
+    'hiyori-pro': {
+      id: 'hiyori-pro',
+      path: 'hiyori-pro/hiyori-pro.model3.json',
+      manifest: { displayName: 'Hiyori Pro' },
+      body: '{"Version":3}',
+    },
+  } as const
+  let configuredModelId: keyof typeof models = 'hiyori-free'
+  let httpUrl = 'http://127.0.0.1:0'
   const { httpServer, wss } = createAmadeusBridgeServer({
     model: 'e2e-model',
     defaultSessionId: 'e2e-session',
-    countPersistedMessages: () => 0,
+    getMemoryMessageCount: () => 0,
     getToolPermissions: () => [],
     resetSession() {},
-    resolvePendingToolPermission: () => false,
     forwardToolPermissionToPython() {},
-    live2dLibrary,
+    async handleLive2DHttpRequest(request, response, requestUrl) {
+      const writeJson = (status: number, payload: Record<string, unknown>) => {
+        response.writeHead(status, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+        })
+        response.end(JSON.stringify(payload))
+      }
+      const toModelPayload = (modelId: keyof typeof models) => ({
+        ...models[modelId],
+        url: `${httpUrl}/live2d/models/${models[modelId].path}`,
+      })
+
+      if (request.method === 'GET' && requestUrl === '/live2d/config') {
+        writeJson(200, { ok: true, model: toModelPayload(configuredModelId) })
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl === '/live2d/models') {
+        writeJson(200, {
+          ok: true,
+          models: Object.keys(models).map((modelId) => ({
+            ...toModelPayload(modelId as keyof typeof models),
+            active: modelId === configuredModelId,
+          })),
+          activeModel: toModelPayload(configuredModelId),
+        })
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl === '/live2d/select') {
+        let body = ''
+        for await (const chunk of request) {
+          body += String(chunk)
+        }
+        const payload = JSON.parse(body || '{}') as { modelId?: string }
+        if (!payload.modelId || !(payload.modelId in models)) {
+          writeJson(400, { ok: false, error: 'live2d_model_not_found' })
+          return
+        }
+        configuredModelId = payload.modelId as keyof typeof models
+        writeJson(200, { ok: true, model: toModelPayload(configuredModelId) })
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.startsWith('/live2d/models/')) {
+        const matched = Object.values(models).find((model) => requestUrl === `/live2d/models/${model.path}`)
+        if (!matched) {
+          writeJson(404, { ok: false, error: 'not_found' })
+          return
+        }
+        response.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+        })
+        response.end(matched.body)
+        return
+      }
+
+      writeJson(404, { ok: false, error: 'not_found' })
+    },
     streamChat() {},
   })
 
@@ -368,10 +415,11 @@ async function startLive2DRuntimeStub(): Promise<{
   })
 
   const address = httpServer.address() as AddressInfo
+  httpUrl = `http://127.0.0.1:${address.port}`
   return {
-    httpUrl: `http://127.0.0.1:${address.port}`,
+    httpUrl,
     wsUrl: `ws://127.0.0.1:${address.port}/ws`,
-    readConfiguredModel: () => live2dLibrary.configuredModel()?.id ?? '',
+    readConfiguredModel: () => configuredModelId,
     close: () => new Promise((resolveClose, rejectClose) => {
       wss.close((wssError) => {
         if (wssError) {
@@ -380,7 +428,6 @@ async function startLive2DRuntimeStub(): Promise<{
         }
 
         httpServer.close((httpError) => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
           if (httpError) {
             rejectClose(httpError)
             return
@@ -403,7 +450,7 @@ async function startRuntimeStub(): Promise<{
   const { httpServer, wss } = createAmadeusBridgeServer({
     model: 'e2e-model',
     defaultSessionId: sessionId,
-    countPersistedMessages: () => 2,
+    getMemoryMessageCount: () => 2,
     getToolPermissions: () => [{
       name: 'get_current_time',
       displayName: 'Current time',
@@ -411,9 +458,7 @@ async function startRuntimeStub(): Promise<{
       permission: 'allow',
     }],
     resetSession() {},
-    resolvePendingToolPermission: () => false,
     forwardToolPermissionToPython() {},
-    live2dLibrary: undefined,
     streamChat(socket: { send(data: string): void }, activeSessionId: string, text: string) {
       receivedUserText = text
       sendRuntimeEvent(socket, 'assistant.state', activeSessionId, { state: 'thinking' })

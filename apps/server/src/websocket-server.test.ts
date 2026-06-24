@@ -3,15 +3,11 @@ import assert from 'node:assert/strict'
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { WebSocket } from 'ws'
 
 import type { RuntimeEvent } from '@amadeus-agent/amadeus/events'
 
-import { forwardToolPermissionToPython, relayPythonTurn } from './bridge.js'
-import { LocalLive2DModelLibrary } from './live2d.js'
+import { forwardToolPermissionToPython, proxyPythonLive2DRequest, relayPythonTurn } from './bridge.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -86,44 +82,105 @@ function closeWebSocket(socket: WebSocket): void {
 }
 
 describe('WebSocket Python-first integration', () => {
-  it('serves local Live2D config and model assets over the bridge HTTP server', async (t) => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), 'amadeus-live2d-'))
-    const modelDir = join(fixtureRoot, 'models', 'hiyori-free')
-    mkdirSync(modelDir, { recursive: true })
-    writeFileSync(join(modelDir, 'hiyori.model3.json'), '{"Version":3}', 'utf8')
-    writeFileSync(join(modelDir, 'hiyori.moc3'), 'moc', 'utf8')
-    writeFileSync(join(modelDir, 'manifest.yaml'), [
-      'displayName: Hiyori Fixture',
-      'defaults:',
-      '  expression: neutral',
-      '  motion: idle',
-      'aliases:',
-      '  motions:',
-      '    talk: [TapBody, Idle]',
-    ].join('\n'), 'utf8')
-    const configPath = join(fixtureRoot, 'harnesses.yaml')
-    writeFileSync(configPath, [
-      'harnesses:',
-      '  live2d:',
-      '    enabled: true',
-      '    model:',
-      '      id: hiyori-free',
-      '      path: hiyori-free/hiyori.model3.json',
-    ].join('\n'), 'utf8')
+  it('proxies Live2D HTTP requests through the Python runtime and rewrites model URLs to the bridge origin', async (t) => {
+    let selectedModelId = 'hiyori-free'
+    const runtimeModels = {
+      'hiyori-free': {
+        id: 'hiyori-free',
+        path: 'hiyori-free/hiyori.model3.json',
+        manifest: { displayName: 'Hiyori Free' },
+      },
+      'hiyori-pro': {
+        id: 'hiyori-pro',
+        path: 'hiyori-pro/hiyori-pro.model3.json',
+        manifest: { displayName: 'Hiyori Pro' },
+      },
+    }
+    const pythonRuntime = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+      if (request.method === 'GET' && request.url === '/live2d/config') {
+        const model = runtimeModels[selectedModelId as keyof typeof runtimeModels]
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          model: {
+            ...model,
+            url: `http://127.0.0.1:8790/live2d/models/${model.path}`,
+          },
+        }))
+        return
+      }
 
-    const library = new LocalLive2DModelLibrary(join(fixtureRoot, 'models'), 'http://127.0.0.1:0', configPath)
+      if (request.method === 'GET' && request.url === '/live2d/models') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          models: Object.values(runtimeModels).map((model) => ({
+            ...model,
+            url: `http://127.0.0.1:8790/live2d/models/${model.path}`,
+            active: model.id === selectedModelId,
+          })),
+          activeModel: {
+            ...runtimeModels[selectedModelId as keyof typeof runtimeModels],
+            url: `http://127.0.0.1:8790/live2d/models/${runtimeModels[selectedModelId as keyof typeof runtimeModels].path}`,
+          },
+        }))
+        return
+      }
+
+      if (request.method === 'POST' && request.url === '/live2d/select') {
+        const payload = JSON.parse(await readBody(request)) as { modelId?: string }
+        if (!payload.modelId || !(payload.modelId in runtimeModels)) {
+          response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+          response.end(JSON.stringify({ ok: false, error: 'live2d_model_not_found' }))
+          return
+        }
+        selectedModelId = payload.modelId
+        const model = runtimeModels[selectedModelId as keyof typeof runtimeModels]
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          model: {
+            ...model,
+            url: `http://127.0.0.1:8790/live2d/models/${model.path}`,
+          },
+        }))
+        return
+      }
+
+      if (request.method === 'GET' && request.url?.startsWith('/live2d/models/')) {
+        response.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+        })
+        response.end('{"Version":3}')
+        return
+      }
+
+      response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: 'not_found' }))
+    })
+    const runtimePort = await listen(pythonRuntime)
+    t.after(() => {
+      void closeServer(pythonRuntime)
+    })
+
+    let bridgePort = 0
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
-      countPersistedMessages: () => 0,
+      getMemoryMessageCount: () => 0,
       getToolPermissions: () => [],
       resetSession: () => {},
-      resolvePendingToolPermission: () => false,
       forwardToolPermissionToPython: () => {},
-      live2dLibrary: library,
+      handleLive2DHttpRequest(request, response, requestUrl) {
+        return proxyPythonLive2DRequest(request, response, requestUrl, {
+          runtimeUrl: `http://127.0.0.1:${runtimePort}`,
+          publicBaseUrl: `http://127.0.0.1:${bridgePort}`,
+        })
+      },
       streamChat: () => {},
     })
-    const bridgePort = await listen(bridge.httpServer)
+    bridgePort = await listen(bridge.httpServer)
     t.after(() => {
       bridge.wss.close()
       void closeServer(bridge.httpServer)
@@ -133,115 +190,61 @@ describe('WebSocket Python-first integration', () => {
     assert.equal(configResponse.status, 200)
     const configPayload = await configResponse.json() as {
       ok: boolean
-        model: {
-          id: string
-          path: string
-          url: string
-          manifest?: Record<string, unknown>
-        }
+      model: { id: string; path: string; url: string; manifest?: { displayName?: string } }
     }
     assert.equal(configPayload.ok, true)
     assert.equal(configPayload.model.id, 'hiyori-free')
-    assert.equal(configPayload.model.path, 'hiyori-free/hiyori.model3.json')
-    assert.equal(configPayload.model.url, 'http://127.0.0.1:0/live2d/models/hiyori-free/hiyori.model3.json')
-    assert.deepEqual(configPayload.model.manifest, {
-      displayName: 'Hiyori Fixture',
-      defaults: {
-        expression: 'neutral',
-        motion: 'idle',
-      },
-      aliases: {
-        motions: {
-          talk: ['TapBody', 'Idle'],
-        },
-      },
-    })
+    assert.equal(
+      configPayload.model.url,
+      `http://127.0.0.1:${bridgePort}/live2d/models/hiyori-free/hiyori.model3.json`,
+    )
+    assert.equal(configPayload.model.manifest?.displayName, 'Hiyori Free')
+
+    const modelsResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/models`)
+    assert.equal(modelsResponse.status, 200)
+    const modelsPayload = await modelsResponse.json() as {
+      ok: boolean
+      models: Array<{ id: string; url: string; active: boolean }>
+      activeModel: { id: string; url: string }
+    }
+    assert.equal(modelsPayload.ok, true)
+    assert.equal(modelsPayload.models.length, 2)
+    assert.equal(
+      modelsPayload.models[0]?.url.startsWith(`http://127.0.0.1:${bridgePort}/live2d/models/`),
+      true,
+    )
+    assert.equal(modelsPayload.activeModel.id, 'hiyori-free')
 
     const modelResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/models/hiyori-free/hiyori.model3.json`)
     assert.equal(modelResponse.status, 200)
     assert.equal(modelResponse.headers.get('access-control-allow-origin'), '*')
     assert.deepEqual(await modelResponse.json(), { Version: 3 })
 
-    const modelsResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/models`)
-    assert.equal(modelsResponse.status, 200)
-    const modelsPayload = await modelsResponse.json() as {
-      ok: boolean
-        models: Array<{
-          id: string
-          path: string
-          active: boolean
-          manifest?: { displayName?: string }
-        }>
-    }
-    assert.equal(modelsPayload.ok, true)
-    assert.equal(modelsPayload.models.length, 1)
-    assert.equal(modelsPayload.models[0].id, 'hiyori-free')
-    assert.equal(modelsPayload.models[0].path, 'hiyori-free/hiyori.model3.json')
-    assert.equal(modelsPayload.models[0].active, true)
-    assert.equal(modelsPayload.models[0].manifest?.displayName, 'Hiyori Fixture')
-  })
-
-  it('switches local Live2D models and persists harness config', async (t) => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), 'amadeus-live2d-switch-'))
-    const freeDir = join(fixtureRoot, 'models', 'hiyori-free')
-    const proDir = join(fixtureRoot, 'models', 'hiyori-pro')
-    mkdirSync(freeDir, { recursive: true })
-    mkdirSync(proDir, { recursive: true })
-    writeFileSync(join(freeDir, 'hiyori-free.model3.json'), '{}', 'utf8')
-    writeFileSync(join(proDir, 'hiyori-pro.model3.json'), '{}', 'utf8')
-    const configPath = join(fixtureRoot, 'harnesses.yaml')
-    writeFileSync(configPath, [
-      'harnesses:',
-      '  live2d:',
-      '    enabled: true',
-      '    adapter: desktop-live2d',
-      '    model:',
-      '      id: hiyori-free',
-      '      path: hiyori-free/hiyori-free.model3.json',
-    ].join('\n'), 'utf8')
-
-    const library = new LocalLive2DModelLibrary(join(fixtureRoot, 'models'), 'http://127.0.0.1:0', configPath)
-    const bridge = createAmadeusBridgeServer({
-      model: 'test-model',
-      defaultSessionId: 'default',
-      countPersistedMessages: () => 0,
-      getToolPermissions: () => [],
-      resetSession: () => {},
-      resolvePendingToolPermission: () => false,
-      forwardToolPermissionToPython: () => {},
-      live2dLibrary: library,
-      streamChat: () => {},
-    })
-    const bridgePort = await listen(bridge.httpServer)
-    t.after(() => {
-      bridge.wss.close()
-      void closeServer(bridge.httpServer)
-    })
-
-    const response = await fetch(`http://127.0.0.1:${bridgePort}/live2d/select`, {
+    const selectResponse = await fetch(`http://127.0.0.1:${bridgePort}/live2d/select`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ modelId: 'hiyori-pro' }),
     })
-
-    assert.equal(response.status, 200)
-    const payload = await response.json() as { ok: boolean; model: { id: string; path: string } }
-    assert.equal(payload.ok, true)
-    assert.equal(payload.model.id, 'hiyori-pro')
-    assert.equal(payload.model.path, 'hiyori-pro/hiyori-pro.model3.json')
-    const persisted = readFileSync(configPath, 'utf8')
-    assert.match(persisted, /id: hiyori-pro/)
-    assert.match(persisted, /path: hiyori-pro\/hiyori-pro\.model3\.json/)
+    assert.equal(selectResponse.status, 200)
+    const selectPayload = await selectResponse.json() as {
+      ok: boolean
+      model: { id: string; url: string }
+    }
+    assert.equal(selectPayload.ok, true)
+    assert.equal(selectPayload.model.id, 'hiyori-pro')
+    assert.equal(
+      selectPayload.model.url,
+      `http://127.0.0.1:${bridgePort}/live2d/models/hiyori-pro/hiyori-pro.model3.json`,
+    )
   })
 
   it('allows browser CORS preflight for Live2D model switching', async (t) => {
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
-      countPersistedMessages: () => 0,
+      getMemoryMessageCount: () => 0,
       getToolPermissions: () => [],
       resetSession: () => {},
-      resolvePendingToolPermission: () => false,
       forwardToolPermissionToPython: () => {},
       streamChat: () => {},
     })
@@ -270,7 +273,10 @@ describe('WebSocket Python-first integration', () => {
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
-      countPersistedMessages: () => 3,
+      async getMemoryMessageCount() {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        return 3
+      },
       async getToolPermissions() {
         await new Promise((resolve) => setTimeout(resolve, 10))
         return [
@@ -278,7 +284,6 @@ describe('WebSocket Python-first integration', () => {
         ]
       },
       resetSession: () => {},
-      resolvePendingToolPermission: () => false,
       forwardToolPermissionToPython: () => {},
       streamChat: () => {},
     })
@@ -301,6 +306,101 @@ describe('WebSocket Python-first integration', () => {
       toolPermissions: [
         { name: 'write_file', displayName: 'Writing local file', enabled: true, permission: 'ask' },
       ],
+    })
+  })
+
+  it('refreshes memory count from the async reset path after session.reset', async (t) => {
+    let memoryMessages = 2
+    const receivedEvents: Array<RuntimeEvent<string, unknown>> = []
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => memoryMessages,
+      getToolPermissions: () => [],
+      async resetSession() {
+        await delay(10)
+        memoryMessages = 0
+      },
+      forwardToolPermissionToPython: () => {},
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws`)
+    t.after(() => {
+      closeWebSocket(socket)
+    })
+
+    socket.on('message', (raw: Buffer) => {
+      receivedEvents.push(JSON.parse(raw.toString()) as RuntimeEvent<string, unknown>)
+    })
+    await delay(30)
+
+    socket.send(JSON.stringify({
+      id: 'client-event-reset',
+      type: 'session.reset',
+      sessionId: 'default',
+      timestamp: '2026-06-24T00:00:00.000Z',
+      payload: {},
+    }))
+    await delay(40)
+
+    assert.ok(receivedEvents.some((event) =>
+      event.type === 'server.hello'
+      && (event.payload as { memoryMessages?: number }).memoryMessages === 0,
+    ))
+  })
+
+  it('reports an error when the async reset path fails', async (t) => {
+    const receivedEvents: Array<RuntimeEvent<string, unknown>> = []
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 2,
+      getToolPermissions: () => [],
+      async resetSession() {
+        throw new Error('reset offline')
+      },
+      forwardToolPermissionToPython: () => {},
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws`)
+    t.after(() => {
+      closeWebSocket(socket)
+    })
+
+    socket.on('message', (raw: Buffer) => {
+      receivedEvents.push(JSON.parse(raw.toString()) as RuntimeEvent<string, unknown>)
+    })
+    await delay(30)
+
+    socket.send(JSON.stringify({
+      id: 'client-event-reset-failure',
+      type: 'session.reset',
+      sessionId: 'default',
+      timestamp: '2026-06-24T00:00:00.000Z',
+      payload: {},
+    }))
+    await delay(40)
+
+    const errorEvent = receivedEvents.find((event) =>
+      event.type === 'error'
+      && (event.payload as { code?: string }).code === 'memory_reset_failed',
+    )
+    assert.ok(errorEvent)
+    assert.deepEqual(errorEvent.payload, {
+      code: 'memory_reset_failed',
+      message: 'reset offline',
     })
   })
 
@@ -342,10 +442,9 @@ describe('WebSocket Python-first integration', () => {
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
-      countPersistedMessages: () => 0,
+      getMemoryMessageCount: () => 0,
       getToolPermissions: () => [],
       resetSession: () => {},
-      resolvePendingToolPermission: () => false,
       forwardToolPermissionToPython: () => {},
       async streamChat(socket, sessionId, text) {
         await relayPythonTurn(socket, sessionId, text, {
@@ -388,7 +487,7 @@ describe('WebSocket Python-first integration', () => {
     assert.deepEqual(event.payload, { text: 'hello' })
   })
 
-  it('forwards desktop permission responses to Python when no local pending request owns them', async (t) => {
+  it('forwards desktop permission responses to Python', async (t) => {
     let resolvePermissionBody: (body: Record<string, unknown>) => void
     const permissionBody = new Promise<Record<string, unknown>>((resolve) => {
       resolvePermissionBody = resolve
@@ -412,10 +511,9 @@ describe('WebSocket Python-first integration', () => {
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
-      countPersistedMessages: () => 0,
+      getMemoryMessageCount: () => 0,
       getToolPermissions: () => [],
       resetSession: () => {},
-      resolvePendingToolPermission: () => false,
       forwardToolPermissionToPython(requestId, approved) {
         return forwardToolPermissionToPython(requestId, approved, {
           runtimeUrl: `http://127.0.0.1:${pythonPort}`,
@@ -456,10 +554,9 @@ describe('WebSocket Python-first integration', () => {
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
-      countPersistedMessages: () => 2,
+      getMemoryMessageCount: () => 2,
       getToolPermissions: () => [],
       resetSession: () => {},
-      resolvePendingToolPermission: () => false,
       forwardToolPermissionToPython: () => {},
       listMemoryReviewCandidates(sessionId, status = 'pending') {
         calls.push(`list:${sessionId}:${status}`)
@@ -587,10 +684,9 @@ describe('WebSocket Python-first integration', () => {
     const bridge = createAmadeusBridgeServer({
       model: 'test-model',
       defaultSessionId: 'default',
-      countPersistedMessages: () => 0,
+      getMemoryMessageCount: () => 0,
       getToolPermissions: () => [],
       resetSession: () => {},
-      resolvePendingToolPermission: () => false,
       forwardToolPermissionToPython: () => {},
       observeDesktopFeedback(event) {
         observed.push(event)

@@ -17,10 +17,13 @@ The next implementation pass should proceed in this order:
 3. Done: add desktop E2E around runtime audio playback feedback. The packaged desktop now receives `audio.tts-ready`, plays deterministic mock runtime audio, and reports both `audio.playback-started` / `audio.playback-ended` and `audio.playback-started` / `audio.playback-error` back to the bridge.
 4. Done: add desktop E2E around permission prompts for the remaining `ask` tools. The packaged desktop now receives deterministic `tool.permission.request` events, renders the real Allow / Deny UI, and reports `tool.permission.response` back to the bridge for both approval and denial flows.
 5. Done: improve lipsync from the pure timed mouth loop to a hybrid mode. Runtime audio playback now drives `ParamMouthOpenY` from Web Audio amplitude analysis, while speech-synthesis and unsupported environments still fall back to the older timed loop.
-6. Done: wire the first explicit runtime lipsync boundary. Python harness feedback can now emit `audio.lipsync-cues` on runtime-audio playback start, using waveform-derived cues for local cached `wav` audio when available, and the desktop consumes those cues before falling back to local amplitude analysis.
-7. Continue shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
-8. Keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
-9. Fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
+6. Done: move the main runtime lipsync planner into `packages/amadeus/audio.py`. Runtime now emits text-driven phoneme/viseme `audio.lipsync-cues` before `audio.tts-ready`, uses local cached `wav` envelope data only as modulation, and leaves the feedback-side harness cue generation as fallback.
+7. Done: accept provider-native lipsync payloads in `packages/amadeus/audio.py`. GPT-SoVITS-style JSON `lipsyncCues` / `visemes` / `phonemes` are now normalized into runtime `audio.lipsync-cues`, and the local phoneme planner remains the fallback when provider data is absent.
+8. Done: move bridge-owned memory count/reset behavior to the Python runtime. `apps/server` no longer opens its own SQLite message table for session counts or resets; it now reads `GET /memory/count` and forwards `POST /memory/reset`, while the desktop protocol stays unchanged.
+9. Done: remove the remaining TypeScript-owned Live2D library fallback and local tool-permission resolution hook from `apps/server`. `/live2d/*` now only goes through the explicit proxy handler, and `tool.permission.response` is always forwarded to Python.
+10. Continue shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
+11. Keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
+12. Fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
 
 ## Phase 0: Project Skeleton
 
@@ -90,14 +93,14 @@ Target deliverables:
 
 - Runtime audio interface.
 - Audio playback in desktop app.
-- Better lipsync than the current timed mouth loop.
+- Better lipsync than the remaining timed-loop fallback.
 - Optional ASR input.
 - Optional push-to-talk hotkey.
 
 Notes:
 
 - Current MVP voice playback uses runtime audio on macOS through `tts.default: auto`, with desktop `speechSynthesis` retained as fallback.
-- Current lipsync is a timed mouth loop, not amplitude-driven or phoneme-aware.
+- Current lipsync is hybrid: provider-native or runtime-planned phoneme/viseme cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the timed mouth loop only as fallback.
 
 ## Phase 5: Memory and Tools
 

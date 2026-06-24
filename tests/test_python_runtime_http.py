@@ -61,6 +61,18 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         live2d_model_dir.mkdir(parents=True)
         (live2d_model_dir / "hiyori_free_t08.model3.json").write_text('{"Version":3}', encoding="utf-8")
         (live2d_model_dir / "hiyori_free_t08.moc3").write_bytes(b"moc")
+        (live2d_model_dir / "manifest.yaml").write_text(
+            "\n".join([
+                "displayName: Hiyori Free",
+                "defaults:",
+                "  expression: neutral",
+                "  motion: idle",
+            ]),
+            encoding="utf-8",
+        )
+        live2d_pro_dir = live2d_root / "hiyori-pro"
+        live2d_pro_dir.mkdir(parents=True)
+        (live2d_pro_dir / "hiyori_pro.model3.json").write_text('{"Version":3}', encoding="utf-8")
         self.harnesses_config_path.write_text(
             "\n".join([
                 "harnesses:",
@@ -152,6 +164,27 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["model"]["id"], "hiyori-free")
         self.assertEqual(payload["model"]["path"], "hiyori-free/hiyori_free_t08.model3.json")
         self.assertTrue(payload["model"]["url"].endswith("/live2d/models/hiyori-free/hiyori_free_t08.model3.json"))
+        self.assertEqual(payload["model"]["manifest"]["displayName"], "Hiyori Free")
+
+    def test_live2d_models_lists_local_models_and_active_selection(self) -> None:
+        payload = self.get_json("/live2d/models")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["models"]), 2)
+        self.assertEqual(payload["activeModel"]["id"], "hiyori-free")
+        free_model = next(model for model in payload["models"] if model["id"] == "hiyori-free")
+        self.assertTrue(free_model["active"])
+        self.assertEqual(free_model["manifest"]["displayName"], "Hiyori Free")
+
+    def test_live2d_select_switches_model_and_persists_harness_config(self) -> None:
+        payload = self.post_json("/live2d/select", {"modelId": "hiyori-pro"})
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["model"]["id"], "hiyori-pro")
+        self.assertEqual(payload["model"]["path"], "hiyori-pro/hiyori_pro.model3.json")
+        persisted = self.harnesses_config_path.read_text(encoding="utf-8")
+        self.assertIn("id: hiyori-pro", persisted)
+        self.assertIn("path: hiyori-pro/hiyori_pro.model3.json", persisted)
 
     def test_live2d_model_file_serves_local_assets(self) -> None:
         with urlopen(self.url("/live2d/models/hiyori-free/hiyori_free_t08.model3.json"), timeout=5) as response:

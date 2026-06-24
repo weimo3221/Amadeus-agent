@@ -107,7 +107,7 @@ Current behavior:
 - Desktop emits playback feedback for runtime audio start, end, and error.
 - On runtime audio error or browser play rejection, desktop falls back to system `speechSynthesis`.
 - Python records these events through `HarnessFeedbackPolicy`.
-- The Live2D harness maps playback start/end/error into `character.behavior`; on runtime-audio start it can also emit `audio.lipsync-cues`. For local cached `wav` audio, those cues are derived from the real waveform when the Python runtime can resolve the file path; otherwise it falls back to coarse duration-based cues.
+- The runtime audio layer can emit `audio.lipsync-cues` before `audio.tts-ready`. When a TTS provider returns native `lipsyncCues` / `visemes` / `phonemes` data, Python normalizes and forwards those cues directly; otherwise it falls back to a text-driven phoneme/viseme planner and can optionally modulate cue intensity from local cached `wav` envelope data. The Live2D harness still maps playback start/end/error into `character.behavior`, and may emit coarse fallback `audio.lipsync-cues` only when runtime cue playback is not already active.
 - The mapping is configurable through `configs/harnesses.yaml` under `live2d.audioPlaybackBehaviors`.
 - Desktop prefers runtime-provided `audio.lipsync-cues` when present, otherwise falls back to local Web Audio amplitude analysis, and finally to the older timed mouth loop.
 
@@ -428,6 +428,8 @@ POST /memory/reset
 POST /audio/speak
 GET /audio/files/{relativePath}
 GET /live2d/config
+GET /live2d/models
+POST /live2d/select
 GET /live2d/models/{relativePath}
 ```
 

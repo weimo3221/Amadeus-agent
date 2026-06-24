@@ -12,21 +12,13 @@ import type {
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server as HttpServer } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
-import {
-  type LocalLive2DModelLibrary,
-  writeLive2DConfig,
-  writeLive2DModels,
-  writeLive2DModelFile,
-  writeLive2DSelection,
-} from './live2d.js'
 
 export interface AmadeusBridgeServerOptions {
   model: string
   defaultSessionId: string
-  countPersistedMessages(sessionId: string): number
+  getMemoryMessageCount(sessionId: string): number | Promise<number>
   getToolPermissions(): ToolPermissionState[] | Promise<ToolPermissionState[]>
-  resetSession(sessionId: string): void
-  resolvePendingToolPermission(requestId: string, approved: boolean): boolean
+  resetSession(sessionId: string): void | Promise<void>
   forwardToolPermissionToPython(requestId: string, approved: boolean): void | Promise<void>
   listMemoryReviewCandidates?(sessionId: string, status?: MemoryReviewCandidatesPayload['status']): MemoryReviewCandidatesPayload | Promise<MemoryReviewCandidatesPayload>
   listMemoryReviewJobs?(sessionId: string, status?: MemoryReviewJobsPayload['status']): MemoryReviewJobsPayload | Promise<MemoryReviewJobsPayload>
@@ -40,7 +32,11 @@ export interface AmadeusBridgeServerOptions {
       | 'audio.playback-ended'
       | 'audio.playback-error'
   }>): Array<RuntimeEvent<string, unknown>> | Promise<Array<RuntimeEvent<string, unknown>>> | void | Promise<void>
-  live2dLibrary?: LocalLive2DModelLibrary
+  handleLive2DHttpRequest?(
+    request: IncomingMessage,
+    response: import('node:http').ServerResponse,
+    requestUrl: string,
+  ): void | Promise<void>
   streamChat(socket: WebSocket, sessionId: string, text: string): void | Promise<void>
 }
 
@@ -80,8 +76,8 @@ async function sendHello(
   socket: WebSocket,
   sessionId: string,
   options: AmadeusBridgeServerOptions,
-  memoryMessages: number,
 ): Promise<void> {
+  const memoryMessages = await Promise.resolve(options.getMemoryMessageCount(sessionId)).catch(() => 0)
   const toolPermissions = await Promise.resolve(options.getToolPermissions()).catch(() => [])
   if (socket.readyState !== WebSocket.OPEN) {
     return
@@ -152,17 +148,6 @@ function parseEvent(raw: Buffer): ClientRuntimeEvent | undefined {
   }
 }
 
-async function readRequestJson(request: IncomingMessage): Promise<unknown> {
-  let body = ''
-  for await (const chunk of request) {
-    body += String(chunk)
-  }
-  if (!body.trim()) {
-    return undefined
-  }
-  return JSON.parse(body) as unknown
-}
-
 export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): AmadeusBridgeServer {
   const httpServer = createServer((request, response) => {
     const requestUrl = request.url ?? '/'
@@ -182,28 +167,14 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
       return
     }
 
-    if (requestUrl === '/live2d/config' && options.live2dLibrary) {
-      writeLive2DConfig(response, options.live2dLibrary)
-      return
-    }
-
-    if (requestUrl === '/live2d/models' && request.method === 'GET' && options.live2dLibrary) {
-      writeLive2DModels(response, options.live2dLibrary)
-      return
-    }
-
-    if (requestUrl === '/live2d/select' && request.method === 'POST' && options.live2dLibrary) {
-      void readRequestJson(request)
-        .then((payload) => writeLive2DSelection(response, options.live2dLibrary!, payload))
-        .catch(() => {
-          response.writeHead(400, { 'Content-Type': 'application/json' })
-          response.end(JSON.stringify({ ok: false, error: 'invalid_json' }))
-        })
-      return
-    }
-
-    if (requestUrl.startsWith('/live2d/models/') && options.live2dLibrary) {
-      writeLive2DModelFile(response, options.live2dLibrary, requestUrl.slice('/live2d/models/'.length))
+    if (requestUrl.startsWith('/live2d/') && options.handleLive2DHttpRequest) {
+      void Promise.resolve(options.handleLive2DHttpRequest(request, response, requestUrl)).catch(() => {
+        if (response.headersSent) {
+          return
+        }
+        response.writeHead(502, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ ok: false, error: 'live2d_proxy_unavailable' }))
+      })
       return
     }
 
@@ -215,7 +186,7 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
 
   wss.on('connection', (socket) => {
     const sessionId = options.defaultSessionId
-    void sendHello(socket, sessionId, options, options.countPersistedMessages(sessionId))
+    void sendHello(socket, sessionId, options)
       .then(() => sendMemoryReviewCandidates(socket, sessionId, options, 'pending'))
       .then(() => sendMemoryReviewJobs(socket, sessionId, options, 'all'))
       .then(() => sendState(socket, sessionId, 'idle'))
@@ -231,11 +202,18 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
       }
 
       if (event.type === 'session.reset') {
-        options.resetSession(event.sessionId)
-        void sendHello(socket, event.sessionId, options, 0)
+        void Promise.resolve(options.resetSession(event.sessionId))
+          .then(() => sendHello(socket, event.sessionId, options))
           .then(() => sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending'))
           .then(() => sendMemoryReviewJobs(socket, event.sessionId, options, 'all'))
           .then(() => sendState(socket, event.sessionId, 'idle'))
+          .catch((error: unknown) => {
+            sendState(socket, event.sessionId, 'error')
+            send(socket, 'error', event.sessionId, {
+              code: 'memory_reset_failed',
+              message: error instanceof Error ? error.message : 'Memory reset failed.',
+            })
+          })
         return
       }
 
@@ -265,7 +243,7 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         })
           .then((payload) => {
             send(socket, 'memory.review.updated', event.sessionId, payload)
-            sendHello(socket, event.sessionId, options, options.countPersistedMessages(event.sessionId)).catch(() => {})
+            sendHello(socket, event.sessionId, options).catch(() => {})
             return sendMemoryReviewCandidates(socket, event.sessionId, options, 'pending')
           })
         return
@@ -284,14 +262,6 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
       }
 
       if (event.type === 'tool.permission.response') {
-        const resolvedLocally = options.resolvePendingToolPermission(
-          event.payload.requestId,
-          event.payload.approved,
-        )
-        if (resolvedLocally) {
-          return
-        }
-
         void options.forwardToolPermissionToPython(event.payload.requestId, event.payload.approved)
         return
       }

@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-23
+Last updated: 2026-06-24
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -40,12 +40,13 @@ Fallback path today:
 ### Done Now
 
 - Project scaffold is in place under `amadeus-agent`.
-- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: runtime-provided lipsync cues when available, waveform-derived from local cached runtime `wav` audio when possible, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback.
+- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: provider-native or runtime-planned phoneme/viseme lipsync cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback.
 - Local runtime MVP is running in `apps/server` with HTTP health check and WebSocket events.
 - DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies.
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
 - Desktop shows memory count, tool status, tool config status, voice status, visible chat messages, and has a Reset Session button.
+- `apps/server` no longer owns a separate local message-count/reset SQLite path; it now reads `GET /memory/count` and forwards `POST /memory/reset` to the Python runtime while keeping the desktop protocol unchanged.
 - Tool calling is model-triggered through OpenAI-compatible `tools` / `tool_calls`, not keyword matching.
 - Tool execution now goes through a formal registry with `allow`, `ask`, and `deny` metadata.
 - `get_current_time` is registered as an `allow` tool.
@@ -82,6 +83,7 @@ Fallback path today:
   - desktop sends `tool.permission.response`
   - the bridge forwards it back to Python `/tools/permission`
 - Python audio interface now has a practical default on macOS: runtime TTS auto-selects GPT-SoVITS when configured, otherwise uses local `say`/`afconvert` and emits `audio.tts-ready`.
+- Python audio now prefers provider-native lipsync payloads when a TTS provider returns them, normalizing `lipsyncCues` / `visemes` / `phonemes` JSON into runtime `audio.lipsync-cues`; the local phoneme planner remains the fallback when providers return audio without cue metadata.
 - Desktop still keeps Electron/browser `speechSynthesis` fallback for provider failures or unsupported platforms.
 - Python runtime parity tests are now wired through `npm test`.
   - missing API key returns a structured runtime error
@@ -100,7 +102,7 @@ Fallback path today:
   - `/agent/turn` NDJSON events are relayed to the desktop socket
   - `/tools/list` tool permissions are read from the Python runtime for server diagnostics
   - desktop capability and audio playback feedback events are forwarded to Python `/runtime/feedback`
-  - Python-returned feedback events such as `character.behavior` and `audio.lipsync-cues` are relayed back to the desktop socket
+  - Python-returned feedback events such as `character.behavior` and fallback `audio.lipsync-cues` are relayed back to the desktop socket
   - Python runtime connection failures return `false` from the relay so the caller can decide whether to report an error or use the explicit fallback
   - malformed Python events emit desktop-compatible `error` events without dropping later valid events
   - unresolved permission responses are forwarded to Python `/tools/permission`
@@ -122,6 +124,7 @@ Fallback path today:
 - Desktop Electron smoke coverage now builds the packaged desktop app, starts the Electron main process, and verifies that the renderer finishes loading.
 - Desktop Electron E2E coverage now includes a deterministic local-runtime UI path: the packaged desktop connects to a stub bridge, submits a chat message through the real form, receives streamed assistant events, and renders the assistant reply without requiring a live model provider.
 - Desktop Electron E2E coverage now includes deterministic Live2D local model loading and switching: the packaged desktop reads local model config/list endpoints, loads the configured model through the renderer, switches models through the real select control, calls `/live2d/select`, and verifies harness config persistence.
+- Production Live2D HTTP ownership is now narrower in `apps/server`: the bridge proxies `/live2d/config`, `/live2d/models`, `/live2d/select`, and `/live2d/models/...` to the Python runtime, rewrites returned model URLs back to the bridge origin, and no longer owns the real model-library scan or harness-config mutation path.
 - Desktop Electron E2E coverage now includes deterministic runtime audio playback feedback: the packaged desktop receives `audio.tts-ready`, plays mock runtime audio, and reports both success feedback (`audio.playback-started` / `audio.playback-ended`) and failure feedback (`audio.playback-started` / `audio.playback-error`) to the bridge.
 - Desktop Electron E2E coverage now includes deterministic permission prompt flows: the packaged desktop receives `tool.permission.request`, shows the real Allow / Deny UI, and reports `tool.permission.response` back to the bridge for both approval and denial.
 - The legacy TypeScript fallback loop has been removed.
@@ -138,7 +141,12 @@ Fallback path today:
 - Local Live2D model storage is active.
   - Local models live under `models/live2d`, with `hiyori-free` as the current default and `hiyori-pro` available for switching.
   - `configs/harnesses.yaml` selects the active model by id/path.
-  - The Node bridge server serves `/live2d/config` and `/live2d/models/...` on `8788`, so the desktop renderer resolves the configured local model through the same server it already uses for WebSocket traffic; the remote model path is now only a defensive fallback.
+  - Python runtime now owns the local Live2D model library, including configured-model reads, model listing, manifest reads, and `/live2d/select` persistence.
+  - `apps/server` keeps the desktop-facing `8788` HTTP origin by proxying `/live2d/*` to Python and rewriting returned model URLs back to bridge-relative URLs, so the renderer can stay on the same origin it already uses for WebSocket traffic.
+  - The old TypeScript local Live2D library fallback has been removed from `apps/server`; Live2D HTTP ownership now lives only in Python runtime plus bridge proxying.
+- Session memory count/reset now follows the same ownership split:
+  - Python runtime owns the real SQLite-backed session count and reset behavior through `GET /memory/count` and `POST /memory/reset`.
+  - `apps/server` only proxies those behaviors into `server.hello` and `session.reset`; it no longer opens its own local `messages` table.
 - First-pass real TTS provider boundary is active.
   - `packages/amadeus/audio.py` now includes a config-gated GPT-SoVITS HTTP provider and a macOS `say` provider.
   - The default `tts.default` is `auto`, preferring GPT-SoVITS when configured and falling back to macOS `say` when available.
@@ -169,8 +177,9 @@ Fallback path today:
 ### Still Needed
 
 - Continue expanding Electron end-to-end coverage beyond the current startup smoke, deterministic local-runtime chat path, deterministic Live2D load/switch path, and deterministic runtime audio feedback path.
-- Keep improving lipsync from the new runtime-audio amplitude path toward richer phoneme-aware movement, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
-- Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/model-serving/feedback proxy, not an agent-loop owner.
+- Keep improving lipsync from the current provider-native plus phoneme-planned path, especially broader provider cue compatibility and better non-Latin mapping, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
+- Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/proxy layer, not an owner of agent, model-library, tool, memory, or audio turn logic.
+- `tool.permission.response` is now always forwarded through the bridge to Python; the old “maybe a local TypeScript tool loop owns this request” branch has been removed from the production server path.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
@@ -220,14 +229,15 @@ Status: complete for MVP.
 Status: complete for MVP.
 
 - Added voice toggle and browser/Electron `speechSynthesis` playback.
-- Added a simple timed mouth loop for speaking.
+- Added runtime TTS playback through `audio.tts-ready`, with macOS `say` and GPT-SoVITS provider support behind `packages/amadeus/audio.py`.
+- Added hybrid lipsync: provider-native or runtime-planned phoneme/viseme cues first, desktop amplitude-driven mouth movement for runtime audio second, and the timed mouth loop only as fallback.
 - Added desktop voice status diagnostics.
 
 ### Phase 5: Memory and Tools
 
 Status: MVP memory, model-triggered tools, registry, config loading, and permission prompts complete.
 
-- Added SQLite-backed message persistence using `node:sqlite`.
+- Added SQLite-backed message persistence in the Python runtime memory store.
 - Desktop now shows memory and tool feedback.
 - Added model-triggered tool calling.
 - Added the first formal tool registry and tool config loader.
@@ -383,11 +393,11 @@ Started.
 Started.
 
 - First harness slice exists in `packages/amadeus/harness`, with `configs/harnesses.yaml` selecting Live2D model config and playback-state behavior mapping.
-- Local Live2D model storage and bridge serving are active through `models/live2d`, `/live2d/config`, and `/live2d/models/...`.
+- Local Live2D model storage is active through `models/live2d`, and the Python runtime now owns `/live2d/config`, `/live2d/models`, `/live2d/select`, and `/live2d/models/...`; the bridge proxies those endpoints back to the desktop-facing origin.
 - Runtime audio provider selection and cache are active through `packages/amadeus/audio.py`, with GPT-SoVITS config support, macOS `say` fallback, `/audio/speak`, and `audio.tts-ready`.
 - Desktop capability and runtime audio playback feedback now reach Python through `POST /runtime/feedback` and are stored by `HarnessFeedbackPolicy`.
 - Live2D maps `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` into playback-state-driven `character.behavior` events returned to the desktop; these mappings are configurable through `live2d.audioPlaybackBehaviors`.
-- Remaining work: richer audio harness boundary, richer Live2D commands, speaking-state reconciliation, and later phoneme-aware lipsync.
+- Remaining work: richer audio harness boundary, richer Live2D commands, speaking-state reconciliation, broader provider cue compatibility, and stronger non-Latin phoneme mapping.
 
 ### Phase 11: Proactive Agent
 
@@ -416,8 +426,7 @@ Not started.
 - Live2D behavior mapping is currently alias-based and depends on the available motions/expressions in the loaded model.
 - The Live2D Cubism runtime still depends on renderer-side package/runtime availability, so full Live2D startup needs deeper Electron coverage.
 - GPT-SoVITS high-quality voice integration still requires a running GPT-SoVITS API and model assets; until then macOS `say` provides the local practical TTS loop.
-- Lipsync is currently a timed mouth loop, not phoneme-accurate.
-- SQLite uses Node 24's experimental built-in `node:sqlite`, so Node prints an experimental warning at server startup.
+- Lipsync is no longer only a timed mouth loop: runtime now prefers provider-native or locally planned phoneme/viseme cues, with desktop amplitude analysis and the timed loop retained as fallbacks.
 - Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and Electron startup smoke behavior. Full Live2D/interaction end-to-end coverage is still missing.
 - Placeholder or partial boundaries still need real implementations or cleanup: `skills.py`, the future audio harness, richer Live2D adapter packaging, and `packages/live2d-stage`.
 

@@ -199,6 +199,7 @@ Python runtime responsibilities today:
 
 - Own the preferred turn path.
 - Own SQLite-backed message persistence for the preferred path.
+- Own session memory count/reset semantics for the preferred path, exposed through `/memory/count` and `/memory/reset`.
 - Own concrete Python tool execution for the preferred path.
 - Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `character.behavior`, and `audio.tts-ready`.
 
@@ -224,7 +225,7 @@ Current note:
 
 - This package is not yet the real implementation package.
 - The current working Live2D adapter logic is still embedded in `apps/desktop/src/renderer/main.ts`.
-- Local model storage is active under `models/live2d`. The Node bridge server serves the configured model to the desktop through `/live2d/config` and `/live2d/models/...` on `8788`; the Python runtime has the same local library boundary for later direct runtime use.
+- Local model storage is active under `models/live2d`. The Python runtime now owns the Live2D model library boundary, including configured-model reads, model listing, model selection persistence, and model asset serving. The Node bridge keeps the desktop-facing `8788` origin by proxying `/live2d/*` to Python and rewriting model URLs back to bridge-relative URLs.
 
 ### packages/amadeus/audio.py
 
@@ -335,6 +336,8 @@ POST /memory/reset
 POST /audio/speak
 GET /audio/files/{relativePath}
 GET /live2d/config
+GET /live2d/models
+POST /live2d/select
 GET /live2d/models/{relativePath}
 ```
 
