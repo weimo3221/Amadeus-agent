@@ -1,5 +1,6 @@
 import { Application } from '@pixi/app'
 import type {
+  AudioLipsyncCuesPayload,
   AssistantState,
   CharacterBehaviorPayload,
 } from '@amadeus-agent/amadeus/events'
@@ -177,6 +178,7 @@ class Live2DController {
   private lastExpression = ''
   private mouthTimer: number | undefined
   private mouthAnimationFrame: number | undefined
+  private lipsyncCueTimers: number[] = []
   private audioContext: AudioContext | undefined
   private analyserNode: AnalyserNode | undefined
   private mediaSourceNode: MediaElementAudioSourceNode | undefined
@@ -208,6 +210,26 @@ class Live2DController {
   setMouthOpen(value: number): void {
     const coreModel = this.model.internalModel.coreModel as Live2DCoreModel
     coreModel.setParameterValueById('ParamMouthOpenY', Math.max(0, Math.min(1, value)))
+  }
+
+  applyLipsyncCues(payload: AudioLipsyncCuesPayload): void {
+    this.stopTimedMouthLoop()
+    this.stopCueDrivenMouth()
+    this.stopAudioDrivenAnimation()
+    for (const cue of payload.cues) {
+      const offsetMs = Math.max(0, Math.trunc(cue.offsetMs))
+      const mouthOpen = typeof cue.mouthOpen === 'number' ? cue.mouthOpen : 0
+      const timer = window.setTimeout(() => {
+        this.setMouthOpen(mouthOpen)
+      }, offsetMs)
+      this.lipsyncCueTimers.push(timer)
+    }
+
+    const durationMs = typeof payload.durationMs === 'number' ? payload.durationMs : 0
+    const tailTimer = window.setTimeout(() => {
+      this.setMouthOpen(0)
+    }, Math.max(durationMs, 0))
+    this.lipsyncCueTimers.push(tailTimer)
   }
 
   startRuntimeAudioLipsync(audio: RuntimeAudioLike): boolean {
@@ -280,22 +302,38 @@ class Live2DController {
 
   stopMouthLoop(): void {
     this.stopAudioDrivenMouth()
-    if (this.mouthTimer !== undefined) {
-      window.clearInterval(this.mouthTimer)
-      this.mouthTimer = undefined
-    }
+    this.stopCueDrivenMouth()
+    this.stopTimedMouthLoop()
     this.setMouthOpen(0)
   }
 
   private stopAudioDrivenMouth(): void {
-    if (this.mouthAnimationFrame !== undefined) {
-      window.cancelAnimationFrame(this.mouthAnimationFrame)
-      this.mouthAnimationFrame = undefined
-    }
+    this.stopAudioDrivenAnimation()
     this.mediaSourceNode?.disconnect()
     this.mediaSourceNode = undefined
     this.analyserNode?.disconnect()
     this.analyserNode = undefined
+  }
+
+  private stopAudioDrivenAnimation(): void {
+    if (this.mouthAnimationFrame !== undefined) {
+      window.cancelAnimationFrame(this.mouthAnimationFrame)
+      this.mouthAnimationFrame = undefined
+    }
+  }
+
+  private stopCueDrivenMouth(): void {
+    for (const timer of this.lipsyncCueTimers) {
+      window.clearTimeout(timer)
+    }
+    this.lipsyncCueTimers = []
+  }
+
+  private stopTimedMouthLoop(): void {
+    if (this.mouthTimer !== undefined) {
+      window.clearInterval(this.mouthTimer)
+      this.mouthTimer = undefined
+    }
   }
 
   async applyState(state: AssistantState): Promise<void> {
@@ -1033,6 +1071,7 @@ const runtimeUi = new RuntimeUiController({
   live2d: {
     applyState: (state) => live2dController?.applyState(state),
     applyBehavior: (behavior) => live2dController?.applyBehavior(behavior),
+    applyLipsyncCues: (payload) => live2dController?.applyLipsyncCues(payload),
     startRuntimeAudioLipsync: (audio) => live2dController?.startRuntimeAudioLipsync(audio) ?? false,
     startMouthLoop: () => live2dController?.startMouthLoop(),
     stopMouthLoop: () => live2dController?.stopMouthLoop(),

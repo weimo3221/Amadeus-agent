@@ -107,9 +107,9 @@ Current behavior:
 - Desktop emits playback feedback for runtime audio start, end, and error.
 - On runtime audio error or browser play rejection, desktop falls back to system `speechSynthesis`.
 - Python records these events through `HarnessFeedbackPolicy`.
-- The Live2D harness maps playback start/end/error into `character.behavior`; the bridge sends those returned behavior events back to the desktop socket.
+- The Live2D harness maps playback start/end/error into `character.behavior`; on runtime-audio start with a known duration it can also emit `audio.lipsync-cues`. The bridge sends those returned events back to the desktop socket.
 - The mapping is configurable through `configs/harnesses.yaml` under `live2d.audioPlaybackBehaviors`.
-- This is still playback-state driven behavior, not amplitude-driven or phoneme-aware lipsync.
+- Desktop prefers runtime-provided `audio.lipsync-cues` when present, otherwise falls back to local Web Audio amplitude analysis, and finally to the older timed mouth loop.
 
 ### memory.review.*
 
@@ -207,6 +207,24 @@ Note:
     "expression": "smile",
     "motion": "nod",
     "intensity": 0.7
+  }
+}
+```
+
+### audio.lipsync-cues
+
+```json
+{
+  "type": "audio.lipsync-cues",
+  "payload": {
+    "source": "runtime_audio",
+    "audioUrl": "http://runtime/audio.wav",
+    "durationMs": 480,
+    "cues": [
+      { "offsetMs": 0, "mouthOpen": 0.2 },
+      { "offsetMs": 90, "mouthOpen": 0.8 },
+      { "offsetMs": 180, "mouthOpen": 0.3 }
+    ]
   }
 }
 ```
@@ -437,7 +455,6 @@ These are discussed elsewhere in the docs but are not part of the current implem
 
 - `character.lipsync`
 - `audio.tts-fallback`
-- `audio.lipsync-cues`
 
 ### Planned bridge/runtime endpoints
 

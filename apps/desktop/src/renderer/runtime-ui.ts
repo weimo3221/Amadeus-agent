@@ -1,4 +1,5 @@
 import type {
+  AudioLipsyncCuesPayload,
   AudioPlaybackEndedPayload,
   AudioPlaybackErrorPayload,
   AudioPlaybackStartedPayload,
@@ -39,6 +40,7 @@ export interface RuntimeSpeechSynthesisLike {
 export interface RuntimeLive2DAdapter {
   applyState(state: AssistantState): Promise<void> | void
   applyBehavior(behavior: CharacterBehaviorPayload): Promise<void> | void
+  applyLipsyncCues?(payload: AudioLipsyncCuesPayload): void
   startRuntimeAudioLipsync?(audio: RuntimeAudioLike): boolean
   startMouthLoop(): void
   stopMouthLoop(): void
@@ -289,8 +291,11 @@ export class RuntimeUiController {
       case 'character.behavior':
         void this.options.live2d?.applyBehavior(event.payload)
         break
+      case 'audio.lipsync-cues':
+        this.options.live2d?.applyLipsyncCues?.(event.payload)
+        break
       case 'audio.tts-ready':
-        this.playRuntimeAudio(event.payload.audioUrl)
+        this.playRuntimeAudio(event.payload.audioUrl, event.payload.durationMs ?? undefined)
         break
       case 'tool.started':
         this.setToolStatus(`Tool running: ${event.payload.displayName}`)
@@ -656,7 +661,7 @@ export class RuntimeUiController {
     this.options.live2d?.stopMouthLoop()
   }
 
-  private playRuntimeAudio(audioUrl: string): void {
+  private playRuntimeAudio(audioUrl: string, durationMs?: number): void {
     if (!this.voiceEnabled) {
       this.setVoiceStatus('Voice off')
       return
@@ -672,7 +677,7 @@ export class RuntimeUiController {
 
     audio.addEventListener('play', () => {
       this.setVoiceStatus('Playing runtime audio')
-      this.sendAudioPlaybackStarted({ source: 'runtime_audio', audioUrl })
+      this.sendAudioPlaybackStarted({ source: 'runtime_audio', audioUrl, durationMs })
       void this.options.live2d?.applyState('speaking')
       const startedAudioDrivenLipsync = this.options.live2d?.startRuntimeAudioLipsync?.(audio) ?? false
       if (!startedAudioDrivenLipsync) {

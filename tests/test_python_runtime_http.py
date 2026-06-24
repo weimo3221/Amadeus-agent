@@ -246,6 +246,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             "payload": {
                 "source": "runtime_audio",
                 "audioUrl": "http://runtime/audio.wav",
+                "durationMs": 480,
             },
         })
 
@@ -253,6 +254,9 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(playback["feedback"]["audioPlayback"]["audioUrl"], "http://runtime/audio.wav")
         self.assertEqual(playback["events"][0]["type"], "character.behavior")
         self.assertEqual(playback["events"][0]["payload"]["motion"], "talk")
+        self.assertEqual(playback["events"][1]["type"], "audio.lipsync-cues")
+        self.assertEqual(playback["events"][1]["payload"]["source"], "runtime_audio")
+        self.assertGreaterEqual(len(playback["events"][1]["payload"]["cues"]), 2)
 
         snapshot = self.get_json("/runtime/feedback?sessionId=feedback-session")
         self.assertEqual(snapshot["feedback"]["sessionId"], "feedback-session")

@@ -167,18 +167,35 @@ describe('Python runtime feedback forwarding', () => {
       calls.push({ url: String(input), init })
       return new Response(JSON.stringify({
         ok: true,
-        events: [{
-          id: 'python-feedback-event',
-          type: 'character.behavior',
-          sessionId: 'session-1',
-          timestamp: '2026-06-22T00:00:00.050Z',
-          payload: {
-            emotion: 'neutral',
-            expression: 'smile',
-            motion: 'talk',
-            intensity: 0.65,
+        events: [
+          {
+            id: 'python-feedback-event',
+            type: 'character.behavior',
+            sessionId: 'session-1',
+            timestamp: '2026-06-22T00:00:00.050Z',
+            payload: {
+              emotion: 'neutral',
+              expression: 'smile',
+              motion: 'talk',
+              intensity: 0.65,
+            },
           },
-        }],
+          {
+            id: 'python-lipsync-event',
+            type: 'audio.lipsync-cues',
+            sessionId: 'session-1',
+            timestamp: '2026-06-22T00:00:00.060Z',
+            payload: {
+              source: 'runtime_audio',
+              audioUrl: 'http://runtime/audio.wav',
+              durationMs: 480,
+              cues: [
+                { offsetMs: 0, mouthOpen: 0.2 },
+                { offsetMs: 90, mouthOpen: 0.8 },
+              ],
+            },
+          },
+        ],
       }), { status: 200 })
     }
 
@@ -190,6 +207,7 @@ describe('Python runtime feedback forwarding', () => {
       payload: {
         source: 'runtime_audio',
         audioUrl: 'http://runtime/audio.wav',
+        durationMs: 480,
       },
     }, {
       runtimeUrl: 'http://127.0.0.1:8790/',
@@ -205,9 +223,10 @@ describe('Python runtime feedback forwarding', () => {
       payload: {
         source: 'runtime_audio',
         audioUrl: 'http://runtime/audio.wav',
+        durationMs: 480,
       },
     })
-    assert.equal(events.length, 1)
+    assert.equal(events.length, 2)
     assert.equal(events[0].type, 'character.behavior')
     assert.deepEqual(events[0].payload, {
       emotion: 'neutral',
@@ -215,6 +234,8 @@ describe('Python runtime feedback forwarding', () => {
       motion: 'talk',
       intensity: 0.65,
     })
+    assert.equal(events[1].type, 'audio.lipsync-cues')
+    assert.equal((events[1].payload as { durationMs?: number }).durationMs, 480)
   })
 
   it('swallows Python runtime feedback failures', async () => {

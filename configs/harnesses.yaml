@@ -21,3 +21,7 @@ harnesses:
         expression: confused
         motion: shake_head
         intensity: 0.55
+    lipsync:
+      enabled: true
+      cueIntervalMs: 90
+      maxCues: 48

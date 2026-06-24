@@ -40,7 +40,7 @@ Fallback path today:
 ### Done Now
 
 - Project scaffold is in place under `amadeus-agent`.
-- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: amplitude-driven mouth movement for runtime audio with the older timed mouth loop kept as fallback.
+- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: runtime-provided lipsync cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback.
 - Local runtime MVP is running in `apps/server` with HTTP health check and WebSocket events.
 - DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies.
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
@@ -100,6 +100,7 @@ Fallback path today:
   - `/agent/turn` NDJSON events are relayed to the desktop socket
   - `/tools/list` tool permissions are read from the Python runtime for server diagnostics
   - desktop capability and audio playback feedback events are forwarded to Python `/runtime/feedback`
+  - Python-returned feedback events such as `character.behavior` and `audio.lipsync-cues` are relayed back to the desktop socket
   - Python runtime connection failures return `false` from the relay so the caller can decide whether to report an error or use the explicit fallback
   - malformed Python events emit desktop-compatible `error` events without dropping later valid events
   - unresolved permission responses are forwarded to Python `/tools/permission`

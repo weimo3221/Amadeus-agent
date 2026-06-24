@@ -17,9 +17,10 @@ The next implementation pass should proceed in this order:
 3. Done: add desktop E2E around runtime audio playback feedback. The packaged desktop now receives `audio.tts-ready`, plays deterministic mock runtime audio, and reports both `audio.playback-started` / `audio.playback-ended` and `audio.playback-started` / `audio.playback-error` back to the bridge.
 4. Done: add desktop E2E around permission prompts for the remaining `ask` tools. The packaged desktop now receives deterministic `tool.permission.request` events, renders the real Allow / Deny UI, and reports `tool.permission.response` back to the bridge for both approval and denial flows.
 5. Done: improve lipsync from the pure timed mouth loop to a hybrid mode. Runtime audio playback now drives `ParamMouthOpenY` from Web Audio amplitude analysis, while speech-synthesis and unsupported environments still fall back to the older timed loop.
-6. Continue shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
-7. Keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
-8. Fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
+6. Done: wire the first explicit runtime lipsync boundary. Python harness feedback can now emit `audio.lipsync-cues` on runtime-audio playback start, and the desktop consumes those cues before falling back to local amplitude analysis.
+7. Continue shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
+8. Keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
+9. Fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
 
 ## Phase 0: Project Skeleton
 

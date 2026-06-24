@@ -241,11 +241,17 @@ function createHarness() {
     startRuntimeAudioLipsyncCalls: 0,
     startMouthLoopCalls: 0,
     stopMouthLoopCalls: 0,
+    applyLipsyncCuesCalls: 0,
+    lastLipsyncCueCount: 0,
     runtimeAudioLipsyncResult: false,
   }
   const live2d: RuntimeLive2DAdapter = {
     applyState: () => {},
     applyBehavior: () => {},
+    applyLipsyncCues: (payload) => {
+      live2dStats.applyLipsyncCuesCalls += 1
+      live2dStats.lastLipsyncCueCount = payload.cues.length
+    },
     startRuntimeAudioLipsync: () => {
       live2dStats.startRuntimeAudioLipsyncCalls += 1
       return live2dStats.runtimeAudioLipsyncResult
@@ -497,6 +503,7 @@ describe('Runtime UI controller', () => {
     assert.deepEqual(socket.sent.at(-1)?.payload, {
       source: 'runtime_audio',
       audioUrl: 'http://runtime/audio.wav',
+      durationMs: 1000,
     })
   })
 
@@ -556,6 +563,31 @@ describe('Runtime UI controller', () => {
       audioUrl: 'http://runtime/broken.wav',
       reason: 'audio_element_error',
     })
+  })
+
+  it('applies runtime-provided lipsync cues to Live2D when they arrive', () => {
+    const { controller, socket, live2dStats } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'model',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
+    controller.handleServerEvent(makeEvent('audio.lipsync-cues', {
+      source: 'runtime_audio',
+      audioUrl: 'http://runtime/audio.wav',
+      durationMs: 320,
+      cues: [
+        { offsetMs: 0, mouthOpen: 0.2 },
+        { offsetMs: 90, mouthOpen: 0.75 },
+        { offsetMs: 180, mouthOpen: 0.1 },
+      ],
+    }))
+
+    assert.equal(live2dStats.applyLipsyncCuesCalls, 1)
+    assert.equal(live2dStats.lastLipsyncCueCount, 3)
   })
 
   it('clears permission prompts and updates tool status on tool.finished', () => {

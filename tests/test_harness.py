@@ -32,6 +32,9 @@ class HarnessTests(unittest.TestCase):
                     "        intensity: 0.9",
                     "      audio.playback-ended:",
                     "        motion: custom_idle",
+                    "    lipsync:",
+                    "      cueIntervalMs: 120",
+                    "      maxCues: 6",
                 ]),
                 encoding="utf-8",
             )
@@ -45,6 +48,8 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(config["live2d"]["audioPlaybackBehaviors"]["started"]["motion"], "custom_talk")
         self.assertEqual(config["live2d"]["audioPlaybackBehaviors"]["started"]["intensity"], 0.9)
         self.assertEqual(config["live2d"]["audioPlaybackBehaviors"]["audio.playback-ended"]["motion"], "custom_idle")
+        self.assertEqual(config["live2d"]["lipsync"]["cueIntervalMs"], 120)
+        self.assertEqual(config["live2d"]["lipsync"]["maxCues"], 6)
 
     def test_live2d_harness_maps_assistant_state_to_character_behavior(self) -> None:
         harness = Live2DHarness()
@@ -80,7 +85,7 @@ class HarnessTests(unittest.TestCase):
 
         started = harness.observe_event(context, {
             "type": "audio.playback-started",
-            "payload": {"source": "runtime_audio", "audioUrl": "http://runtime/audio.wav"},
+            "payload": {"source": "runtime_audio", "audioUrl": "http://runtime/audio.wav", "durationMs": 400},
         })
         ended = harness.observe_event(context, {
             "type": "audio.playback-ended",
@@ -93,6 +98,10 @@ class HarnessTests(unittest.TestCase):
 
         self.assertEqual(started[0]["payload"]["motion"], "talk")
         self.assertEqual(started[0]["payload"]["expression"], "smile")
+        self.assertEqual(started[1]["type"], "audio.lipsync-cues")
+        self.assertEqual(started[1]["payload"]["source"], "runtime_audio")
+        self.assertEqual(started[1]["payload"]["audioUrl"], "http://runtime/audio.wav")
+        self.assertGreaterEqual(len(started[1]["payload"]["cues"]), 2)
         self.assertEqual(ended[0]["payload"]["motion"], "idle")
         self.assertEqual(failed[0]["payload"]["motion"], "shake_head")
 
@@ -105,6 +114,21 @@ class HarnessTests(unittest.TestCase):
         )
 
         self.assertEqual(events, [])
+
+    def test_live2d_harness_skips_lipsync_cues_without_runtime_audio_duration(self) -> None:
+        harness = Live2DHarness()
+        context = HarnessContext(
+            session_id="default",
+            client_capabilities={"live2d": {"available": True}},
+        )
+
+        events = harness.observe_event(
+            context,
+            {"type": "audio.playback-started", "payload": {"source": "runtime_audio", "audioUrl": "http://runtime/audio.wav"}},
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "character.behavior")
 
     def test_harness_registry_reads_configured_audio_playback_behaviors(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,6 +145,9 @@ class HarnessTests(unittest.TestCase):
                     "        intensity: 0.9",
                     "      ended:",
                     "        motion: custom_idle",
+                    "    lipsync:",
+                    "      cueIntervalMs: 120",
+                    "      maxCues: 6",
                 ]),
                 encoding="utf-8",
             )
@@ -135,12 +162,18 @@ class HarnessTests(unittest.TestCase):
             HarnessContext(session_id="default", client_capabilities={"live2d": {"available": True}}),
             {"type": "audio.playback-ended", "payload": {"source": "runtime_audio"}},
         )
+        started_with_duration = registry.observe_event(
+            HarnessContext(session_id="default", client_capabilities={"live2d": {"available": True}}),
+            {"type": "audio.playback-started", "payload": {"source": "runtime_audio", "durationMs": 900}},
+        )
 
         self.assertEqual(started[0]["payload"]["expression"], "grin")
         self.assertEqual(started[0]["payload"]["motion"], "custom_talk")
         self.assertEqual(started[0]["payload"]["intensity"], 0.9)
         self.assertEqual(ended[0]["payload"]["expression"], "neutral")
         self.assertEqual(ended[0]["payload"]["motion"], "custom_idle")
+        self.assertEqual(started_with_duration[1]["type"], "audio.lipsync-cues")
+        self.assertLessEqual(len(started_with_duration[1]["payload"]["cues"]), 7)
 
     def test_harness_registry_can_disable_live2d(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

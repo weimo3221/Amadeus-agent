@@ -29,6 +29,9 @@ class Live2DHarness:
     model_path: str = ""
     state_behaviors: dict[str, dict[str, Any]] = field(default_factory=lambda: dict(DEFAULT_STATE_BEHAVIORS))
     audio_playback_behaviors: dict[str, dict[str, Any]] = field(default_factory=lambda: dict(DEFAULT_AUDIO_PLAYBACK_BEHAVIORS))
+    lipsync_enabled: bool = True
+    lipsync_cue_interval_ms: int = 90
+    lipsync_max_cues: int = 48
 
     name: str = "live2d"
 
@@ -42,7 +45,7 @@ class Live2DHarness:
                 "audio.playback-ended",
                 "audio.playback-error",
             ],
-            events_out=["character.behavior"],
+            events_out=["character.behavior", "audio.lipsync-cues"],
         )
 
     def observe_event(self, context: HarnessContext, event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -53,7 +56,7 @@ class Live2DHarness:
         if event_type == "assistant.state":
             return self._behavior_for_assistant_state(event)
         if event_type in self.audio_playback_behaviors:
-            return self._behavior_for_audio_playback(context, event_type)
+            return self._events_for_audio_playback(context, event_type, event)
         return []
 
     def _behavior_for_assistant_state(self, event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -68,14 +71,68 @@ class Live2DHarness:
 
         return [{"type": "character.behavior", "payload": dict(behavior)}]
 
-    def _behavior_for_audio_playback(self, context: HarnessContext, event_type: str) -> list[dict[str, Any]]:
+    def _events_for_audio_playback(
+        self,
+        context: HarnessContext,
+        event_type: str,
+        event: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         if not self._live2d_available(context):
             return []
 
+        emitted: list[dict[str, Any]] = []
         behavior = self.audio_playback_behaviors.get(event_type)
-        if not behavior:
-            return []
-        return [{"type": "character.behavior", "payload": dict(behavior)}]
+        if behavior:
+            emitted.append({"type": "character.behavior", "payload": dict(behavior)})
+
+        if event_type == "audio.playback-started":
+            lipsync_event = self._lipsync_for_audio_playback(event)
+            if lipsync_event:
+                emitted.append(lipsync_event)
+
+        return emitted
+
+    def _lipsync_for_audio_playback(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.lipsync_enabled:
+            return None
+
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if payload.get("source") != "runtime_audio":
+            return None
+
+        duration_ms = payload.get("durationMs")
+        if not isinstance(duration_ms, (int, float)) or duration_ms <= 0:
+            return None
+
+        cues = self._build_lipsync_cues(int(duration_ms))
+        if not cues:
+            return None
+
+        return {
+            "type": "audio.lipsync-cues",
+            "payload": {
+                "source": "runtime_audio",
+                "audioUrl": payload.get("audioUrl") if isinstance(payload.get("audioUrl"), str) else None,
+                "durationMs": int(duration_ms),
+                "cues": cues,
+            },
+        }
+
+    def _build_lipsync_cues(self, duration_ms: int) -> list[dict[str, float | int]]:
+        interval_ms = max(50, self.lipsync_cue_interval_ms)
+        max_cues = max(1, self.lipsync_max_cues)
+        cue_count = max(1, min(max_cues, duration_ms // interval_ms))
+        pattern = (0.18, 0.78, 0.34, 0.64, 0.22, 0.56)
+        cues: list[dict[str, float | int]] = []
+        for index in range(cue_count):
+            offset_ms = min(duration_ms, index * interval_ms)
+            cues.append({
+                "offsetMs": offset_ms,
+                "mouthOpen": pattern[index % len(pattern)],
+            })
+        if int(cues[-1]["offsetMs"]) < duration_ms:
+            cues.append({"offsetMs": duration_ms, "mouthOpen": 0.0})
+        return cues
 
     def _live2d_available(self, context: HarnessContext) -> bool:
         capabilities = context.client_capabilities

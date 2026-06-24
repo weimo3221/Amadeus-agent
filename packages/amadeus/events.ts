@@ -54,6 +54,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'assistant.message', AssistantMessagePayload>
   | RuntimeEvent<'assistant.state', AssistantStatePayload>
   | RuntimeEvent<'character.behavior', CharacterBehaviorPayload>
+  | RuntimeEvent<'audio.lipsync-cues', AudioLipsyncCuesPayload>
   | RuntimeEvent<'audio.tts-ready', AudioTtsReadyPayload>
   | RuntimeEvent<'tool.started', ToolStartedPayload>
   | RuntimeEvent<'tool.finished', ToolFinishedPayload>
@@ -111,9 +112,22 @@ export interface AudioTtsReadyPayload {
   durationMs?: number | null
 }
 
+export interface AudioLipsyncCue {
+  offsetMs: number
+  mouthOpen: number
+}
+
+export interface AudioLipsyncCuesPayload {
+  source: 'runtime_audio' | 'speech_synthesis'
+  audioUrl?: string
+  durationMs?: number | null
+  cues: AudioLipsyncCue[]
+}
+
 export interface AudioPlaybackStartedPayload {
   source: 'runtime_audio' | 'speech_synthesis'
   audioUrl?: string
+  durationMs?: number | null
 }
 
 export interface AudioPlaybackEndedPayload {
