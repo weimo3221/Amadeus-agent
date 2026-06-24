@@ -9,7 +9,7 @@ tools:
 
   search_files:
     enabled: true
-    permission: ask
+    permission: allow
 
   search_memory:
     enabled: true
@@ -41,7 +41,7 @@ tools:
 
   read_file:
     enabled: true
-    permission: ask
+    permission: allow
 
   patch:
     enabled: true

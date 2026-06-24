@@ -6,13 +6,18 @@ import type {
 import type { Live2DModel as Live2DModelClass } from 'pixi-live2d-display/cubism4'
 import * as PIXI from 'pixi.js'
 
-import { RuntimeUiController } from './runtime-ui'
+import { RuntimeUiController, type RuntimeAudioLike } from './runtime-ui'
 import './styles.css'
 
 window.PIXI = PIXI
 
+const runtimeQuery = new URLSearchParams(window.location.search)
 const DEFAULT_MODEL_URL = 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json'
-const AGENT_HTTP_URL = import.meta.env.VITE_AGENT_HTTP_URL || 'http://127.0.0.1:8788'
+const AGENT_HTTP_URL = runtimeQuery.get('agentHttpUrl') || import.meta.env.VITE_AGENT_HTTP_URL || 'http://127.0.0.1:8788'
+const AGENT_WS_URL = runtimeQuery.get('agentWsUrl') || import.meta.env.VITE_AGENT_WS_URL || 'ws://127.0.0.1:8788/ws'
+const SKIP_LIVE2D = runtimeQuery.get('skipLive2d') === '1'
+const MOCK_LIVE2D = runtimeQuery.get('mockLive2d') === '1'
+const MOCK_AUDIO = runtimeQuery.get('mockAudio')
 const CUBISM_CORE_URL = 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js'
 const CUBISM_CORE_TIMEOUT_MS = 8000
 const MOTION_PRIORITY_FORCE = 3
@@ -488,6 +493,10 @@ function loadScript(src: string): Promise<void> {
 }
 
 async function loadCubismCore(): Promise<void> {
+  if (MOCK_LIVE2D) {
+    return
+  }
+
   if ('Live2DCubismCore' in window) {
     return
   }
@@ -718,9 +727,11 @@ async function loadLive2DModel(modelConfig: Live2DResolvedModel): Promise<void> 
   console.info(`Loading Live2D model ${modelConfig.id} from ${modelConfig.url}`)
 
   await loadCubismCore()
-  const { Live2DModel } = await import('pixi-live2d-display/cubism4')
+  const modelPromise = MOCK_LIVE2D
+    ? createMockLive2DModel(modelConfig.url)
+    : import('pixi-live2d-display/cubism4').then(({ Live2DModel }) => Live2DModel.from(modelConfig.url))
   const nextModel = await withTimeout(
-    Live2DModel.from(modelConfig.url),
+    modelPromise,
     LIVE2D_LOAD_TIMEOUT_MS,
     'Live2D model loading',
   )
@@ -779,6 +790,58 @@ function destroyLive2DModel(model: Live2DModelInstance): void {
   }
 }
 
+async function createMockLive2DModel(_url: string): Promise<Live2DModelInstance> {
+  const model = new PIXI.Container() as unknown as Live2DModelInstance
+  const mock = model as unknown as {
+    anchor: { set: (x: number, y?: number) => void }
+    width: number
+    height: number
+    settings: Live2DSettingsLike
+    internalModel: {
+      coreModel: Live2DCoreModel
+      settings: Live2DSettingsLike
+      motionManager: { definitions: Record<string, unknown[]> }
+      expressionManager: { definitions: Array<{ Name: string }> }
+    }
+    expression: (name?: string) => Promise<boolean>
+    motion: (name: string, index?: number, priority?: number) => Promise<boolean>
+  }
+  const settings: Live2DSettingsLike = {
+    json: {
+      FileReferences: {
+        Expressions: [{ Name: 'neutral' }, { Name: 'smile' }],
+        Motions: {
+          Idle: [],
+          TapBody: [],
+        },
+      },
+    },
+  }
+
+  mock.anchor = { set: () => {} }
+  mock.width = 320
+  mock.height = 480
+  mock.settings = settings
+  mock.internalModel = {
+    coreModel: {
+      setParameterValueById: () => {},
+    },
+    settings,
+    motionManager: {
+      definitions: {
+        Idle: [],
+        TapBody: [],
+      },
+    },
+    expressionManager: {
+      definitions: [{ Name: 'neutral' }, { Name: 'smile' }],
+    },
+  }
+  mock.expression = async () => true
+  mock.motion = async () => true
+  return model
+}
+
 function bootControls(): void {
   if (pinButton) {
     pinButton.textContent = pinned ? 'Unpin' : 'Pin'
@@ -823,6 +886,39 @@ function bootControls(): void {
   })
 }
 
+function createMockRuntimeAudio(_url: string, mode: string): RuntimeAudioLike {
+  const listeners = new Map<string, Array<() => void>>()
+  let paused = false
+  const emit = (type: string): void => {
+    for (const listener of listeners.get(type) ?? []) {
+      listener()
+    }
+  }
+
+  return {
+    addEventListener(type: 'play' | 'ended' | 'error', listener: () => void): void {
+      listeners.set(type, [...(listeners.get(type) ?? []), listener])
+    },
+    async play(): Promise<void> {
+      if (mode === 'reject') {
+        throw new Error('mock audio play rejected')
+      }
+
+      paused = false
+      window.setTimeout(() => emit('play'), 0)
+      window.setTimeout(() => {
+        if (paused) {
+          return
+        }
+        emit(mode === 'error' ? 'error' : 'ended')
+      }, 150)
+    },
+    pause(): void {
+      paused = true
+    },
+  }
+}
+
 const runtimeUi = new RuntimeUiController({
   elements: {
     statusElement,
@@ -846,10 +942,10 @@ const runtimeUi = new RuntimeUiController({
     voiceStatus,
     resetSessionButton,
   },
-  wsUrl: import.meta.env.VITE_AGENT_WS_URL || 'ws://127.0.0.1:8788/ws',
+  wsUrl: AGENT_WS_URL,
   modelLabel: import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-flash',
   createSocket: (url) => new WebSocket(url),
-  createAudio: (url) => new Audio(url),
+  createAudio: (url) => MOCK_AUDIO ? createMockRuntimeAudio(url, MOCK_AUDIO) : new Audio(url),
   createUtterance: (text) => new SpeechSynthesisUtterance(text),
   randomUUID: () => crypto.randomUUID(),
   setTimeout: (handler, timeout) => window.setTimeout(handler, timeout),
@@ -867,5 +963,11 @@ const runtimeUi = new RuntimeUiController({
 bootControls()
 runtimeUi.bindControls()
 runtimeUi.connectAgentRuntime()
-void loadLive2DModelOptions()
-void bootLive2D()
+if (SKIP_LIVE2D) {
+  updateLive2DModelStatus('Model: skipped for E2E')
+  setStatus('Live2D skipped for E2E', false)
+}
+else {
+  void loadLive2DModelOptions()
+  void bootLive2D()
+}

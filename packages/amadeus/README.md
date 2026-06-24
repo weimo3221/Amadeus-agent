@@ -52,8 +52,8 @@ The Python runtime reads this file on startup. After editing it, call `POST /run
 | `memory_add` | `ask` | Adds one durable structured memory fact after user approval, with duplicate detection and source-session metadata. |
 | `memory_replace` | `ask` | Replaces one active durable structured memory fact after user approval. |
 | `memory_forget` | `ask` | Deletes one active durable structured memory fact after user approval. |
-| `search_files` | `ask` | Searches workspace-relative filenames and/or small text file contents using `target: all | files | content`, skipping generated/heavy directories and capping result count. |
-| `read_file` | `ask` | Reads an explicit, line-numbered window from a workspace-relative UTF-8 text file after search; images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded. |
+| `search_files` | `allow` | Searches workspace-relative filenames and/or small text file contents using `target: all | files | content`, skipping generated/heavy directories and capping result count. |
+| `read_file` | `allow` | Reads an explicit, line-numbered window from a workspace-relative UTF-8 text file after search; images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded. |
 | `patch` | `ask` | Applies a safe single-file text replacement inside the workspace, requiring a unique `oldText` match unless `replaceAll=true`, and returns a unified diff preview. |
 | `write_file` | `ask` | Creates or fully overwrites a workspace-relative UTF-8 text file, refusing accidental overwrites unless `overwrite=true`, and returns size/line metadata plus a diff preview. |
 
@@ -92,7 +92,7 @@ Adding a simple local tool is intentionally lightweight:
    - Return a JSON-serializable `dict`. Return `{"error": "..."}` for expected tool-level failures.
 2. Add a `ToolSpec` next to the handler and register it from `tools/__init__.py`.
    - `name` must match the function schema name.
-   - `permission` should usually be `allow` for safe read-only low-risk tools, `ask` for local filesystem/network/user-visible actions, and `deny` only when disabled by default.
+   - `permission` should usually be `allow` for safe read-only low-risk tools, `ask` for persistent mutations, workspace-external access, script/shell execution, network or user-visible external actions, and `deny` only when disabled by default.
    - `schema` should be OpenAI-compatible function metadata with clear parameter descriptions.
 3. Add or update the matching entry in `../../configs/tools.yaml`.
    - `enabled: true|false`

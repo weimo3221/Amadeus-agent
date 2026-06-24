@@ -12,7 +12,7 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 
 Amadeus is now a working desktop MVP with a Python-first turn path and a mostly landed runtime reliability foundation.
 
-The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, and Memory v2 has its core storage/review/context pieces in place. The next large product step is to turn the remaining placeholder runtime boundaries into real modules and start the Live2D/audio harness layer.
+The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The next large product step is desktop/runtime stabilization: deeper Electron E2E, better lipsync, continued TypeScript bridge shrinkage, and targeted ToolRuntime/Memory hardening driven by real usage.
 
 ### Current Runtime Flow
 
@@ -56,8 +56,8 @@ Fallback path today:
 - `search_memory_items` is registered as an `allow` tool for searching structured memory facts.
 - `memory_add` is registered as an `ask` tool for adding durable structured memory facts after user approval.
 - `memory_replace` and `memory_forget` are registered as `ask` tools for correcting or deleting durable structured memory facts after user approval.
-- `search_files` is implemented as the preferred `ask` search tool in the Python runtime.
-- `read_file` is implemented as an `ask` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
+- `search_files` is implemented as the preferred `allow` search tool in the Python runtime.
+- `read_file` is implemented as an `allow` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
 - `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
 - `AgentRuntime` maintains a per-session `workspace_epoch` for file-observing tool guardrails; successful `patch` / `write_file` mutations advance the epoch so repeated reads/searches after an edit are not treated as stale duplicates.
@@ -119,6 +119,10 @@ Fallback path today:
   - runtime audio start/end/error sends playback feedback for harness coordination
   - `tool.finished` clears permission prompts and updates tool status
 - Desktop Electron smoke coverage now builds the packaged desktop app, starts the Electron main process, and verifies that the renderer finishes loading.
+- Desktop Electron E2E coverage now includes a deterministic local-runtime UI path: the packaged desktop connects to a stub bridge, submits a chat message through the real form, receives streamed assistant events, and renders the assistant reply without requiring a live model provider.
+- Desktop Electron E2E coverage now includes deterministic Live2D local model loading and switching: the packaged desktop reads local model config/list endpoints, loads the configured model through the renderer, switches models through the real select control, calls `/live2d/select`, and verifies harness config persistence.
+- Desktop Electron E2E coverage now includes deterministic runtime audio playback feedback: the packaged desktop receives `audio.tts-ready`, plays mock runtime audio, and reports both success feedback (`audio.playback-started` / `audio.playback-ended`) and failure feedback (`audio.playback-started` / `audio.playback-error`) to the bridge.
+- Desktop Electron E2E coverage now includes deterministic permission prompt flows: the packaged desktop receives `tool.permission.request`, shows the real Allow / Deny UI, and reports `tool.permission.response` back to the bridge for both approval and denial.
 - The legacy TypeScript fallback loop has been removed.
   - Python runtime failures now produce an explicit desktop error
   - `apps/server` no longer owns provider calls, tool execution, memory writes, or audio trigger logic for user turns
@@ -163,9 +167,9 @@ Fallback path today:
 
 ### Still Needed
 
-- Expand Electron end-to-end coverage beyond the current startup smoke to cover Live2D loading and real user/runtime interactions.
-- Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone.
-- Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement.
+- Continue expanding Electron end-to-end coverage beyond the current startup smoke, deterministic local-runtime chat path, deterministic Live2D load/switch path, and deterministic runtime audio feedback path.
+- Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
+- Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/model-serving/feedback proxy, not an agent-loop owner.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.

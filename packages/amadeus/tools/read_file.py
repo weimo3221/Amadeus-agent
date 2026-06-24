@@ -185,7 +185,7 @@ def read_file(args: dict[str, Any]) -> dict[str, Any]:
 READ_FILE_TOOL_SPEC = ToolSpec(
     name="read_file",
     display_name="Reading local file",
-    permission="ask",
+    permission="allow",
     enabled=True,
     handler=read_file,
     schema={

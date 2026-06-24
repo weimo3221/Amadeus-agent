@@ -258,7 +258,7 @@ describe('Python tool list bridge', () => {
       return new Response(JSON.stringify({
         ok: true,
         tools: [
-          { name: 'read_file', displayName: 'Reading local file', enabled: true, permission: 'ask' },
+          { name: 'read_file', displayName: 'Reading local file', enabled: true, permission: 'allow' },
         ],
         schemas: [
           {
@@ -281,7 +281,7 @@ describe('Python tool list bridge', () => {
     assert.equal(calls[0].url, 'http://127.0.0.1:8790/tools/list')
     assert.equal(calls[0].init?.method, 'GET')
     assert.deepEqual(permissions, [
-      { name: 'read_file', displayName: 'Reading local file', enabled: true, permission: 'ask' },
+      { name: 'read_file', displayName: 'Reading local file', enabled: true, permission: 'allow' },
     ])
   })
 

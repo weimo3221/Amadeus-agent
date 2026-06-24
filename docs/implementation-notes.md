@@ -23,6 +23,10 @@ Current implementation note:
 
 Current progress calibration:
 
+- The active project phase is desktop/runtime stabilization, not MVP construction. The Python-first runtime path, local Live2D model serving, TTS fallback, ToolRuntime foundation, and Memory v2 foundation are already present. The next work should prove and harden real packaged-desktop behavior first.
+- Electron E2E is the highest-priority test gap. The first deterministic local-runtime UI path now covers packaged desktop connection, chat submission, streamed assistant output, and visible chat rendering without a live provider. The Live2D path now covers packaged desktop model config/list reads, renderer model loading through a deterministic Live2D test double, model select switching, `/live2d/select`, and harness config persistence. The runtime audio path now covers `audio.tts-ready`, mock runtime audio playback success, playback failure, and the resulting `audio.playback-*` feedback events reaching the bridge. The permission path now covers deterministic `tool.permission.request`, the real Allow / Deny desktop UI, and `tool.permission.response` reaching the bridge for both approval and denial flows.
+- Lipsync is the highest-priority experience gap. The current timed mouth loop is acceptable as fallback, but future work should move toward amplitude-driven or phoneme-aware cues carried through the runtime/harness boundary and consumed by the desktop adapter.
+- `apps/server` should keep shrinking toward a transport bridge. It may serve local Live2D assets and proxy feedback, but it should not regain agent-loop, tool-loop, memory, or provider-decision ownership.
 - ToolRuntime should be treated as mostly implemented and entering hardening mode. Do not start a second tool execution framework; extend `amadeus.tool_runtime` when new reliability needs appear.
 - Memory v2 should be treated as core-implemented and entering consolidation mode. A first-pass `ContextAssembler` now owns API-call-time summary, structured memory, and FTS retrieval injection plus `memory.context.used` diagnostics; the runtime retains the most recent diagnostics per session in an in-memory ring buffer for developer inspection. The next memory work should focus on summary/profile policy, review quality, overflow behavior, and diagnostics endpoints rather than basic storage primitives.
 - Runtime diagnostics now have two layers: legacy `GET /health` for compatibility and structured `GET /runtime/health` for local health checks across runtime, model config, memory DB, tools, Live2D, audio, and effective runtime config. Keep this endpoint local and deterministic; do not make it call external model or TTS providers.
@@ -67,8 +71,8 @@ Current active Python tools:
 - `memory_forget`: `ask`; deletes one active durable structured memory fact after user approval.
 - Memory review candidates are stored separately from durable memory. `POST /memory/review/run` asks the provider to propose candidates from recent messages, candidates are exposed through `GET/POST /memory/review/candidates`, accepted through `POST /memory/review/accept`, and rejected through `POST /memory/review/reject`; only acceptance writes to `memory_items`. Automatic post-turn review is threshold/cooldown gated and still only creates pending candidates. Rejected candidates suppress identical future suggestions.
 - The desktop review UI uses WebSocket events rather than talking to the Python sidecar directly: `memory.review.list`, `memory.review.run`, `memory.review.accept`, and `memory.review.reject` are handled by `apps/server`, which proxies the Python memory review APIs and returns `memory.review.candidates` / `memory.review.updated`.
-- `search_files`: `ask`; searches workspace-relative filenames and/or small text file contents with `target: all | files | content`, path containment, skipped generated directories, result caps, and a per-tool model-output policy.
-- `read_file`: `ask`; reads an explicit line-numbered window from a workspace-relative UTF-8 text file with path containment, file type/size limits, `startLine` / `lineLimit`, `totalLines`, `hasMore`, and a visible character cap. It intentionally avoids hidden runtime compression. Images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded.
+- `search_files`: `allow`; searches workspace-relative filenames and/or small text file contents with `target: all | files | content`, path containment, skipped generated directories, result caps, and a per-tool model-output policy.
+- `read_file`: `allow`; reads an explicit line-numbered window from a workspace-relative UTF-8 text file with path containment, file type/size limits, `startLine` / `lineLimit`, `totalLines`, `hasMore`, and a visible character cap. It intentionally avoids hidden runtime compression. Images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded.
 - `patch`: `ask`; applies a single-file UTF-8 text replacement with workspace containment, generated-directory denylist, file size limits, unique `oldText` matching by default, optional `replaceAll`, and unified diff output.
 - `write_file`: `ask`; creates or fully overwrites workspace-relative UTF-8 text files with workspace containment, generated-directory denylist, text-extension checks, size limits, explicit `overwrite=true` for replacement, parent directory creation inside the workspace, and unified diff output.
 
@@ -204,17 +208,19 @@ The Amadeus provider should only be wired after standalone GPT-SoVITS tests can 
 
 ## Permission Model
 
-Tools should use one of three permission levels:
+Tools should use one of three permission levels. The default product posture is to avoid interrupting the user for low-risk read-only workspace inspection, and to ask only for persistent side effects, external actions, or sensitive-risk operations.
 
-- `allow`: safe to run immediately.
-- `ask`: requires explicit user approval.
+- `allow`: safe to run immediately, including bounded read-only inspection inside the project workspace.
+- `ask`: requires explicit user approval because the action mutates state, reaches outside the local workspace, contacts external services, opens apps/URLs, executes scripts, or may expose sensitive data.
 - `deny`: unavailable.
 
 Examples:
 
 - current time: `allow`
-- reading selected local folders: `ask`
-- deleting files: `deny` until a stronger approval UI exists
+- searching or reading bounded project text files: `allow`
+- patching or writing files: `ask`
+- running scripts, shell commands, installers, network actions, opening URLs, or touching workspace-external paths: `ask`
+- deleting broad file trees or arbitrary shell execution without a stronger approval UI: `deny`
 
 ## Desktop Behavior States
 

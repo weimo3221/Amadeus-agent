@@ -7,6 +7,12 @@ const projectRoot = resolve(__dirname, '../../../..')
 const logDir = join(projectRoot, 'logs')
 const runtimeLogPath = join(logDir, 'desktop-runtime.log')
 const isE2eSmoke = process.env.AMADEUS_E2E_SMOKE === '1'
+const isE2eRuntimeUi = process.env.AMADEUS_E2E_RUNTIME_UI === '1'
+const isE2eLive2D = process.env.AMADEUS_E2E_LIVE2D_SWITCH === '1'
+const isE2eAudioFeedback = process.env.AMADEUS_E2E_AUDIO_FEEDBACK === '1'
+const isE2eAudioError = process.env.AMADEUS_E2E_EXPECT_AUDIO_ERROR === '1'
+const isE2ePermissionPrompt = process.env.AMADEUS_E2E_PERMISSION_PROMPT === '1'
+const isE2ePermissionAllow = process.env.AMADEUS_E2E_EXPECT_PERMISSION_ALLOW === '1'
 
 if (is.dev) {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
@@ -78,6 +84,26 @@ function createMainWindow(): BrowserWindow {
       return
     }
 
+    if (isE2eRuntimeUi) {
+      void runRuntimeUiE2E(mainWindow)
+      return
+    }
+
+    if (isE2eLive2D) {
+      void runLive2DSwitchE2E(mainWindow)
+      return
+    }
+
+    if (isE2eAudioFeedback) {
+      void runAudioFeedbackE2E(mainWindow)
+      return
+    }
+
+    if (isE2ePermissionPrompt) {
+      void runPermissionPromptE2E(mainWindow)
+      return
+    }
+
     let checks = 0
     const timer = setInterval(() => {
       checks += 1
@@ -95,14 +121,306 @@ function createMainWindow(): BrowserWindow {
     }, 3000)
   })
 
-  if (!isE2eSmoke && process.env.AMADEUS_DESKTOP_DEV === '1') {
+  if (!isE2eSmoke && !isE2eRuntimeUi && !isE2eLive2D && !isE2eAudioFeedback && !isE2ePermissionPrompt && process.env.AMADEUS_DESKTOP_DEV === '1') {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173/')
   }
   else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    const query: Record<string, string> = {}
+    if (process.env.AMADEUS_E2E_AGENT_HTTP_URL) {
+      query.agentHttpUrl = process.env.AMADEUS_E2E_AGENT_HTTP_URL
+    }
+    if (process.env.AMADEUS_E2E_AGENT_WS_URL) {
+      query.agentWsUrl = process.env.AMADEUS_E2E_AGENT_WS_URL
+    }
+    if (process.env.AMADEUS_E2E_SKIP_LIVE2D === '1') {
+      query.skipLive2d = '1'
+    }
+    if (process.env.AMADEUS_E2E_MOCK_LIVE2D === '1') {
+      query.mockLive2d = '1'
+    }
+    if (process.env.AMADEUS_E2E_MOCK_AUDIO) {
+      query.mockAudio = process.env.AMADEUS_E2E_MOCK_AUDIO
+    }
+
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'), { query })
   }
 
   return mainWindow
+}
+
+async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> {
+  try {
+    const expectAllow = JSON.stringify(isE2ePermissionAllow)
+    const result = await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const expectAllow = ${expectAllow};
+        const deadline = Date.now() + 8000;
+        const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+        const waitFor = (predicate, label) => {
+          return new Promise((waitResolve, waitReject) => {
+            const tick = () => {
+              try {
+                if (predicate()) {
+                  waitResolve(undefined);
+                  return;
+                }
+              }
+              catch (error) {
+                waitReject(error);
+                return;
+              }
+
+              if (Date.now() > deadline) {
+                waitReject(new Error('Timed out waiting for ' + label + '; tool=' + text('#tool-status')));
+                return;
+              }
+              setTimeout(tick, 50);
+            };
+            tick();
+          });
+        };
+
+        (async () => {
+          await waitFor(() => text('#connection-label') === 'Connected', 'runtime connection');
+          const input = document.querySelector('#chat-input');
+          const form = document.querySelector('#chat-form');
+          const prompt = document.querySelector('#tool-permission');
+          const allowButton = document.querySelector('#tool-allow-button');
+          const denyButton = document.querySelector('#tool-deny-button');
+          if (!input || !form || !prompt || !allowButton || !denyButton) {
+            throw new Error('Permission prompt controls are missing');
+          }
+
+          input.value = 'e2e permission ping';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          form.requestSubmit();
+
+          await waitFor(() => !prompt.hidden, 'permission prompt visible');
+          const promptText = text('#tool-permission-text');
+          if (expectAllow) {
+            allowButton.click();
+            await waitFor(() => text('#tool-status') === 'Tool permission approved', 'allow status');
+          }
+          else {
+            denyButton.click();
+            await waitFor(() => text('#tool-status') === 'Tool permission denied', 'deny status');
+          }
+          await waitFor(() => prompt.hidden, 'permission prompt cleared');
+
+          resolve({
+            promptText,
+            toolStatus: text('#tool-status'),
+          });
+        })().catch(reject);
+      }))()
+    `)
+    console.log(`AMADEUS_E2E_PERMISSION_PROMPT ${JSON.stringify(result)}`)
+    setTimeout(() => app.quit(), 100)
+  }
+  catch (error) {
+    console.error(`AMADEUS_E2E_PERMISSION_PROMPT failed: ${error instanceof Error ? error.message : String(error)}`)
+    app.exit(1)
+  }
+}
+
+async function runAudioFeedbackE2E(mainWindow: BrowserWindow): Promise<void> {
+  try {
+    const expectAudioError = JSON.stringify(isE2eAudioError)
+    const result = await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const expectAudioError = ${expectAudioError};
+        const deadline = Date.now() + 8000;
+        const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+        const waitFor = (predicate, label) => {
+          return new Promise((waitResolve, waitReject) => {
+            const tick = () => {
+              try {
+                if (predicate()) {
+                  waitResolve(undefined);
+                  return;
+                }
+              }
+              catch (error) {
+                waitReject(error);
+                return;
+              }
+
+              if (Date.now() > deadline) {
+                waitReject(new Error('Timed out waiting for ' + label + '; voice=' + text('#voice-status')));
+                return;
+              }
+              setTimeout(tick, 50);
+            };
+            tick();
+          });
+        };
+
+        (async () => {
+          await waitFor(() => text('#connection-label') === 'Connected', 'runtime connection');
+          const input = document.querySelector('#chat-input');
+          const form = document.querySelector('#chat-form');
+          if (!input || !form) {
+            throw new Error('Chat form is missing');
+          }
+
+          input.value = 'e2e audio ping';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          form.requestSubmit();
+
+          await waitFor(() => text('#voice-status') === 'Playing runtime audio', 'runtime audio start');
+          if (expectAudioError) {
+            await new Promise((done) => setTimeout(done, 250));
+          }
+          else {
+            await waitFor(() => text('#voice-status') === 'Voice idle', 'runtime audio end');
+          }
+          await new Promise((done) => setTimeout(done, 100));
+
+          resolve({
+            voice: text('#voice-status'),
+            chat: text('#chat-log'),
+          });
+        })().catch(reject);
+      }))()
+    `)
+    console.log(`AMADEUS_E2E_AUDIO_FEEDBACK ${JSON.stringify(result)}`)
+    setTimeout(() => app.quit(), 100)
+  }
+  catch (error) {
+    console.error(`AMADEUS_E2E_AUDIO_FEEDBACK failed: ${error instanceof Error ? error.message : String(error)}`)
+    app.exit(1)
+  }
+}
+
+async function runLive2DSwitchE2E(mainWindow: BrowserWindow): Promise<void> {
+  try {
+    const result = await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const deadline = Date.now() + 10000;
+        const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+        const waitFor = (predicate, label) => {
+          return new Promise((waitResolve, waitReject) => {
+            const tick = () => {
+              try {
+                if (predicate()) {
+                  waitResolve(undefined);
+                  return;
+                }
+              }
+              catch (error) {
+                waitReject(error);
+                return;
+              }
+
+              if (Date.now() > deadline) {
+                waitReject(new Error('Timed out waiting for ' + label + '; model status=' + text('#live2d-model-status')));
+                return;
+              }
+              setTimeout(tick, 50);
+            };
+            tick();
+          });
+        };
+
+        (async () => {
+          await waitFor(() => {
+            return text('#debug-capabilities').includes('hiyori-free')
+              && document.querySelector('#live2d-model-select')?.value === 'hiyori-free';
+          }, 'initial Live2D model load');
+          const select = document.querySelector('#live2d-model-select');
+          if (!select) {
+            throw new Error('Live2D model select is missing');
+          }
+          const options = Array.from(select.options).map((option) => option.value);
+          if (!options.includes('hiyori-free') || !options.includes('hiyori-pro')) {
+            throw new Error('Live2D model options missing: ' + options.join(','));
+          }
+
+          select.value = 'hiyori-pro';
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          await waitFor(() => {
+            return text('#debug-capabilities').includes('hiyori-pro') && select.value === 'hiyori-pro';
+          }, 'switched Live2D model load');
+
+          resolve({
+            modelStatus: text('#live2d-model-status'),
+            selectValue: select.value,
+            capabilities: text('#debug-capabilities'),
+          });
+        })().catch(reject);
+      }))()
+    `)
+    console.log(`AMADEUS_E2E_LIVE2D_SWITCH ${JSON.stringify(result)}`)
+    setTimeout(() => app.quit(), 100)
+  }
+  catch (error) {
+    console.error(`AMADEUS_E2E_LIVE2D_SWITCH failed: ${error instanceof Error ? error.message : String(error)}`)
+    app.exit(1)
+  }
+}
+
+async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
+  try {
+    const result = await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const deadline = Date.now() + 8000;
+        const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+        const waitFor = (predicate, label) => {
+          return new Promise((waitResolve, waitReject) => {
+            const tick = () => {
+              try {
+                if (predicate()) {
+                  waitResolve(undefined);
+                  return;
+                }
+              }
+              catch (error) {
+                waitReject(error);
+                return;
+              }
+
+              if (Date.now() > deadline) {
+                waitReject(new Error('Timed out waiting for ' + label));
+                return;
+              }
+              setTimeout(tick, 50);
+            };
+            tick();
+          });
+        };
+
+        (async () => {
+          await waitFor(() => text('#connection-label') === 'Connected', 'runtime connection');
+          const input = document.querySelector('#chat-input');
+          const form = document.querySelector('#chat-form');
+          if (!input || !form) {
+            throw new Error('Chat form is missing');
+          }
+
+          input.value = 'e2e runtime ping';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          form.requestSubmit();
+
+          await waitFor(() => {
+            return Array.from(document.querySelectorAll('.message.assistant'))
+              .some((element) => element.textContent?.includes('E2E runtime reply'));
+          }, 'assistant reply');
+
+          resolve({
+            connection: text('#connection-label'),
+            memory: text('#memory-status'),
+            chat: text('#chat-log'),
+          });
+        })().catch(reject);
+      }))()
+    `)
+    console.log(`AMADEUS_E2E_RUNTIME_UI ${JSON.stringify(result)}`)
+    setTimeout(() => app.quit(), 100)
+  }
+  catch (error) {
+    console.error(`AMADEUS_E2E_RUNTIME_UI failed: ${error instanceof Error ? error.message : String(error)}`)
+    app.exit(1)
+  }
 }
 
 app.whenReady().then(() => {

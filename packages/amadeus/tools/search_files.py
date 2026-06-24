@@ -110,7 +110,7 @@ def search_files(args: dict[str, Any]) -> dict[str, Any]:
 SEARCH_FILES_TOOL_SPEC = ToolSpec(
     name="search_files",
     display_name="Searching local files",
-    permission="ask",
+    permission="allow",
     enabled=True,
     handler=search_files,
     schema={
@@ -145,4 +145,3 @@ SEARCH_FILES_TOOL_SPEC = ToolSpec(
         },
     },
 )
-

@@ -12,13 +12,14 @@ This file is the forward-looking plan. For live implementation status, use `docs
 
 The next implementation pass should proceed in this order:
 
-1. Done: extract the model/provider boundary out of `packages/amadeus/agent.py` into `packages/amadeus/model.py`, keeping the current OpenAI-compatible behavior unchanged.
-2. Done: add the first minimal harness boundary under `packages/amadeus/harness` plus `configs/harnesses.yaml`, starting with state-to-Live2D behavior mapping rather than a broad framework.
-3. Done: add a real Python TTS provider behind `packages/amadeus/audio.py`, with the first target being a narrow GPT-SoVITS adapter that emits `audio.tts-ready` when it can produce a wav file.
-4. Done: move the default Live2D model to a local `models/live2d` bundle so desktop startup and E2E coverage do not depend on a remote test URL.
-5. Done: expose developer diagnostics for recent memory context assembly through `GET /memory/context/diagnostics`.
-6. Done: expose structured local runtime health checks through `GET /runtime/health`.
-7. Keep ToolRuntime and Memory v2 in consolidation mode: extend them only for real gaps found while implementing model, harness, audio, and desktop flows.
+1. Done: expand Electron end-to-end coverage beyond startup smoke with a deterministic local-runtime path. The packaged desktop now connects to a stub bridge, submits chat, receives streamed assistant events, and updates the visible chat UI without a live model provider.
+2. Done: add deeper desktop E2E around Live2D local model loading and model-switch behavior. The packaged desktop now exercises local `/live2d/config`, `/live2d/models`, `/live2d/select`, renderer model loading, the model select control, and harness config persistence with deterministic local fixtures.
+3. Done: add desktop E2E around runtime audio playback feedback. The packaged desktop now receives `audio.tts-ready`, plays deterministic mock runtime audio, and reports both `audio.playback-started` / `audio.playback-ended` and `audio.playback-started` / `audio.playback-error` back to the bridge.
+4. Done: add desktop E2E around permission prompts for the remaining `ask` tools. The packaged desktop now receives deterministic `tool.permission.request` events, renders the real Allow / Deny UI, and reports `tool.permission.response` back to the bridge for both approval and denial flows.
+5. Improve lipsync from the current timed mouth loop toward audio-driven or phoneme-aware behavior. Keep rendering and playback in the desktop adapter, but route runtime policy through harness events.
+6. Continue shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
+7. Keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
+8. Fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
 
 ## Phase 0: Project Skeleton
 

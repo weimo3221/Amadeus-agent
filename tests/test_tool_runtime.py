@@ -24,7 +24,7 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertIn("search_files", list_tools())
         self.assertIn("search_files", tool_state)
-        self.assertEqual(tool_state["search_files"]["permission"], "ask")
+        self.assertEqual(tool_state["search_files"]["permission"], "allow")
         self.assertIn("search_files", schema_names)
 
         self.assertIn("search_memory", list_tools())
@@ -68,7 +68,7 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertIn("read_file", list_tools())
         self.assertIn("read_file", tool_state)
-        self.assertEqual(tool_state["read_file"]["permission"], "ask")
+        self.assertEqual(tool_state["read_file"]["permission"], "allow")
         self.assertIn("read_file", schema_names)
 
         self.assertIn("patch", list_tools())
