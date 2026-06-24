@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from amadeus.audio import LocalAudioLibrary
 from amadeus.harness.base import Harness, HarnessCapability, HarnessContext
 from amadeus.harness.live2d import DEFAULT_AUDIO_PLAYBACK_BEHAVIORS, DEFAULT_STATE_BEHAVIORS, Live2DHarness
 
@@ -21,7 +22,12 @@ class HarnessRegistry:
         self.harnesses = harnesses or []
 
     @classmethod
-    def from_config(cls, config_path: Path = DEFAULT_HARNESSES_CONFIG_PATH) -> "HarnessRegistry":
+    def from_config(
+        cls,
+        config_path: Path = DEFAULT_HARNESSES_CONFIG_PATH,
+        *,
+        audio_library: LocalAudioLibrary | None = None,
+    ) -> "HarnessRegistry":
         config = parse_harnesses_config(config_path)
         harnesses: list[Harness] = []
         live2d_config = config.get("live2d", {})
@@ -44,6 +50,7 @@ class HarnessRegistry:
                 lipsync_enabled=bool((live2d_config.get("lipsync") or {}).get("enabled", True)) if isinstance(live2d_config.get("lipsync"), dict) else True,
                 lipsync_cue_interval_ms=int((live2d_config.get("lipsync") or {}).get("cueIntervalMs", 90)) if isinstance(live2d_config.get("lipsync"), dict) else 90,
                 lipsync_max_cues=int((live2d_config.get("lipsync") or {}).get("maxCues", 48)) if isinstance(live2d_config.get("lipsync"), dict) else 48,
+                audio_library=audio_library,
             ))
         return cls(harnesses)
 

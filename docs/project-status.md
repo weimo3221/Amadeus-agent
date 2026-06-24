@@ -40,7 +40,7 @@ Fallback path today:
 ### Done Now
 
 - Project scaffold is in place under `amadeus-agent`.
-- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: runtime-provided lipsync cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback.
+- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: runtime-provided lipsync cues when available, waveform-derived from local cached runtime `wav` audio when possible, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback.
 - Local runtime MVP is running in `apps/server` with HTTP health check and WebSocket events.
 - DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies.
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from amadeus.audio import LocalAudioLibrary
 from amadeus.harness.base import HarnessCapability, HarnessContext
 
 
@@ -32,6 +33,7 @@ class Live2DHarness:
     lipsync_enabled: bool = True
     lipsync_cue_interval_ms: int = 90
     lipsync_max_cues: int = 48
+    audio_library: LocalAudioLibrary | None = None
 
     name: str = "live2d"
 
@@ -101,10 +103,22 @@ class Live2DHarness:
             return None
 
         duration_ms = payload.get("durationMs")
-        if not isinstance(duration_ms, (int, float)) or duration_ms <= 0:
-            return None
+        cues: list[dict[str, float | int]] = []
+        resolved_duration_ms: int | None = None
+        audio_url = payload.get("audioUrl") if isinstance(payload.get("audioUrl"), str) else None
+        if audio_url and self.audio_library is not None:
+            resolved_duration_ms, cues = self.audio_library.lipsync_cues_for_audio_url(
+                audio_url,
+                cue_interval_ms=self.lipsync_cue_interval_ms,
+                max_cues=self.lipsync_max_cues,
+            )
 
-        cues = self._build_lipsync_cues(int(duration_ms))
+        if not cues:
+            if not isinstance(duration_ms, (int, float)) or duration_ms <= 0:
+                return None
+            resolved_duration_ms = int(duration_ms)
+            cues = self._build_lipsync_cues(resolved_duration_ms)
+
         if not cues:
             return None
 
@@ -112,8 +126,8 @@ class Live2DHarness:
             "type": "audio.lipsync-cues",
             "payload": {
                 "source": "runtime_audio",
-                "audioUrl": payload.get("audioUrl") if isinstance(payload.get("audioUrl"), str) else None,
-                "durationMs": int(duration_ms),
+                "audioUrl": audio_url,
+                "durationMs": resolved_duration_ms,
                 "cues": cues,
             },
         }

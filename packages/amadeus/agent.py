@@ -179,7 +179,10 @@ class AgentRuntime:
         self.audio_runtime = audio_runtime
         self.model_client = OpenAICompatibleChatModel()
         self.tool_registry = ToolRegistry(config_path=tools_config_path)
-        self.harness_registry = HarnessRegistry.from_config(harnesses_config_path)
+        self.harness_registry = HarnessRegistry.from_config(
+            harnesses_config_path,
+            audio_library=audio_runtime.library if audio_runtime is not None else None,
+        )
         self.harness_feedback_policy = HarnessFeedbackPolicy()
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)

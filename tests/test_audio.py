@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,6 +37,18 @@ class FakeHttpResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+def write_test_wav(path: Path, amplitudes: list[int], frame_rate: int = 1000) -> None:
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(frame_rate)
+        frames = bytearray()
+        for amplitude in amplitudes:
+            sample = max(-32768, min(32767, amplitude))
+            frames.extend(int(sample).to_bytes(2, byteorder="little", signed=True))
+        wav_file.writeframes(bytes(frames))
 
 
 class AudioProviderTests(unittest.TestCase):
@@ -221,6 +234,47 @@ class AudioProviderTests(unittest.TestCase):
             result = runtime.speak(AudioOutputCommand(text="hello"))
 
         self.assertEqual(result.reason, "tts_provider_unavailable:none")
+
+    def test_local_audio_library_reports_wav_duration_and_lipsync_cues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+            wav_path = library.cache_dir / "tts-test.wav"
+            write_test_wav(wav_path, [0] * 100 + [22000] * 100 + [4000] * 100, frame_rate=1000)
+
+            duration_ms = library.duration_ms(wav_path)
+            resolved_duration_ms, cues = library.lipsync_cues_for_audio_url(
+                library.public_url(wav_path),
+                cue_interval_ms=100,
+                max_cues=10,
+            )
+
+        self.assertEqual(duration_ms, 300)
+        self.assertEqual(resolved_duration_ms, 300)
+        self.assertGreaterEqual(len(cues), 3)
+        self.assertLess(float(cues[0]["mouthOpen"]), float(cues[1]["mouthOpen"]))
+        self.assertGreater(float(cues[1]["mouthOpen"]), float(cues[2]["mouthOpen"]))
+
+    def test_macos_say_provider_reports_cached_wav_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library = LocalAudioLibrary(Path(tmpdir) / "audio", "http://localhost:8790")
+            provider = MacOsSayTtsProvider(MacOsSayConfig(voice="Samantha", rate=180), library)
+
+            def fake_run(command: list[str], **_: object) -> None:
+                if command[0] == "say":
+                    Path(command[command.index("-o") + 1]).write_bytes(b"AIFF")
+                    return
+                if command[0] == "afconvert":
+                    write_test_wav(Path(command[-1]), [12000] * 200, frame_rate=1000)
+                    return
+                raise AssertionError(f"unexpected command: {command}")
+
+            with patch.object(MacOsSayTtsProvider, "is_available", return_value=True):
+                with patch("subprocess.run", side_effect=fake_run):
+                    result = provider.synthesize(AudioOutputCommand(text="hello", format="wav"))
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.duration_ms, 200)
 
 
 if __name__ == "__main__":

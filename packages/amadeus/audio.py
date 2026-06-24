@@ -7,13 +7,15 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import wave
 import urllib.error
 import urllib.request
+from audioop import rms, tomono
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 from amadeus.model import DEFAULT_PROVIDERS_CONFIG_PATH, parse_bool_value, parse_providers_config
 
@@ -116,7 +118,9 @@ class GptSovitsTtsProvider:
             return None
 
         audio_path = self._write_audio_cache(normalized_text, command.voice, audio_format, response_body)
-        duration_ms = round((perf_counter() - request_start) * 1000)
+        duration_ms = self.library.duration_ms(audio_path)
+        if duration_ms is None:
+            duration_ms = round((perf_counter() - request_start) * 1000)
         return AudioOutputResult(
             audio_url=self.library.public_url(audio_path),
             duration_ms=duration_ms,
@@ -205,7 +209,7 @@ class MacOsSayTtsProvider:
 
         return AudioOutputResult(
             audio_url=self.library.public_url(cache_path),
-            duration_ms=None,
+            duration_ms=self.library.duration_ms(cache_path),
             provider=self.name,
         )
 
@@ -262,6 +266,96 @@ class LocalAudioLibrary:
     def public_url(self, file_path: Path) -> str:
         relative = file_path.resolve().relative_to(self.root_dir).as_posix()
         return f"{self.public_base_url}/audio/files/{quote(relative)}"
+
+    def public_file_path(self, audio_url: str) -> Path | None:
+        parsed = urlparse(audio_url)
+        base = urlparse(self.public_base_url)
+        if parsed.scheme != base.scheme or parsed.netloc != base.netloc:
+            return None
+
+        base_path = base.path.rstrip("/")
+        prefix = f"{base_path}/audio/files/"
+        if not parsed.path.startswith(prefix):
+            return None
+
+        relative_path = unquote(parsed.path[len(prefix):]).lstrip("/")
+        return self.resolve_public_path(relative_path)
+
+    def duration_ms(self, file_path: Path) -> int | None:
+        if file_path.suffix.lower() != ".wav":
+            return None
+
+        try:
+            with wave.open(str(file_path), "rb") as wav_file:
+                frame_rate = wav_file.getframerate()
+                frame_count = wav_file.getnframes()
+        except (OSError, EOFError, wave.Error):
+            return None
+
+        if frame_rate <= 0:
+            return None
+        return max(0, round((frame_count / frame_rate) * 1000))
+
+    def lipsync_cues_for_audio_url(
+        self,
+        audio_url: str,
+        *,
+        cue_interval_ms: int,
+        max_cues: int,
+    ) -> tuple[int | None, list[dict[str, float | int]]]:
+        file_path = self.public_file_path(audio_url)
+        if file_path is None or file_path.suffix.lower() != ".wav":
+            return (None, [])
+
+        try:
+            with wave.open(str(file_path), "rb") as wav_file:
+                frame_rate = wav_file.getframerate()
+                sample_width = wav_file.getsampwidth()
+                channel_count = wav_file.getnchannels()
+                frame_count = wav_file.getnframes()
+                if frame_rate <= 0 or sample_width <= 0 or channel_count <= 0 or frame_count <= 0:
+                    return (None, [])
+
+                duration_ms = max(0, round((frame_count / frame_rate) * 1000))
+                window_ms = max(50, cue_interval_ms)
+                window_frames = max(1, round(frame_rate * (window_ms / 1000)))
+                cues: list[dict[str, float | int]] = []
+                offset_ms = 0
+
+                while len(cues) < max(1, max_cues):
+                    frames = wav_file.readframes(window_frames)
+                    if not frames:
+                        break
+
+                    if channel_count == 2:
+                        frames = tomono(frames, sample_width, 1 / channel_count, 1 / channel_count)
+                    elif channel_count > 2:
+                        return (duration_ms, [])
+
+                    signal_rms = rms(frames, sample_width)
+                    max_amplitude = {
+                        1: 128.0,
+                        2: 32768.0,
+                        3: 8388608.0,
+                        4: 2147483648.0,
+                    }.get(sample_width)
+                    if max_amplitude is None:
+                        return (duration_ms, [])
+
+                    mouth_open = min(1.0, max(0.0, 0.05 + (signal_rms / max_amplitude) * 4.0))
+                    cues.append({
+                        "offsetMs": min(duration_ms, offset_ms),
+                        "mouthOpen": round(mouth_open, 4),
+                    })
+                    offset_ms += window_ms
+
+                if not cues:
+                    return (duration_ms, [])
+                if int(cues[-1]["offsetMs"]) < duration_ms:
+                    cues.append({"offsetMs": duration_ms, "mouthOpen": 0.0})
+                return (duration_ms, cues)
+        except (OSError, EOFError, wave.Error):
+            return (None, [])
 
     @staticmethod
     def _is_inside(path: Path, parent: Path) -> bool:
