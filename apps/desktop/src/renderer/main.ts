@@ -176,6 +176,10 @@ class Live2DController {
   private lastMotion = ''
   private lastExpression = ''
   private mouthTimer: number | undefined
+  private mouthAnimationFrame: number | undefined
+  private audioContext: AudioContext | undefined
+  private analyserNode: AnalyserNode | undefined
+  private mediaSourceNode: MediaElementAudioSourceNode | undefined
   private readonly expressionAliases: Record<string, string[]>
   private readonly motionAliases: Record<string, string[]>
   readonly capabilities: Live2DModelCapabilities
@@ -206,6 +210,62 @@ class Live2DController {
     coreModel.setParameterValueById('ParamMouthOpenY', Math.max(0, Math.min(1, value)))
   }
 
+  startRuntimeAudioLipsync(audio: RuntimeAudioLike): boolean {
+    if (!(audio instanceof HTMLMediaElement)) {
+      return false
+    }
+
+    const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!AudioContextCtor) {
+      return false
+    }
+
+    try {
+      this.stopAudioDrivenMouth()
+      const audioContext = this.audioContext ?? new AudioContextCtor()
+      this.audioContext = audioContext
+      if (audioContext.state === 'suspended') {
+        void audioContext.resume().catch(() => {})
+      }
+
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = 0.72
+
+      const mediaSource = audioContext.createMediaElementSource(audio)
+      mediaSource.connect(analyser)
+      analyser.connect(audioContext.destination)
+
+      this.mediaSourceNode = mediaSource
+      this.analyserNode = analyser
+      const samples = new Uint8Array(analyser.fftSize)
+      const tick = () => {
+        if (!this.analyserNode) {
+          return
+        }
+
+        this.analyserNode.getByteTimeDomainData(samples)
+        let energy = 0
+        for (const sample of samples) {
+          const normalized = (sample - 128) / 128
+          energy += normalized * normalized
+        }
+        const rms = Math.sqrt(energy / samples.length)
+        const mouthOpen = Math.min(1, Math.max(0, 0.05 + rms * 3.1))
+        this.setMouthOpen(mouthOpen)
+        this.mouthAnimationFrame = window.requestAnimationFrame(tick)
+      }
+
+      this.mouthAnimationFrame = window.requestAnimationFrame(tick)
+      return true
+    }
+    catch (error) {
+      console.warn('Live2D audio-driven lipsync unavailable', error)
+      this.stopAudioDrivenMouth()
+      return false
+    }
+  }
+
   startMouthLoop(): void {
     this.stopMouthLoop()
     const startedAt = performance.now()
@@ -219,11 +279,23 @@ class Live2DController {
   }
 
   stopMouthLoop(): void {
+    this.stopAudioDrivenMouth()
     if (this.mouthTimer !== undefined) {
       window.clearInterval(this.mouthTimer)
       this.mouthTimer = undefined
     }
     this.setMouthOpen(0)
+  }
+
+  private stopAudioDrivenMouth(): void {
+    if (this.mouthAnimationFrame !== undefined) {
+      window.cancelAnimationFrame(this.mouthAnimationFrame)
+      this.mouthAnimationFrame = undefined
+    }
+    this.mediaSourceNode?.disconnect()
+    this.mediaSourceNode = undefined
+    this.analyserNode?.disconnect()
+    this.analyserNode = undefined
   }
 
   async applyState(state: AssistantState): Promise<void> {
@@ -945,7 +1017,14 @@ const runtimeUi = new RuntimeUiController({
   wsUrl: AGENT_WS_URL,
   modelLabel: import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-flash',
   createSocket: (url) => new WebSocket(url),
-  createAudio: (url) => MOCK_AUDIO ? createMockRuntimeAudio(url, MOCK_AUDIO) : new Audio(url),
+  createAudio: (url) => {
+    if (MOCK_AUDIO) {
+      return createMockRuntimeAudio(url, MOCK_AUDIO)
+    }
+    const audio = new Audio(url)
+    audio.crossOrigin = 'anonymous'
+    return audio
+  },
   createUtterance: (text) => new SpeechSynthesisUtterance(text),
   randomUUID: () => crypto.randomUUID(),
   setTimeout: (handler, timeout) => window.setTimeout(handler, timeout),
@@ -954,6 +1033,7 @@ const runtimeUi = new RuntimeUiController({
   live2d: {
     applyState: (state) => live2dController?.applyState(state),
     applyBehavior: (behavior) => live2dController?.applyBehavior(behavior),
+    startRuntimeAudioLipsync: (audio) => live2dController?.startRuntimeAudioLipsync(audio) ?? false,
     startMouthLoop: () => live2dController?.startMouthLoop(),
     stopMouthLoop: () => live2dController?.stopMouthLoop(),
     getCapabilities: () => currentLive2DCapabilities(),

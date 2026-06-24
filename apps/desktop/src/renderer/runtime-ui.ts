@@ -39,6 +39,7 @@ export interface RuntimeSpeechSynthesisLike {
 export interface RuntimeLive2DAdapter {
   applyState(state: AssistantState): Promise<void> | void
   applyBehavior(behavior: CharacterBehaviorPayload): Promise<void> | void
+  startRuntimeAudioLipsync?(audio: RuntimeAudioLike): boolean
   startMouthLoop(): void
   stopMouthLoop(): void
   getCapabilities?(): DesktopCapabilitiesPayload['live2d']
@@ -643,6 +644,7 @@ export class RuntimeUiController {
 
   private stopRuntimeAudio(): void {
     this.currentAudio?.pause()
+    this.options.live2d?.stopMouthLoop()
     this.currentAudio = undefined
   }
 
@@ -672,7 +674,10 @@ export class RuntimeUiController {
       this.setVoiceStatus('Playing runtime audio')
       this.sendAudioPlaybackStarted({ source: 'runtime_audio', audioUrl })
       void this.options.live2d?.applyState('speaking')
-      this.options.live2d?.startMouthLoop()
+      const startedAudioDrivenLipsync = this.options.live2d?.startRuntimeAudioLipsync?.(audio) ?? false
+      if (!startedAudioDrivenLipsync) {
+        this.options.live2d?.startMouthLoop()
+      }
     })
 
     audio.addEventListener('ended', () => {

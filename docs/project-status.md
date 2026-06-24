@@ -40,7 +40,7 @@ Fallback path today:
 ### Done Now
 
 - Project scaffold is in place under `amadeus-agent`.
-- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and lipsync MVP.
+- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: amplitude-driven mouth movement for runtime audio with the older timed mouth loop kept as fallback.
 - Local runtime MVP is running in `apps/server` with HTTP health check and WebSocket events.
 - DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies.
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
@@ -168,7 +168,7 @@ Fallback path today:
 ### Still Needed
 
 - Continue expanding Electron end-to-end coverage beyond the current startup smoke, deterministic local-runtime chat path, deterministic Live2D load/switch path, and deterministic runtime audio feedback path.
-- Improve lipsync from a timed mouth loop to audio-driven or phoneme-aware movement, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
+- Keep improving lipsync from the new runtime-audio amplitude path toward richer phoneme-aware movement, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
 - Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/model-serving/feedback proxy, not an agent-loop owner.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
@@ -386,7 +386,7 @@ Started.
 - Runtime audio provider selection and cache are active through `packages/amadeus/audio.py`, with GPT-SoVITS config support, macOS `say` fallback, `/audio/speak`, and `audio.tts-ready`.
 - Desktop capability and runtime audio playback feedback now reach Python through `POST /runtime/feedback` and are stored by `HarnessFeedbackPolicy`.
 - Live2D maps `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` into playback-state-driven `character.behavior` events returned to the desktop; these mappings are configurable through `live2d.audioPlaybackBehaviors`.
-- Remaining work: audio harness boundary, richer Live2D commands, speaking-state reconciliation, and amplitude/phoneme-driven lipsync.
+- Remaining work: richer audio harness boundary, richer Live2D commands, speaking-state reconciliation, and later phoneme-aware lipsync.
 
 ### Phase 11: Proactive Agent
 

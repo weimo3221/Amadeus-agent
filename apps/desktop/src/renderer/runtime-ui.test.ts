@@ -237,11 +237,25 @@ function createHarness() {
   const socket = new FakeSocket()
   const speech = new FakeSpeechSynthesis()
   const audios: FakeAudio[] = []
+  const live2dStats = {
+    startRuntimeAudioLipsyncCalls: 0,
+    startMouthLoopCalls: 0,
+    stopMouthLoopCalls: 0,
+    runtimeAudioLipsyncResult: false,
+  }
   const live2d: RuntimeLive2DAdapter = {
     applyState: () => {},
     applyBehavior: () => {},
-    startMouthLoop: () => {},
-    stopMouthLoop: () => {},
+    startRuntimeAudioLipsync: () => {
+      live2dStats.startRuntimeAudioLipsyncCalls += 1
+      return live2dStats.runtimeAudioLipsyncResult
+    },
+    startMouthLoop: () => {
+      live2dStats.startMouthLoopCalls += 1
+    },
+    stopMouthLoop: () => {
+      live2dStats.stopMouthLoopCalls += 1
+    },
     getCapabilities: () => ({
       available: true,
       modelId: 'hiyori-free',
@@ -268,7 +282,7 @@ function createHarness() {
   })
 
   controller.bindControls()
-  return { controller, elements, socket, timers, speech, audios }
+  return { controller, elements, socket, timers, speech, audios, live2dStats }
 }
 
 describe('Runtime UI controller', () => {
@@ -455,7 +469,7 @@ describe('Runtime UI controller', () => {
   })
 
   it('uses runtime audio and cancels speechSynthesis fallback after audio.tts-ready', () => {
-    const { controller, elements, socket, timers, speech, audios } = createHarness()
+    const { controller, elements, socket, timers, speech, audios, live2dStats } = createHarness()
 
     controller.connectAgentRuntime()
     socket.emitServerEvent(makeEvent('server.hello', {
@@ -477,11 +491,34 @@ describe('Runtime UI controller', () => {
     assert.equal(speech.spoken.length, 0)
     assert.equal(speech.cancelCalls, 1)
     assert.equal(elements.voiceStatus.textContent, 'Playing runtime audio')
+    assert.equal(live2dStats.startRuntimeAudioLipsyncCalls, 1)
+    assert.equal(live2dStats.startMouthLoopCalls, 1)
     assert.equal(socket.sent.at(-1)?.type, 'audio.playback-started')
     assert.deepEqual(socket.sent.at(-1)?.payload, {
       source: 'runtime_audio',
       audioUrl: 'http://runtime/audio.wav',
     })
+  })
+
+  it('prefers audio-driven Live2D lipsync over the timed mouth loop when available', () => {
+    const { controller, socket, live2dStats } = createHarness()
+    live2dStats.runtimeAudioLipsyncResult = true
+
+    controller.connectAgentRuntime()
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'model',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
+    controller.handleServerEvent(makeEvent('assistant.message', { text: 'hello with audio' }))
+    controller.handleServerEvent(makeEvent('audio.tts-ready', {
+      audioUrl: 'http://runtime/audio.wav',
+      durationMs: 1000,
+    }))
+
+    assert.equal(live2dStats.startRuntimeAudioLipsyncCalls, 1)
+    assert.equal(live2dStats.startMouthLoopCalls, 0)
   })
 
   it('reports runtime audio ended and error playback feedback', () => {
