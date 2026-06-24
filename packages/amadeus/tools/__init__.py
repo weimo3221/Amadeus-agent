@@ -8,6 +8,7 @@ from amadeus.tools.search_files import SEARCH_FILES_TOOL_SPEC, search_files
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
 from amadeus.tools.search_memory import SEARCH_MEMORY_TOOL_SPEC, search_memory
+from amadeus.tools.skills import SKILLS_LIST_TOOL_SPEC, SKILL_VIEW_TOOL_SPEC, skill_view, skills_list
 from amadeus.tools.stable_memory import READ_MEMORY_TOOL_SPEC, UPDATE_MEMORY_TOOL_SPEC, read_memory, update_memory
 from amadeus.tools.structured_memory import (
     MEMORY_ADD_TOOL_SPEC,
@@ -30,6 +31,8 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         DICE_TOOL_SPEC,
         SEARCH_FILES_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
+        SKILLS_LIST_TOOL_SPEC,
+        SKILL_VIEW_TOOL_SPEC,
         SEARCH_MEMORY_TOOL_SPEC,
         READ_MEMORY_TOOL_SPEC,
         UPDATE_MEMORY_TOOL_SPEC,
@@ -87,6 +90,8 @@ __all__ = [
     "search_files",
     "search_memory",
     "search_memory_items",
+    "skill_view",
+    "skills_list",
     "update_memory",
     "write_file",
 ]

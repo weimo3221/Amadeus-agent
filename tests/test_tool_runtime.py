@@ -71,6 +71,16 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["read_file"]["permission"], "allow")
         self.assertIn("read_file", schema_names)
 
+        self.assertIn("skills_list", list_tools())
+        self.assertIn("skills_list", tool_state)
+        self.assertEqual(tool_state["skills_list"]["permission"], "allow")
+        self.assertIn("skills_list", schema_names)
+
+        self.assertIn("skill_view", list_tools())
+        self.assertIn("skill_view", tool_state)
+        self.assertEqual(tool_state["skill_view"]["permission"], "allow")
+        self.assertIn("skill_view", schema_names)
+
         self.assertIn("patch", list_tools())
         self.assertIn("patch", tool_state)
         self.assertEqual(tool_state["patch"]["permission"], "ask")

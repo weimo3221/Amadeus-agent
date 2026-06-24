@@ -446,8 +446,8 @@ describe('WebSocket Python-first integration', () => {
       getToolPermissions: () => [],
       resetSession: () => {},
       forwardToolPermissionToPython: () => {},
-      async streamChat(socket, sessionId, text) {
-        await relayPythonTurn(socket, sessionId, text, {
+      async streamChat(socket, sessionId, text, skills) {
+        await relayPythonTurn(socket, sessionId, text, skills, {
           runtimeUrl: `http://127.0.0.1:${pythonPort}`,
         })
       },
@@ -472,6 +472,7 @@ describe('WebSocket Python-first integration', () => {
       payload: {
         text: 'hello',
         inputMode: 'text',
+        skills: ['runtime-debug'],
       },
     }))
 
@@ -481,6 +482,7 @@ describe('WebSocket Python-first integration', () => {
       sessionId: 'default',
       text: 'hello',
       inputMode: 'text',
+      skills: ['runtime-debug'],
     })
     assert.equal(event.id, 'python-event-2')
     assert.equal(event.type, 'assistant.message')

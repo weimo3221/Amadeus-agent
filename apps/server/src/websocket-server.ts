@@ -37,7 +37,7 @@ export interface AmadeusBridgeServerOptions {
     response: import('node:http').ServerResponse,
     requestUrl: string,
   ): void | Promise<void>
-  streamChat(socket: WebSocket, sessionId: string, text: string): void | Promise<void>
+  streamChat(socket: WebSocket, sessionId: string, text: string, skills?: string[]): void | Promise<void>
 }
 
 export interface AmadeusBridgeServer {
@@ -286,7 +286,7 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
       }
 
       if (event.type === 'user.message') {
-        void Promise.resolve(options.streamChat(socket, event.sessionId, event.payload.text)).catch((error: unknown) => {
+        void Promise.resolve(options.streamChat(socket, event.sessionId, event.payload.text, event.payload.skills)).catch((error: unknown) => {
           sendState(socket, event.sessionId, 'error')
           send(socket, 'error', event.sessionId, {
             code: 'runtime_error',

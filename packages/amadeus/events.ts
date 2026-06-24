@@ -68,6 +68,7 @@ export type ServerRuntimeEvent =
 export interface UserMessagePayload {
   text: string
   inputMode: 'text' | 'voice'
+  skills?: string[]
 }
 
 export interface AssistantDeltaPayload {

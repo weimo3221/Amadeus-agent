@@ -6,7 +6,7 @@ This package is intended to become the real agent core. The surrounding TypeScri
 
 - `apps/desktop`: Electron window, Live2D rendering, local UI, runtime audio playback, and permission UI.
 - `apps/server`: WebSocket bridge between desktop events and the Python runtime.
-- `packages/amadeus`: preferred agent turn path, memory, tools, runtime HTTP API, and future model/skills/harness boundaries.
+- `packages/amadeus`: preferred agent turn path, memory, tools, runtime HTTP API, and active model/skills/harness boundaries.
 
 ## Current active modules
 
@@ -16,9 +16,9 @@ This package is intended to become the real agent core. The surrounding TypeScri
 - `audio.py`: active audio/TTS interface.
 - `server.py`: active HTTP runtime.
 
-## Current placeholder boundaries
+## Current evolving boundaries
 
-These files exist as future module boundaries, but are not yet the main active implementation path:
+These files are active boundaries, but some still need more depth:
 
 - `model.py`
 - `skills.py`
@@ -28,6 +28,7 @@ These files exist as future module boundaries, but are not yet the main active i
 
 - `agent.py` contains the real preferred turn logic today.
 - The runtime loads recent SQLite history, saves user and assistant messages, makes the tool-decision call, executes Python tools, streams `assistant.delta`, emits `assistant.message`, and may emit `audio.tts-ready`.
+- Skills now live under `../../skills/<category>/<skill-name>/SKILL.md`. The runtime can list/view them through `/skills/list`, `/skills/view`, `skills_list`, and `skill_view`, and `POST /agent/turn` accepts optional `skills: string[]` for explicit turn-scoped skill injection.
 - Tool permission requests are brokered through streamed `tool.permission.request` events plus `POST /tools/permission`.
 - Audio is wired through `audio.tts-ready`. The default `auto` TTS config prefers GPT-SoVITS when configured and otherwise uses macOS `say`/`afconvert` when available, with `speechSynthesis` as the desktop fallback.
 
@@ -54,6 +55,8 @@ The Python runtime reads this file on startup. After editing it, call `POST /run
 | `memory_forget` | `ask` | Deletes one active durable structured memory fact after user approval. |
 | `search_files` | `allow` | Searches workspace-relative filenames and/or small text file contents using `target: all | files | content`, skipping generated/heavy directories and capping result count. |
 | `read_file` | `allow` | Reads an explicit, line-numbered window from a workspace-relative UTF-8 text file after search; images, PDFs, binaries, and unknown extensions return structured `kind/supported/hint` metadata instead of being decoded. |
+| `skills_list` | `allow` | Lists installed runtime skills with identifiers, descriptions, and declared tool preferences. |
+| `skill_view` | `allow` | Loads the full instructions for one installed runtime skill by identifier or unique skill name. |
 | `patch` | `ask` | Applies a safe single-file text replacement inside the workspace, requiring a unique `oldText` match unless `replaceAll=true`, and returns a unified diff preview. |
 | `write_file` | `ask` | Creates or fully overwrites a workspace-relative UTF-8 text file, refusing accidental overwrites unless `overwrite=true`, and returns size/line metadata plus a diff preview. |
 

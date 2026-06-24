@@ -87,6 +87,27 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path == "/skills/list":
+            logger.info("Handling skills list request")
+            self.write_json(200, {
+                "ok": True,
+                "skills": agent_runtime.skill_catalog.skill_summaries(),
+            })
+            return
+
+        if parsed.path == "/skills/view":
+            query = parse_qs(parsed.query)
+            name = optional_query_string(query, "name")
+            if not name:
+                self.write_json(400, {"ok": False, "error": "name is required"})
+                return
+            skill = agent_runtime.skill_catalog.view_skill(name)
+            if skill is None:
+                self.write_json(404, {"ok": False, "error": "skill_not_found"})
+                return
+            self.write_json(200, {"ok": True, "skill": skill})
+            return
+
         if parsed.path == "/tools/audit":
             query = parse_qs(parsed.query)
             session_id = optional_query_string(query, "sessionId")
@@ -428,13 +449,23 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             body = self.read_json_body()
             session_id = body.get("sessionId", "default")
             text = body.get("text")
+            raw_skills = body.get("skills")
 
             if not isinstance(session_id, str) or not isinstance(text, str):
                 logger.info("Rejecting malformed agent turn request sessionIdType=%s textType=%s", type(session_id).__name__, type(text).__name__)
                 self.write_json(400, {"ok": False, "error": "sessionId and text must be strings"})
                 return
+            if raw_skills is not None and (
+                not isinstance(raw_skills, list)
+                or any(not isinstance(skill_name, str) for skill_name in raw_skills)
+            ):
+                logger.info("Rejecting malformed agent turn skills payload skillsType=%s", type(raw_skills).__name__)
+                self.write_json(400, {"ok": False, "error": "skills must be an array of strings when provided"})
+                return
 
-            logger.info("Handling agent turn request sessionId=%s textChars=%s", session_id, len(text))
+            skills = [skill_name for skill_name in (raw_skills or []) if isinstance(skill_name, str)]
+
+            logger.info("Handling agent turn request sessionId=%s textChars=%s skillCount=%s", session_id, len(text), len(skills))
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
@@ -457,7 +488,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 })
                 return permission_broker.wait(request.request_id)
 
-            for event in agent_runtime.run_turn(session_id, text, request_permission):
+            for event in agent_runtime.run_turn(session_id, text, request_permission, active_skills=skills):
                 logger.info("Streaming runtime event sessionId=%s type=%s", session_id, event.type)
                 self.write_json_line(event.to_runtime_event(session_id))
         except BrokenPipeError:

@@ -51,8 +51,8 @@ async function getPythonToolPermissions(): Promise<ToolPermissionState[]> {
   return permissions ?? pythonToolsUnavailable
 }
 
-async function streamChat(socket: WebSocket, sessionId: string, userText: string): Promise<void> {
-  const handledByPython = await relayPythonTurn(socket, sessionId, userText, { runtimeUrl: pythonRuntimeUrl })
+async function streamChat(socket: WebSocket, sessionId: string, userText: string, skills?: string[]): Promise<void> {
+  const handledByPython = await relayPythonTurn(socket, sessionId, userText, skills, { runtimeUrl: pythonRuntimeUrl })
   if (handledByPython) {
     return
   }

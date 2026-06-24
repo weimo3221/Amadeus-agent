@@ -18,7 +18,7 @@ The Python-first turn path is already in place: `/agent/turn` is implemented as 
 Current implementation note:
 
 - Active provider/model transport logic now lives in `packages/amadeus/model.py` as a first-pass OpenAI-compatible boundary. It reads `configs/providers.yaml` plus environment-expanded provider values, keeps lightweight provider metadata, and raises classified `ModelError` instances for auth, rate limit, server, timeout, context, payload, format, model-not-found, and unknown failures. `packages/amadeus/agent.py` still owns when and why to request tool decisions, summaries, memory review, and final responses.
-- `packages/amadeus/skills.py` is still a future boundary rather than a mature active module. `packages/amadeus/live2d.py` now owns the local Live2D model library boundary while renderer-specific adapter logic still lives in desktop.
+- `packages/amadeus/skills.py` now owns a first-pass runtime skill catalog. It scans `skills/<category>/<skill-name>/SKILL.md`, parses simple frontmatter, exposes list/view metadata, and can inject explicitly requested skills into one turn without loading every skill by default. `packages/amadeus/live2d.py` now owns the local Live2D model library boundary while renderer-specific adapter logic still lives in desktop.
 - `packages/live2d-stage` is still an intended package boundary; the working Live2D renderer logic currently lives in `apps/desktop/src/renderer/main.ts`.
 
 Current progress calibration:
@@ -35,7 +35,7 @@ Current progress calibration:
 - Local Live2D model storage is in place: `models/live2d` stores switchable local models, `configs/harnesses.yaml` selects the active model, and `packages/amadeus/live2d.py` now owns model resolution, model listing, manifest reads, and `/live2d/select` persistence. `apps/server` keeps the desktop-facing `8788` origin by proxying `/live2d/*` to the Python runtime and rewriting model URLs back to the bridge origin. The default model is now local `hiyori-free`.
 - First-pass desktop feedback is in place end to end: the renderer sends `desktop.capabilities` after connection/model load and emits `audio.playback-started`, `audio.playback-ended`, and `audio.playback-error` for runtime audio; the bridge forwards them to Python `POST /runtime/feedback`; Python `HarnessFeedbackPolicy` stores the latest per-session desktop capabilities, audio playback state, and recent feedback events for harness policy.
 - Live2D now consumes playback feedback at the harness layer: `audio.playback-started` maps to a talking behavior, `audio.playback-ended` maps to idle, and `audio.playback-error` maps to a confused/failure behavior. The bridge forwards these Python-returned `character.behavior` events back to the desktop socket. The desktop still keeps its immediate local mouth loop as a fallback and low-latency response.
-- The desktop side now prefers runtime-provided `audio.lipsync-cues` for runtime audio, otherwise samples the playing `HTMLAudioElement` through Web Audio `AnalyserNode` and maps waveform energy to `ParamMouthOpenY`. The Python audio library now resolves actual `wav` duration where possible, normalizes provider-native `lipsyncCues` / `visemes` / `phonemes` payloads when present, otherwise builds phoneme/viseme cue sequences from assistant text, and can scale those fallback cues with local waveform envelope data. The next large architectural gap is completing the runtime/harness layer: richer audio harness decisions, richer Live2D commands, better non-Latin phoneme mapping, and later skills/tasks.
+- The desktop side now prefers runtime-provided `audio.lipsync-cues` for runtime audio, otherwise samples the playing `HTMLAudioElement` through Web Audio `AnalyserNode` and maps waveform energy to `ParamMouthOpenY`. The Python audio library now resolves actual `wav` duration where possible, normalizes provider-native `lipsyncCues` / `visemes` / `phonemes` payloads when present, otherwise builds phoneme/viseme cue sequences from assistant text, and can scale those fallback cues with local waveform envelope data. The next large architectural gaps are richer audio harness decisions, richer Live2D commands, better non-Latin phoneme mapping, and later skill management / orchestration rather than basic skill loading.
 
 Live2D and audio should be treated as installable harnesses. They can contribute prompt fragments and observe runtime events, but the actual rendering and playback stay in the desktop adapter.
 
@@ -53,6 +53,19 @@ The Python runtime now separates concrete tool implementations from runtime tool
 - `packages/amadeus/tools.ts`: TypeScript bridge types and Python tool HTTP clients only. It intentionally does not mirror concrete tool handlers or schemas; server diagnostics should call Python `/tools/list`.
 
 Keep future tool hardening inside `tool_runtime` unless it needs model context or desktop events. The next additions should be additional per-tool result policies for new high-volume tools, richer diagnostics UI surfaces on top of `GET /tools/audit` if needed, and continued tuning of semantic no-progress policies as new tools land. Live2D and audio harnesses may register optional tools later, but they should not be implemented as ad hoc branches in the agent loop.
+
+## Skills V1 Boundary
+
+The first runtime skill slice is intentionally narrow and modeled after the useful parts of Hermes rather than its full ecosystem:
+
+- Skills live under `skills/<category>/<skill-name>/SKILL.md`.
+- `SKILL.md` may declare simple frontmatter such as `name`, `description`, `preferred_tools`, and `allowed_tools`.
+- Python exposes `GET /skills/list` and `GET /skills/view`.
+- The tool registry exposes read-only `skills_list` and `skill_view`.
+- `POST /agent/turn` now accepts an optional `skills: string[]` field; when present, Python resolves those skills and appends an `<active-skills>` block to the system context for that turn only.
+- The bridge now forwards optional `user.message.payload.skills` through to Python, but the desktop UI does not yet provide skill selection controls.
+
+This is enough to establish a real skill boundary without taking on bundles, marketplace sync, subagent orchestration, or skill editing flows yet.
 
 `workspace_epoch` is maintained by `AgentRuntime` per session. It is a monotonic runtime counter, not a content hash or filesystem scan. It starts at `0`, is passed into `ToolContext`, guardrail signatures, and `tool.audit` metadata, and advances after `patch` or `write_file` succeeds with `changed: true`. This lets the same `read_file` window or `search_files` query be blocked as no-progress within one epoch, then become allowed again after a real workspace mutation. Future shell/external mutation tools should advance the counter conservatively on successful mutation.
 

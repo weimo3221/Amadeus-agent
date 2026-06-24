@@ -225,6 +225,12 @@ Target deliverables:
 - `skill_manage` with permission prompts and path safety.
 - Initial Live2D/audio-aware companion skills.
 
+Current status:
+
+- V1 is now in place for `skills/<category>/<skill-name>/SKILL.md` discovery, simple frontmatter parsing, read-only `skills_list` / `skill_view`, optional `POST /agent/turn` `skills: []` injection, and bridge passthrough for future desktop selection UI.
+- Two seed skills exist under `skills/development/`: `runtime-debug` and `desktop-e2e`.
+- Remaining work is `skill_run`, richer metadata validation, support files, desktop/UI selection, and later skill management/orchestration.
+
 ## Phase 11: Proactive Agent
 
 Goal: the character can help without waiting for every instruction.

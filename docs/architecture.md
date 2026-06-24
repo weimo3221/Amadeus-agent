@@ -86,7 +86,7 @@ packages/amadeus
   +--> audio.py        (active audio interface; noop TTS by default)
   +--> server.py       (active HTTP runtime)
   +--> model.py        (placeholder boundary)
-  +--> skills.py       (placeholder boundary)
+  +--> skills.py       (active skill catalog boundary)
   +--> live2d.py       (placeholder boundary)
 ```
 
@@ -155,7 +155,7 @@ packages/amadeus
 - `server.py`: active Python HTTP runtime surface, including local audio file serving and local Live2D model config/static asset serving for direct runtime use.
 - `model.py`: active first-pass OpenAI-compatible provider boundary for `configs/providers.yaml` plus environment-backed provider config, JSON chat-completion requests, stream parsing, and classified provider error normalization.
 - `harness/`: active first-pass harness boundary with a registry and Live2D harness that maps `assistant.state` plus configurable audio playback feedback behaviors to `character.behavior`.
-- `skills.py`: future reusable behavior boundary; currently placeholder only.
+- `skills.py`: active first-pass reusable behavior boundary; owns skill discovery, metadata/view APIs, and explicit turn-level skill prompt injection.
 - `live2d.py`: active local Live2D model library boundary plus character command dataclasses.
 
 Live2D and audio are not the agent brain. They are device interfaces that the Python runtime can command, while the actual rendering/playback remains in desktop-side adapters.

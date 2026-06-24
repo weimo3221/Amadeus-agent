@@ -68,7 +68,7 @@ describe('Python bridge relay', () => {
       ])
     }
 
-    const handled = await relayPythonTurn(socket, 'session-1', 'hello', {
+    const handled = await relayPythonTurn(socket, 'session-1', 'hello', undefined, {
       runtimeUrl: 'http://127.0.0.1:8790/',
       fetchImpl,
     })
@@ -91,11 +91,11 @@ describe('Python bridge relay', () => {
     }
     const rejectedFetch: typeof fetch = async () => streamResponse([], 503)
 
-    assert.equal(await relayPythonTurn(socket, 'session-1', 'hello', {
+    assert.equal(await relayPythonTurn(socket, 'session-1', 'hello', undefined, {
       runtimeUrl: 'http://runtime',
       fetchImpl: failingFetch,
     }), false)
-    assert.equal(await relayPythonTurn(socket, 'session-1', 'hello', {
+    assert.equal(await relayPythonTurn(socket, 'session-1', 'hello', undefined, {
       runtimeUrl: 'http://runtime',
       fetchImpl: rejectedFetch,
     }), false)
@@ -114,7 +114,7 @@ describe('Python bridge relay', () => {
       `not-json\n${JSON.stringify(validEvent)}\n`,
     ])
 
-    const handled = await relayPythonTurn(socket, 'session-1', 'hello', {
+    const handled = await relayPythonTurn(socket, 'session-1', 'hello', undefined, {
       runtimeUrl: 'http://runtime',
       fetchImpl,
     })
@@ -126,6 +126,27 @@ describe('Python bridge relay', () => {
       message: 'Python runtime emitted an invalid event.',
     })
     assert.deepEqual(sent[1], validEvent)
+  })
+
+  it('forwards explicit skill selections to Python when provided', async () => {
+    const { socket } = captureSocket()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return streamResponse([])
+    }
+
+    await relayPythonTurn(socket, 'session-1', 'hello', ['runtime-debug', 'desktop-e2e'], {
+      runtimeUrl: 'http://127.0.0.1:8790/',
+      fetchImpl,
+    })
+
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+      sessionId: 'session-1',
+      text: 'hello',
+      inputMode: 'text',
+      skills: ['runtime-debug', 'desktop-e2e'],
+    })
   })
 })
 

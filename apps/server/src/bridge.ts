@@ -121,6 +121,7 @@ export async function relayPythonTurn(
   socket: SocketLike,
   sessionId: string,
   userText: string,
+  activeSkills: string[] | undefined,
   options: PythonBridgeOptions,
 ): Promise<boolean> {
   const fetchImpl = options.fetchImpl ?? fetch
@@ -135,6 +136,7 @@ export async function relayPythonTurn(
         sessionId,
         text: userText,
         inputMode: 'text',
+        ...(activeSkills && activeSkills.length ? { skills: activeSkills } : {}),
       }),
     })
   }

@@ -44,6 +44,21 @@ class ReviewRuntime(AgentRuntime):
         ]
 
 
+class TurnRuntime(AgentRuntime):
+    def __init__(self, *args, **kwargs) -> None:
+        self.decision_messages: list[list[dict]] = []
+        self.final_messages: list[list[dict]] = []
+        super().__init__(*args, **kwargs)
+
+    def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        self.decision_messages.append(json.loads(json.dumps(messages)))
+        return {"role": "assistant", "content": "", "tool_calls": []}
+
+    def _stream_final_response(self, messages: list[dict[str, Any]]):
+        self.final_messages.append(json.loads(json.dumps(messages)))
+        yield "HTTP ok"
+
+
 class PythonRuntimeHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -56,6 +71,13 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
         self.runtime_config_path = Path(self.tmpdir.name) / "runtime.yaml"
         self.harnesses_config_path = Path(self.tmpdir.name) / "harnesses.yaml"
+        self.skills_root = Path(self.tmpdir.name) / "skills"
+        skill_dir = self.skills_root / "development" / "runtime-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: runtime-debug\ndescription: Debug runtime behavior.\n---\n\nUse tests before fixes.\n",
+            encoding="utf-8",
+        )
         live2d_root = Path(self.tmpdir.name) / "live2d"
         live2d_model_dir = live2d_root / "hiyori-free"
         live2d_model_dir.mkdir(parents=True)
@@ -87,11 +109,12 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         )
         memory_store = MessageMemoryStore(database_path)
         runtime_server.memory_store = memory_store
-        runtime_server.agent_runtime = AgentRuntime(
+        runtime_server.agent_runtime = TurnRuntime(
             memory_store,
             audio_runtime=None,
             tools_config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
             runtime_config_path=self.runtime_config_path,
+            skills_root=self.skills_root,
         )
         runtime_server.permission_broker = PermissionBroker()
         runtime_server.live2d_library = LocalLive2DModelLibrary(live2d_root, "http://runtime", self.harnesses_config_path)
@@ -156,6 +179,28 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         schema_names = {entry["function"]["name"] for entry in payload["schemas"]}
         self.assertIn("get_current_time", tool_names)
         self.assertIn("get_current_time", schema_names)
+
+    def test_skills_list_and_view_expose_runtime_skills(self) -> None:
+        listed = self.get_json("/skills/list")
+        viewed = self.get_json("/skills/view?name=runtime-debug")
+
+        self.assertTrue(listed["ok"])
+        self.assertEqual(len(listed["skills"]), 1)
+        self.assertEqual(listed["skills"][0]["identifier"], "development/runtime-debug")
+        self.assertTrue(viewed["ok"])
+        self.assertEqual(viewed["skill"]["name"], "runtime-debug")
+        self.assertIn("Use tests before fixes.", viewed["skill"]["instructions"])
+
+    def test_agent_turn_accepts_explicit_skills(self) -> None:
+        events = self.post_ndjson("/agent/turn", {
+            "sessionId": "http-test",
+            "text": "hello",
+            "skills": ["runtime-debug"],
+        })
+
+        self.assertEqual(events[0]["sessionId"], "http-test")
+        self.assertIn("assistant.message", [event["type"] for event in events])
+        self.assertIn("<active-skills>", runtime_server.agent_runtime.decision_messages[-1][0]["content"])
 
     def test_live2d_config_returns_current_model_url(self) -> None:
         payload = self.get_json("/live2d/config")

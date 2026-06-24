@@ -332,7 +332,7 @@ Current limitations:
 - `apps/server` no longer contains the legacy TypeScript fallback loop or local TypeScript tool registry mirror.
 - Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and an Electron startup smoke. Full Live2D/interaction end-to-end coverage is still missing.
 - `packages/amadeus/model.py` is active as the first-pass provider boundary, but richer provider profile/fallback behavior is still future work.
-- `skills.py` is still a placeholder boundary rather than a mature runtime module; `live2d.py` owns the local model library but not the desktop renderer adapter.
+- `skills.py` now implements a first-pass runtime skill catalog and explicit turn-level skill injection; `live2d.py` owns the local model library but not the desktop renderer adapter.
 - `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/main.ts`.
 
 ## Next Recommended Phase
@@ -428,7 +428,7 @@ Not started.
 - GPT-SoVITS high-quality voice integration still requires a running GPT-SoVITS API and model assets; until then macOS `say` provides the local practical TTS loop.
 - Lipsync is no longer only a timed mouth loop: runtime now prefers provider-native or locally planned phoneme/viseme cues, with desktop amplitude analysis and the timed loop retained as fallbacks.
 - Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and Electron startup smoke behavior. Full Live2D/interaction end-to-end coverage is still missing.
-- Placeholder or partial boundaries still need real implementations or cleanup: `skills.py`, the future audio harness, richer Live2D adapter packaging, and `packages/live2d-stage`.
+- Partial boundaries still need more depth or cleanup: richer skill management/orchestration, the future audio harness, richer Live2D adapter packaging, and `packages/live2d-stage`.
 
 ## Useful Commands
 

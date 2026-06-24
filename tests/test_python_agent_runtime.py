@@ -27,6 +27,7 @@ class FakeAgentRuntime(AgentRuntime):
         tools_config_path: Path | None = None,
         runtime_config_path: Path | None = None,
         audio_runtime: AudioRuntime | None = None,
+        skills_root: Path | None = None,
         summary_error: str | None = None,
         memory_review_response: list[dict[str, Any]] | None = None,
         memory_review_error: str | None = None,
@@ -46,6 +47,7 @@ class FakeAgentRuntime(AgentRuntime):
             audio_runtime=audio_runtime,
             tools_config_path=tools_config_path or Path(tempfile.mkdtemp()) / "missing-tools.yaml",
             runtime_config_path=runtime_config_path or Path(tempfile.mkdtemp()) / "missing-runtime.yaml",
+            skills_root=skills_root or Path(tempfile.mkdtemp()) / "skills",
         )
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -116,6 +118,13 @@ class AgentRuntimeTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
         self.memory = MessageMemoryStore(self.database_path)
+        self.skills_root = Path(self.tmpdir.name) / "skills"
+        runtime_debug = self.skills_root / "development" / "runtime-debug"
+        runtime_debug.mkdir(parents=True)
+        (runtime_debug / "SKILL.md").write_text(
+            "---\nname: runtime-debug\ndescription: Debug runtime behavior.\n---\n\nUse evidence before fixes.\n",
+            encoding="utf-8",
+        )
 
     def tearDown(self) -> None:
         self.tmpdir.cleanup()
@@ -131,7 +140,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(self.memory.count("default"), 0)
 
     def test_simple_turn_persists_user_and_assistant_messages(self) -> None:
-        runtime = FakeAgentRuntime(self.memory, deltas=["Hello", " there"])
+        runtime = FakeAgentRuntime(self.memory, deltas=["Hello", " there"], skills_root=self.skills_root)
 
         events = list(runtime.run_turn("default", "hi", lambda _request: False))
 
@@ -141,6 +150,26 @@ class AgentRuntimeTests(unittest.TestCase):
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "Hello there"},
         ])
+
+    def test_explicit_skills_are_injected_into_turn_system_context(self) -> None:
+        runtime = FakeAgentRuntime(self.memory, deltas=["done"], skills_root=self.skills_root)
+
+        list(runtime.run_turn("default", "debug this runtime issue", lambda _request: False, active_skills=["runtime-debug"]))
+
+        system_message = runtime.decision_messages[-1][0]
+        self.assertEqual(system_message["role"], "system")
+        self.assertIn("<active-skills>", system_message["content"])
+        self.assertIn("development/runtime-debug", system_message["content"])
+        self.assertIn("Use evidence before fixes.", system_message["content"])
+
+    def test_unknown_explicit_skill_returns_structured_error(self) -> None:
+        runtime = FakeAgentRuntime(self.memory, skills_root=self.skills_root)
+
+        events = list(runtime.run_turn("default", "debug this runtime issue", lambda _request: False, active_skills=["missing-skill"]))
+
+        self.assertEqual(events[0].type, "error")
+        self.assertEqual(events[0].payload["code"], "skill_not_found")
+        self.assertEqual(self.memory.count("default"), 0)
 
     def test_turn_emits_runtime_audio_lipsync_cues_from_audio_runtime(self) -> None:
         audio_library_root = Path(self.tmpdir.name) / "audio"
