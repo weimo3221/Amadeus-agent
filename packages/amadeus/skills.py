@@ -68,6 +68,26 @@ class ResolvedSkills:
         return not self.missing and not self.ambiguous
 
 
+@dataclass(frozen=True)
+class SkillValidationIssue:
+    level: str
+    code: str
+    message: str
+    path: str
+
+
+@dataclass(frozen=True)
+class SkillValidationResult:
+    skill_dir: Path
+    identifier: str
+    errors: tuple[SkillValidationIssue, ...]
+    warnings: tuple[SkillValidationIssue, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
 def slugify(value: str) -> str:
     slug = value.strip().lower().replace("_", "-").replace(" ", "-")
     slug = _SLUG_INVALID_CHARS_RE.sub("", slug)
@@ -75,13 +95,13 @@ def slugify(value: str) -> str:
     return slug
 
 
-def parse_frontmatter(markdown: str) -> tuple[dict[str, Any], str]:
+def split_frontmatter(markdown: str) -> tuple[str, str] | None:
     if not markdown.startswith("---\n"):
-        return {}, markdown
+        return None
 
     lines = markdown.splitlines()
     if not lines or lines[0].strip() != "---":
-        return {}, markdown
+        return None
 
     closing_index = None
     for index, line in enumerate(lines[1:], start=1):
@@ -90,11 +110,20 @@ def parse_frontmatter(markdown: str) -> tuple[dict[str, Any], str]:
             break
 
     if closing_index is None:
+        return None
+
+    frontmatter_text = "\n".join(lines[1:closing_index])
+    body = "\n".join(lines[closing_index + 1 :]).lstrip()
+    return frontmatter_text, body
+
+
+def parse_frontmatter(markdown: str) -> tuple[dict[str, Any], str]:
+    split = split_frontmatter(markdown)
+    if split is None:
         return {}, markdown
 
-    frontmatter_lines = lines[1:closing_index]
-    body = "\n".join(lines[closing_index + 1 :]).lstrip()
-    frontmatter_text = "\n".join(frontmatter_lines)
+    frontmatter_text, body = split
+    frontmatter_lines = frontmatter_text.splitlines()
 
     if yaml is not None:
         try:
@@ -184,6 +213,24 @@ def _bool_from_metadata(value: Any) -> bool:
     return False
 
 
+def _validate_skill_name_value(name: str) -> str | None:
+    if not name:
+        return "name must not be empty"
+    if slugify(name) != name:
+        return "name should be kebab-case and stable for identifier lookup"
+    if len(name) > 64:
+        return "name should be 64 characters or fewer"
+    return None
+
+
+def _validate_description_value(description: str) -> str | None:
+    if not description:
+        return "description must not be empty"
+    if len(description) > 1024:
+        return "description should be 1024 characters or fewer"
+    return None
+
+
 def _infer_description(body: str) -> str:
     for line in body.splitlines():
         stripped = line.strip()
@@ -204,6 +251,119 @@ def _skill_lookup_path_error(name: str) -> str | None:
     if ".." in PurePosixPath(candidate).parts or ".." in PureWindowsPath(candidate).parts:
         return "Skill name cannot contain path traversal."
     return None
+
+
+def validate_skill_dir(skill_dir: Path, *, root: Path | None = None) -> SkillValidationResult:
+    import json
+
+    root_dir = root or DEFAULT_SKILLS_ROOT
+    skill_md = skill_dir / SKILL_FILE_NAME
+    errors: list[SkillValidationIssue] = []
+    warnings: list[SkillValidationIssue] = []
+
+    try:
+        identifier = str(skill_dir.relative_to(root_dir)).replace("\\", "/")
+    except ValueError:
+        identifier = skill_dir.name
+
+    def add(level: str, code: str, message: str, path: Path) -> None:
+        issue = SkillValidationIssue(level=level, code=code, message=message, path=str(path))
+        if level == "error":
+            errors.append(issue)
+        else:
+            warnings.append(issue)
+
+    if not skill_md.exists():
+        add("error", "missing_skill_md", "SKILL.md not found", skill_md)
+        return SkillValidationResult(skill_dir, identifier, tuple(errors), tuple(warnings))
+
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except OSError as exc:
+        add("error", "read_failed", f"Failed to read SKILL.md: {exc}", skill_md)
+        return SkillValidationResult(skill_dir, identifier, tuple(errors), tuple(warnings))
+
+    split = split_frontmatter(content)
+    if split is None:
+        add("error", "missing_frontmatter", "SKILL.md must start with YAML frontmatter bounded by ---", skill_md)
+        return SkillValidationResult(skill_dir, identifier, tuple(errors), tuple(warnings))
+
+    frontmatter_text, body = split
+    parsed_frontmatter: dict[str, Any] | None = None
+    if yaml is not None:
+        try:
+            parsed = yaml.safe_load(frontmatter_text)
+        except Exception as exc:
+            add("error", "invalid_yaml", f"YAML frontmatter parse error: {exc}", skill_md)
+            parsed = None
+        if parsed is not None and not isinstance(parsed, dict):
+            add("error", "frontmatter_not_mapping", "Frontmatter must be a YAML mapping", skill_md)
+        elif isinstance(parsed, dict):
+            parsed_frontmatter = parsed
+    else:
+        parsed_frontmatter, _ = parse_frontmatter(content)
+
+    if parsed_frontmatter is None:
+        return SkillValidationResult(skill_dir, identifier, tuple(errors), tuple(warnings))
+
+    name = parsed_frontmatter.get("name")
+    if not isinstance(name, str):
+        add("error", "missing_name", "Frontmatter must include string field 'name'", skill_md)
+        normalized_name = ""
+    else:
+        normalized_name = name.strip()
+        name_error = _validate_skill_name_value(normalized_name)
+        if name_error:
+            add("warning", "name_style", name_error, skill_md)
+
+    description = parsed_frontmatter.get("description")
+    if not isinstance(description, str):
+        add("error", "missing_description", "Frontmatter must include string field 'description'", skill_md)
+    else:
+        description_error = _validate_description_value(description.strip())
+        if description_error:
+            add("error", "description_invalid", description_error, skill_md)
+
+    if not body.strip():
+        add("error", "empty_body", "SKILL.md must include instructions after the frontmatter", skill_md)
+
+    for resource_dir in KNOWN_SKILL_RESOURCE_DIRS:
+        resource_path = skill_dir / resource_dir
+        if resource_path.exists() and not resource_path.is_dir():
+            add("error", "resource_not_dir", f"{resource_dir} must be a directory when present", resource_path)
+
+    evals_path = skill_dir / "evals" / "evals.json"
+    if evals_path.exists():
+        try:
+            payload = json.loads(evals_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            add("error", "invalid_evals_json", f"Failed to parse evals/evals.json: {exc}", evals_path)
+        else:
+            if not isinstance(payload, dict):
+                add("error", "invalid_evals_json", "evals/evals.json must contain a JSON object", evals_path)
+            else:
+                if payload.get("skill_name") not in (None, normalized_name):
+                    add("warning", "eval_skill_name_mismatch", "evals/evals.json skill_name does not match frontmatter name", evals_path)
+                if not isinstance(payload.get("evals"), list):
+                    add("error", "invalid_evals_shape", "evals/evals.json must contain an 'evals' array", evals_path)
+
+    return SkillValidationResult(skill_dir, identifier, tuple(errors), tuple(warnings))
+
+
+def validate_skills_root(root: Path = DEFAULT_SKILLS_ROOT) -> list[SkillValidationResult]:
+    if not root.exists():
+        return []
+
+    results: list[SkillValidationResult] = []
+    for skill_md in sorted(root.rglob(SKILL_FILE_NAME)):
+        try:
+            relative_dir = skill_md.parent.relative_to(root)
+        except ValueError:
+            continue
+        if any(part.startswith(".") for part in relative_dir.parts):
+            continue
+        results.append(validate_skill_dir(skill_md.parent, root=root))
+    return results
 
 
 class SkillCatalog:

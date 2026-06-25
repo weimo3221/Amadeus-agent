@@ -3,12 +3,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import subprocess
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.skills import SkillCatalog, parse_frontmatter
+from amadeus.skills import SkillCatalog, parse_frontmatter, validate_skill_dir
 
 
 class SkillsCatalogTests(unittest.TestCase):
@@ -145,6 +146,47 @@ class SkillsCatalogTests(unittest.TestCase):
         self.assertTrue(viewed["hasEvals"])
         self.assertEqual(viewed["compatibility"]["dependencies"], ["poppler"])
 
+    def test_validate_skill_dir_accepts_skill_creator_style_layout(self) -> None:
+        skill_dir = self.skills_root / "automation" / "pdf-fill"
+        (skill_dir / "evals").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "\n".join([
+                "---",
+                "name: pdf-fill",
+                "description: Fill PDF forms.",
+                "compatibility:",
+                "  tools: [read_file, patch]",
+                "---",
+                "",
+                "Use scripts/ for repeatable transforms.",
+            ]),
+            encoding="utf-8",
+        )
+        (skill_dir / "evals" / "evals.json").write_text(
+            '{"skill_name":"pdf-fill","evals":[]}',
+            encoding="utf-8",
+        )
+
+        result = validate_skill_dir(skill_dir, root=self.skills_root)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.errors, ())
+
+    def test_validate_skill_dir_reports_missing_required_fields(self) -> None:
+        skill_dir = self.skills_root / "broken" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: Bad Name\n---\n\n",
+            encoding="utf-8",
+        )
+
+        result = validate_skill_dir(skill_dir, root=self.skills_root)
+
+        self.assertFalse(result.ok)
+        self.assertTrue(any(issue.code == "missing_description" for issue in result.errors))
+        self.assertTrue(any(issue.code == "empty_body" for issue in result.errors))
+        self.assertTrue(any(issue.code == "name_style" for issue in result.warnings))
+
 
 class SkillsToolTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -182,3 +224,26 @@ class SkillsToolTests(unittest.TestCase):
         result = skill_view({})
 
         self.assertEqual(result, {"error": "name must be a non-empty string"})
+
+
+class ValidateSkillsScriptTests(unittest.TestCase):
+    def test_validate_skills_script_succeeds_for_valid_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skills_root = Path(tmpdir) / "skills"
+            skill_dir = skills_root / "development" / "runtime-debug"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: runtime-debug\ndescription: Debug runtime behavior.\n---\n\nUse evidence.\n",
+                encoding="utf-8",
+            )
+            script = Path(__file__).resolve().parents[1] / "scripts" / "validate_skills.py"
+
+            completed = subprocess.run(
+                [sys.executable, str(script), str(skills_root), "--json"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn('"ok": true', completed.stdout)
