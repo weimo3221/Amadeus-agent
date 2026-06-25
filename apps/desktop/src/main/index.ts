@@ -13,6 +13,7 @@ const isE2eAudioFeedback = process.env.AMADEUS_E2E_AUDIO_FEEDBACK === '1'
 const isE2eAudioError = process.env.AMADEUS_E2E_EXPECT_AUDIO_ERROR === '1'
 const isE2ePermissionPrompt = process.env.AMADEUS_E2E_PERMISSION_PROMPT === '1'
 const isE2ePermissionAllow = process.env.AMADEUS_E2E_EXPECT_PERMISSION_ALLOW === '1'
+const isE2eMultiSkillSelect = process.env.AMADEUS_E2E_MULTI_SKILL_SELECT === '1'
 
 if (is.dev) {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
@@ -121,7 +122,7 @@ function createMainWindow(): BrowserWindow {
     }, 3000)
   })
 
-  if (!isE2eSmoke && !isE2eRuntimeUi && !isE2eLive2D && !isE2eAudioFeedback && !isE2ePermissionPrompt && process.env.AMADEUS_DESKTOP_DEV === '1') {
+  if (!isE2eSmoke && !isE2eRuntimeUi && !isE2eLive2D && !isE2eAudioFeedback && !isE2ePermissionPrompt && !isE2eMultiSkillSelect && process.env.AMADEUS_DESKTOP_DEV === '1') {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173/')
   }
   else {
@@ -141,6 +142,7 @@ function createMainWindow(): BrowserWindow {
     if (process.env.AMADEUS_E2E_MOCK_AUDIO) {
       query.mockAudio = process.env.AMADEUS_E2E_MOCK_AUDIO
     }
+    query.disableSkillPersistence = '1'
 
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'), { query })
   }
@@ -361,8 +363,10 @@ async function runLive2DSwitchE2E(mainWindow: BrowserWindow): Promise<void> {
 
 async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
   try {
+    const enableMultiSkillSelect = JSON.stringify(isE2eMultiSkillSelect)
     const result = await mainWindow.webContents.executeJavaScript(`
       (() => new Promise((resolve, reject) => {
+        const enableMultiSkillSelect = ${enableMultiSkillSelect};
         const deadline = Date.now() + 8000;
         const text = (selector) => document.querySelector(selector)?.textContent ?? '';
         const waitFor = (predicate, label) => {
@@ -393,8 +397,19 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
           await waitFor(() => text('#connection-label') === 'Connected', 'runtime connection');
           const input = document.querySelector('#chat-input');
           const form = document.querySelector('#chat-form');
+          const skillsList = document.querySelector('#skills-list');
           if (!input || !form) {
             throw new Error('Chat form is missing');
+          }
+
+          if (enableMultiSkillSelect) {
+            await waitFor(() => (skillsList?.querySelectorAll('input[type="checkbox"]').length ?? 0) >= 2, 'skills loaded');
+            await waitFor(() => text('#skill-detail-title').includes('development/runtime-debug'), 'default skill detail');
+            const checkboxes = Array.from(skillsList.querySelectorAll('input[type="checkbox"]'));
+            checkboxes.forEach((checkbox) => {
+              checkbox.checked = true;
+              checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            });
           }
 
           input.value = 'e2e runtime ping';
@@ -409,6 +424,9 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
           resolve({
             connection: text('#connection-label'),
             memory: text('#memory-status'),
+            skills: text('#skills-status'),
+            skillDetailTitle: text('#skill-detail-title'),
+            skillDetailBody: text('#skill-detail-body'),
             chat: text('#chat-log'),
           });
         })().catch(reject);

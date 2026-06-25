@@ -63,7 +63,8 @@ The first runtime skill slice is intentionally narrow and modeled after the usef
 - Python exposes `GET /skills/list` and `GET /skills/view`.
 - The tool registry exposes read-only `skills_list` and `skill_view`.
 - `POST /agent/turn` now accepts an optional `skills: string[]` field; when present, Python resolves those skills and appends an `<active-skills>` block to the system context for that turn only.
-- The bridge now forwards optional `user.message.payload.skills` through to Python, but the desktop UI does not yet provide skill selection controls.
+- `apps/server` now proxies read-only `/skills/list` and `/skills/view` requests to Python so the desktop can stay on the bridge origin.
+- The desktop renderer now exposes a refreshable multi-select skill checklist with local search/filtering, shows only a short inline summary for the active skill, persists selected skill identifiers plus the last active preview in local storage, and includes the selected skill identifiers on each `user.message` turn payload.
 
 This is enough to establish a real skill boundary without taking on bundles, marketplace sync, subagent orchestration, or skill editing flows yet.
 

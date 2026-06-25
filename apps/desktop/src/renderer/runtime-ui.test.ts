@@ -16,6 +16,10 @@ class FakeElement {
   hidden = false
   title = ''
   className = ''
+  type = ''
+  value = ''
+  checked = false
+  disabled = false
   scrollTop = 0
   scrollHeight = 0
   dataset: Record<string, string> = {}
@@ -54,11 +58,29 @@ class FakeElement {
 }
 
 class FakeInputElement extends FakeElement {
-  value = ''
+}
+
+class FakeStorage {
+  private readonly values = new Map<string, string>()
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
 }
 
 class FakeDocument {
-  createElement(_tagName: string): FakeElement {
+  createElement(tagName: string): FakeElement {
+    if (tagName === 'input') {
+      return new FakeInputElement()
+    }
     return new FakeElement()
   }
 }
@@ -209,13 +231,20 @@ function makeEvent<TType extends ServerRuntimeEvent['type']>(
   } as Extract<ServerRuntimeEvent, { type: TType }>
 }
 
-function createHarness() {
+function createHarness(storage = new FakeStorage()) {
   globalThis.document = new FakeDocument() as unknown as Document
+  const skillFetchCalls: Array<{ input: string; init?: RequestInit }> = []
   const elements = {
     statusElement: new FakeElement(),
     chatForm: new FakeElement(),
     chatInput: new FakeInputElement(),
     chatLog: new FakeElement(),
+    skillsStatus: new FakeElement(),
+    skillsSearchInput: new FakeInputElement(),
+    skillsList: new FakeElement(),
+    skillsRefreshButton: new FakeElement(),
+    skillDetailTitle: new FakeElement(),
+    skillDetailBody: new FakeElement(),
     voiceButton: new FakeElement(),
     providerLabel: new FakeElement(),
     connectionLabel: new FakeElement(),
@@ -272,6 +301,7 @@ function createHarness() {
   const controller = new RuntimeUiController({
     elements: elements as unknown as RuntimeUiElements,
     wsUrl: 'ws://runtime/ws',
+    skillsUrl: 'http://runtime/skills/list',
     modelLabel: 'initial-model',
     createSocket: () => socket,
     createAudio: (url) => {
@@ -283,15 +313,79 @@ function createHarness() {
     randomUUID: () => 'client-event-id',
     setTimeout: (handler, timeout) => timers.setTimeout(handler, timeout),
     clearTimeout: (id) => timers.clearTimeout(id),
+    fetchImpl: async (input, init) => {
+      skillFetchCalls.push({ input: String(input), init })
+      return new Response(JSON.stringify({
+        ok: true,
+        skills: [
+          {
+            name: 'runtime-debug',
+            identifier: 'development/runtime-debug',
+            description: 'Debug runtime behavior.',
+          },
+          {
+            name: 'desktop-e2e',
+            identifier: 'development/desktop-e2e',
+            description: 'Exercise desktop E2E workflows.',
+          },
+        ],
+      }), { status: 200 })
+    },
+    storage,
     speechSynthesis: speech as unknown as FakeSpeechSynthesis,
     live2d,
   })
 
   controller.bindControls()
-  return { controller, elements, socket, timers, speech, audios, live2dStats }
+  return { controller, elements, socket, timers, speech, audios, live2dStats, skillFetchCalls, storage }
 }
 
 describe('Runtime UI controller', () => {
+  it('loads available skills on connect and renders a multi-select checklist', async () => {
+    const { controller, elements, socket, skillFetchCalls } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    assert.equal(skillFetchCalls[0]?.input, 'http://runtime/skills/list')
+    assert.equal(elements.skillsStatus.textContent, 'Skills: 2 available')
+    assert.equal(elements.skillsList.children.length, 2)
+    assert.equal(elements.skillsList.children[0]?.children[1]?.children[0]?.textContent, 'development/runtime-debug')
+    assert.equal(elements.skillDetailTitle.textContent, 'development/runtime-debug')
+    assert.equal(elements.skillDetailBody.textContent, 'Debug runtime behavior.')
+  })
+
+  it('filters visible skills from the local search input without affecting stored selections', async () => {
+    const { controller, elements, socket } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    elements.skillsSearchInput.value = 'desktop'
+    elements.skillsSearchInput.dispatch('input')
+
+    assert.equal(elements.skillsList.children.length, 1)
+    assert.equal(elements.skillsList.children[0]?.children[1]?.children[0]?.textContent, 'development/desktop-e2e')
+    assert.equal(elements.skillsStatus.textContent, 'Skills: 1/2 shown')
+  })
+
+  it('loads and renders skill detail preview when clicking a skill summary', async () => {
+    const { controller, elements, socket } = createHarness()
+
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const previewButton = elements.skillsList.children[0]?.children[1] as FakeElement
+    previewButton.click()
+
+    assert.equal(elements.skillDetailTitle.textContent, 'development/runtime-debug')
+    assert.equal(elements.skillDetailBody.textContent, 'Debug runtime behavior.')
+    assert.equal(elements.skillsList.children[0]?.dataset.active, 'true')
+  })
+
   it('connects to the runtime and renders server.hello diagnostics', () => {
     const { controller, elements, socket } = createHarness()
 
@@ -472,6 +566,83 @@ describe('Runtime UI controller', () => {
       text: 'hello',
       inputMode: 'text',
     })
+  })
+
+  it('sends all selected skills with the user message payload', async () => {
+    const { controller, elements, socket, storage } = createHarness()
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    socket.emitServerEvent(makeEvent('server.hello', {
+      name: 'amadeus-agent-server',
+      model: 'model',
+      memoryMessages: 0,
+      toolPermissions: [],
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const firstCheckbox = elements.skillsList.children[0]?.children[0] as FakeInputElement
+    const secondCheckbox = elements.skillsList.children[1]?.children[0] as FakeInputElement
+    firstCheckbox.checked = true
+    firstCheckbox.dispatch('change')
+    secondCheckbox.checked = true
+    secondCheckbox.dispatch('change')
+    elements.chatInput.value = 'hello'
+
+    elements.chatForm.submit()
+
+    assert.equal(elements.skillsStatus.textContent, 'Skills: 2 available, 2 selected')
+    assert.deepEqual(socket.sent.at(-1)?.payload, {
+      text: 'hello',
+      inputMode: 'text',
+      skills: ['development/runtime-debug', 'development/desktop-e2e'],
+    })
+    assert.equal(
+      storage.getItem('amadeus.desktop.selectedSkills'),
+      JSON.stringify(['development/runtime-debug', 'development/desktop-e2e']),
+    )
+  })
+
+  it('restores persisted selections and active detail across controller instances', async () => {
+    const sharedStorage = new FakeStorage()
+    sharedStorage.setItem(
+      'amadeus.desktop.selectedSkills',
+      JSON.stringify(['development/desktop-e2e']),
+    )
+    sharedStorage.setItem('amadeus.desktop.activeSkillDetail', 'development/runtime-debug')
+
+    const { controller, elements, socket } = createHarness(sharedStorage)
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const firstCheckbox = elements.skillsList.children[0]?.children[0] as FakeInputElement
+    const secondCheckbox = elements.skillsList.children[1]?.children[0] as FakeInputElement
+    assert.equal(firstCheckbox.checked, false)
+    assert.equal(secondCheckbox.checked, true)
+    assert.equal(elements.skillDetailTitle.textContent, 'development/runtime-debug')
+  })
+
+  it('keeps selected skills when the search filter hides some of them', async () => {
+    const { controller, elements, socket } = createHarness()
+    controller.connectAgentRuntime()
+    socket.emit('open')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const firstCheckbox = elements.skillsList.children[0]?.children[0] as FakeInputElement
+    firstCheckbox.checked = true
+    firstCheckbox.dispatch('change')
+    elements.skillsSearchInput.value = 'desktop'
+    elements.skillsSearchInput.dispatch('input')
+    elements.chatInput.value = 'hello'
+
+    elements.chatForm.submit()
+
+    assert.deepEqual(socket.sent.at(-1)?.payload, {
+      text: 'hello',
+      inputMode: 'text',
+      skills: ['development/runtime-debug'],
+    })
+    assert.equal(elements.skillsStatus.textContent, 'Skills: 1/2 shown, 1 selected')
   })
 
   it('uses runtime audio and cancels speechSynthesis fallback after audio.tts-ready', () => {

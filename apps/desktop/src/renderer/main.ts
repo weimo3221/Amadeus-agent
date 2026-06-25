@@ -19,6 +19,7 @@ const AGENT_WS_URL = runtimeQuery.get('agentWsUrl') || import.meta.env.VITE_AGEN
 const SKIP_LIVE2D = runtimeQuery.get('skipLive2d') === '1'
 const MOCK_LIVE2D = runtimeQuery.get('mockLive2d') === '1'
 const MOCK_AUDIO = runtimeQuery.get('mockAudio')
+const DISABLE_SKILL_PERSISTENCE = runtimeQuery.get('disableSkillPersistence') === '1'
 const CUBISM_CORE_URL = 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js'
 const CUBISM_CORE_TIMEOUT_MS = 8000
 const MOTION_PRIORITY_FORCE = 3
@@ -30,6 +31,12 @@ const statusElement = document.querySelector<HTMLDivElement>('#stage-status')
 const chatForm = document.querySelector<HTMLFormElement>('#chat-form')
 const chatInput = document.querySelector<HTMLInputElement>('#chat-input')
 const chatLog = document.querySelector<HTMLDivElement>('#chat-log')
+const skillsStatus = document.querySelector<HTMLSpanElement>('#skills-status')
+const skillsSearchInput = document.querySelector<HTMLInputElement>('#skills-search-input')
+const skillsList = document.querySelector<HTMLDivElement>('#skills-list')
+const skillsRefreshButton = document.querySelector<HTMLButtonElement>('#skills-refresh-button')
+const skillDetailTitle = document.querySelector<HTMLSpanElement>('#skill-detail-title')
+const skillDetailBody = document.querySelector<HTMLDivElement>('#skill-detail-body')
 const pinButton = document.querySelector<HTMLButtonElement>('#pin-button')
 const minimizeButton = document.querySelector<HTMLButtonElement>('#minimize-button')
 const voiceButton = document.querySelector<HTMLButtonElement>('#voice-button')
@@ -1035,6 +1042,12 @@ const runtimeUi = new RuntimeUiController({
     chatForm,
     chatInput,
     chatLog,
+    skillsStatus,
+    skillsSearchInput,
+    skillsList,
+    skillsRefreshButton,
+    skillDetailTitle,
+    skillDetailBody,
     voiceButton,
     providerLabel,
     connectionLabel,
@@ -1053,6 +1066,7 @@ const runtimeUi = new RuntimeUiController({
     resetSessionButton,
   },
   wsUrl: AGENT_WS_URL,
+  skillsUrl: `${AGENT_HTTP_URL}/skills/list`,
   modelLabel: import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-flash',
   createSocket: (url) => new WebSocket(url),
   createAudio: (url) => {
@@ -1067,6 +1081,8 @@ const runtimeUi = new RuntimeUiController({
   randomUUID: () => crypto.randomUUID(),
   setTimeout: (handler, timeout) => window.setTimeout(handler, timeout),
   clearTimeout: (id) => window.clearTimeout(id),
+  fetchImpl: (input, init) => window.fetch(input, init),
+  storage: DISABLE_SKILL_PERSISTENCE ? undefinedStorage() : window.localStorage,
   speechSynthesis: 'speechSynthesis' in window ? window.speechSynthesis : undefined,
   live2d: {
     applyState: (state) => live2dController?.applyState(state),
@@ -1078,6 +1094,16 @@ const runtimeUi = new RuntimeUiController({
     getCapabilities: () => currentLive2DCapabilities(),
   },
 })
+
+function undefinedStorage() {
+  return {
+    getItem() {
+      return null
+    },
+    setItem() {},
+    removeItem() {},
+  }
+}
 
 bootControls()
 runtimeUi.bindControls()

@@ -186,7 +186,7 @@ button:hover {
 
 .chat-panel {
   display: grid;
-  grid-template-rows: 20px 24px 34px auto minmax(0, 1fr) 34px;
+  grid-template-rows: 20px 24px 34px auto auto minmax(0, 1fr) 34px;
   gap: 4px;
   min-height: 0;
   padding: 0 10px 8px;
@@ -315,6 +315,155 @@ button:hover {
   gap: 4px;
   max-height: 92px;
   overflow: auto;
+}
+
+.skills-panel {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.32);
+}
+
+.skills-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.skills-header span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(226, 232, 240, 0.68);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skills-header button {
+  height: 20px;
+  min-width: 54px;
+}
+
+.skills-search-input {
+  min-width: 0;
+  height: 24px;
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  border-radius: 7px;
+  outline: none;
+  padding: 0 8px;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.48);
+  font: inherit;
+  font-size: 11px;
+}
+
+.skills-search-input::placeholder {
+  color: rgba(226, 232, 240, 0.48);
+}
+
+.skills-list {
+  display: grid;
+  gap: 4px;
+  max-height: 84px;
+  overflow: auto;
+}
+
+.skills-empty {
+  color: rgba(226, 232, 240, 0.5);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 7px;
+  background: rgba(30, 41, 59, 0.64);
+  cursor: pointer;
+}
+
+.skill-option[data-active="true"] {
+  outline: 1px solid rgba(125, 211, 252, 0.55);
+  background: rgba(14, 116, 144, 0.22);
+}
+
+.skill-option:hover {
+  background: rgba(51, 65, 85, 0.72);
+}
+
+.skill-option input {
+  margin: 2px 0 0;
+}
+
+.skill-option-summary {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.skill-option-summary:hover {
+  background: transparent;
+}
+
+.skill-option-title {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(248, 250, 252, 0.88);
+  font-size: 11px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-option-description {
+  color: rgba(226, 232, 240, 0.64);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.skill-detail {
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 7px;
+  background: rgba(2, 6, 23, 0.38);
+}
+
+.skill-detail-header {
+  display: grid;
+}
+
+.skill-detail-header span {
+  color: rgba(248, 250, 252, 0.9);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.skill-detail-body {
+  margin: 0;
+  max-height: 52px;
+  overflow: hidden;
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .memory-review-candidate {

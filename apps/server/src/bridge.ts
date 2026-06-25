@@ -55,6 +55,11 @@ interface Live2DProxyModelLike {
   url?: unknown
 }
 
+interface SkillsListResponse {
+  ok?: boolean
+  skills?: unknown
+}
+
 function runtimeEndpoint(runtimeUrl: string, path: string): string {
   return `${runtimeUrl.replace(/\/$/, '')}${path}`
 }
@@ -397,6 +402,55 @@ export async function proxyPythonLive2DRequest(
     }
     catch {
       writeJson(response, 502, { ok: false, error: 'live2d_proxy_unavailable' })
+      return
+    }
+  }
+
+  writeJson(response, 404, { ok: false, error: 'not_found' })
+}
+
+export async function proxyPythonSkillsRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requestUrl: string,
+  options: PythonBridgeOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+
+  if (request.method === 'GET' && requestUrl === '/skills/list') {
+    try {
+      const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, '/skills/list'), {
+        method: 'GET',
+      })
+      const payload = await runtimeResponse.json().catch(() => undefined) as SkillsListResponse | undefined
+      if (!payload || !isRecord(payload) || !Array.isArray(payload.skills)) {
+        writeJson(response, 502, { ok: false, error: 'skills_proxy_invalid_response' })
+        return
+      }
+      writeJson(response, runtimeResponse.status, payload)
+      return
+    }
+    catch {
+      writeJson(response, 502, { ok: false, error: 'skills_proxy_unavailable' })
+      return
+    }
+  }
+
+  if (request.method === 'GET' && requestUrl.startsWith('/skills/view')) {
+    try {
+      const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, requestUrl), {
+        method: 'GET',
+      })
+      const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+      if (!payload || !isRecord(payload)) {
+        writeJson(response, 502, { ok: false, error: 'skills_proxy_invalid_response' })
+        return
+      }
+      writeJson(response, runtimeResponse.status, payload)
+      return
+    }
+    catch {
+      writeJson(response, 502, { ok: false, error: 'skills_proxy_unavailable' })
       return
     }
   }

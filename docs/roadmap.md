@@ -227,9 +227,9 @@ Target deliverables:
 
 Current status:
 
-- V1 is now in place for `skills/<category>/<skill-name>/SKILL.md` discovery, simple frontmatter parsing, read-only `skills_list` / `skill_view`, optional `POST /agent/turn` `skills: []` injection, and bridge passthrough for future desktop selection UI.
+- V1 is now in place for `skills/<category>/<skill-name>/SKILL.md` discovery, simple frontmatter parsing, read-only `skills_list` / `skill_view`, optional `POST /agent/turn` `skills: []` injection, bridge passthrough for `/skills/list` and `/skills/view`, and a desktop multi-select skill picker with local search/filtering, a short inline summary, and persisted selection state.
 - Two seed skills exist under `skills/development/`: `runtime-debug` and `desktop-e2e`.
-- Remaining work is `skill_run`, richer metadata validation, support files, desktop/UI selection, and later skill management/orchestration.
+- Remaining work is `skill_run`, richer support-file aware workflows, optional install/manage flows, and later orchestration.
 
 ## Phase 11: Proactive Agent
 

@@ -10,6 +10,7 @@ import {
   forwardRuntimeFeedbackToPython,
   listPythonMemoryReviewCandidates,
   listPythonMemoryReviewJobs,
+  proxyPythonSkillsRequest,
   proxyPythonLive2DRequest,
   rejectPythonMemoryReviewCandidate,
   relayPythonTurn,
@@ -106,6 +107,11 @@ const { httpServer } = createAmadeusBridgeServer({
     return proxyPythonLive2DRequest(request, response, requestUrl, {
       runtimeUrl: pythonRuntimeUrl,
       publicBaseUrl: serverBaseUrl,
+    })
+  },
+  handleSkillsHttpRequest(request, response, requestUrl) {
+    return proxyPythonSkillsRequest(request, response, requestUrl, {
+      runtimeUrl: pythonRuntimeUrl,
     })
   },
   streamChat,

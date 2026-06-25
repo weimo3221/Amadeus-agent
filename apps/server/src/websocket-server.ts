@@ -37,6 +37,11 @@ export interface AmadeusBridgeServerOptions {
     response: import('node:http').ServerResponse,
     requestUrl: string,
   ): void | Promise<void>
+  handleSkillsHttpRequest?(
+    request: IncomingMessage,
+    response: import('node:http').ServerResponse,
+    requestUrl: string,
+  ): void | Promise<void>
   streamChat(socket: WebSocket, sessionId: string, text: string, skills?: string[]): void | Promise<void>
 }
 
@@ -174,6 +179,17 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         }
         response.writeHead(502, { 'Content-Type': 'application/json' })
         response.end(JSON.stringify({ ok: false, error: 'live2d_proxy_unavailable' }))
+      })
+      return
+    }
+
+    if (requestUrl.startsWith('/skills/') && options.handleSkillsHttpRequest) {
+      void Promise.resolve(options.handleSkillsHttpRequest(request, response, requestUrl)).catch(() => {
+        if (response.headersSent) {
+          return
+        }
+        response.writeHead(502, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ ok: false, error: 'skills_proxy_unavailable' }))
       })
       return
     }

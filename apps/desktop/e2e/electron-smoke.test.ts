@@ -35,6 +35,33 @@ describe('Electron desktop smoke', () => {
       assert.match(output.stdout, /AMADEUS_E2E_RUNTIME_UI/)
       assert.match(output.stdout, /E2E runtime reply/)
       assert.equal(runtime.receivedUserText(), 'e2e runtime ping')
+      assert.deepEqual(runtime.receivedSkills(), [])
+    }
+    finally {
+      await runtime.close()
+    }
+  })
+
+  it('loads turn skills and sends all selected skills with the user message', async () => {
+    const runtime = await startRuntimeStub()
+
+    try {
+      const output = await runElectronSmoke({
+        AMADEUS_E2E_RUNTIME_UI: '1',
+        AMADEUS_E2E_MULTI_SKILL_SELECT: '1',
+        AMADEUS_E2E_SKIP_LIVE2D: '1',
+        AMADEUS_E2E_AGENT_HTTP_URL: runtime.httpUrl,
+        AMADEUS_E2E_AGENT_WS_URL: runtime.wsUrl,
+      })
+
+      assert.equal(output.code, 0, output.stderr || output.stdout)
+      assert.match(output.stdout, /AMADEUS_E2E_RUNTIME_UI/)
+      assert.deepEqual(runtime.receivedSkills(), [
+        'development/runtime-debug',
+        'development/desktop-e2e',
+      ])
+      assert.match(output.stdout, /development\/desktop-e2e/)
+      assert.match(output.stdout, /Exercise desktop E2E workflows\./)
     }
     finally {
       await runtime.close()
@@ -169,6 +196,7 @@ function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: num
           || env.AMADEUS_E2E_LIVE2D_SWITCH === '1'
           || env.AMADEUS_E2E_AUDIO_FEEDBACK === '1'
           || env.AMADEUS_E2E_PERMISSION_PROMPT === '1'
+          || env.AMADEUS_E2E_MULTI_SKILL_SELECT === '1'
           ? '0'
           : '1',
         ELECTRON_ENABLE_LOGGING: '1',
@@ -443,9 +471,11 @@ async function startRuntimeStub(): Promise<{
   httpUrl: string
   wsUrl: string
   receivedUserText: () => string | undefined
+  receivedSkills: () => string[]
   close: () => Promise<void>
 }> {
   let receivedUserText: string | undefined
+  let receivedSkills: string[] = []
   const sessionId = 'e2e-session'
   const { httpServer, wss } = createAmadeusBridgeServer({
     model: 'e2e-model',
@@ -459,8 +489,69 @@ async function startRuntimeStub(): Promise<{
     }],
     resetSession() {},
     forwardToolPermissionToPython() {},
-    streamChat(socket: { send(data: string): void }, activeSessionId: string, text: string) {
+    handleSkillsHttpRequest(_request, response, requestUrl) {
+      if (requestUrl === '/skills/list') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          skills: [
+            {
+              name: 'runtime-debug',
+              identifier: 'development/runtime-debug',
+              description: 'Debug runtime behavior.',
+            },
+            {
+              name: 'desktop-e2e',
+              identifier: 'development/desktop-e2e',
+              description: 'Exercise desktop E2E workflows.',
+            },
+          ],
+        }))
+        return
+      }
+
+      if (requestUrl === '/skills/view?name=development%2Fruntime-debug') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          skill: {
+            name: 'runtime-debug',
+            identifier: 'development/runtime-debug',
+            description: 'Debug runtime behavior.',
+            instructions: 'Inspect runtime logs.\nCollect evidence narrowly.\nPatch the smallest surface.',
+            preferredTools: ['read_file', 'search_files'],
+            allowedTools: ['read_file', 'search_files', 'patch'],
+            resourceDirs: ['scripts'],
+            platforms: ['macos'],
+          },
+        }))
+        return
+      }
+
+      if (requestUrl === '/skills/view?name=development%2Fdesktop-e2e') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          skill: {
+            name: 'desktop-e2e',
+            identifier: 'development/desktop-e2e',
+            description: 'Exercise desktop E2E workflows.',
+            instructions: 'Use packaged Electron paths.',
+            preferredTools: ['read_file'],
+            allowedTools: ['read_file'],
+            resourceDirs: ['references'],
+            platforms: ['macos'],
+          },
+        }))
+        return
+      }
+
+      response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: 'not_found' }))
+    },
+    streamChat(socket: { send(data: string): void }, activeSessionId: string, text: string, skills?: string[]) {
       receivedUserText = text
+      receivedSkills = [...(skills ?? [])]
       sendRuntimeEvent(socket, 'assistant.state', activeSessionId, { state: 'thinking' })
       sendRuntimeEvent(socket, 'assistant.delta', activeSessionId, { text: 'E2E runtime ' })
       sendRuntimeEvent(socket, 'assistant.delta', activeSessionId, { text: 'reply' })
@@ -478,6 +569,7 @@ async function startRuntimeStub(): Promise<{
     httpUrl: `http://127.0.0.1:${address.port}`,
     wsUrl: `ws://127.0.0.1:${address.port}/ws`,
     receivedUserText: () => receivedUserText,
+    receivedSkills: () => [...receivedSkills],
     close: () => new Promise((resolveClose, rejectClose) => {
       wss.close((wssError) => {
         if (wssError) {

@@ -332,7 +332,7 @@ Current limitations:
 - `apps/server` no longer contains the legacy TypeScript fallback loop or local TypeScript tool registry mirror.
 - Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and an Electron startup smoke. Full Live2D/interaction end-to-end coverage is still missing.
 - `packages/amadeus/model.py` is active as the first-pass provider boundary, but richer provider profile/fallback behavior is still future work.
-- `skills.py` now implements a first-pass runtime skill catalog and explicit turn-level skill injection; `live2d.py` owns the local model library but not the desktop renderer adapter.
+- `skills.py` now implements a first-pass runtime skill catalog and explicit turn-level skill injection; the bridge proxies read-only skills APIs, and the desktop renderer exposes a multi-select skill picker with local search/filtering, a short inline summary, and persisted selections that sends selected skill identifiers with each turn. `live2d.py` owns the local model library but not the desktop renderer adapter.
 - `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/main.ts`.
 
 ## Next Recommended Phase

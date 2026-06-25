@@ -52,6 +52,12 @@ export interface RuntimeUiElements {
   chatForm: HTMLFormElement | null
   chatInput: HTMLInputElement | null
   chatLog: HTMLDivElement | null
+  skillsStatus: HTMLSpanElement | null
+  skillsSearchInput: HTMLInputElement | null
+  skillsList: HTMLDivElement | null
+  skillsRefreshButton: HTMLButtonElement | null
+  skillDetailTitle: HTMLSpanElement | null
+  skillDetailBody: HTMLDivElement | null
   voiceButton: HTMLButtonElement | null
   providerLabel: HTMLElement | null
   connectionLabel: HTMLElement | null
@@ -73,6 +79,7 @@ export interface RuntimeUiElements {
 export interface RuntimeUiControllerOptions {
   elements: RuntimeUiElements
   wsUrl: string
+  skillsUrl: string
   modelLabel: string
   createSocket(url: string): RuntimeSocketLike
   createAudio(url: string): RuntimeAudioLike
@@ -80,9 +87,32 @@ export interface RuntimeUiControllerOptions {
   randomUUID(): string
   setTimeout(handler: () => void, timeout: number): number
   clearTimeout(id: number): void
+  fetchImpl?: typeof fetch
+  storage?: RuntimeStorageLike
   speechSynthesis?: RuntimeSpeechSynthesisLike
   live2d?: RuntimeLive2DAdapter
 }
+
+interface RuntimeSkillSummary {
+  name: string
+  identifier: string
+  description: string
+  category?: string | null
+}
+
+interface RuntimeSkillsListResponse {
+  ok?: boolean
+  skills?: unknown
+}
+
+export interface RuntimeStorageLike {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
+
+const SELECTED_SKILLS_STORAGE_KEY = 'amadeus.desktop.selectedSkills'
+const ACTIVE_SKILL_DETAIL_STORAGE_KEY = 'amadeus.desktop.activeSkillDetail'
 
 export class RuntimeUiController {
   private socket: RuntimeSocketLike | undefined
@@ -99,9 +129,14 @@ export class RuntimeUiController {
   private availableVoices: SpeechSynthesisVoice[] = []
   private memoryReviewPendingCount = 0
   private memoryReviewLastJobText = 'last job: none'
+  private availableSkills: RuntimeSkillSummary[] = []
+  private readonly selectedSkillIds = new Set<string>()
+  private activeSkillDetailId: string | undefined
+  private skillSearchQuery = ''
 
   constructor(private readonly options: RuntimeUiControllerOptions) {
     this.sessionId = options.randomUUID()
+    this.restorePersistedSkillState()
   }
 
   bindControls(): void {
@@ -173,6 +208,16 @@ export class RuntimeUiController {
       this.sendEvent('memory.review.run', { force: true })
     })
 
+    elements.skillsRefreshButton?.addEventListener('click', () => {
+      void this.loadAvailableSkills()
+    })
+
+    elements.skillsSearchInput?.addEventListener('input', () => {
+      this.skillSearchQuery = elements.skillsSearchInput?.value.trim().toLowerCase() || ''
+      this.renderSkillOptions()
+      this.updateSkillsStatus()
+    })
+
     elements.chatForm?.addEventListener('submit', (event) => {
       event.preventDefault()
       const text = elements.chatInput?.value.trim()
@@ -194,9 +239,11 @@ export class RuntimeUiController {
         return
       }
 
+      const activeSkills = this.getSelectedSkills()
       this.sendEvent('user.message', {
         text,
         inputMode: 'text',
+        ...(activeSkills.length ? { skills: activeSkills } : {}),
       })
       if (elements.chatInput) {
         elements.chatInput.value = ''
@@ -210,6 +257,7 @@ export class RuntimeUiController {
 
     this.socket.addEventListener('open', () => {
       this.setConnection('Connected', true)
+      void this.loadAvailableSkills()
     })
 
     this.socket.addEventListener('message', (message) => {
@@ -371,6 +419,22 @@ export class RuntimeUiController {
     }
   }
 
+  private setSkillsStatus(message: string): void {
+    if (this.options.elements.skillsStatus) {
+      this.options.elements.skillsStatus.textContent = message
+    }
+  }
+
+  private renderSkillDetailPlaceholder(title: string, body = ''): void {
+    const { skillDetailTitle, skillDetailBody } = this.options.elements
+    if (skillDetailTitle) {
+      skillDetailTitle.textContent = title
+    }
+    if (skillDetailBody) {
+      skillDetailBody.textContent = body
+    }
+  }
+
   private updateMemoryReviewStatus(prefix?: string): void {
     const pendingText = `${this.memoryReviewPendingCount} pending`
     const status = prefix ? `${prefix} | ${pendingText} | ${this.memoryReviewLastJobText}` : `Memory review: ${pendingText} | ${this.memoryReviewLastJobText}`
@@ -430,6 +494,263 @@ export class RuntimeUiController {
     for (const candidate of candidates.slice(0, 5)) {
       memoryReviewList.append(this.createMemoryReviewCandidateElement(candidate))
     }
+  }
+
+  private async loadAvailableSkills(): Promise<void> {
+    const { skillsList, skillsRefreshButton } = this.options.elements
+    const fetchImpl = this.options.fetchImpl ?? fetch
+    if (!skillsList) {
+      return
+    }
+
+    this.setSkillsStatus('Skills: loading...')
+    if (skillsRefreshButton) {
+      skillsRefreshButton.disabled = true
+    }
+
+    try {
+      const response = await fetchImpl(this.options.skillsUrl, { method: 'GET' })
+      const payload = await response.json().catch(() => undefined) as RuntimeSkillsListResponse | undefined
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.skills)) {
+        this.availableSkills = []
+        this.selectedSkillIds.clear()
+        skillsList.replaceChildren()
+        this.setSkillsStatus('Skills unavailable')
+        return
+      }
+
+      this.availableSkills = payload.skills
+        .map(normalizeRuntimeSkillSummary)
+        .filter((skill): skill is RuntimeSkillSummary => skill !== undefined)
+
+      const availableIdentifiers = new Set(this.availableSkills.map((skill) => skill.identifier))
+      for (const identifier of Array.from(this.selectedSkillIds)) {
+        if (!availableIdentifiers.has(identifier)) {
+          this.selectedSkillIds.delete(identifier)
+        }
+      }
+      if (this.activeSkillDetailId && !availableIdentifiers.has(this.activeSkillDetailId)) {
+        this.activeSkillDetailId = undefined
+      }
+
+      this.renderSkillOptions()
+      this.updateSkillsStatus()
+      this.persistSelectedSkills()
+      if (this.availableSkills.length) {
+        const detailId = this.activeSkillDetailId
+          ?? this.getSelectedSkills()[0]
+          ?? this.availableSkills[0]?.identifier
+        if (detailId) {
+          void this.showSkillDetail(detailId)
+        }
+      }
+      else {
+        this.renderSkillDetailPlaceholder('Skill Preview', 'No installed skills')
+      }
+    }
+    catch {
+      this.availableSkills = []
+      this.selectedSkillIds.clear()
+      this.activeSkillDetailId = undefined
+      skillsList.replaceChildren()
+      this.setSkillsStatus('Skills unavailable')
+      this.renderSkillDetailPlaceholder('Skill Preview', 'Skills unavailable')
+    }
+    finally {
+      if (skillsRefreshButton) {
+        skillsRefreshButton.disabled = false
+      }
+    }
+  }
+
+  private renderSkillOptions(): void {
+    const { skillsList } = this.options.elements
+    if (!skillsList) {
+      return
+    }
+
+    skillsList.replaceChildren()
+    if (!this.availableSkills.length) {
+      const empty = document.createElement('div')
+      empty.className = 'skills-empty'
+      empty.textContent = 'No installed skills'
+      skillsList.append(empty)
+      return
+    }
+
+    const visibleSkills = this.getVisibleSkills()
+    if (!visibleSkills.length) {
+      const empty = document.createElement('div')
+      empty.className = 'skills-empty'
+      empty.textContent = 'No matching skills'
+      skillsList.append(empty)
+      return
+    }
+
+    for (const skill of visibleSkills) {
+      skillsList.append(this.createSkillOptionElement(skill))
+    }
+  }
+
+  private createSkillOptionElement(skill: RuntimeSkillSummary): HTMLDivElement {
+    const item = document.createElement('div')
+    item.className = 'skill-option'
+    item.title = `${skill.identifier}${skill.description ? `\n${skill.description}` : ''}`
+    if (this.activeSkillDetailId === skill.identifier) {
+      item.dataset.active = 'true'
+    }
+
+    const checkbox = document.createElement('input')
+    checkbox.type = 'checkbox'
+    checkbox.value = skill.identifier
+    checkbox.checked = this.selectedSkillIds.has(skill.identifier)
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        this.selectedSkillIds.add(skill.identifier)
+      }
+      else {
+        this.selectedSkillIds.delete(skill.identifier)
+      }
+      this.persistSelectedSkills()
+      this.updateSkillsStatus()
+      void this.showSkillDetail(skill.identifier)
+    })
+
+    const summary = document.createElement('button')
+    summary.type = 'button'
+    summary.className = 'skill-option-summary'
+    summary.addEventListener('click', () => {
+      void this.showSkillDetail(skill.identifier)
+    })
+
+    const title = document.createElement('span')
+    title.className = 'skill-option-title'
+    title.textContent = skill.identifier
+
+    const description = document.createElement('span')
+    description.className = 'skill-option-description'
+    description.textContent = skill.description || skill.name
+
+    summary.append(title)
+    summary.append(description)
+    item.append(checkbox)
+    item.append(summary)
+    return item
+  }
+
+  private getSelectedSkills(): string[] {
+    return this.availableSkills
+      .filter((skill) => this.selectedSkillIds.has(skill.identifier))
+      .map((skill) => skill.identifier)
+  }
+
+  private getVisibleSkills(): RuntimeSkillSummary[] {
+    if (!this.skillSearchQuery) {
+      return this.availableSkills
+    }
+
+    return this.availableSkills.filter((skill) => {
+      const haystacks = [
+        skill.identifier,
+        skill.name,
+        skill.description,
+        skill.category ?? '',
+      ]
+      return haystacks.some((value) => value.toLowerCase().includes(this.skillSearchQuery))
+    })
+  }
+
+  private async showSkillDetail(identifier: string): Promise<void> {
+    const summary = this.availableSkills.find((skill) => skill.identifier === identifier)
+    if (!summary) {
+      this.renderSkillDetailPlaceholder('Skill Preview', 'Skill not found')
+      return
+    }
+
+    this.activeSkillDetailId = identifier
+    this.persistActiveSkillDetail()
+    this.renderSkillOptions()
+    this.renderSkillDetailPlaceholder(
+      summary.identifier,
+      summary.description || summary.name || 'No summary available.',
+    )
+  }
+
+  private updateSkillsStatus(): void {
+    if (!this.availableSkills.length) {
+      this.setSkillsStatus('Skills: none installed')
+      return
+    }
+
+    const selectedCount = this.selectedSkillIds.size
+    const visibleCount = this.getVisibleSkills().length
+    const visibleText = this.skillSearchQuery
+      ? `${visibleCount}/${this.availableSkills.length} shown`
+      : `${this.availableSkills.length} available`
+    this.setSkillsStatus(
+      selectedCount > 0
+        ? `Skills: ${visibleText}, ${selectedCount} selected`
+        : `Skills: ${visibleText}`,
+    )
+  }
+
+  private restorePersistedSkillState(): void {
+    const storage = this.options.storage ?? readWindowStorage()
+    if (!storage) {
+      return
+    }
+
+    try {
+      const rawSelected = storage.getItem(SELECTED_SKILLS_STORAGE_KEY)
+      if (rawSelected) {
+        const parsed = JSON.parse(rawSelected) as unknown
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (typeof item === 'string' && item.trim()) {
+              this.selectedSkillIds.add(item)
+            }
+          }
+        }
+      }
+
+      const activeDetail = storage.getItem(ACTIVE_SKILL_DETAIL_STORAGE_KEY)
+      if (activeDetail && activeDetail.trim()) {
+        this.activeSkillDetailId = activeDetail
+      }
+    }
+    catch {
+      this.selectedSkillIds.clear()
+      this.activeSkillDetailId = undefined
+    }
+  }
+
+  private persistSelectedSkills(): void {
+    const storage = this.options.storage ?? readWindowStorage()
+    if (!storage) {
+      return
+    }
+
+    const selected = this.getSelectedSkills()
+    if (!selected.length) {
+      storage.removeItem(SELECTED_SKILLS_STORAGE_KEY)
+      return
+    }
+
+    storage.setItem(SELECTED_SKILLS_STORAGE_KEY, JSON.stringify(selected))
+  }
+
+  private persistActiveSkillDetail(): void {
+    const storage = this.options.storage ?? readWindowStorage()
+    if (!storage) {
+      return
+    }
+
+    if (!this.activeSkillDetailId) {
+      storage.removeItem(ACTIVE_SKILL_DETAIL_STORAGE_KEY)
+      return
+    }
+
+    storage.setItem(ACTIVE_SKILL_DETAIL_STORAGE_KEY, this.activeSkillDetailId)
   }
 
   private updateMemoryReviewJobs(jobs: MemoryReviewJob[]): void {
@@ -751,4 +1072,33 @@ function formatMemoryReviewJob(job: MemoryReviewJob): string {
     : job.reason || job.error || 'no detail'
   const durationText = job.durationMs ? `, ${job.durationMs}ms` : ''
   return `last job: ${job.status} (${job.trigger}, ${countText}${durationText})`
+}
+
+function normalizeRuntimeSkillSummary(value: unknown): RuntimeSkillSummary | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
+  }
+
+  const skill = value as Record<string, unknown>
+  if (
+    typeof skill.name !== 'string'
+    || typeof skill.identifier !== 'string'
+    || typeof skill.description !== 'string'
+  ) {
+    return undefined
+  }
+
+  return {
+    name: skill.name,
+    identifier: skill.identifier,
+    description: skill.description,
+    category: typeof skill.category === 'string' ? skill.category : undefined,
+  }
+}
+
+function readWindowStorage(): RuntimeStorageLike | undefined {
+  if (typeof window === 'undefined' || !('localStorage' in window)) {
+    return undefined
+  }
+  return window.localStorage
 }

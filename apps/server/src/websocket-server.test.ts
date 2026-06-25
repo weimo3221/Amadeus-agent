@@ -7,7 +7,7 @@ import { WebSocket } from 'ws'
 
 import type { RuntimeEvent } from '@amadeus-agent/amadeus/events'
 
-import { forwardToolPermissionToPython, proxyPythonLive2DRequest, relayPythonTurn } from './bridge.js'
+import { forwardToolPermissionToPython, proxyPythonLive2DRequest, proxyPythonSkillsRequest, relayPythonTurn } from './bridge.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -236,6 +236,93 @@ describe('WebSocket Python-first integration', () => {
       selectPayload.model.url,
       `http://127.0.0.1:${bridgePort}/live2d/models/hiyori-pro/hiyori-pro.model3.json`,
     )
+  })
+
+  it('proxies read-only skills HTTP requests through the Python runtime', async (t) => {
+    const pythonRuntime = createServer((request: IncomingMessage, response: ServerResponse) => {
+      if (request.method === 'GET' && request.url === '/skills/list') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          skills: [
+            {
+              name: 'runtime-debug',
+              identifier: 'development/runtime-debug',
+              description: 'Debug runtime behavior.',
+            },
+            {
+              name: 'desktop-e2e',
+              identifier: 'development/desktop-e2e',
+              description: 'Exercise desktop E2E workflows.',
+            },
+          ],
+        }))
+        return
+      }
+
+      if (request.method === 'GET' && request.url === '/skills/view?name=development%2Fruntime-debug') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          skill: {
+            name: 'runtime-debug',
+            identifier: 'development/runtime-debug',
+            description: 'Debug runtime behavior.',
+            instructions: 'Use evidence.',
+          },
+        }))
+        return
+      }
+
+      response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: 'not_found' }))
+    })
+    const runtimePort = await listen(pythonRuntime)
+    t.after(() => {
+      void closeServer(pythonRuntime)
+    })
+
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      handleSkillsHttpRequest(request, response, requestUrl) {
+        return proxyPythonSkillsRequest(request, response, requestUrl, {
+          runtimeUrl: `http://127.0.0.1:${runtimePort}`,
+        })
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const listResponse = await fetch(`http://127.0.0.1:${bridgePort}/skills/list`)
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json() as {
+      ok: boolean
+      skills: Array<{ identifier: string }>
+    }
+    assert.equal(listPayload.ok, true)
+    assert.deepEqual(
+      listPayload.skills.map((skill) => skill.identifier),
+      ['development/runtime-debug', 'development/desktop-e2e'],
+    )
+
+    const viewResponse = await fetch(`http://127.0.0.1:${bridgePort}/skills/view?name=development%2Fruntime-debug`)
+    assert.equal(viewResponse.status, 200)
+    const viewPayload = await viewResponse.json() as {
+      ok: boolean
+      skill: { identifier: string; instructions: string }
+    }
+    assert.equal(viewPayload.ok, true)
+    assert.equal(viewPayload.skill.identifier, 'development/runtime-debug')
+    assert.equal(viewPayload.skill.instructions, 'Use evidence.')
   })
 
   it('allows browser CORS preflight for Live2D model switching', async (t) => {

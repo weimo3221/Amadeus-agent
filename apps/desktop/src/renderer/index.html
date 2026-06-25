@@ -71,6 +71,26 @@
           </div>
           <div id="memory-review-list" class="memory-review-list"></div>
         </section>
+        <section class="skills-panel" aria-label="Turn skills">
+          <div class="skills-header">
+            <span id="skills-status">Skills: loading...</span>
+            <button id="skills-refresh-button" type="button">Refresh</button>
+          </div>
+          <input
+            id="skills-search-input"
+            class="skills-search-input"
+            type="search"
+            autocomplete="off"
+            placeholder="Search skills..."
+          />
+          <div id="skills-list" class="skills-list"></div>
+          <div class="skill-detail">
+            <div class="skill-detail-header">
+              <span id="skill-detail-title">Skill Summary</span>
+            </div>
+            <div id="skill-detail-body" class="skill-detail-body">Select a skill to preview a short summary.</div>
+          </div>
+        </section>
         <div id="tool-permission" class="tool-permission" hidden>
           <span id="tool-permission-text"></span>
           <button id="tool-allow-button" type="button">Allow</button>
