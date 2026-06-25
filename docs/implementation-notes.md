@@ -18,7 +18,7 @@ The Python-first turn path is already in place: `/agent/turn` is implemented as 
 Current implementation note:
 
 - Active provider/model transport logic now lives in `packages/amadeus/model.py` as a first-pass OpenAI-compatible boundary. It reads `configs/providers.yaml` plus environment-expanded provider values, keeps lightweight provider metadata, and raises classified `ModelError` instances for auth, rate limit, server, timeout, context, payload, format, model-not-found, and unknown failures. `packages/amadeus/agent.py` still owns when and why to request tool decisions, summaries, memory review, and final responses.
-- `packages/amadeus/skills.py` now owns a first-pass runtime skill catalog. It scans `skills/<category>/<skill-name>/SKILL.md`, parses simple frontmatter, exposes list/view metadata, and can inject explicitly requested skills into one turn without loading every skill by default. `packages/amadeus/live2d.py` now owns the local Live2D model library boundary while renderer-specific adapter logic still lives in desktop.
+- `packages/amadeus/skills.py` now owns a first-pass runtime skill catalog. It scans `skills/<category>/<skill-name>/SKILL.md`, parses real YAML frontmatter when available, tolerates Hermes- and skill-creator-style nested metadata such as `platforms`, `compatibility`, and `metadata`, reports bundled resource directories like `scripts/`, `references/`, `assets/`, `agents/`, and `evals/`, and can inject explicitly requested skills into one turn without loading every skill by default. `packages/amadeus/live2d.py` now owns the local Live2D model library boundary while renderer-specific adapter logic still lives in desktop.
 - `packages/live2d-stage` is still an intended package boundary; the working Live2D renderer logic currently lives in `apps/desktop/src/renderer/main.ts`.
 
 Current progress calibration:
@@ -59,7 +59,7 @@ Keep future tool hardening inside `tool_runtime` unless it needs model context o
 The first runtime skill slice is intentionally narrow and modeled after the useful parts of Hermes rather than its full ecosystem:
 
 - Skills live under `skills/<category>/<skill-name>/SKILL.md`.
-- `SKILL.md` may declare simple frontmatter such as `name`, `description`, `preferred_tools`, and `allowed_tools`.
+- `SKILL.md` should declare `name` and `description`. `preferred_tools` and `allowed_tools` are optional, and broader frontmatter like `platforms`, `compatibility`, and nested `metadata` is accepted for compatibility with more general skill packs and skill-creator output.
 - Python exposes `GET /skills/list` and `GET /skills/view`.
 - The tool registry exposes read-only `skills_list` and `skill_view`.
 - `POST /agent/turn` now accepts an optional `skills: string[]` field; when present, Python resolves those skills and appends an `<active-skills>` block to the system context for that turn only.

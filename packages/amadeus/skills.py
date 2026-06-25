@@ -5,12 +5,18 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SKILLS_ROOT = REPO_ROOT / "skills"
 SKILL_FILE_NAME = "SKILL.md"
 MAX_SKILL_DESCRIPTION_CHARS = 280
 MAX_SKILL_BODY_CHARS = 12000
+KNOWN_SKILL_RESOURCE_DIRS = ("scripts", "references", "assets", "agents", "evals")
 _SLUG_INVALID_CHARS_RE = re.compile(r"[^a-z0-9-]")
 _SLUG_MULTI_DASH_RE = re.compile(r"-{2,}")
 
@@ -25,6 +31,10 @@ class Skill:
     instructions: str = ""
     preferred_tools: tuple[str, ...] = ()
     allowed_tools: tuple[str, ...] = ()
+    compatibility: dict[str, Any] = field(default_factory=dict)
+    platforms: tuple[str, ...] = ()
+    resource_dirs: tuple[str, ...] = ()
+    has_evals: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -39,6 +49,10 @@ class Skill:
             "category": self.category,
             "preferredTools": list(self.preferred_tools),
             "allowedTools": list(self.allowed_tools),
+            "compatibility": dict(self.compatibility),
+            "platforms": list(self.platforms),
+            "resourceDirs": list(self.resource_dirs),
+            "hasEvals": self.has_evals,
             "path": str(self.path),
         }
 
@@ -80,6 +94,16 @@ def parse_frontmatter(markdown: str) -> tuple[dict[str, Any], str]:
 
     frontmatter_lines = lines[1:closing_index]
     body = "\n".join(lines[closing_index + 1 :]).lstrip()
+    frontmatter_text = "\n".join(frontmatter_lines)
+
+    if yaml is not None:
+        try:
+            parsed_yaml = yaml.safe_load(frontmatter_text)
+        except Exception:
+            parsed_yaml = None
+        if isinstance(parsed_yaml, dict):
+            return parsed_yaml, body
+
     parsed: dict[str, Any] = {}
     current_list_key: str | None = None
 
@@ -144,6 +168,20 @@ def _normalize_str_list(value: Any) -> tuple[str, ...]:
         normalized = [str(item).strip() for item in value]
         return tuple(item for item in normalized if item)
     return ()
+
+
+def _normalize_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {str(key): nested for key, nested in value.items()}
+    return {}
+
+
+def _bool_from_metadata(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
 
 def _infer_description(body: str) -> str:
@@ -258,6 +296,10 @@ class SkillCatalog:
                 lines.append(f"allowed_tools: {', '.join(skill.allowed_tools)}")
             if skill.preferred_tools:
                 lines.append(f"preferred_tools: {', '.join(skill.preferred_tools)}")
+            if skill.platforms:
+                lines.append(f"platforms: {', '.join(skill.platforms)}")
+            if skill.resource_dirs:
+                lines.append(f"resources: {', '.join(skill.resource_dirs)}")
             lines.append(skill.instructions)
             lines.append("</skill>")
         lines.append("</active-skills>")
@@ -300,6 +342,28 @@ class SkillCatalog:
             description = _infer_description(body)
         identifier = "/".join(relative_dir.parts)
         instructions = sanitize_skill_text(body, max_chars=MAX_SKILL_BODY_CHARS)
+        compatibility = _normalize_mapping(metadata.get("compatibility"))
+        resource_dirs = tuple(
+            directory_name
+            for directory_name in KNOWN_SKILL_RESOURCE_DIRS
+            if (path.parent / directory_name).exists()
+        )
+        has_evals = _bool_from_metadata(metadata.get("has_evals")) or (path.parent / "evals").exists()
+        preferred_tools = _normalize_str_list(
+            metadata.get("preferred_tools")
+            or metadata.get("preferredTools")
+            or compatibility.get("preferred_tools")
+            or compatibility.get("preferredTools")
+        )
+        allowed_tools = _normalize_str_list(
+            metadata.get("allowed_tools")
+            or metadata.get("allowedTools")
+            or compatibility.get("allowed_tools")
+            or compatibility.get("allowedTools")
+            or compatibility.get("required_tools")
+            or compatibility.get("requiredTools")
+            or compatibility.get("tools")
+        )
         return Skill(
             name=name,
             description=sanitize_skill_text(description, max_chars=MAX_SKILL_DESCRIPTION_CHARS),
@@ -307,7 +371,11 @@ class SkillCatalog:
             path=path,
             category=category,
             instructions=instructions,
-            preferred_tools=_normalize_str_list(metadata.get("preferred_tools") or metadata.get("preferredTools")),
-            allowed_tools=_normalize_str_list(metadata.get("allowed_tools") or metadata.get("allowedTools")),
+            preferred_tools=preferred_tools,
+            allowed_tools=allowed_tools,
+            compatibility=compatibility,
+            platforms=_normalize_str_list(metadata.get("platforms")),
+            resource_dirs=resource_dirs,
+            has_evals=has_evals,
             metadata=metadata,
         )

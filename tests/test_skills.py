@@ -54,6 +54,29 @@ class SkillsCatalogTests(unittest.TestCase):
         self.assertEqual(metadata["tools"], ["read_file", "patch"])
         self.assertEqual(body, "Body.")
 
+    def test_parse_frontmatter_supports_nested_yaml_metadata(self) -> None:
+        metadata, body = parse_frontmatter(
+            "\n".join([
+                "---",
+                "name: findmy",
+                "platforms: [macos]",
+                "metadata:",
+                "  hermes:",
+                "    tags: [FindMy, AirTag]",
+                "compatibility:",
+                "  tools: [search_files, read_file]",
+                "---",
+                "",
+                "Track devices.",
+            ]),
+        )
+
+        self.assertEqual(metadata["name"], "findmy")
+        self.assertEqual(metadata["platforms"], ["macos"])
+        self.assertEqual(metadata["metadata"]["hermes"]["tags"], ["FindMy", "AirTag"])
+        self.assertEqual(metadata["compatibility"]["tools"], ["search_files", "read_file"])
+        self.assertEqual(body, "Track devices.")
+
     def test_list_skills_returns_metadata(self) -> None:
         skills = self.catalog.skill_summaries()
 
@@ -69,6 +92,8 @@ class SkillsCatalogTests(unittest.TestCase):
         self.assertEqual(by_identifier["name"], "runtime-debug")
         self.assertIn("Use tests before fixes.", by_identifier["instructions"])
         self.assertEqual(by_slug["identifier"], "development/runtime-debug")
+        self.assertEqual(by_identifier["resourceDirs"], [])
+        self.assertFalse(by_identifier["hasEvals"])
 
     def test_build_prompt_block_surfaces_selected_skills(self) -> None:
         block, resolved = self.catalog.build_prompt_block(["desktop-e2e", "runtime-debug"])
@@ -84,6 +109,41 @@ class SkillsCatalogTests(unittest.TestCase):
         self.assertEqual(block, "")
         self.assertFalse(resolved.ok)
         self.assertEqual(resolved.missing, ("missing-skill",))
+
+    def test_skill_catalog_understands_skill_creator_style_layout(self) -> None:
+        skill_dir = self.skills_root / "automation" / "pdf-fill"
+        (skill_dir / "scripts").mkdir(parents=True)
+        (skill_dir / "references").mkdir(parents=True)
+        (skill_dir / "assets").mkdir(parents=True)
+        (skill_dir / "agents").mkdir(parents=True)
+        (skill_dir / "evals").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "\n".join([
+                "---",
+                "name: pdf-fill",
+                "description: Fill PDF forms.",
+                "platforms: [macos, linux]",
+                "compatibility:",
+                "  tools: [read_file, patch]",
+                "  dependencies: [poppler]",
+                "---",
+                "",
+                "Use scripts/ for repeatable transforms.",
+            ]),
+            encoding="utf-8",
+        )
+
+        viewed = self.catalog.view_skill("automation/pdf-fill")
+
+        self.assertIsNotNone(viewed)
+        self.assertEqual(viewed["platforms"], ["macos", "linux"])
+        self.assertEqual(viewed["allowedTools"], ["read_file", "patch"])
+        self.assertEqual(
+            viewed["resourceDirs"],
+            ["scripts", "references", "assets", "agents", "evals"],
+        )
+        self.assertTrue(viewed["hasEvals"])
+        self.assertEqual(viewed["compatibility"]["dependencies"], ["poppler"])
 
 
 class SkillsToolTests(unittest.TestCase):

@@ -28,7 +28,7 @@ These files are active boundaries, but some still need more depth:
 
 - `agent.py` contains the real preferred turn logic today.
 - The runtime loads recent SQLite history, saves user and assistant messages, makes the tool-decision call, executes Python tools, streams `assistant.delta`, emits `assistant.message`, and may emit `audio.tts-ready`.
-- Skills now live under `../../skills/<category>/<skill-name>/SKILL.md`. The runtime can list/view them through `/skills/list`, `/skills/view`, `skills_list`, and `skill_view`, and `POST /agent/turn` accepts optional `skills: string[]` for explicit turn-scoped skill injection.
+- Skills now live under `../../skills/<category>/<skill-name>/SKILL.md`. The runtime can list/view them through `/skills/list`, `/skills/view`, `skills_list`, and `skill_view`, and `POST /agent/turn` accepts optional `skills: string[]` for explicit turn-scoped skill injection. `name` and `description` are the main frontmatter fields; `preferred_tools` and `allowed_tools` are optional. The loader also accepts richer skill-creator / Hermes-style YAML such as `platforms`, `compatibility`, nested `metadata`, and bundled `scripts/`, `references/`, `assets/`, `agents/`, or `evals/` directories.
 - Tool permission requests are brokered through streamed `tool.permission.request` events plus `POST /tools/permission`.
 - Audio is wired through `audio.tts-ready`. The default `auto` TTS config prefers GPT-SoVITS when configured and otherwise uses macOS `say`/`afconvert` when available, with `speechSynthesis` as the desktop fallback.
 
