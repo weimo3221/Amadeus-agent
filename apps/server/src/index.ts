@@ -17,13 +17,12 @@ import {
   resetPythonMemory,
   runPythonMemoryReview,
 } from './bridge.js'
-import { createAmadeusBridgeServer } from './websocket-server.js'
+import { createAmadeusBridgeServer, type BridgeSocket } from './websocket-server.js'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { config } from 'dotenv'
-import { type WebSocket } from 'ws'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = resolve(serverDir, '../../..')
@@ -52,7 +51,7 @@ async function getPythonToolPermissions(): Promise<ToolPermissionState[]> {
   return permissions ?? pythonToolsUnavailable
 }
 
-async function streamChat(socket: WebSocket, sessionId: string, userText: string, skills?: string[]): Promise<void> {
+async function streamChat(socket: BridgeSocket, sessionId: string, userText: string, skills?: string[]): Promise<void> {
   const handledByPython = await relayPythonTurn(socket, sessionId, userText, skills, { runtimeUrl: pythonRuntimeUrl })
   if (handledByPython) {
     return

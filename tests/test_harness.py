@@ -271,6 +271,59 @@ class HarnessTests(unittest.TestCase):
             "audio.playback-error",
         ])
 
+    def test_harness_feedback_policy_aggregates_capabilities_by_client(self) -> None:
+        policy = HarnessFeedbackPolicy()
+
+        policy.record_feedback(
+            "session-1",
+            "desktop.capabilities",
+            {
+                "desktop": {"runtime": "electron", "protocolVersion": 1},
+                "live2d": {
+                    "available": False,
+                    "expressions": [],
+                    "motions": [],
+                },
+                "audio": {
+                    "runtimeAudio": False,
+                    "speechSynthesis": True,
+                    "voiceCount": 2,
+                },
+            },
+            client_id="main-ui-client",
+            surface="main-ui",
+        )
+        snapshot = policy.record_feedback(
+            "session-1",
+            "desktop.capabilities",
+            {
+                "desktop": {"runtime": "electron", "protocolVersion": 1},
+                "live2d": {
+                    "available": True,
+                    "modelId": "hiyori-free",
+                    "expressions": ["smile"],
+                    "motions": ["Idle"],
+                },
+                "audio": {
+                    "runtimeAudio": True,
+                    "speechSynthesis": False,
+                    "voiceCount": 0,
+                },
+            },
+            client_id="companion-client",
+            surface="companion",
+        )
+
+        self.assertEqual(snapshot["desktopCapabilities"]["desktop"]["clientCount"], 2)
+        self.assertTrue(snapshot["desktopCapabilities"]["live2d"]["available"])
+        self.assertEqual(snapshot["desktopCapabilities"]["live2d"]["modelId"], "hiyori-free")
+        self.assertEqual(snapshot["desktopCapabilities"]["live2d"]["expressions"], ["smile"])
+        self.assertTrue(snapshot["desktopCapabilities"]["audio"]["runtimeAudio"])
+        self.assertTrue(snapshot["desktopCapabilities"]["audio"]["speechSynthesis"])
+        self.assertEqual(snapshot["desktopCapabilities"]["audio"]["voiceCount"], 2)
+        self.assertIn("main-ui-client", snapshot["desktopCapabilitiesByClient"])
+        self.assertIn("companion-client", snapshot["desktopCapabilitiesByClient"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,9 @@ MEMORY_REVIEW_MAX_CANDIDATES = 8
 MEMORY_REVIEW_TRIGGER_MESSAGE_COUNT = 12
 MEMORY_REVIEW_SUCCESS_COOLDOWN_SECONDS = 600
 MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS = 300
+DESKTOP_COMPANION_LIVE2D_SCALE = 0.92
+DESKTOP_COMPANION_LIVE2D_OFFSET_X = 0
+DESKTOP_COMPANION_LIVE2D_OFFSET_Y = 0
 WORKSPACE_MUTATING_TOOLS = {"patch", "write_file"}
 logger = logging.getLogger(__name__)
 
@@ -235,12 +238,16 @@ class AgentRuntime:
         payload: dict[str, Any],
         *,
         timestamp: str | None = None,
+        client_id: str | None = None,
+        surface: str | None = None,
     ) -> dict[str, Any]:
         return self.harness_feedback_policy.record_feedback(
             session_id,
             event_type,
             payload,
             timestamp=timestamp,
+            client_id=client_id,
+            surface=surface,
         )
 
     def harness_feedback_snapshot(self, session_id: str) -> dict[str, Any]:
@@ -270,6 +277,7 @@ class AgentRuntime:
         context_config = runtime_config.get("context", {})
         summary_config = runtime_config.get("summary", {})
         memory_review_config = runtime_config.get("memoryReview", {})
+        desktop_config = runtime_config.get("desktop", {})
         self.context_max_tokens = parse_positive_int_env(
             "AMADEUS_CONTEXT_MAX_TOKENS",
             parse_positive_int_value(context_config.get("maxTokens"), CONTEXT_MAX_TOKENS),
@@ -369,6 +377,20 @@ class AgentRuntime:
         self.memory_review_failure_cooldown_seconds = parse_positive_int_env(
             "AMADEUS_MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS",
             parse_positive_int_value(memory_review_config.get("failureCooldownSeconds"), MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS),
+        )
+        self.desktop_companion_live2d_scale = parse_float_env(
+            "AMADEUS_DESKTOP_COMPANION_LIVE2D_SCALE",
+            parse_float_value(desktop_config.get("companionLive2dScale"), DESKTOP_COMPANION_LIVE2D_SCALE, minimum=0.25, maximum=2.5),
+            minimum=0.25,
+            maximum=2.5,
+        )
+        self.desktop_companion_live2d_offset_x = parse_int_env(
+            "AMADEUS_DESKTOP_COMPANION_LIVE2D_OFFSET_X",
+            parse_int_value(desktop_config.get("companionLive2dOffsetX"), DESKTOP_COMPANION_LIVE2D_OFFSET_X),
+        )
+        self.desktop_companion_live2d_offset_y = parse_int_env(
+            "AMADEUS_DESKTOP_COMPANION_LIVE2D_OFFSET_Y",
+            parse_int_value(desktop_config.get("companionLive2dOffsetY"), DESKTOP_COMPANION_LIVE2D_OFFSET_Y),
         )
         snapshot = self._runtime_config_snapshot()
         logger.info(
@@ -715,6 +737,11 @@ class AgentRuntime:
                 "maxCandidates": self.memory_review_max_candidates,
                 "successCooldownSeconds": self.memory_review_success_cooldown_seconds,
                 "failureCooldownSeconds": self.memory_review_failure_cooldown_seconds,
+            },
+            "desktop": {
+                "companionLive2dScale": self.desktop_companion_live2d_scale,
+                "companionLive2dOffsetX": self.desktop_companion_live2d_offset_x,
+                "companionLive2dOffsetY": self.desktop_companion_live2d_offset_y,
             },
         }
 
@@ -2020,6 +2047,13 @@ def parse_non_negative_int_value(value: Any, default: int) -> int:
     return parsed if parsed >= 0 else default
 
 
+def parse_int_value(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_float_value(value: Any, default: float, *, minimum: float, maximum: float) -> float:
     try:
         parsed = float(value)
@@ -2050,6 +2084,16 @@ def parse_non_negative_int_env(name: str, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed >= 0 else default
+
+
+def parse_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
 
 
 def parse_float_env(name: str, default: float, *, minimum: float, maximum: float) -> float:

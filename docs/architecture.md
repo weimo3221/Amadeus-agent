@@ -22,13 +22,15 @@ Today the preferred path is already Python-first:
 ```text
 User
   |
-  | text input in desktop UI
+  | text input in Companion / Main UI
   v
 apps/desktop
   |
-  | WebSocket user.message
+  | WebSocket user.message with surface/client/session metadata
   v
 apps/server
+  |
+  | session room broadcast / Python relay
   |
   | POST /agent/turn
   v
@@ -47,7 +49,7 @@ packages/amadeus/agent.py
   v
 apps/server
   |
-  | relay NDJSON events to desktop
+  | relay NDJSON events to every client in the session
   v
 apps/desktop
 ```
@@ -68,13 +70,19 @@ So in current practice, `apps/server` is:
 ```text
 User
   |
-  | text / mouse / local UI events
+  | text / global cursor / local UI events
   v
 apps/desktop
+  |
+  +--> companion renderer (Live2D, transient bubbles, lightweight input)
+  +--> main-ui renderer    (larger chat/workbench, no Live2D)
   |
   | WebSocket / local IPC events
   v
 apps/server
+  |
+  +--> sessionId -> clients[] WebSocket rooms
+  +--> surface-aware broadcast
   |
   | HTTP / JSON runtime calls
   v
@@ -101,9 +109,8 @@ apps/server
   +--> packages/amadeus/tools.ts
          +--> tool schema metadata
          +--> permission metadata
-         +--> config loading
-         +--> Python runtime bridge
-         +--> TS fallback tool implementations
+         +--> Python runtime bridge helpers
+         +--> desktop/server diagnostics scaffolding
 ```
 
 ### Long-term target
@@ -168,18 +175,22 @@ In the mature architecture, Live2D and audio are first-class harnesses. A harnes
 
 Desktop app responsibilities:
 
-- Create an Electron window with transparent background and always-on-top option.
-- Render Live2D model.
-- Provide chat input, compact settings, and status indicators.
-- Display streaming replies.
+- Create separate Electron surfaces for Companion and Main UI.
+- Render Live2D only in Companion.
+- Keep Companion as a transparent frameless always-on-top desktop presence with lightweight input and transient streaming reply bubbles.
+- Keep Main UI as the larger chat/workbench surface without Live2D.
 - Show inline tool permission prompts.
 - Play runtime audio when available and otherwise fall back to browser/Electron `speechSynthesis`.
 - Drive current lipsync behavior locally.
 - Receive behavior commands from the agent runtime.
+- Sample the global desktop cursor in the Electron main process and send it to Companion for gaze tracking and panel visibility.
 
 Current note:
 
-- The actual desktop Live2D and renderer behavior logic currently lives in `apps/desktop/src/renderer/main.ts`.
+- The actual Companion Live2D and lightweight renderer behavior logic currently lives in `apps/desktop/src/renderer/companion/main.ts`.
+- The larger chat/workbench renderer currently lives in `apps/desktop/src/renderer/main-ui/main.ts`.
+- Companion panel visibility is not DOM hover-driven. The renderer shows the panel only when the global cursor point is inside the Companion window bounds and hides it 1.5 seconds after the cursor leaves.
+- Live2D model fit is configured from `configs/runtime.yaml` through `/live2d/config` (`desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, `desktop.companionLive2dOffsetY`).
 - `packages/live2d-stage` is still an intended package boundary, not the active implementation.
 
 ### apps/server
@@ -187,8 +198,11 @@ Current note:
 TypeScript bridge responsibilities today:
 
 - Expose WebSocket and HTTP endpoints to the desktop app.
+- Parse and validate WebSocket `surface` and `sessionId` parameters.
+- Track `sessionId -> clients[]` rooms and broadcast runtime events to every client in the same session.
 - Translate desktop events into Python runtime requests.
 - Forward Python runtime events back to the desktop.
+- Forward per-client desktop capability and audio feedback metadata to Python for harness policy.
 - Route desktop `tool.permission.response` events back to Python `/tools/permission`.
 
 This layer should shrink over time.
@@ -224,7 +238,7 @@ Intended Live2D responsibilities:
 Current note:
 
 - This package is not yet the real implementation package.
-- The current working Live2D adapter logic is still embedded in `apps/desktop/src/renderer/main.ts`.
+- The current working Live2D adapter logic is still embedded in `apps/desktop/src/renderer/companion/main.ts`.
 - Local model storage is active under `models/live2d`. The Python runtime now owns the Live2D model library boundary, including configured-model reads, model listing, model selection persistence, and model asset serving. The Node bridge keeps the desktop-facing `8788` origin by proxying `/live2d/*` to Python and rewriting model URLs back to bridge-relative URLs.
 
 ### packages/amadeus/audio.py

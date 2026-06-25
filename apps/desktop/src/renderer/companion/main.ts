@@ -7,15 +7,17 @@ import type {
 import type { Live2DModel as Live2DModelClass } from 'pixi-live2d-display/cubism4'
 import * as PIXI from 'pixi.js'
 
-import { RuntimeUiController, type RuntimeAudioLike } from './runtime-ui'
+import { RuntimeUiController, type RuntimeAudioLike } from '../runtime-ui'
 import './styles.css'
 
 window.PIXI = PIXI
+console.info('Amadeus companion renderer booting')
 
 const runtimeQuery = new URLSearchParams(window.location.search)
 const DEFAULT_MODEL_URL = 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json'
 const AGENT_HTTP_URL = runtimeQuery.get('agentHttpUrl') || import.meta.env.VITE_AGENT_HTTP_URL || 'http://127.0.0.1:8788'
-const AGENT_WS_URL = runtimeQuery.get('agentWsUrl') || import.meta.env.VITE_AGENT_WS_URL || 'ws://127.0.0.1:8788/ws'
+const BASE_AGENT_WS_URL = runtimeQuery.get('agentWsUrl') || import.meta.env.VITE_AGENT_WS_URL || 'ws://127.0.0.1:8788/ws'
+const SESSION_ID = runtimeQuery.get('sessionId') || import.meta.env.VITE_AMADEUS_SESSION_ID || 'companion:default'
 const SKIP_LIVE2D = runtimeQuery.get('skipLive2d') === '1'
 const MOCK_LIVE2D = runtimeQuery.get('mockLive2d') === '1'
 const MOCK_AUDIO = runtimeQuery.get('mockAudio')
@@ -25,6 +27,20 @@ const CUBISM_CORE_TIMEOUT_MS = 8000
 const MOTION_PRIORITY_FORCE = 3
 const LIVE2D_LOAD_TIMEOUT_MS = 15000
 const LIVE2D_CONFIG_TIMEOUT_MS = 2500
+const LIVE2D_MAX_LOAD_RETRIES = 5
+const DEFAULT_LIVE2D_DISPLAY_CONFIG = {
+  scale: 0.92,
+  offsetX: 0,
+  offsetY: 0,
+}
+const COMPANION_PANEL_HIDE_DELAY_MS = 1500
+
+function wsUrlForSurface(url: string, surface: string, sessionId: string): string {
+  const parsed = new URL(url)
+  parsed.searchParams.set('surface', surface)
+  parsed.searchParams.set('sessionId', sessionId)
+  return parsed.toString()
+}
 
 const stageElement = document.querySelector<HTMLDivElement>('#live2d-stage')
 const statusElement = document.querySelector<HTMLDivElement>('#stage-status')
@@ -40,6 +56,7 @@ const skillDetailBody = document.querySelector<HTMLDivElement>('#skill-detail-bo
 const pinButton = document.querySelector<HTMLButtonElement>('#pin-button')
 const minimizeButton = document.querySelector<HTMLButtonElement>('#minimize-button')
 const voiceButton = document.querySelector<HTMLButtonElement>('#voice-button')
+const openMainUiButton = document.querySelector<HTMLButtonElement>('#open-main-ui-button')
 const closeButton = document.querySelector<HTMLButtonElement>('#close-button')
 const providerLabel = document.querySelector<HTMLElement>('#provider-label')
 const connectionLabel = document.querySelector<HTMLElement>('#connection-label')
@@ -70,11 +87,25 @@ let live2dController: Live2DController | undefined
 let live2dApp: Application | undefined
 let live2dModel: Live2DModelInstance | undefined
 let live2dResizeHandler: (() => void) | undefined
+let live2dLoadRetryCount = 0
+let live2dLoadRetryTimer: number | undefined
 let live2dLoadToken = 0
 let activeLive2DModelId = ''
+let live2dDisplayConfig = { ...DEFAULT_LIVE2D_DISPLAY_CONFIG }
+let companionPanelHideTimer: number | undefined
+let companionPanelVisible = false
+
+interface DesktopGlobalCursorPayload {
+  cursor: { x: number; y: number }
+  window: { x: number; y: number; width: number; height: number }
+}
 
 interface Live2DCoreModel {
   setParameterValueById: (id: string, value: number) => void
+}
+
+interface Live2DFocusModel {
+  focus: (x: number, y: number, instant?: boolean) => void
 }
 
 type Live2DModelConstructor = typeof Live2DModelClass
@@ -131,6 +162,13 @@ interface Live2DInternalsLike {
 interface Live2DRuntimeConfig {
   ok?: boolean
   model?: Partial<Live2DResolvedModel>
+  display?: Partial<Live2DDisplayConfig>
+}
+
+interface Live2DDisplayConfig {
+  scale: number
+  offsetX: number
+  offsetY: number
 }
 
 interface Live2DModelListItem {
@@ -208,8 +246,14 @@ class Live2DController {
   }
 
   focus(pointerX: number, pointerY: number, width: number, height: number): void {
-    const x = (pointerX / width - 0.5) * 30
-    const y = (pointerY / height - 0.5) * 30
+    const focusModel = this.model as unknown as Live2DFocusModel
+    if (typeof focusModel.focus === 'function') {
+      focusModel.focus(pointerX, pointerY)
+      return
+    }
+
+    const x = Math.max(-18, Math.min(18, (pointerX / width - 0.5) * 24))
+    const y = Math.max(-18, Math.min(18, (pointerY / height - 0.5) * 24))
     const coreModel = this.model.internalModel.coreModel as Live2DCoreModel
     coreModel.setParameterValueById('ParamAngleX', x)
     coreModel.setParameterValueById('ParamAngleY', -y)
@@ -640,6 +684,15 @@ function normalizeResolvedModel(model: Partial<Live2DResolvedModel> | undefined)
   }
 }
 
+function normalizeLive2DDisplayConfig(value: Partial<Live2DDisplayConfig> | undefined): Live2DDisplayConfig {
+  const scale = typeof value?.scale === 'number' && value.scale >= 0.25 && value.scale <= 2.5
+    ? value.scale
+    : DEFAULT_LIVE2D_DISPLAY_CONFIG.scale
+  const offsetX = typeof value?.offsetX === 'number' ? value.offsetX : DEFAULT_LIVE2D_DISPLAY_CONFIG.offsetX
+  const offsetY = typeof value?.offsetY === 'number' ? value.offsetY : DEFAULT_LIVE2D_DISPLAY_CONFIG.offsetY
+  return { scale, offsetX, offsetY }
+}
+
 async function resolveLive2DModelConfig(): Promise<Live2DResolvedModel> {
   if (import.meta.env.VITE_LIVE2D_MODEL_URL) {
     return {
@@ -663,6 +716,7 @@ async function resolveLive2DModelConfig(): Promise<Live2DResolvedModel> {
     const config = await response.json() as Live2DRuntimeConfig
     const model = normalizeResolvedModel(config.model)
     if (config.ok && model) {
+      live2dDisplayConfig = normalizeLive2DDisplayConfig(config.display)
       console.info(`Using configured Live2D model ${model.id}: ${model.url}`)
       updateLive2DModelStatus(`Model: ${model.id} loading`)
       return model
@@ -795,6 +849,97 @@ function setStatus(message: string, visible = true): void {
 
   statusElement.textContent = message
   statusElement.hidden = !visible
+  document.body.dataset.live2dStatus = visible ? 'visible' : 'hidden'
+}
+
+function focusLive2DFromWindowPoint(windowX: number, windowY: number): void {
+  if (!stageElement) {
+    return
+  }
+
+  const rect = stageElement.getBoundingClientRect()
+  live2dController?.focus(windowX - rect.left, windowY - rect.top, rect.width, rect.height)
+}
+
+function showCompanionPanel(): void {
+  if (companionPanelHideTimer !== undefined) {
+    window.clearTimeout(companionPanelHideTimer)
+    companionPanelHideTimer = undefined
+  }
+  if (companionPanelVisible) {
+    return
+  }
+  companionPanelVisible = true
+  document.body.classList.add('companion-panel-open')
+}
+
+function hideCompanionPanel(): void {
+  companionPanelHideTimer = undefined
+  if (!companionPanelVisible) {
+    return
+  }
+  companionPanelVisible = false
+  document.body.classList.remove('companion-panel-open')
+  chatInput?.blur()
+}
+
+function scheduleCompanionPanelHide(delayMs = COMPANION_PANEL_HIDE_DELAY_MS): void {
+  if (companionPanelHideTimer !== undefined) {
+    window.clearTimeout(companionPanelHideTimer)
+  }
+  companionPanelHideTimer = window.setTimeout(hideCompanionPanel, delayMs)
+}
+
+function isCursorInsideWindow(payload: DesktopGlobalCursorPayload): boolean {
+  const { cursor, window: windowBounds } = payload
+  return cursor.x >= windowBounds.x
+    && cursor.x < windowBounds.x + windowBounds.width
+    && cursor.y >= windowBounds.y
+    && cursor.y < windowBounds.y + windowBounds.height
+}
+
+function handleGlobalCursor(payload: DesktopGlobalCursorPayload): void {
+  focusLive2DFromWindowPoint(payload.cursor.x - payload.window.x, payload.cursor.y - payload.window.y)
+
+  if (isCursorInsideWindow(payload)) {
+    showCompanionPanel()
+    return
+  }
+
+  scheduleCompanionPanelHide()
+}
+
+function bindGlobalCursorTracking(): void {
+  window.amadeus?.onGlobalCursor?.(handleGlobalCursor)
+}
+
+function scheduleLive2DRetry(reason: string): void {
+  if (live2dLoadRetryCount >= LIVE2D_MAX_LOAD_RETRIES) {
+    setStatus(`Live2D failed: ${reason}`)
+    return
+  }
+
+  live2dLoadRetryCount += 1
+  const delayMs = Math.min(5000, 750 * live2dLoadRetryCount)
+  setStatus(`Live2D retrying (${live2dLoadRetryCount}/${LIVE2D_MAX_LOAD_RETRIES})...`)
+  if (live2dLoadRetryTimer) {
+    window.clearTimeout(live2dLoadRetryTimer)
+  }
+  live2dLoadRetryTimer = window.setTimeout(() => {
+    live2dLoadRetryTimer = undefined
+    void retryLive2DLoad()
+  }, delayMs)
+}
+
+async function retryLive2DLoad(): Promise<void> {
+  try {
+    await loadLive2DModel(await resolveLive2DModelConfig())
+  }
+  catch (error) {
+    console.error(error)
+    const message = error instanceof Error ? error.message : 'Unknown Live2D loading error'
+    scheduleLive2DRetry(message)
+  }
 }
 
 async function bootLive2D(): Promise<void> {
@@ -825,11 +970,12 @@ async function bootLive2D(): Promise<void> {
 
   try {
     await loadLive2DModel(await resolveLive2DModelConfig())
+    live2dLoadRetryCount = 0
   }
   catch (error) {
     console.error(error)
     const message = error instanceof Error ? error.message : 'Unknown Live2D loading error'
-    setStatus(`Live2D failed: ${message}`)
+    scheduleLive2DRetry(message)
   }
 }
 
@@ -870,10 +1016,10 @@ async function loadLive2DModel(modelConfig: Live2DResolvedModel): Promise<void> 
 
   const fitModel = (): void => {
     const bounds = stageElement.getBoundingClientRect()
-    const scale = Math.min(bounds.width / nextModel.width, bounds.height / nextModel.height) * 0.92
+    const scale = Math.min(bounds.width / nextModel.width, bounds.height / nextModel.height) * live2dDisplayConfig.scale
     nextModel.scale.set(scale)
-    nextModel.x = bounds.width / 2
-    nextModel.y = bounds.height / 2
+    nextModel.x = bounds.width / 2 + live2dDisplayConfig.offsetX
+    nextModel.y = bounds.height / 2 + live2dDisplayConfig.offsetY
   }
   live2dResizeHandler = fitModel
   fitModel()
@@ -896,6 +1042,7 @@ async function loadLive2DModel(modelConfig: Live2DResolvedModel): Promise<void> 
   }
   runtimeUi.reportDesktopCapabilities()
   void live2dController.applyState('idle')
+  live2dLoadRetryCount = 0
   setStatus('Live2D ready', false)
 }
 
@@ -986,6 +1133,10 @@ function bootControls(): void {
     void window.amadeus?.minimizeWindow()
   })
 
+  openMainUiButton?.addEventListener('click', () => {
+    void window.amadeus?.openMainUi(SESSION_ID)
+  })
+
   debugApply?.addEventListener('click', () => {
     const state = (debugState?.value || 'idle') as AssistantState
     const expression = debugExpression?.value || 'neutral'
@@ -1039,7 +1190,7 @@ function createMockRuntimeAudio(_url: string, mode: string): RuntimeAudioLike {
 
 const runtimeUi = new RuntimeUiController({
   elements: {
-    statusElement,
+    statusElement: null,
     chatForm,
     chatInput,
     chatLog,
@@ -1067,7 +1218,7 @@ const runtimeUi = new RuntimeUiController({
     voiceStatus,
     resetSessionButton,
   },
-  wsUrl: AGENT_WS_URL,
+  wsUrl: wsUrlForSurface(BASE_AGENT_WS_URL, 'companion', SESSION_ID),
   skillsUrl: `${AGENT_HTTP_URL}/skills/list`,
   modelLabel: import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-flash',
   createSocket: (url) => new WebSocket(url),
@@ -1108,6 +1259,7 @@ function undefinedStorage() {
 }
 
 bootControls()
+bindGlobalCursorTracking()
 runtimeUi.bindControls()
 runtimeUi.connectAgentRuntime()
 if (SKIP_LIVE2D) {

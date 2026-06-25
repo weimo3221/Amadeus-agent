@@ -8,11 +8,23 @@ All events are JSON objects with this shape:
 export interface RuntimeEvent<TType extends string = string, TPayload = unknown> {
   id: string
   type: TType
-  sessionId: string
-  timestamp: string
+  sessionId?: string
+  clientId?: string
+  surface?: 'main-ui' | 'companion' | 'cli'
+  timestamp?: string
   payload: TPayload
 }
 ```
+
+WebSocket clients connect with URL parameters:
+
+```text
+/ws?surface=companion&sessionId=companion:default
+/ws?surface=main-ui&sessionId=companion:default
+/ws?surface=cli&sessionId=cli:default
+```
+
+The bridge validates `surface`, assigns a `clientId`, stores clients in `sessionId -> clients[]`, and broadcasts runtime events to all connected clients in the same session. `surface` describes the client that produced an event; it is not a routing target.
 
 ## Current Desktop to Server Events
 
@@ -76,8 +88,10 @@ export interface RuntimeEvent<TType extends string = string, TPayload = unknown>
 
 Current behavior:
 
-- Desktop sends this after `server.hello` and again after a Live2D model finishes loading.
-- The bridge forwards it to Python `/runtime/feedback`, where `HarnessFeedbackPolicy` records it for runtime policy.
+- Desktop clients send this after `server.hello`; Companion sends it again after a Live2D model finishes loading.
+- Main UI normally reports `live2d.available=false`; Companion reports `live2d.available=true` after the model is ready.
+- The bridge forwards it to Python `/runtime/feedback` with `clientId` and `surface`.
+- `HarnessFeedbackPolicy` stores per-client capabilities and exposes an aggregate session capability view. `live2d.available` is true for the session when any connected client reports Live2D availability.
 
 ### audio.playback-started / audio.playback-ended / audio.playback-error
 
@@ -172,6 +186,11 @@ The bridge emits memory review state in response to desktop `memory.review.*` re
   }
 }
 ```
+
+Desktop behavior:
+
+- Main UI keeps the normal chat history view.
+- Companion streams `assistant.delta` into a transient desktop bubble and marks it complete on `assistant.message`; the completed bubble fades out after a short delay instead of staying inside the input panel.
 
 ### assistant.state
 

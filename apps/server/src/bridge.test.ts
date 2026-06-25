@@ -317,6 +317,8 @@ describe('Python runtime feedback forwarding', () => {
       id: 'feedback-1',
       type: 'audio.playback-started',
       sessionId: 'session-1',
+      clientId: 'companion-client',
+      surface: 'companion',
       timestamp: '2026-06-22T00:00:00.000Z',
       payload: {
         source: 'runtime_audio',
@@ -332,6 +334,8 @@ describe('Python runtime feedback forwarding', () => {
     assert.equal(calls[0].init?.method, 'POST')
     assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
       sessionId: 'session-1',
+      clientId: 'companion-client',
+      surface: 'companion',
       type: 'audio.playback-started',
       timestamp: '2026-06-22T00:00:00.000Z',
       payload: {

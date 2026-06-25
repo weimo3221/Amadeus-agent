@@ -410,6 +410,8 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             event_type = body.get("type")
             payload = body.get("payload")
             timestamp = body.get("timestamp")
+            client_id = body.get("clientId")
+            surface = body.get("surface")
 
             if not isinstance(session_id, str) or not isinstance(event_type, str) or not isinstance(payload, dict):
                 self.write_json(400, {"ok": False, "error": "sessionId, type, and payload must be provided"})
@@ -417,23 +419,34 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             if timestamp is not None and not isinstance(timestamp, str):
                 self.write_json(400, {"ok": False, "error": "timestamp must be a string when provided"})
                 return
+            if client_id is not None and not isinstance(client_id, str):
+                self.write_json(400, {"ok": False, "error": "clientId must be a string when provided"})
+                return
+            if surface is not None and not isinstance(surface, str):
+                self.write_json(400, {"ok": False, "error": "surface must be a string when provided"})
+                return
 
             snapshot = agent_runtime.observe_harness_feedback(
                 session_id,
                 event_type,
                 payload,
                 timestamp=timestamp,
+                client_id=client_id,
+                surface=surface,
             )
             events = [
                 event.to_runtime_event(session_id)
                 for event in agent_runtime.harness_events_for_feedback(session_id, event_type, payload)
             ]
             logger.info(
-                "Handled runtime feedback sessionId=%s type=%s audioStatus=%s live2dAvailable=%s emittedEvents=%s",
+                "Handled runtime feedback sessionId=%s clientId=%s surface=%s type=%s audioStatus=%s live2dAvailable=%s clientCount=%s emittedEvents=%s",
                 session_id,
+                client_id,
+                surface,
                 event_type,
                 snapshot.get("audioPlayback", {}).get("status"),
                 (snapshot.get("desktopCapabilities") or {}).get("live2d", {}).get("available"),
+                (snapshot.get("desktopCapabilities") or {}).get("desktop", {}).get("clientCount"),
                 len(events),
             )
             self.write_json(200, {"ok": True, "feedback": snapshot, "events": events})
@@ -888,6 +901,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "path": selection.relative_path,
                 "url": live2d_library.model_url(selection),
                 "manifest": live2d_library.read_manifest(selection.relative_path),
+            },
+            "display": {
+                "scale": agent_runtime.desktop_companion_live2d_scale,
+                "offsetX": agent_runtime.desktop_companion_live2d_offset_x,
+                "offsetY": agent_runtime.desktop_companion_live2d_offset_y,
             },
         })
 

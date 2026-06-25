@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval' https://cubism.live2d.com; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* http://localhost:* ws://localhost:* https://cdn.jsdelivr.net https://cubism.live2d.com; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net https://raw.githubusercontent.com; media-src 'self' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline';"
+    />
+    <title>Amadeus Companion</title>
+  </head>
+  <body>
+    <main id="app">
+      <section class="stage-shell">
+        <div id="live2d-stage"></div>
+        <div class="companion-drag-hint" aria-hidden="true">drag</div>
+        <div id="stage-status" class="stage-status">Loading Live2D model...</div>
+        <section class="debug-panel" aria-label="Live2D debug controls">
+          <select id="debug-state" title="Assistant state">
+            <option value="idle">idle</option>
+            <option value="thinking">thinking</option>
+            <option value="speaking">speaking</option>
+            <option value="error">error</option>
+          </select>
+          <select id="debug-expression" title="Expression">
+            <option value="neutral">loading expressions</option>
+          </select>
+          <select id="debug-motion" title="Motion">
+            <option value="idle">loading motions</option>
+          </select>
+          <button id="debug-apply" type="button">Apply</button>
+          <div class="live2d-model-row">
+            <span id="live2d-model-status">Model: resolving</span>
+            <select id="live2d-model-select" title="Live2D model">
+              <option value="">loading models</option>
+            </select>
+            <button id="live2d-model-refresh" type="button" title="Refresh local Live2D models">Refresh</button>
+          </div>
+          <div id="debug-capabilities" class="debug-capabilities">Loading model capabilities</div>
+        </section>
+      </section>
+
+      <div id="chat-log" class="chat-log companion-transient-log" aria-live="polite"></div>
+
+      <section class="chat-panel companion-hover-panel">
+        <div class="provider">
+          <span id="connection-label">Connecting</span>
+          <button id="open-main-ui-button" type="button" title="Open main UI">Main UI</button>
+        </div>
+        <form id="chat-form">
+          <input id="chat-input" name="message" autocomplete="off" placeholder="Message Amadeus..." />
+          <button type="submit">Send</button>
+        </form>
+
+        <div class="companion-internals" aria-hidden="true">
+          <strong id="provider-label">DeepSeek</strong>
+          <button id="pin-button" type="button" title="Toggle always on top">Unpin</button>
+          <button id="minimize-button" type="button" title="Minimize">Minimize</button>
+          <button id="voice-button" type="button" title="Toggle voice output">Voice On</button>
+          <button id="close-button" type="button" title="Close">Close</button>
+          <div class="runtime-row">
+            <span id="memory-status">Memory unknown</span>
+            <button id="reset-session-button" type="button" title="Clear this session memory">Reset</button>
+          </div>
+          <div class="diagnostics">
+            <div id="tool-status" class="tool-status">Tools idle</div>
+            <div id="skill-status" class="skill-status">Skills idle</div>
+            <div id="tool-config-status" class="tool-config-status">Tool config unknown</div>
+            <div id="voice-status" class="voice-status">Voice idle</div>
+          </div>
+          <section class="memory-review" aria-label="Memory review">
+            <div class="memory-review-header">
+              <span id="memory-review-status">Memory review: loading</span>
+              <button id="memory-review-run-button" type="button">Review</button>
+            </div>
+            <div id="memory-review-list" class="memory-review-list"></div>
+          </section>
+          <section class="skills-panel" aria-label="Suggested skills">
+            <div class="skills-header">
+              <span id="skills-status">Suggested skills: loading...</span>
+              <button id="skills-refresh-button" type="button">Refresh</button>
+            </div>
+            <input
+              id="skills-search-input"
+              class="skills-search-input"
+              type="search"
+              autocomplete="off"
+              placeholder="Search skills..."
+            />
+            <div id="skills-list" class="skills-list"></div>
+            <div class="skill-detail">
+              <div class="skill-detail-header">
+                <span id="skill-detail-title">Skill Summary</span>
+              </div>
+              <div id="skill-detail-body" class="skill-detail-body">Select a skill to preview a short summary.</div>
+            </div>
+          </section>
+          <div id="tool-permission" class="tool-permission" hidden>
+            <span id="tool-permission-text"></span>
+            <button id="tool-allow-button" type="button">Allow</button>
+            <button id="tool-deny-button" type="button">Deny</button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

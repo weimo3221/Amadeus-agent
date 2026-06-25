@@ -211,6 +211,9 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["model"]["path"], "hiyori-free/hiyori_free_t08.model3.json")
         self.assertTrue(payload["model"]["url"].endswith("/live2d/models/hiyori-free/hiyori_free_t08.model3.json"))
         self.assertEqual(payload["model"]["manifest"]["displayName"], "Hiyori Free")
+        self.assertEqual(payload["display"]["scale"], 0.92)
+        self.assertEqual(payload["display"]["offsetX"], 0)
+        self.assertEqual(payload["display"]["offsetY"], 0)
 
     def test_live2d_models_lists_local_models_and_active_selection(self) -> None:
         payload = self.get_json("/live2d/models")
@@ -295,8 +298,32 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["checks"]["config"]["harnessesConfig"], str(self.harnesses_config_path))
 
     def test_runtime_feedback_records_desktop_capabilities_and_audio_state(self) -> None:
+        main_capabilities = self.post_json("/runtime/feedback", {
+            "sessionId": "feedback-session",
+            "clientId": "main-ui-client",
+            "surface": "main-ui",
+            "type": "desktop.capabilities",
+            "timestamp": "2026-06-22T00:00:00.000Z",
+            "payload": {
+                "desktop": {"runtime": "electron", "protocolVersion": 1},
+                "live2d": {
+                    "available": False,
+                    "expressions": [],
+                    "motions": [],
+                },
+                "audio": {
+                    "runtimeAudio": False,
+                    "speechSynthesis": True,
+                    "voiceCount": 2,
+                },
+            },
+        })
+        self.assertFalse(main_capabilities["feedback"]["desktopCapabilities"]["live2d"]["available"])
+
         capabilities = self.post_json("/runtime/feedback", {
             "sessionId": "feedback-session",
+            "clientId": "companion-client",
+            "surface": "companion",
             "type": "desktop.capabilities",
             "timestamp": "2026-06-22T00:00:00.000Z",
             "payload": {
@@ -316,10 +343,16 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         })
 
         self.assertTrue(capabilities["ok"])
+        self.assertEqual(capabilities["feedback"]["desktopCapabilities"]["desktop"]["clientCount"], 2)
+        self.assertTrue(capabilities["feedback"]["desktopCapabilities"]["live2d"]["available"])
         self.assertEqual(capabilities["feedback"]["desktopCapabilities"]["live2d"]["modelId"], "hiyori-free")
+        self.assertIn("main-ui-client", capabilities["feedback"]["desktopCapabilitiesByClient"])
+        self.assertIn("companion-client", capabilities["feedback"]["desktopCapabilitiesByClient"])
 
         playback = self.post_json("/runtime/feedback", {
             "sessionId": "feedback-session",
+            "clientId": "companion-client",
+            "surface": "companion",
             "type": "audio.playback-started",
             "timestamp": "2026-06-22T00:00:01.000Z",
             "payload": {
@@ -331,6 +364,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
         self.assertEqual(playback["feedback"]["audioPlayback"]["status"], "playing")
         self.assertEqual(playback["feedback"]["audioPlayback"]["audioUrl"], "http://runtime/audio.wav")
+        self.assertEqual(playback["feedback"]["audioPlayback"]["clientId"], "companion-client")
+        self.assertEqual(playback["feedback"]["audioPlayback"]["surface"], "companion")
         self.assertEqual(playback["events"][0]["type"], "character.behavior")
         self.assertEqual(playback["events"][0]["payload"]["motion"], "talk")
         self.assertEqual(playback["events"][1]["type"], "audio.lipsync-cues")
@@ -339,7 +374,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
         snapshot = self.get_json("/runtime/feedback?sessionId=feedback-session")
         self.assertEqual(snapshot["feedback"]["sessionId"], "feedback-session")
-        self.assertEqual(snapshot["feedback"]["recentEventCount"], 2)
+        self.assertEqual(snapshot["feedback"]["recentEventCount"], 3)
         self.assertEqual(snapshot["feedback"]["recentEvents"][-1]["type"], "audio.playback-started")
 
     def test_agent_turn_streams_missing_api_key_error_as_ndjson(self) -> None:

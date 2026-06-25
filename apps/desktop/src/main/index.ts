@@ -14,6 +14,14 @@ const isE2eAudioError = process.env.AMADEUS_E2E_EXPECT_AUDIO_ERROR === '1'
 const isE2ePermissionPrompt = process.env.AMADEUS_E2E_PERMISSION_PROMPT === '1'
 const isE2ePermissionAllow = process.env.AMADEUS_E2E_EXPECT_PERMISSION_ALLOW === '1'
 const isE2eMultiSkillSelect = process.env.AMADEUS_E2E_MULTI_SKILL_SELECT === '1'
+const isE2eOpenMainUi = process.env.AMADEUS_E2E_OPEN_MAIN_UI === '1'
+const isE2eCompanionHover = process.env.AMADEUS_E2E_COMPANION_HOVER === '1'
+const defaultCompanionSessionId = process.env.AMADEUS_SESSION_ID || 'companion:default'
+
+let mainUiWindow: BrowserWindow | undefined
+let companionWindow: BrowserWindow | undefined
+let companionCursorTimer: NodeJS.Timeout | undefined
+let companionLastCursor: { x: number, y: number } | undefined
 
 if (is.dev) {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
@@ -24,11 +32,70 @@ function writeRuntimeLog(message: string): void {
   appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${message}\n`, 'utf8')
 }
 
-function createMainWindow(): BrowserWindow {
+function rendererDevUrl(entry: 'main-ui' | 'companion'): string {
+  const baseUrl = process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173/'
+  return new URL(`${entry}/index.html`, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString()
+}
+
+function rendererQuery(sessionId = defaultCompanionSessionId): Record<string, string> {
+  const query: Record<string, string> = {
+    sessionId,
+  }
+  if (process.env.AMADEUS_E2E_AGENT_HTTP_URL) {
+    query.agentHttpUrl = process.env.AMADEUS_E2E_AGENT_HTTP_URL
+  }
+  if (process.env.AMADEUS_E2E_AGENT_WS_URL) {
+    query.agentWsUrl = process.env.AMADEUS_E2E_AGENT_WS_URL
+  }
+  if (process.env.AMADEUS_E2E_SKIP_LIVE2D === '1') {
+    query.skipLive2d = '1'
+  }
+  if (process.env.AMADEUS_E2E_MOCK_LIVE2D === '1') {
+    query.mockLive2d = '1'
+  }
+  if (process.env.AMADEUS_E2E_MOCK_AUDIO) {
+    query.mockAudio = process.env.AMADEUS_E2E_MOCK_AUDIO
+  }
+  query.disableSkillPersistence = '1'
+  return query
+}
+
+function startCompanionCursorTracking(window: BrowserWindow): void {
+  if (companionCursorTimer) {
+    clearInterval(companionCursorTimer)
+  }
+  companionLastCursor = undefined
+
+  companionCursorTimer = setInterval(() => {
+    if (window.isDestroyed()) {
+      clearInterval(companionCursorTimer)
+      companionCursorTimer = undefined
+      companionLastCursor = undefined
+      return
+    }
+
+    const cursor = screen.getCursorScreenPoint()
+    if (
+      companionLastCursor
+      && Math.abs(cursor.x - companionLastCursor.x) < 2
+      && Math.abs(cursor.y - companionLastCursor.y) < 2
+    ) {
+      return
+    }
+    companionLastCursor = cursor
+
+    window.webContents.send('desktop:global-cursor', {
+      cursor,
+      window: window.getBounds(),
+    })
+  }, 80)
+}
+
+function createCompanionWindow(): BrowserWindow {
   const primaryDisplay = screen.getPrimaryDisplay()
   const { width, height } = primaryDisplay.workAreaSize
 
-  const mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 420,
     height: 620,
     x: Math.max(0, width - 460),
@@ -41,7 +108,7 @@ function createMainWindow(): BrowserWindow {
     alwaysOnTop: true,
     skipTaskbar: false,
     backgroundColor: '#00000000',
-    title: 'Amadeus Agent',
+    title: 'Amadeus Companion',
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       sandbox: false,
@@ -50,9 +117,11 @@ function createMainWindow(): BrowserWindow {
     },
   })
 
-  mainWindow.setAlwaysOnTop(true, 'floating')
+  companionWindow = window
+  window.setAlwaysOnTop(true, 'floating')
+  startCompanionCursorTracking(window)
 
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+  window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     const location = sourceId ? `${sourceId}:${line}` : 'renderer'
     const text = `[renderer:${level}] ${message} (${location})`
     writeRuntimeLog(text)
@@ -64,12 +133,12 @@ function createMainWindow(): BrowserWindow {
     }
   })
 
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+  window.webContents.on('render-process-gone', (_event, details) => {
     writeRuntimeLog(`Renderer process gone: ${details.reason}`)
     console.error(`Renderer process gone: ${details.reason}`)
   })
 
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl) => {
+  window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl) => {
     writeRuntimeLog(`Renderer failed to load ${validatedUrl}: ${errorCode} ${errorDescription}`)
     console.error(`Renderer failed to load ${validatedUrl}: ${errorCode} ${errorDescription}`)
     if (isE2eSmoke) {
@@ -77,7 +146,18 @@ function createMainWindow(): BrowserWindow {
     }
   })
 
-  mainWindow.webContents.on('did-finish-load', () => {
+  window.on('closed', () => {
+    if (companionWindow === window) {
+      companionWindow = undefined
+    }
+    if (companionCursorTimer) {
+      clearInterval(companionCursorTimer)
+      companionCursorTimer = undefined
+      companionLastCursor = undefined
+    }
+  })
+
+  window.webContents.on('did-finish-load', () => {
     writeRuntimeLog('Renderer finished loading')
     if (isE2eSmoke) {
       console.log('AMADEUS_E2E_SMOKE renderer-ready')
@@ -86,29 +166,39 @@ function createMainWindow(): BrowserWindow {
     }
 
     if (isE2eRuntimeUi) {
-      void runRuntimeUiE2E(mainWindow)
+      void runRuntimeUiE2E(window)
       return
     }
 
     if (isE2eLive2D) {
-      void runLive2DSwitchE2E(mainWindow)
+      void runLive2DSwitchE2E(window)
       return
     }
 
     if (isE2eAudioFeedback) {
-      void runAudioFeedbackE2E(mainWindow)
+      void runAudioFeedbackE2E(window)
       return
     }
 
     if (isE2ePermissionPrompt) {
-      void runPermissionPromptE2E(mainWindow)
+      void runPermissionPromptE2E(window)
+      return
+    }
+
+    if (isE2eOpenMainUi) {
+      void runOpenMainUiE2E(window)
+      return
+    }
+
+    if (isE2eCompanionHover) {
+      void runCompanionHoverE2E(window)
       return
     }
 
     let checks = 0
     const timer = setInterval(() => {
       checks += 1
-      void mainWindow.webContents.executeJavaScript('document.querySelector("#stage-status")?.textContent ?? ""')
+      void window.webContents.executeJavaScript('document.querySelector("#stage-status")?.textContent ?? ""')
         .then((status) => {
           writeRuntimeLog(`Stage status: ${status || '(hidden)'}`)
         })
@@ -123,31 +213,74 @@ function createMainWindow(): BrowserWindow {
   })
 
   if (!isE2eSmoke && !isE2eRuntimeUi && !isE2eLive2D && !isE2eAudioFeedback && !isE2ePermissionPrompt && !isE2eMultiSkillSelect && process.env.AMADEUS_DESKTOP_DEV === '1') {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173/')
+    const url = new URL(rendererDevUrl('companion'))
+    url.searchParams.set('sessionId', defaultCompanionSessionId)
+    void window.loadURL(url.toString())
   }
   else {
-    const query: Record<string, string> = {}
-    if (process.env.AMADEUS_E2E_AGENT_HTTP_URL) {
-      query.agentHttpUrl = process.env.AMADEUS_E2E_AGENT_HTTP_URL
-    }
-    if (process.env.AMADEUS_E2E_AGENT_WS_URL) {
-      query.agentWsUrl = process.env.AMADEUS_E2E_AGENT_WS_URL
-    }
-    if (process.env.AMADEUS_E2E_SKIP_LIVE2D === '1') {
-      query.skipLive2d = '1'
-    }
-    if (process.env.AMADEUS_E2E_MOCK_LIVE2D === '1') {
-      query.mockLive2d = '1'
-    }
-    if (process.env.AMADEUS_E2E_MOCK_AUDIO) {
-      query.mockAudio = process.env.AMADEUS_E2E_MOCK_AUDIO
-    }
-    query.disableSkillPersistence = '1'
-
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'), { query })
+    void window.loadFile(join(__dirname, '../renderer/companion/index.html'), { query: rendererQuery() })
   }
 
-  return mainWindow
+  return window
+}
+
+function createMainUiWindow(sessionId = defaultCompanionSessionId): BrowserWindow {
+  if (mainUiWindow && !mainUiWindow.isDestroyed()) {
+    mainUiWindow.show()
+    mainUiWindow.focus()
+    return mainUiWindow
+  }
+
+  const window = new BrowserWindow({
+    width: 1040,
+    height: 760,
+    minWidth: 760,
+    minHeight: 560,
+    frame: true,
+    transparent: false,
+    resizable: true,
+    minimizable: true,
+    hasShadow: true,
+    alwaysOnTop: false,
+    skipTaskbar: false,
+    backgroundColor: '#10121a',
+    title: 'Amadeus Main UI',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.mjs'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  mainUiWindow = window
+  window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const location = sourceId ? `${sourceId}:${line}` : 'main-ui-renderer'
+    const text = `[main-ui:${level}] ${message} (${location})`
+    writeRuntimeLog(text)
+    if (level >= 2) {
+      console.error(text)
+    }
+    else {
+      console.log(text)
+    }
+  })
+  window.on('closed', () => {
+    if (mainUiWindow === window) {
+      mainUiWindow = undefined
+    }
+  })
+
+  if (process.env.AMADEUS_DESKTOP_DEV === '1') {
+    const url = new URL(rendererDevUrl('main-ui'))
+    url.searchParams.set('sessionId', sessionId)
+    void window.loadURL(url.toString())
+  }
+  else {
+    void window.loadFile(join(__dirname, '../renderer/main-ui/index.html'), { query: rendererQuery(sessionId) })
+  }
+
+  return window
 }
 
 async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> {
@@ -441,6 +574,120 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
   }
 }
 
+async function runOpenMainUiE2E(window: BrowserWindow): Promise<void> {
+  try {
+    const result = await window.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const button = document.querySelector('#open-main-ui-button');
+        if (!button) {
+          reject(new Error('Open Main UI button is missing'));
+          return;
+        }
+        button.click();
+        setTimeout(() => resolve({ clicked: true }), 100);
+      }))()
+    `)
+    const deadline = Date.now() + 5000
+    while ((!mainUiWindow || mainUiWindow.isDestroyed() || !mainUiWindow.webContents.getURL().includes('sessionId=companion%3Adefault')) && Date.now() < deadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100))
+    }
+
+    if (!mainUiWindow || mainUiWindow.isDestroyed()) {
+      throw new Error('Main UI window did not open')
+    }
+
+    const url = mainUiWindow.webContents.getURL()
+    if (!url.includes('sessionId=companion%3Adefault')) {
+      throw new Error(`Main UI did not inherit companion session: ${url}`)
+    }
+
+      const loadDeadline = Date.now() + 5000
+      while (mainUiWindow.webContents.isLoading() && Date.now() < loadDeadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100))
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1500))
+      const connection = await mainUiWindow.webContents.executeJavaScript('document.querySelector("#connection-label")?.textContent ?? ""')
+
+      console.log(`AMADEUS_E2E_OPEN_MAIN_UI ${JSON.stringify({ ...result, windowCount: BrowserWindow.getAllWindows().length, url, connection })}`)
+      setTimeout(() => app.quit(), 100)
+  }
+  catch (error) {
+    console.error(`AMADEUS_E2E_OPEN_MAIN_UI failed: ${error instanceof Error ? error.message : String(error)}`)
+    app.exit(1)
+  }
+}
+
+async function runCompanionHoverE2E(window: BrowserWindow): Promise<void> {
+  try {
+    const bounds = window.getBounds()
+    window.webContents.send('desktop:global-cursor', {
+      cursor: { x: bounds.x - 20, y: bounds.y - 20 },
+      window: bounds,
+    })
+    await new Promise((resolveWait) => setTimeout(resolveWait, 650))
+
+    const before = await window.webContents.executeJavaScript(`
+      (() => {
+        const panel = document.querySelector('.companion-hover-panel');
+        const stage = document.querySelector('#live2d-stage');
+        if (!panel || !stage) {
+          throw new Error('Companion hover panel or Live2D stage is missing');
+        }
+        const panelStyle = getComputedStyle(panel);
+        const stageRect = stage.getBoundingClientRect();
+        return {
+          panelOpacity: Number(panelStyle.opacity),
+          pointerEvents: panelStyle.pointerEvents,
+          stageWidth: Math.round(stageRect.width),
+          stageHeight: Math.round(stageRect.height),
+        };
+      })()
+    `) as { panelOpacity: number, pointerEvents: string, stageWidth: number, stageHeight: number }
+
+    if (before.stageWidth <= 0 || before.stageHeight <= 0) {
+      throw new Error(`Live2D stage is not visible: ${JSON.stringify(before)}`)
+    }
+      if (before.panelOpacity > 0.05) {
+      throw new Error(`Hover panel should be hidden by default: ${JSON.stringify(before)}`)
+    }
+
+    window.webContents.send('desktop:global-cursor', {
+      cursor: { x: bounds.x + 210, y: bounds.y + 520 },
+      window: bounds,
+    })
+    await new Promise((resolveWait) => setTimeout(resolveWait, 260))
+
+    const after = await window.webContents.executeJavaScript(`
+      (() => {
+        const panel = document.querySelector('.companion-hover-panel');
+        const input = document.querySelector('#chat-input');
+        const button = document.querySelector('#open-main-ui-button');
+        if (!panel || !input || !button) {
+          throw new Error('Companion hover controls are missing');
+        }
+        const panelStyle = getComputedStyle(panel);
+        return {
+          panelOpacity: Number(panelStyle.opacity),
+          pointerEvents: panelStyle.pointerEvents,
+          inputVisible: input.getBoundingClientRect().width > 0 && input.getBoundingClientRect().height > 0,
+          mainUiButtonVisible: button.getBoundingClientRect().width > 0 && button.getBoundingClientRect().height > 0,
+        };
+      })()
+    `) as { panelOpacity: number, pointerEvents: string, inputVisible: boolean, mainUiButtonVisible: boolean }
+
+      if (after.panelOpacity < 0.95 || !after.inputVisible || !after.mainUiButtonVisible) {
+      throw new Error(`Hover panel did not become interactive: ${JSON.stringify(after)}`)
+    }
+
+    console.log(`AMADEUS_E2E_COMPANION_HOVER ${JSON.stringify({ before, after })}`)
+    setTimeout(() => app.quit(), 100)
+  }
+  catch (error) {
+    console.error(`AMADEUS_E2E_COMPANION_HOVER failed: ${error instanceof Error ? error.message : String(error)}`)
+    app.exit(1)
+  }
+}
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('local.amadeus.agent')
 
@@ -468,11 +715,16 @@ app.whenReady().then(() => {
     return window?.isMinimized() ?? false
   })
 
-  createMainWindow()
+  ipcMain.handle('window:open-main-ui', (_event, sessionId?: string) => {
+    createMainUiWindow(typeof sessionId === 'string' && sessionId.trim() ? sessionId : defaultCompanionSessionId)
+    return true
+  })
+
+  createCompanionWindow()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow()
+      createCompanionWindow()
     }
   })
 })

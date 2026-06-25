@@ -330,7 +330,10 @@ export class RuntimeUiController {
         this.appendAssistantDelta(event.payload.text)
         break
       case 'assistant.message':
-        this.activeAssistantMessage = undefined
+        if (!this.activeAssistantMessage && event.payload.text) {
+          this.activeAssistantMessage = this.appendMessage('assistant', event.payload.text)
+        }
+        this.finalizeAssistantMessage()
         this.lastAssistantSpeechText = event.payload.text || this.pendingAssistantText
         this.scheduleSpeechFallback(this.lastAssistantSpeechText)
         this.pendingAssistantText = ''
@@ -828,6 +831,25 @@ export class RuntimeUiController {
     chatLog.append(item)
     chatLog.scrollTop = chatLog.scrollHeight
     return item
+  }
+
+  private finalizeAssistantMessage(): void {
+    const message = this.activeAssistantMessage
+    this.activeAssistantMessage = undefined
+    if (!message) {
+      return
+    }
+
+    if (message.classList) {
+      message.classList.add('message-complete')
+    }
+    else {
+      message.className = `${message.className} message-complete`.trim()
+    }
+
+    message.addEventListener?.('animationend', () => {
+      message.remove()
+    }, { once: true })
   }
 
   private appendAssistantDelta(text: string): void {

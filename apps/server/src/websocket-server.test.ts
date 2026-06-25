@@ -396,6 +396,191 @@ describe('WebSocket Python-first integration', () => {
     })
   })
 
+  it('uses validated WebSocket surface and sessionId query parameters', async (t) => {
+    const memoryCountSessions: string[] = []
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      async getMemoryMessageCount(sessionId) {
+        await delay(5)
+        memoryCountSessions.push(sessionId)
+        return 5
+      },
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      observeDesktopFeedback(event) {
+        memoryCountSessions.push(`${event.surface}:${event.sessionId}`)
+        return []
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=companion&sessionId=companion:default`)
+    t.after(() => {
+      closeWebSocket(socket)
+    })
+
+    const hello = await waitForEvent(socket, (event) => event.type === 'server.hello')
+    assert.equal(hello.sessionId, 'companion:default')
+    assert.ok(memoryCountSessions.includes('companion:default'))
+
+    socket.send(JSON.stringify({
+      id: 'client-capabilities-for-query-session',
+      type: 'desktop.capabilities',
+      sessionId: 'companion:default',
+      timestamp: '2026-06-24T00:00:00.000Z',
+      payload: {
+        desktop: {
+          runtime: 'electron',
+          protocolVersion: 1,
+        },
+        live2d: {
+          available: true,
+          expressions: [],
+          motions: [],
+        },
+        audio: {
+          runtimeAudio: true,
+          speechSynthesis: false,
+          voiceCount: 0,
+        },
+      },
+    }))
+    await delay(20)
+    assert.ok(memoryCountSessions.includes('companion:companion:default'))
+  })
+
+  it('accepts mock main-ui and companion capabilities for the same session', async (t) => {
+    const observed: Array<RuntimeEvent<string, unknown>> = []
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      observeDesktopFeedback(event) {
+        observed.push(event)
+        return []
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const sessionId = 'companion:default'
+    const mainSocket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=main-ui&sessionId=${sessionId}`)
+    const companionSocket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=companion&sessionId=${sessionId}`)
+    t.after(() => {
+      closeWebSocket(mainSocket)
+      closeWebSocket(companionSocket)
+    })
+
+    mainSocket.send(JSON.stringify({
+      id: 'mock-main-ui-capabilities',
+      type: 'desktop.capabilities',
+      sessionId,
+      timestamp: '2026-06-24T00:00:00.000Z',
+      payload: {
+        desktop: {
+          runtime: 'electron',
+          protocolVersion: 1,
+        },
+        live2d: {
+          available: false,
+          expressions: [],
+          motions: [],
+        },
+        audio: {
+          runtimeAudio: false,
+          speechSynthesis: true,
+          voiceCount: 2,
+        },
+      },
+    }))
+    companionSocket.send(JSON.stringify({
+      id: 'mock-companion-capabilities',
+      type: 'desktop.capabilities',
+      sessionId,
+      timestamp: '2026-06-24T00:00:00.100Z',
+      payload: {
+        desktop: {
+          runtime: 'electron',
+          protocolVersion: 1,
+        },
+        live2d: {
+          available: true,
+          modelId: 'hiyori-free',
+          expressions: ['smile'],
+          motions: ['Idle'],
+        },
+        audio: {
+          runtimeAudio: true,
+          speechSynthesis: false,
+          voiceCount: 0,
+        },
+      },
+    }))
+    await delay(25)
+
+    assert.equal(observed.length, 2)
+    assert.deepEqual(observed.map((event) => event.sessionId), [sessionId, sessionId])
+    assert.deepEqual(observed.map((event) => event.surface).sort(), ['companion', 'main-ui'])
+    assert.equal(new Set(observed.map((event) => event.clientId)).size, 2)
+
+    const mainEvent = observed.find((event) => event.surface === 'main-ui')
+    const companionEvent = observed.find((event) => event.surface === 'companion')
+    assert.equal((mainEvent?.payload as { live2d?: { available?: boolean } }).live2d?.available, false)
+    assert.equal((companionEvent?.payload as { live2d?: { available?: boolean } }).live2d?.available, true)
+    assert.equal((companionEvent?.payload as { live2d?: { modelId?: string } }).live2d?.modelId, 'hiyori-free')
+  })
+
+  it('rejects invalid WebSocket connection query parameters', async (t) => {
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const badSurfaceSocket = new WebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=overlay&sessionId=companion:default`)
+    const badSurfaceErrorPromise = waitForEvent(badSurfaceSocket, (event) =>
+      event.type === 'error'
+      && (event.payload as { code?: string }).code === 'bad_connection_params',
+    )
+    await once(badSurfaceSocket, 'open')
+    const badSurfaceError = await badSurfaceErrorPromise
+    assert.match((badSurfaceError.payload as { message: string }).message, /surface/)
+    await once(badSurfaceSocket, 'close')
+
+    const badSessionSocket = new WebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=cli&sessionId=bad%20session`)
+    const badSessionErrorPromise = waitForEvent(badSessionSocket, (event) =>
+      event.type === 'error'
+      && (event.payload as { code?: string }).code === 'bad_connection_params',
+    )
+    await once(badSessionSocket, 'open')
+    const badSessionError = await badSessionErrorPromise
+    assert.match((badSessionError.payload as { message: string }).message, /sessionId/)
+    await once(badSessionSocket, 'close')
+  })
+
   it('refreshes memory count from the async reset path after session.reset', async (t) => {
     let memoryMessages = 2
     const receivedEvents: Array<RuntimeEvent<string, unknown>> = []
@@ -574,6 +759,82 @@ describe('WebSocket Python-first integration', () => {
     assert.equal(event.id, 'python-event-2')
     assert.equal(event.type, 'assistant.message')
     assert.deepEqual(event.payload, { text: 'hello' })
+  })
+
+  it('broadcasts Python turn events to every client in the same session', async (t) => {
+    let receivedTurnBody: Record<string, unknown> | undefined
+    const pythonRuntime = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+      if (request.method === 'POST' && request.url === '/agent/turn') {
+        receivedTurnBody = JSON.parse(await readBody(request)) as Record<string, unknown>
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' })
+        response.end(`${JSON.stringify({
+          id: 'python-broadcast-message',
+          type: 'assistant.message',
+          sessionId: 'default',
+          timestamp: '2026-06-19T00:00:01.000Z',
+          payload: { text: 'hello everyone' },
+        })}\n`)
+        return
+      }
+
+      response.writeHead(404)
+      response.end()
+    })
+    const pythonPort = await listen(pythonRuntime)
+    t.after(() => {
+      void closeServer(pythonRuntime)
+    })
+
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      async streamChat(socket, sessionId, text, skills) {
+        await relayPythonTurn(socket, sessionId, text, skills, {
+          runtimeUrl: `http://127.0.0.1:${pythonPort}`,
+        })
+      },
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const mainSocket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=main-ui`)
+    const companionSocket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=companion`)
+    t.after(() => {
+      closeWebSocket(mainSocket)
+      closeWebSocket(companionSocket)
+    })
+
+    const mainMessage = waitForEvent(mainSocket, (event) => event.type === 'assistant.message')
+    const companionMessage = waitForEvent(companionSocket, (event) => event.type === 'assistant.message')
+    mainSocket.send(JSON.stringify({
+      id: 'client-broadcast-turn',
+      type: 'user.message',
+      sessionId: 'default',
+      timestamp: '2026-06-19T00:00:00.000Z',
+      payload: {
+        text: 'hello from main',
+        inputMode: 'text',
+      },
+    }))
+
+    const [mainEvent, companionEvent] = await Promise.all([mainMessage, companionMessage])
+
+    assert.deepEqual(receivedTurnBody, {
+      sessionId: 'default',
+      text: 'hello from main',
+      inputMode: 'text',
+    })
+    assert.equal(mainEvent.id, 'python-broadcast-message')
+    assert.equal(companionEvent.id, 'python-broadcast-message')
+    assert.deepEqual(mainEvent.payload, { text: 'hello everyone' })
+    assert.deepEqual(companionEvent.payload, { text: 'hello everyone' })
   })
 
   it('forwards desktop permission responses to Python', async (t) => {
@@ -803,7 +1064,7 @@ describe('WebSocket Python-first integration', () => {
       void closeServer(bridge.httpServer)
     })
 
-    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws`)
+    const socket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=companion`)
     t.after(() => {
       closeWebSocket(socket)
     })
@@ -874,6 +1135,14 @@ describe('WebSocket Python-first integration', () => {
       'audio.playback-ended',
       'audio.playback-error',
     ])
+    assert.deepEqual(observed.map((event) => event.surface), [
+      'companion',
+      'companion',
+      'companion',
+      'companion',
+    ])
+    assert.equal(new Set(observed.map((event) => event.clientId)).size, 1)
+    assert.equal(typeof observed[0]?.clientId, 'string')
     assert.ok(receivedEvents.some((event) => (
       event.type === 'character.behavior'
       && (event.payload as { motion?: string }).motion === 'talk'

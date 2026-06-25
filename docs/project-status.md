@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-24
+Last updated: 2026-06-26
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -10,16 +10,16 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 
 ## Current Snapshot
 
-Amadeus is now a working desktop MVP with a Python-first turn path and a mostly landed runtime reliability foundation.
+Amadeus is now a working desktop MVP with a Python-first turn path, split Electron desktop surfaces, and a mostly landed runtime reliability foundation.
 
-The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The next large product step is desktop/runtime stabilization: deeper Electron E2E, better lipsync, continued TypeScript bridge shrinkage, and targeted ToolRuntime/Memory hardening driven by real usage.
+The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The desktop product surface now has separate `companion` and `main-ui` renderer entries: Companion owns Live2D and lightweight desktop presence, while Main UI owns the larger workbench/chat surface. The next large product step is desktop/runtime stabilization: finish CLI/session switching, polish the two desktop surfaces, improve lipsync, continue TypeScript bridge shrinkage, and harden ToolRuntime/Memory only where real usage exposes gaps.
 
 ### Current Runtime Flow
 
 Preferred path today:
 
-1. Desktop renderer in `apps/desktop` sends `user.message` over WebSocket.
-2. `apps/server` receives the event and first tries Python `POST /agent/turn`.
+1. A desktop surface (`companion` or `main-ui`) sends `user.message` over WebSocket with `surface`, `clientId`, and `sessionId` metadata.
+2. `apps/server` routes the event inside the matching session room and first tries Python `POST /agent/turn`.
 3. `packages/amadeus/agent.py` runs the turn in Python:
    - loads recent SQLite history
    - saves the user message
@@ -30,7 +30,7 @@ Preferred path today:
    - saves the assistant message
    - optionally emits `audio.tts-ready`
 4. `apps/server` relays the NDJSON runtime events back to the desktop.
-5. Desktop updates chat, tool state, permission UI, runtime audio playback, and Live2D behavior.
+5. Desktop clients in the same session receive the events. Companion updates Live2D, lightweight streaming bubbles, audio playback, and permission UI; Main UI updates the larger chat/workbench surface.
 
 Fallback path today:
 
@@ -40,8 +40,11 @@ Fallback path today:
 ### Done Now
 
 - Project scaffold is in place under `amadeus-agent`.
-- Desktop app MVP is running with Electron, Vite, transparent frameless window controls, Live2D stage, chat panel, debug controls, voice toggle, and a hybrid lipsync path: provider-native or runtime-planned phoneme/viseme lipsync cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback.
+- Desktop app MVP is running with Electron and Vite multi-page renderer entries. `companion` is a transparent frameless desktop presence with Live2D, lightweight input, transient streaming reply bubbles, runtime audio playback, and a hybrid lipsync path: provider-native or runtime-planned phoneme/viseme lipsync cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback. `main-ui` is a larger chat/workbench surface without Live2D.
+- Companion panel visibility is controlled by one rule: the Electron main process samples the global cursor, sends `desktop:global-cursor` with the cursor point and companion window bounds, and the renderer shows the panel only while the cursor is inside the companion window, then hides it 1.5 seconds after the cursor leaves.
+- Companion Live2D model fit is configurable through `configs/runtime.yaml` under `desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, and `desktop.companionLive2dOffsetY`; Python exposes those values through `/live2d/config` and the renderer applies them when fitting the model.
 - Local runtime MVP is running in `apps/server` with HTTP health check and WebSocket events.
+- WebSocket connection management supports multiple clients per session through `sessionId -> clients[]`, with validated `surface` values (`main-ui`, `companion`, `cli`) and per-client `clientId` metadata.
 - DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies.
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
@@ -95,7 +98,7 @@ Fallback path today:
 - Python runtime HTTP handler tests now cover the local sidecar boundary.
   - `/tools/list` exposes effective permission state and enabled schemas
   - `/runtime/health` exposes structured local health checks for runtime, model config, memory DB, tools, Live2D, audio, and effective config
-  - `/runtime/feedback` records and returns Python-side harness feedback for desktop capabilities and audio playback state
+  - `/runtime/feedback` records and returns Python-side harness feedback for per-client desktop capabilities, aggregate session capabilities, and audio playback state
   - `/tools/permission` returns unresolved for unknown request IDs
   - `/agent/turn` streams missing API key failures as desktop-compatible NDJSON events
 - TypeScript bridge tests now cover the Python-first relay boundary.
@@ -111,6 +114,7 @@ Fallback path today:
   - streamed Python runtime events are returned to the WebSocket client
   - `tool.permission.response` over WebSocket is forwarded to Python
   - `desktop.capabilities` and `audio.playback-*` feedback events are accepted by the bridge feedback hook
+  - multiple WebSocket clients can share a session while preserving independent `surface` / `clientId` metadata
   - Python-returned feedback harness events such as `character.behavior` are sent back to the desktop socket
 - Desktop renderer harness tests now cover runtime UI behavior.
   - `server.hello` updates model, memory, connection, and tool config diagnostics
@@ -123,6 +127,8 @@ Fallback path today:
   - `tool.finished` clears permission prompts and updates tool status
 - Desktop Electron smoke coverage now builds the packaged desktop app, starts the Electron main process, and verifies that the renderer finishes loading.
 - Desktop Electron E2E coverage now includes a deterministic local-runtime UI path: the packaged desktop connects to a stub bridge, submits a chat message through the real form, receives streamed assistant events, and renders the assistant reply without requiring a live model provider.
+- Desktop Electron E2E coverage now includes the dual-window desktop shape: Companion can open Main UI, both windows attach to the same companion session, and closing Main UI does not terminate Companion.
+- Desktop Electron E2E coverage now includes the Companion lightweight surface: controls are hidden by default, become visible from the global-cursor visibility path, and streaming assistant output renders outside the input panel as transient bubbles.
 - Desktop Electron E2E coverage now includes deterministic Live2D local model loading and switching: the packaged desktop reads local model config/list endpoints, loads the configured model through the renderer, switches models through the real select control, calls `/live2d/select`, and verifies harness config persistence.
 - Production Live2D HTTP ownership is now narrower in `apps/server`: the bridge proxies `/live2d/config`, `/live2d/models`, `/live2d/select`, and `/live2d/models/...` to the Python runtime, rewrites returned model URLs back to the bridge origin, and no longer owns the real model-library scan or harness-config mutation path.
 - Desktop Electron E2E coverage now includes deterministic runtime audio playback feedback: the packaged desktop receives `audio.tts-ready`, plays mock runtime audio, and reports both success feedback (`audio.playback-started` / `audio.playback-ended`) and failure feedback (`audio.playback-started` / `audio.playback-error`) to the bridge.
@@ -176,7 +182,9 @@ Fallback path today:
 
 ### Still Needed
 
-- Before adding more product surfaces, consolidate the desktop UI. The current priority is to reduce panel creep, simplify visible status copy, and make the chat/skills/debug/runtime information hierarchy feel intentional instead of additive.
+- Continue consolidating the desktop UI now that Main UI and Companion are split. The current priority is to keep Companion lightweight and make Main UI the place for richer context, skills, diagnostics, permissions, and future session switching.
+- Implement the real CLI entry as an independent session client, defaulting to its own session ID unless explicitly attached elsewhere.
+- Add Main UI session switching and an explicit attach/view flow for Companion sessions.
 - Keep Electron end-to-end coverage aligned with that UI pass so layout and interaction regressions are caught while the surface is being simplified.
 - Keep improving lipsync from the current provider-native plus phoneme-planned path, especially broader provider cue compatibility and better non-Latin mapping, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
 - Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/proxy layer, not an owner of agent, model-library, tool, memory, or audio turn logic.
@@ -334,7 +342,7 @@ Current limitations:
 - Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and an Electron startup smoke. Full Live2D/interaction end-to-end coverage is still missing.
 - `packages/amadeus/model.py` is active as the first-pass provider boundary, but richer provider profile/fallback behavior is still future work.
 - `skills.py` now implements a first-pass runtime skill catalog with an always-on system-prompt catalog plus `skill_view`-driven full activation; the bridge proxies read-only skills APIs, and the desktop renderer exposes a multi-select suggested-skills picker with local search/filtering, a short inline summary, and persisted selections. `live2d.py` owns the local model library but not the desktop renderer adapter.
-- `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/main.ts`.
+- `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/companion/main.ts`.
 
 ## Next Recommended Phase
 

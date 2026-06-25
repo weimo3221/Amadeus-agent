@@ -6,10 +6,17 @@ export type AssistantState =
   | 'tool-running'
   | 'error'
 
+export type ClientSurface =
+  | 'main-ui'
+  | 'companion'
+  | 'cli'
+
 export interface RuntimeEvent<TType extends string = string, TPayload = unknown> {
   id: string
   type: TType
   sessionId: string
+  clientId?: string
+  surface?: ClientSurface
   timestamp: string
   payload: TPayload
 }

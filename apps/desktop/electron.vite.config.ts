@@ -27,7 +27,10 @@ export default defineConfig({
     envDir: rootDir,
     build: {
       rollupOptions: {
-        input: resolve(__dirname, 'src/renderer/index.html'),
+        input: {
+          mainUi: resolve(__dirname, 'src/renderer/main-ui/index.html'),
+          companion: resolve(__dirname, 'src/renderer/companion/index.html'),
+        },
       },
     },
   },

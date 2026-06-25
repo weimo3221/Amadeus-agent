@@ -65,3 +65,12 @@ memoryReview:
 
   # Cooldown after a failed automatic review, in seconds.
   failureCooldownSeconds: 300
+
+desktop:
+  # Companion Live2D model fit multiplier. Increase to make the model larger;
+  # decrease to leave more transparent desktop space around the model.
+  companionLive2dScale: 0.92
+
+  # Pixel offsets applied after centering the model inside the companion window.
+  companionLive2dOffsetX: 0
+  companionLive2dOffsetY: 0

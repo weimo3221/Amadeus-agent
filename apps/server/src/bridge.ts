@@ -282,6 +282,8 @@ export async function forwardRuntimeFeedbackToPython(
       },
       body: JSON.stringify({
         sessionId: event.sessionId,
+        clientId: event.clientId,
+        surface: event.surface,
         type: event.type,
         timestamp: event.timestamp,
         payload: event.payload,

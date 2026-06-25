@@ -42,6 +42,42 @@ describe('Electron desktop smoke', () => {
     }
   })
 
+  it('opens the main UI from companion and keeps the companion session id', async () => {
+    const runtime = await startRuntimeStub()
+
+    try {
+      const output = await runElectronSmoke({
+        AMADEUS_E2E_OPEN_MAIN_UI: '1',
+        AMADEUS_E2E_SKIP_LIVE2D: '1',
+        AMADEUS_E2E_AGENT_HTTP_URL: runtime.httpUrl,
+        AMADEUS_E2E_AGENT_WS_URL: runtime.wsUrl,
+      })
+
+      assert.equal(output.code, 0, output.stderr || output.stdout)
+      assert.match(output.stdout, /AMADEUS_E2E_OPEN_MAIN_UI/)
+      assert.match(output.stdout, /sessionId=companion%3Adefault/)
+      await waitFor(() => {
+        const surfaces = runtime.feedbackEvents().map((event) => `${event.surface}:${event.sessionId}`).sort()
+        return surfaces.includes('companion:companion:default') && surfaces.includes('main-ui:companion:default')
+      }, 'main-ui and companion capabilities feedback', 6000)
+    }
+    finally {
+      await runtime.close()
+    }
+  })
+
+  it('keeps companion controls hidden until hover reveals the lightweight input panel', async () => {
+    const output = await runElectronSmoke({
+      AMADEUS_E2E_COMPANION_HOVER: '1',
+      AMADEUS_E2E_SKIP_LIVE2D: '1',
+    })
+
+    assert.equal(output.code, 0, output.stderr || output.stdout)
+    assert.match(output.stdout, /AMADEUS_E2E_COMPANION_HOVER/)
+    assert.match(output.stdout, /"panelOpacity":0/)
+    assert.match(output.stdout, /"panelOpacity":1/)
+  })
+
   it('loads turn skills and sends all selected skills with the user message', async () => {
     const runtime = await startRuntimeStub()
 
@@ -197,6 +233,8 @@ function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: num
           || env.AMADEUS_E2E_AUDIO_FEEDBACK === '1'
           || env.AMADEUS_E2E_PERMISSION_PROMPT === '1'
           || env.AMADEUS_E2E_MULTI_SKILL_SELECT === '1'
+          || env.AMADEUS_E2E_OPEN_MAIN_UI === '1'
+          || env.AMADEUS_E2E_COMPANION_HOVER === '1'
           ? '0'
           : '1',
         ELECTRON_ENABLE_LOGGING: '1',
@@ -229,6 +267,17 @@ function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: num
       resolvePromise({ code, stdout, stderr })
     })
   })
+}
+
+async function waitFor(predicate: () => boolean, label: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+  }
+  throw new Error(`Timed out waiting for ${label}`)
 }
 
 async function startPermissionPromptRuntimeStub(): Promise<{
@@ -472,10 +521,12 @@ async function startRuntimeStub(): Promise<{
   wsUrl: string
   receivedUserText: () => string | undefined
   receivedSkills: () => string[]
+  feedbackEvents: () => Array<{ sessionId: string, surface?: string }>
   close: () => Promise<void>
 }> {
   let receivedUserText: string | undefined
   let receivedSkills: string[] = []
+  const feedbackEvents: Array<{ sessionId: string, surface?: string }> = []
   const sessionId = 'e2e-session'
   const { httpServer, wss } = createAmadeusBridgeServer({
     model: 'e2e-model',
@@ -489,6 +540,13 @@ async function startRuntimeStub(): Promise<{
     }],
     resetSession() {},
     forwardToolPermissionToPython() {},
+    observeDesktopFeedback(event) {
+      feedbackEvents.push({
+        sessionId: event.sessionId,
+        surface: event.surface,
+      })
+      return []
+    },
     handleSkillsHttpRequest(_request, response, requestUrl) {
       if (requestUrl === '/skills/list') {
         response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -570,6 +628,7 @@ async function startRuntimeStub(): Promise<{
     wsUrl: `ws://127.0.0.1:${address.port}/ws`,
     receivedUserText: () => receivedUserText,
     receivedSkills: () => [...receivedSkills],
+    feedbackEvents: () => [...feedbackEvents],
     close: () => new Promise((resolveClose, rejectClose) => {
       wss.close((wssError) => {
         if (wssError) {

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* http://localhost:* ws://localhost:*; media-src 'self' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline';"
+    />
+    <title>Amadeus Main UI</title>
+  </head>
+  <body>
+    <main id="app" class="main-ui">
+      <header class="titlebar">
+        <div class="drag-region">
+          <span class="status-dot" id="status-dot"></span>
+          <span>Amadeus Main UI</span>
+        </div>
+        <button id="minimize-button" title="Minimize">Minimize</button>
+        <button id="close-button" title="Close">Close</button>
+      </header>
+
+      <section class="workspace">
+        <section class="chat-panel main-chat">
+          <div class="provider">
+            <span id="connection-label">Connecting</span>
+            <strong id="provider-label">Runtime</strong>
+          </div>
+          <div id="stage-status" class="stage-status" hidden>State: idle</div>
+          <div id="chat-log" class="chat-log"></div>
+          <form id="chat-form">
+            <input id="chat-input" name="message" autocomplete="off" placeholder="Type to Amadeus..." />
+            <button type="submit">Send</button>
+          </form>
+        </section>
+
+        <aside class="side-panel">
+          <section class="runtime-card">
+            <div class="runtime-row">
+              <span id="memory-status">Memory unknown</span>
+              <button id="reset-session-button" type="button" title="Clear this session memory">Reset</button>
+            </div>
+            <div class="diagnostics">
+              <div id="tool-status" class="tool-status">Tools idle</div>
+              <div id="skill-status" class="skill-status">Skills idle</div>
+              <div id="tool-config-status" class="tool-config-status">Tool config unknown</div>
+              <div id="voice-status" class="voice-status">Voice idle</div>
+            </div>
+            <div id="tool-permission" class="tool-permission" hidden>
+              <span id="tool-permission-text"></span>
+              <button id="tool-allow-button" type="button">Allow</button>
+              <button id="tool-deny-button" type="button">Deny</button>
+            </div>
+          </section>
+
+          <section class="memory-review" aria-label="Memory review">
+            <div class="memory-review-header">
+              <span id="memory-review-status">Memory review: loading</span>
+              <button id="memory-review-run-button" type="button">Review</button>
+            </div>
+            <div id="memory-review-list" class="memory-review-list"></div>
+          </section>
+
+          <section class="skills-panel" aria-label="Suggested skills">
+            <div class="skills-header">
+              <span id="skills-status">Suggested skills: loading...</span>
+              <button id="skills-refresh-button" type="button">Refresh</button>
+            </div>
+            <input
+              id="skills-search-input"
+              class="skills-search-input"
+              type="search"
+              autocomplete="off"
+              placeholder="Search skills..."
+            />
+            <div id="skills-list" class="skills-list"></div>
+            <div class="skill-detail">
+              <div class="skill-detail-header">
+                <span id="skill-detail-title">Skill Summary</span>
+              </div>
+              <div id="skill-detail-body" class="skill-detail-body">Select a skill to preview a short summary.</div>
+            </div>
+          </section>
+        </aside>
+      </section>
+      <button id="voice-button" hidden type="button">Voice On</button>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
