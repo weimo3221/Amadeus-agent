@@ -176,15 +176,16 @@ Fallback path today:
 
 ### Still Needed
 
-- Continue expanding Electron end-to-end coverage beyond the current startup smoke, deterministic local-runtime chat path, deterministic Live2D load/switch path, and deterministic runtime audio feedback path.
+- Before adding more product surfaces, consolidate the desktop UI. The current priority is to reduce panel creep, simplify visible status copy, and make the chat/skills/debug/runtime information hierarchy feel intentional instead of additive.
+- Keep Electron end-to-end coverage aligned with that UI pass so layout and interaction regressions are caught while the surface is being simplified.
 - Keep improving lipsync from the current provider-native plus phoneme-planned path, especially broader provider cue compatibility and better non-Latin mapping, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
 - Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/proxy layer, not an owner of agent, model-library, tool, memory, or audio turn logic.
 - `tool.permission.response` is now always forwarded through the bridge to Python; the old “maybe a local TypeScript tool loop owns this request” branch has been removed from the production server path.
 - Add more practical `ask` tools such as opening URLs or reminders.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
+- After the UI pass, the next product step for skills should be a real import/install flow that runs `scripts/validate_skills.py` during add/import, then refreshes runtime discovery without forcing a full manual restart.
 - Turn placeholder runtime boundaries into real modules where needed:
-  - `packages/amadeus/skills.py`
   - future audio harness module
   - `packages/live2d-stage`
 

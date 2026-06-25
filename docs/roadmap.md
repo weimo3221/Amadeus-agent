@@ -12,18 +12,12 @@ This file is the forward-looking plan. For live implementation status, use `docs
 
 The next implementation pass should proceed in this order:
 
-1. Done: expand Electron end-to-end coverage beyond startup smoke with a deterministic local-runtime path. The packaged desktop now connects to a stub bridge, submits chat, receives streamed assistant events, and updates the visible chat UI without a live model provider.
-2. Done: add deeper desktop E2E around Live2D local model loading and model-switch behavior. The packaged desktop now exercises local `/live2d/config`, `/live2d/models`, `/live2d/select`, renderer model loading, the model select control, and harness config persistence with deterministic local fixtures.
-3. Done: add desktop E2E around runtime audio playback feedback. The packaged desktop now receives `audio.tts-ready`, plays deterministic mock runtime audio, and reports both `audio.playback-started` / `audio.playback-ended` and `audio.playback-started` / `audio.playback-error` back to the bridge.
-4. Done: add desktop E2E around permission prompts for the remaining `ask` tools. The packaged desktop now receives deterministic `tool.permission.request` events, renders the real Allow / Deny UI, and reports `tool.permission.response` back to the bridge for both approval and denial flows.
-5. Done: improve lipsync from the pure timed mouth loop to a hybrid mode. Runtime audio playback now drives `ParamMouthOpenY` from Web Audio amplitude analysis, while speech-synthesis and unsupported environments still fall back to the older timed loop.
-6. Done: move the main runtime lipsync planner into `packages/amadeus/audio.py`. Runtime now emits text-driven phoneme/viseme `audio.lipsync-cues` before `audio.tts-ready`, uses local cached `wav` envelope data only as modulation, and leaves the feedback-side harness cue generation as fallback.
-7. Done: accept provider-native lipsync payloads in `packages/amadeus/audio.py`. GPT-SoVITS-style JSON `lipsyncCues` / `visemes` / `phonemes` are now normalized into runtime `audio.lipsync-cues`, and the local phoneme planner remains the fallback when provider data is absent.
-8. Done: move bridge-owned memory count/reset behavior to the Python runtime. `apps/server` no longer opens its own SQLite message table for session counts or resets; it now reads `GET /memory/count` and forwards `POST /memory/reset`, while the desktop protocol stays unchanged.
-9. Done: remove the remaining TypeScript-owned Live2D library fallback and local tool-permission resolution hook from `apps/server`. `/live2d/*` now only goes through the explicit proxy handler, and `tool.permission.response` is always forwarded to Python.
-10. Continue shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
-11. Keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
-12. Fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
+1. Current: consolidate the desktop UI before adding more product surfaces. The next pass should reduce visual crowding, clarify information hierarchy, and avoid stacking more management panels on top of the current chat/debug/skills layout.
+2. Current: tighten the skills UI semantics around "available", "suggested", and "active" so the desktop keeps exposing only lightweight user-facing state while the runtime logs keep the deeper activation details.
+3. Next: keep shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
+4. Next: keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
+5. Later: after the desktop UI shape settles, add a real skill import/install flow, run `validate_skills.py` as part of that flow, and support runtime refresh so newly added skills become available without a full manual restart.
+6. Later: fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
 
 ## Phase 0: Project Skeleton
 
@@ -229,7 +223,8 @@ Current status:
 
 - V1 is now in place for `skills/<category>/<skill-name>/SKILL.md` discovery, simple frontmatter parsing, read-only `skills_list` / `skill_view`, an always-on system-prompt skills catalog, `skill_view`-driven turn-local full activation, bridge passthrough for `/skills/list` and `/skills/view`, and a desktop suggested-skills picker with local search/filtering, a short inline summary, and persisted selection state.
 - Two seed skills exist under `skills/development/`: `runtime-debug` and `desktop-e2e`.
-- Remaining work is `skill_run`, richer support-file aware workflows, optional install/manage flows, and later orchestration.
+- Current priority is not to add more skill-management UI yet. The desktop surface should first be visually consolidated so future features do not keep adding one more panel or status row.
+- Remaining work after that UI pass is a real import/install flow, validate-on-import, runtime refresh, optional enable/disable management, and only later heavier orchestration such as `skill_run`.
 
 ## Phase 11: Proactive Agent
 
