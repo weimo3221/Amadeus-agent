@@ -100,9 +100,18 @@ class SkillsCatalogTests(unittest.TestCase):
         block, resolved = self.catalog.build_prompt_block(["desktop-e2e", "runtime-debug"])
 
         self.assertTrue(resolved.ok)
-        self.assertIn("<active-skills>", block)
+        self.assertIn("<suggested-skills>", block)
         self.assertIn("development/desktop-e2e", block)
-        self.assertIn("preferred_tools: search_files, read_file", block)
+        self.assertIn("Debug runtime behavior.", block)
+        self.assertNotIn("Use tests before fixes.", block)
+
+    def test_build_loaded_skill_prompt_block_surfaces_full_skill_instructions(self) -> None:
+        block, resolved = self.catalog.build_loaded_skill_prompt_block("runtime-debug")
+
+        self.assertTrue(resolved.ok)
+        self.assertIn("<active-skills source=\"skill_view\">", block)
+        self.assertIn("development/runtime-debug", block)
+        self.assertIn("Use tests before fixes.", block)
 
     def test_build_prompt_block_reports_missing_skills(self) -> None:
         block, resolved = self.catalog.build_prompt_block(["missing-skill"])
@@ -110,6 +119,13 @@ class SkillsCatalogTests(unittest.TestCase):
         self.assertEqual(block, "")
         self.assertFalse(resolved.ok)
         self.assertEqual(resolved.missing, ("missing-skill",))
+
+    def test_build_catalog_prompt_lists_installed_skills(self) -> None:
+        block = self.catalog.build_catalog_prompt()
+
+        self.assertIn("<available_skills>", block)
+        self.assertIn("development:", block)
+        self.assertIn("- development/runtime-debug: Debug runtime behavior.", block)
 
     def test_skill_catalog_understands_skill_creator_style_layout(self) -> None:
         skill_dir = self.skills_root / "automation" / "pdf-fill"

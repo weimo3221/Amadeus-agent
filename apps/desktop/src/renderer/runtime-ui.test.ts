@@ -251,6 +251,7 @@ function createHarness(storage = new FakeStorage()) {
     statusDot: new FakeElement(),
     memoryStatus: new FakeElement(),
     toolStatus: new FakeElement(),
+    skillStatus: new FakeElement(),
     toolConfigStatus: new FakeElement(),
     toolPermission: new FakeElement(),
     toolPermissionText: new FakeElement(),
@@ -349,7 +350,7 @@ describe('Runtime UI controller', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     assert.equal(skillFetchCalls[0]?.input, 'http://runtime/skills/list')
-    assert.equal(elements.skillsStatus.textContent, 'Skills: 2 available')
+    assert.equal(elements.skillsStatus.textContent, 'Suggested skills: 2 available')
     assert.equal(elements.skillsList.children.length, 2)
     assert.equal(elements.skillsList.children[0]?.children[1]?.children[0]?.textContent, 'development/runtime-debug')
     assert.equal(elements.skillDetailTitle.textContent, 'development/runtime-debug')
@@ -368,7 +369,7 @@ describe('Runtime UI controller', () => {
 
     assert.equal(elements.skillsList.children.length, 1)
     assert.equal(elements.skillsList.children[0]?.children[1]?.children[0]?.textContent, 'development/desktop-e2e')
-    assert.equal(elements.skillsStatus.textContent, 'Skills: 1/2 shown')
+    assert.equal(elements.skillsStatus.textContent, 'Suggested skills: 1/2 shown')
   })
 
   it('loads and renders skill detail preview when clicking a skill summary', async () => {
@@ -590,7 +591,7 @@ describe('Runtime UI controller', () => {
 
     elements.chatForm.submit()
 
-    assert.equal(elements.skillsStatus.textContent, 'Skills: 2 available, 2 selected')
+    assert.equal(elements.skillsStatus.textContent, 'Suggested skills: 2 available, 2 selected')
     assert.deepEqual(socket.sent.at(-1)?.payload, {
       text: 'hello',
       inputMode: 'text',
@@ -642,7 +643,7 @@ describe('Runtime UI controller', () => {
       inputMode: 'text',
       skills: ['development/runtime-debug'],
     })
-    assert.equal(elements.skillsStatus.textContent, 'Skills: 1/2 shown, 1 selected')
+    assert.equal(elements.skillsStatus.textContent, 'Suggested skills: 1/2 shown, 1 selected')
   })
 
   it('uses runtime audio and cancels speechSynthesis fallback after audio.tts-ready', () => {
@@ -814,5 +815,25 @@ describe('Runtime UI controller', () => {
     assert.equal(elements.toolPermission.hidden, true)
     assert.equal(elements.toolPermissionText.textContent, '')
     assert.equal(elements.toolStatus.textContent, 'Tool failed: roll_dice')
+  })
+
+  it('updates skill status from skill activation events', () => {
+    const { controller, elements } = createHarness()
+
+    controller.handleServerEvent(makeEvent('skill.started', {
+      skillName: 'runtime-debug',
+      displayName: 'runtime-debug',
+      source: 'skill_view',
+    }))
+    assert.equal(elements.skillStatus.textContent, 'Skill activating')
+
+    controller.handleServerEvent(makeEvent('skill.finished', {
+      skillName: 'runtime-debug',
+      displayName: 'development/runtime-debug',
+      identifier: 'development/runtime-debug',
+      ok: true,
+      source: 'skill_view',
+    }))
+    assert.equal(elements.skillStatus.textContent, 'Skill ready')
   })
 })

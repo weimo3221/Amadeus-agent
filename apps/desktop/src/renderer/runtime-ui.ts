@@ -64,6 +64,7 @@ export interface RuntimeUiElements {
   statusDot: HTMLSpanElement | null
   memoryStatus: HTMLSpanElement | null
   toolStatus: HTMLDivElement | null
+  skillStatus: HTMLDivElement | null
   toolConfigStatus: HTMLDivElement | null
   toolPermission: HTMLDivElement | null
   toolPermissionText: HTMLSpanElement | null
@@ -185,6 +186,7 @@ export class RuntimeUiController {
       this.lastAssistantSpeechText = ''
       this.stopAllVoiceOutput()
       this.setToolStatus('Tools idle')
+      this.setSkillStatus('Skills idle')
       this.clearToolPermissionPrompt()
       this.setMemoryStatus('Memory: resetting...')
       this.sendEvent('session.reset', {})
@@ -352,6 +354,14 @@ export class RuntimeUiController {
       case 'tool.started':
         this.setToolStatus(`Tool running: ${event.payload.displayName}`)
         break
+      case 'skill.started':
+        this.setSkillStatus('Skill activating')
+        break
+      case 'skill.finished':
+        this.setSkillStatus(event.payload.ok
+          ? 'Skill ready'
+          : 'Skill unavailable')
+        break
       case 'tool.finished':
         this.clearToolPermissionPrompt()
         this.setToolStatus(`Tool ${event.payload.ok ? 'finished' : 'failed'}: ${event.payload.toolName}`)
@@ -404,6 +414,12 @@ export class RuntimeUiController {
   private setToolStatus(message: string): void {
     if (this.options.elements.toolStatus) {
       this.options.elements.toolStatus.textContent = message
+    }
+  }
+
+  private setSkillStatus(message: string): void {
+    if (this.options.elements.skillStatus) {
+      this.options.elements.skillStatus.textContent = message
     }
   }
 
@@ -503,7 +519,7 @@ export class RuntimeUiController {
       return
     }
 
-    this.setSkillsStatus('Skills: loading...')
+    this.setSkillsStatus('Suggested skills: loading...')
     if (skillsRefreshButton) {
       skillsRefreshButton.disabled = true
     }
@@ -515,7 +531,7 @@ export class RuntimeUiController {
         this.availableSkills = []
         this.selectedSkillIds.clear()
         skillsList.replaceChildren()
-        this.setSkillsStatus('Skills unavailable')
+        this.setSkillsStatus('Suggested skills unavailable')
         return
       }
 
@@ -553,7 +569,7 @@ export class RuntimeUiController {
       this.selectedSkillIds.clear()
       this.activeSkillDetailId = undefined
       skillsList.replaceChildren()
-      this.setSkillsStatus('Skills unavailable')
+      this.setSkillsStatus('Suggested skills unavailable')
       this.renderSkillDetailPlaceholder('Skill Preview', 'Skills unavailable')
     }
     finally {
@@ -678,7 +694,7 @@ export class RuntimeUiController {
 
   private updateSkillsStatus(): void {
     if (!this.availableSkills.length) {
-      this.setSkillsStatus('Skills: none installed')
+      this.setSkillsStatus('Suggested skills: none installed')
       return
     }
 
@@ -689,8 +705,8 @@ export class RuntimeUiController {
       : `${this.availableSkills.length} available`
     this.setSkillsStatus(
       selectedCount > 0
-        ? `Skills: ${visibleText}, ${selectedCount} selected`
-        : `Skills: ${visibleText}`,
+        ? `Suggested skills: ${visibleText}, ${selectedCount} selected`
+        : `Suggested skills: ${visibleText}`,
     )
   }
 

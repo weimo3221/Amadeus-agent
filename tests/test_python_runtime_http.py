@@ -200,7 +200,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
         self.assertEqual(events[0]["sessionId"], "http-test")
         self.assertIn("assistant.message", [event["type"] for event in events])
-        self.assertIn("<active-skills>", runtime_server.agent_runtime.decision_messages[-1][0]["content"])
+        self.assertIn("<suggested-skills>", runtime_server.agent_runtime.decision_messages[-1][0]["content"])
+        self.assertIn("<available_skills>", runtime_server.agent_runtime.decision_messages[-1][0]["content"])
 
     def test_live2d_config_returns_current_model_url(self) -> None:
         payload = self.get_json("/live2d/config")

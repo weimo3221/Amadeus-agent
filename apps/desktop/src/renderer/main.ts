@@ -45,6 +45,7 @@ const providerLabel = document.querySelector<HTMLElement>('#provider-label')
 const connectionLabel = document.querySelector<HTMLElement>('#connection-label')
 const memoryStatus = document.querySelector<HTMLSpanElement>('#memory-status')
 const toolStatus = document.querySelector<HTMLDivElement>('#tool-status')
+const skillStatus = document.querySelector<HTMLDivElement>('#skill-status')
 const toolConfigStatus = document.querySelector<HTMLDivElement>('#tool-config-status')
 const toolPermission = document.querySelector<HTMLDivElement>('#tool-permission')
 const toolPermissionText = document.querySelector<HTMLSpanElement>('#tool-permission-text')
@@ -1054,6 +1055,7 @@ const runtimeUi = new RuntimeUiController({
     statusDot: document.querySelector<HTMLSpanElement>('#status-dot'),
     memoryStatus,
     toolStatus,
+    skillStatus,
     toolConfigStatus,
     toolPermission,
     toolPermissionText,

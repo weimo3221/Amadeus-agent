@@ -62,7 +62,10 @@ The first runtime skill slice is intentionally narrow and modeled after the usef
 - `SKILL.md` should declare `name` and `description`. `preferred_tools` and `allowed_tools` are optional, and broader frontmatter like `platforms`, `compatibility`, and nested `metadata` is accepted for compatibility with more general skill packs and skill-creator output.
 - Python exposes `GET /skills/list` and `GET /skills/view`.
 - The tool registry exposes read-only `skills_list` and `skill_view`.
-- `POST /agent/turn` now accepts an optional `skills: string[]` field; when present, Python resolves those skills and appends an `<active-skills>` block to the system context for that turn only.
+- The runtime system prompt now includes an always-on `<available_skills>` catalog, following the Hermes-style progressive disclosure path: the model should inspect the catalog and call `skill_view(name)` before relying on a relevant installed skill.
+- `POST /agent/turn` still accepts an optional `skills: string[]` field, but those are now injected as `<suggested-skills>` hints rather than mandatory full skill instructions.
+- When `skill_view(name)` succeeds during a turn, Python appends that skill's full instructions as a turn-local `<active-skills source="skill_view">` block for the rest of that turn.
+- Skill activation is now observable through streamed `skill.started` / `skill.finished` events, mirroring the lighter-weight `tool.started` / `tool.finished` desktop status model without introducing a separate persisted audit system.
 - `apps/server` now proxies read-only `/skills/list` and `/skills/view` requests to Python so the desktop can stay on the bridge origin.
 - The desktop renderer now exposes a refreshable multi-select skill checklist with local search/filtering, shows only a short inline summary for the active skill, persists selected skill identifiers plus the last active preview in local storage, and includes the selected skill identifiers on each `user.message` turn payload.
 

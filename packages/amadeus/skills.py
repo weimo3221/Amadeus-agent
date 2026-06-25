@@ -390,6 +390,25 @@ class SkillCatalog:
     def skill_summaries(self) -> list[dict[str, Any]]:
         return [skill.summary() for skill in self.list_skills()]
 
+    def build_catalog_prompt(self) -> str:
+        skills = self.list_skills()
+        if not skills:
+            return ""
+
+        by_category: dict[str, list[Skill]] = {}
+        for skill in skills:
+            category = skill.category or "general"
+            by_category.setdefault(category, []).append(skill)
+
+        lines = ["<available_skills>"]
+        for category in sorted(by_category):
+            lines.append(f"{category}:")
+            for skill in sorted(by_category[category], key=lambda item: item.identifier):
+                description = f": {skill.description}" if skill.description else ""
+                lines.append(f"- {skill.identifier}{description}")
+        lines.append("</available_skills>")
+        return "\n".join(lines)
+
     def resolve(self, requested_names: list[str] | tuple[str, ...]) -> ResolvedSkills:
         if not requested_names:
             return ResolvedSkills(loaded=(), missing=())
@@ -441,8 +460,8 @@ class SkillCatalog:
             return "", resolved
 
         lines = [
-            "<active-skills>",
-            "The following explicitly selected skills are additional operating instructions for this turn. Treat them as higher-priority workflow guidance than the user's phrasing details, but never override tool permissions, stable safety rules, or explicit user constraints.",
+            "<suggested-skills>",
+            "The user preselected the following installed skills as likely relevant. Treat them as suggestions, not mandatory instructions. Review them first, but decide for yourself whether to call skill_view(name) and activate one for this turn.",
         ]
         for index, skill in enumerate(resolved.loaded, start=1):
             lines.append(
@@ -452,16 +471,37 @@ class SkillCatalog:
             )
             if skill.description:
                 lines.append(f"description: {skill.description}")
-            if skill.allowed_tools:
-                lines.append(f"allowed_tools: {', '.join(skill.allowed_tools)}")
-            if skill.preferred_tools:
-                lines.append(f"preferred_tools: {', '.join(skill.preferred_tools)}")
-            if skill.platforms:
-                lines.append(f"platforms: {', '.join(skill.platforms)}")
-            if skill.resource_dirs:
-                lines.append(f"resources: {', '.join(skill.resource_dirs)}")
-            lines.append(skill.instructions)
             lines.append("</skill>")
+        lines.append("</suggested-skills>")
+        return "\n".join(lines), resolved
+
+    def build_loaded_skill_prompt_block(self, requested_name: str) -> tuple[str, ResolvedSkills]:
+        resolved = self.resolve([requested_name])
+        if len(resolved.loaded) != 1 or not resolved.ok:
+            return "", resolved
+
+        skill = resolved.loaded[0]
+        lines = [
+            "<active-skills source=\"skill_view\">",
+            "The following skill was loaded with skill_view during this turn. Treat it as active workflow guidance for the rest of this turn, but never override explicit user constraints, tool permissions, or stable safety rules.",
+            (
+                f"<skill index=\"1\" identifier=\"{skill.identifier}\" name=\"{skill.name}\""
+                + (f" category=\"{skill.category}\"" if skill.category else "")
+                + ">"
+            ),
+        ]
+        if skill.description:
+            lines.append(f"description: {skill.description}")
+        if skill.allowed_tools:
+            lines.append(f"allowed_tools: {', '.join(skill.allowed_tools)}")
+        if skill.preferred_tools:
+            lines.append(f"preferred_tools: {', '.join(skill.preferred_tools)}")
+        if skill.platforms:
+            lines.append(f"platforms: {', '.join(skill.platforms)}")
+        if skill.resource_dirs:
+            lines.append(f"resources: {', '.join(skill.resource_dirs)}")
+        lines.append(skill.instructions)
+        lines.append("</skill>")
         lines.append("</active-skills>")
         return "\n".join(lines), resolved
 

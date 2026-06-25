@@ -56,6 +56,8 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'character.behavior', CharacterBehaviorPayload>
   | RuntimeEvent<'audio.lipsync-cues', AudioLipsyncCuesPayload>
   | RuntimeEvent<'audio.tts-ready', AudioTtsReadyPayload>
+  | RuntimeEvent<'skill.started', SkillStartedPayload>
+  | RuntimeEvent<'skill.finished', SkillFinishedPayload>
   | RuntimeEvent<'tool.started', ToolStartedPayload>
   | RuntimeEvent<'tool.finished', ToolFinishedPayload>
   | RuntimeEvent<'tool.audit', ToolAuditPayload>
@@ -143,6 +145,21 @@ export interface AudioPlaybackErrorPayload {
   source: 'runtime_audio' | 'speech_synthesis'
   audioUrl?: string
   reason: string
+}
+
+export interface SkillStartedPayload {
+  skillName: string
+  displayName: string
+  source: 'skill_view'
+}
+
+export interface SkillFinishedPayload {
+  skillName: string
+  displayName: string
+  ok: boolean
+  source: 'skill_view'
+  identifier?: string | null
+  failureCode?: string | null
 }
 
 export interface ToolStartedPayload {

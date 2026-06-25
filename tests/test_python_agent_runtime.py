@@ -158,9 +158,110 @@ class AgentRuntimeTests(unittest.TestCase):
 
         system_message = runtime.decision_messages[-1][0]
         self.assertEqual(system_message["role"], "system")
-        self.assertIn("<active-skills>", system_message["content"])
+        self.assertIn("<available_skills>", system_message["content"])
+        self.assertIn("<suggested-skills>", system_message["content"])
         self.assertIn("development/runtime-debug", system_message["content"])
-        self.assertIn("Use evidence before fixes.", system_message["content"])
+        self.assertNotIn("Use evidence before fixes.", system_message["content"])
+
+    def test_skill_view_tool_loads_full_skill_instructions_for_the_same_turn(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            skills_root=self.skills_root,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tool-skill-view",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": json.dumps({"name": "runtime-debug"}),
+                        },
+                    },
+                ],
+            },
+            deltas=["done"],
+        )
+
+        list(runtime.run_turn("default", "debug this runtime issue", lambda _request: False))
+
+        final_messages = runtime.final_messages[-1]
+        system_messages = [message for message in final_messages if message.get("role") == "system"]
+        self.assertGreaterEqual(len(system_messages), 2)
+        self.assertIn("<active-skills source=\"skill_view\">", system_messages[-1]["content"])
+        self.assertIn("development/runtime-debug", system_messages[-1]["content"])
+        self.assertIn("Use evidence before fixes.", system_messages[-1]["content"])
+
+    def test_skill_view_tool_emits_skill_activation_events(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            skills_root=self.skills_root,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tool-skill-view",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": json.dumps({"name": "runtime-debug"}),
+                        },
+                    },
+                ],
+            },
+            deltas=["done"],
+        )
+
+        events = list(runtime.run_turn("default", "debug this runtime issue", lambda _request: False))
+
+        skill_started = [event.payload for event in events if event.type == "skill.started"]
+        skill_finished = [event.payload for event in events if event.type == "skill.finished"]
+        self.assertEqual(skill_started, [{
+            "skillName": "runtime-debug",
+            "displayName": "runtime-debug",
+            "source": "skill_view",
+        }])
+        self.assertEqual(skill_finished, [{
+            "skillName": "runtime-debug",
+            "displayName": "development/runtime-debug",
+            "identifier": "development/runtime-debug",
+            "ok": True,
+            "source": "skill_view",
+        }])
+
+    def test_skill_view_tool_emits_failed_activation_for_missing_skill(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            skills_root=self.skills_root,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tool-skill-view",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": json.dumps({"name": "missing-skill"}),
+                        },
+                    },
+                ],
+            },
+            deltas=["done"],
+        )
+
+        events = list(runtime.run_turn("default", "debug this runtime issue", lambda _request: False))
+
+        skill_finished = [event.payload for event in events if event.type == "skill.finished"]
+        self.assertEqual(skill_finished, [{
+            "skillName": "missing-skill",
+            "displayName": "missing-skill",
+            "ok": False,
+            "source": "skill_view",
+            "failureCode": "skill_not_found",
+        }])
 
     def test_unknown_explicit_skill_returns_structured_error(self) -> None:
         runtime = FakeAgentRuntime(self.memory, skills_root=self.skills_root)
@@ -198,12 +299,14 @@ class AgentRuntimeTests(unittest.TestCase):
         self.memory.update_stable_memory("user", "add", content="The user prefers concise Chinese updates.")
         self.memory.update_stable_memory("agent", "add", content="The project uses Python-first AgentRuntime.")
 
-        runtime = FakeAgentRuntime(self.memory)
+        runtime = FakeAgentRuntime(self.memory, skills_root=self.skills_root)
 
         self.assertIn("<stable_memory target=\"agent\"", runtime.system_prompt)
         self.assertIn("Python-first AgentRuntime", runtime.system_prompt)
         self.assertIn("<stable_memory target=\"user\"", runtime.system_prompt)
         self.assertIn("concise Chinese", runtime.system_prompt)
+        self.assertIn("<available_skills>", runtime.system_prompt)
+        self.assertIn("development/runtime-debug", runtime.system_prompt)
 
     def test_runtime_config_file_sets_context_summary_and_review_limits(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime.yaml"
