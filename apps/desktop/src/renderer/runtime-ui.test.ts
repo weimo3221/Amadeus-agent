@@ -13,6 +13,7 @@ import {
 
 class FakeElement {
   textContent = ''
+  innerHTML = ''
   hidden = false
   title = ''
   className = ''
@@ -23,6 +24,7 @@ class FakeElement {
   scrollTop = 0
   scrollHeight = 0
   dataset: Record<string, string> = {}
+  attributes: Record<string, string> = {}
   children: FakeElement[] = []
   private listeners = new Map<string, Array<(event: any) => void>>()
 
@@ -49,6 +51,10 @@ class FakeElement {
   append(child: FakeElement): void {
     this.children.push(child)
     this.scrollHeight = this.children.length
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes[name] = value
   }
 
   replaceChildren(): void {
@@ -402,7 +408,7 @@ describe('Runtime UI controller', () => {
       ],
     }))
 
-    assert.equal(elements.connectionLabel.textContent, 'Connected')
+    assert.equal(elements.connectionLabel.title, 'Connected')
     assert.equal(elements.statusDot.dataset.connected, 'true')
     assert.equal(elements.providerLabel.textContent, 'deepseek-v4-flash')
     assert.equal(elements.memoryStatus.textContent, 'Memory: 7 messages')
@@ -497,13 +503,29 @@ describe('Runtime UI controller', () => {
     controller.handleServerEvent(makeEvent('assistant.message', { text: 'hello' }))
 
     assert.equal(elements.chatLog.children.length, 1)
-    assert.equal(elements.chatLog.children[0].textContent, 'hello')
+    assert.equal(elements.chatLog.children[0].innerHTML, '<p>hello</p>')
     assert.equal(speech.spoken.length, 0)
 
     timers.runAll()
 
     assert.equal(speech.spoken.length, 1)
     assert.equal(speech.spoken[0].text, 'hello')
+  })
+
+  it('renders assistant markdown safely', () => {
+    const { controller, elements } = createHarness()
+
+    controller.handleServerEvent(makeEvent('assistant.message', {
+      text: '# Title\n\n**Bold** and `code`\n- one\n- two\n\n<script>alert(1)</script>',
+    }))
+
+    assert.equal(elements.chatLog.children.length, 1)
+    const html = elements.chatLog.children[0].innerHTML
+    assert.match(html, /<h1>Title<\/h1>/)
+    assert.match(html, /<strong>Bold<\/strong>/)
+    assert.match(html, /<code>code<\/code>/)
+    assert.match(html, /<ul><li>one<\/li><li>two<\/li><\/ul>/)
+    assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
   })
 
   it('shows permission prompts and sends Allow or Deny responses', () => {
@@ -560,7 +582,7 @@ describe('Runtime UI controller', () => {
 
     elements.chatForm.submit()
 
-    assert.equal(elements.chatLog.children[0].textContent, 'hello')
+    assert.equal(elements.chatLog.children[0].innerHTML, '<p>hello</p>')
     assert.equal(elements.chatInput.value, '')
     assert.equal(socket.sent.at(-1)?.type, 'user.message')
     assert.deepEqual(socket.sent.at(-1)?.payload, {

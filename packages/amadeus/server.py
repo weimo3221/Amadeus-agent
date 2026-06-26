@@ -22,6 +22,7 @@ from amadeus.memory import MessageMemoryStore
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary, create_tts_provider_from_config
 from amadeus.live2d import LocalLive2DModelLibrary
+from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_providers_config, provider_profile
 from amadeus.tool_runtime import ToolContext
 from amadeus.tools import list_tools
 
@@ -32,9 +33,46 @@ DATABASE_PATH = Path(os.environ.get("AMADEUS_MEMORY_DB", str(REPO_ROOT / "data" 
 AUDIO_ROOT = Path(os.environ.get("AMADEUS_AUDIO_ROOT", str(RUNTIME_DIR / "assets" / "audio")))
 LIVE2D_ROOT = Path(os.environ.get("AMADEUS_LIVE2D_ROOT", str(REPO_ROOT / "models" / "live2d")))
 HARNESSES_CONFIG_PATH = Path(os.environ.get("AMADEUS_HARNESSES_CONFIG", str(REPO_ROOT / "configs" / "harnesses.yaml")))
+PROVIDERS_CONFIG_PATH = REPO_ROOT / "configs" / "providers.yaml"
+ENV_CONFIG_PATH = REPO_ROOT / ".env"
 PUBLIC_BASE_URL = os.environ.get("AMADEUS_PYTHON_RUNTIME_URL", f"http://{HOST}:{PORT}")
 LOG_LEVEL = os.environ.get("AMADEUS_LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger(__name__)
+
+RUNTIME_CONFIG_FIELDS: dict[str, dict[str, tuple[type, float | int | None, float | int | None]]] = {
+    "context": {
+        "maxTokens": (int, 1000, None),
+        "compactionTriggerRatio": (float, 0.1, 1.0),
+        "recentMessageTargetRatio": (float, 0.1, 0.9),
+        "summaryChars": (int, 100, None),
+        "memoryItemLimit": (int, 1, None),
+        "memoryItemChars": (int, 50, None),
+        "retrievalLimit": (int, 1, None),
+        "retrievalSnippetChars": (int, 50, None),
+        "diagnosticsLimit": (int, 1, None),
+    },
+    "summary": {
+        "triggerMessageCount": (int, 1, None),
+        "keepRecentMessages": (int, 1, None),
+        "minKeepRecentMessages": (int, 0, None),
+        "sourceMaxMessages": (int, 1, None),
+        "failureCooldownSeconds": (int, 1, None),
+    },
+    "memoryReview": {
+        "triggerMessageCount": (int, 1, None),
+        "sourceMaxMessages": (int, 1, None),
+        "existingMemoryLimit": (int, 1, None),
+        "pendingLimit": (int, 1, None),
+        "maxCandidates": (int, 1, None),
+        "successCooldownSeconds": (int, 1, None),
+        "failureCooldownSeconds": (int, 1, None),
+    },
+    "desktop": {
+        "companionLive2dScale": (float, 0.25, 2.5),
+        "companionLive2dOffsetX": (int, None, None),
+        "companionLive2dOffsetY": (int, None, None),
+    },
+}
 
 memory_store = MessageMemoryStore(DATABASE_PATH)
 audio_library = LocalAudioLibrary(AUDIO_ROOT, PUBLIC_BASE_URL)
@@ -64,6 +102,29 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/runtime/health":
             logger.info("Handling structured runtime health request")
             self.write_json(200, build_runtime_health())
+            return
+
+        if parsed.path == "/runtime/config":
+            logger.info("Handling runtime config request")
+            self.write_json(200, build_runtime_config_payload())
+            return
+
+        if parsed.path == "/roles":
+            query = parse_qs(parsed.query)
+            include_archived = parse_optional_bool(optional_query_string(query, "includeArchived")) or False
+            logger.info("Handling roles list includeArchived=%s", include_archived)
+            self.write_json(200, {"ok": True, "roles": memory_store.list_roles(include_archived=include_archived)})
+            return
+
+        if parsed.path == "/sessions":
+            query = parse_qs(parsed.query)
+            role_id = optional_query_string(query, "roleId")
+            include_archived = parse_optional_bool(optional_query_string(query, "includeArchived")) or False
+            logger.info("Handling sessions list roleId=%s includeArchived=%s", role_id, include_archived)
+            self.write_json(200, {
+                "ok": True,
+                "sessions": memory_store.list_sessions(role_id=role_id, include_archived=include_archived),
+            })
             return
 
         if parsed.path == "/runtime/feedback":
@@ -320,9 +381,28 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         self.write_json(404, {"ok": False, "error": "not_found"})
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def do_POST(self) -> None:
         if self.path == "/runtime/config/reload":
             self.handle_runtime_config_reload()
+            return
+
+        if self.path == "/runtime/config":
+            self.handle_runtime_config_update()
+            return
+
+        if self.path == "/roles":
+            self.handle_role_create()
+            return
+
+        if self.path == "/sessions":
+            self.handle_session_create()
             return
 
         if self.path == "/runtime/feedback":
@@ -391,6 +471,26 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         self.write_json(404, {"ok": False, "error": "not_found"})
 
+    def do_PUT(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/roles/"):
+            role_id = unquote(parsed.path.removeprefix("/roles/")).strip()
+            self.handle_role_update(role_id)
+            return
+        if parsed.path.startswith("/sessions/"):
+            session_id = unquote(parsed.path.removeprefix("/sessions/")).strip()
+            self.handle_session_update(session_id)
+            return
+        self.write_json(404, {"ok": False, "error": "not_found"})
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/sessions/"):
+            session_id = unquote(parsed.path.removeprefix("/sessions/")).strip()
+            self.handle_session_delete(session_id)
+            return
+        self.write_json(404, {"ok": False, "error": "not_found"})
+
     def handle_runtime_config_reload(self) -> None:
         try:
             result = agent_runtime.reload_runtime_config()
@@ -401,6 +501,130 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, **result})
         except Exception as error:
             logger.info("Runtime config reload failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_role_create(self) -> None:
+        try:
+            body = self.read_json_body()
+            name = body.get("name")
+            if not isinstance(name, str):
+                self.write_json(400, {"ok": False, "error": "name must be a string"})
+                return
+            role = memory_store.create_role(
+                name,
+                description=body.get("description") if isinstance(body.get("description"), str) else None,
+                persona=body.get("persona") if isinstance(body.get("persona"), str) else None,
+                style=body.get("style") if isinstance(body.get("style"), str) else None,
+                provider=body.get("provider") if isinstance(body.get("provider"), str) else None,
+                model=body.get("model") if isinstance(body.get("model"), str) else None,
+                live2d_model=body.get("live2dModel") if isinstance(body.get("live2dModel"), str) else None,
+                tts_voice=body.get("ttsVoice") if isinstance(body.get("ttsVoice"), str) else None,
+            )
+            session = memory_store.create_session(str(role["id"]))
+            logger.info("Created role roleId=%s defaultSessionId=%s", role["id"], session["id"])
+            self.write_json(200, {"ok": True, "role": role, "session": session})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Role create failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_role_update(self, role_id: str) -> None:
+        try:
+            body = self.read_json_body()
+            role = memory_store.update_role(
+                role_id,
+                name=body.get("name") if isinstance(body.get("name"), str) else None,
+                description=body.get("description") if isinstance(body.get("description"), str) else None,
+                persona=body.get("persona") if isinstance(body.get("persona"), str) else None,
+                style=body.get("style") if isinstance(body.get("style"), str) else None,
+                provider=body.get("provider") if isinstance(body.get("provider"), str) else None,
+                model=body.get("model") if isinstance(body.get("model"), str) else None,
+                live2d_model=body.get("live2dModel") if isinstance(body.get("live2dModel"), str) else None,
+                tts_voice=body.get("ttsVoice") if isinstance(body.get("ttsVoice"), str) else None,
+            )
+            logger.info("Updated role roleId=%s", role["id"])
+            self.write_json(200, {"ok": True, "role": role})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Role update failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_session_create(self) -> None:
+        try:
+            body = self.read_json_body()
+            role_id = body.get("roleId")
+            title = body.get("title")
+            if not isinstance(role_id, str):
+                self.write_json(400, {"ok": False, "error": "roleId must be a string"})
+                return
+            if title is not None and not isinstance(title, str):
+                self.write_json(400, {"ok": False, "error": "title must be a string"})
+                return
+            session = memory_store.create_session(role_id, title)
+            logger.info("Created session sessionId=%s roleId=%s", session["id"], session["roleId"])
+            self.write_json(200, {"ok": True, "session": session})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Session create failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_session_update(self, session_id: str) -> None:
+        try:
+            body = self.read_json_body()
+            title = body.get("title")
+            if not isinstance(title, str):
+                self.write_json(400, {"ok": False, "error": "title must be a string"})
+                return
+            session = memory_store.update_session(session_id, title=title)
+            logger.info("Updated session sessionId=%s", session["id"])
+            self.write_json(200, {"ok": True, "session": session})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Session update failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_session_delete(self, session_id: str) -> None:
+        try:
+            session = memory_store.archive_session(session_id)
+            logger.info("Archived session sessionId=%s", session["id"])
+            self.write_json(200, {"ok": True, "session": session})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Session delete failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_runtime_config_update(self) -> None:
+        try:
+            body = self.read_json_body()
+            api_payload = body.get("api")
+            runtime_payload = body.get("runtime")
+            updated_api: dict[str, Any] | None = None
+
+            if api_payload is not None:
+                if not isinstance(api_payload, dict):
+                    self.write_json(400, {"ok": False, "error": "api must be an object"})
+                    return
+                updated_api = update_api_config(api_payload)
+
+            if runtime_payload is not None:
+                if not isinstance(runtime_payload, dict):
+                    self.write_json(400, {"ok": False, "error": "runtime must be an object"})
+                    return
+                update_runtime_config_file(runtime_payload)
+                agent_runtime.reload_runtime_config()
+
+            payload = build_runtime_config_payload()
+            payload["updatedApi"] = updated_api
+            self.write_json(200, payload)
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Runtime config update failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_runtime_feedback(self) -> None:
@@ -1193,6 +1417,371 @@ def config_health_check() -> dict[str, Any]:
         "harnessesConfigExists": live2d_library.config_path.exists(),
         "effectiveRuntimeConfig": agent_runtime._runtime_config_snapshot(),
     }
+
+
+def build_runtime_config_payload() -> dict[str, Any]:
+    providers = configured_provider_profiles()
+    active_provider = next(
+        (provider for provider in providers if provider.get("id") == agent_runtime.model_client.provider),
+        provider_profile(agent_runtime.model_client.provider).to_public_dict(),
+    )
+    requires_api_key = bool(active_provider.get("requiresApiKey"))
+    return {
+        "ok": True,
+        "api": {
+            "provider": agent_runtime.model_client.provider,
+            "providerLabel": str(active_provider.get("label") or agent_runtime.model_client.provider),
+            "envVar": str(active_provider.get("envVar") or "API_KEY"),
+            "requiresApiKey": requires_api_key,
+            "baseUrl": agent_runtime.base_url,
+            "model": agent_runtime.model,
+            "streaming": agent_runtime.model_client.config.streaming,
+            "apiKeyConfigured": bool(agent_runtime.api_key) and (requires_api_key or agent_runtime.api_key != "local"),
+            "apiKeyPreview": "" if not requires_api_key and agent_runtime.api_key == "local" else mask_secret(agent_runtime.api_key),
+        },
+        "providers": providers,
+        "runtime": agent_runtime._runtime_config_snapshot(),
+        "paths": {
+            "env": str(ENV_CONFIG_PATH),
+            "providersConfig": str(PROVIDERS_CONFIG_PATH),
+            "runtimeConfig": str(agent_runtime.runtime_config_path),
+        },
+    }
+
+
+def configured_provider_profiles() -> list[dict[str, Any]]:
+    llm_config = parse_providers_config(PROVIDERS_CONFIG_PATH).get("llm", {})
+    configured = llm_config.get("providers") if isinstance(llm_config.get("providers"), dict) else {}
+    provider_ids = [str(provider_id) for provider_id in configured]
+    if agent_runtime.model_client.provider not in provider_ids:
+        provider_ids.append(agent_runtime.model_client.provider)
+
+    profiles: list[dict[str, Any]] = []
+    for provider_id in provider_ids:
+        entry = configured.get(provider_id) if isinstance(configured.get(provider_id), dict) else {}
+        preset = provider_profile(str(provider_id))
+        requires_api_key = parse_bool_value(entry.get("requiresApiKey"), preset.requires_api_key) if entry else preset.requires_api_key
+        profiles.append({
+            "id": str(provider_id),
+            "label": str(entry.get("label") or preset.label or provider_id),
+            "apiMode": str(entry.get("apiMode") or preset.api_mode),
+            "envVar": str(entry.get("envVar") or preset.env_var),
+            "baseUrl": str(entry.get("baseUrl") or preset.base_url),
+            "defaultModel": str(entry.get("model") or preset.default_model),
+            "requiresApiKey": requires_api_key,
+            "supportsStreaming": parse_bool_value(entry.get("streaming"), preset.supports_streaming) if entry else preset.supports_streaming,
+        })
+    return profiles
+
+
+def mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = optional_non_empty_string(payload.get("provider"), "provider") or agent_runtime.model_client.provider
+    profile = provider_profile(provider)
+    same_provider = profile.name == agent_runtime.model_client.provider
+    label = optional_non_empty_string(payload.get("label"), "label") or profile.label or profile.name
+    env_var = optional_non_empty_string(payload.get("envVar"), "envVar") or profile.env_var
+    base_url = optional_non_empty_string(payload.get("baseUrl"), "baseUrl")
+    model = optional_non_empty_string(payload.get("model"), "model")
+    requires_api_key = parse_bool_value(payload.get("requiresApiKey"), profile.requires_api_key)
+    streaming = parse_bool_value(payload.get("streaming"), profile.supports_streaming)
+    api_key = payload.get("apiKey")
+    if api_key is not None and not isinstance(api_key, str):
+        raise ValueError("apiKey must be a string")
+
+    env_updates: dict[str, str] = {}
+    env_updates["AMADEUS_LLM_PROVIDER"] = profile.name
+    if base_url is not None:
+        env_updates[f"{env_var.removesuffix('_API_KEY')}_BASE_URL"] = base_url.rstrip("/")
+    if model is not None:
+        env_updates[f"{env_var.removesuffix('_API_KEY')}_MODEL"] = model
+    if isinstance(api_key, str) and api_key.strip():
+        env_updates[env_var] = api_key.strip()
+
+    if env_updates:
+        update_env_file(ENV_CONFIG_PATH, env_updates)
+        os.environ.update(env_updates)
+
+    update_providers_config_file(
+        provider=profile.name,
+        label=label,
+        base_url=base_url or (agent_runtime.base_url if same_provider else profile.base_url),
+        model=model or (agent_runtime.model if same_provider else profile.default_model),
+        env_var=env_var,
+        requires_api_key=requires_api_key,
+        streaming=streaming,
+    )
+
+    return agent_runtime.configure_model_api(
+        provider=profile.name,
+        base_url=base_url or (agent_runtime.base_url if same_provider else profile.base_url),
+        model=model or (agent_runtime.model if same_provider else profile.default_model),
+        api_key=env_updates.get(env_var)
+        or os.environ.get(env_var)
+        or (agent_runtime.api_key if same_provider else "")
+        or ("" if requires_api_key else "local"),
+        streaming=streaming,
+    )
+
+
+def optional_non_empty_string(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} cannot be empty")
+    return normalized
+
+
+def update_env_file(path: Path, updates: dict[str, str]) -> None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    except OSError as error:
+        raise ValueError(f"failed to read env config: {error}") from error
+
+    remaining = dict(updates)
+    next_lines: list[str] = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw_line:
+            next_lines.append(raw_line)
+            continue
+
+        key = raw_line.split("=", 1)[0].strip()
+        if key in remaining:
+            next_lines.append(f"{key}={quote_env_value(remaining.pop(key))}")
+        else:
+            next_lines.append(raw_line)
+
+    for key, value in remaining.items():
+        next_lines.append(f"{key}={quote_env_value(value)}")
+
+    path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def quote_env_value(value: str) -> str:
+    if not value or any(character.isspace() for character in value) or any(character in value for character in ['"', "'", "#"]):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+def update_providers_config_file(
+    *,
+    provider: str,
+    label: str,
+    base_url: str,
+    model: str,
+    env_var: str,
+    requires_api_key: bool,
+    streaming: bool,
+) -> None:
+    llm_config = parse_providers_config(PROVIDERS_CONFIG_PATH).get("llm", {})
+    configured = llm_config.get("providers") if isinstance(llm_config.get("providers"), dict) else {}
+    provider_ids = [str(provider_id) for provider_id in configured]
+    if provider not in provider_ids:
+        provider_ids.append(provider)
+
+    content = [
+        "llm:",
+        f"  default: {provider}",
+        "  providers:",
+    ]
+    for provider_id in provider_ids:
+        entry = configured.get(provider_id) if isinstance(configured.get(provider_id), dict) else {}
+        profile = provider_profile(provider_id)
+        active_label = label if provider_id == provider else str(entry.get("label") or profile.label or provider_id)
+        active_base_url = base_url if provider_id == provider else str(entry.get("baseUrl") or profile.base_url)
+        active_model = model if provider_id == provider else str(entry.get("model") or profile.default_model)
+        active_env_var = env_var if provider_id == provider else str(entry.get("envVar") or profile.env_var)
+        active_requires_api_key = requires_api_key if provider_id == provider else parse_bool_value(entry.get("requiresApiKey"), profile.requires_api_key)
+        active_streaming = streaming if provider_id == provider else parse_bool_value(entry.get("streaming"), profile.supports_streaming)
+        content.extend([
+            f"    {provider_id}:",
+            f"      label: {quote_yaml_value(active_label)}",
+            f"      envVar: {active_env_var}",
+            f"      baseUrl: {quote_yaml_value(active_base_url)}",
+            f"      apiKey: ${{{active_env_var}}}",
+            f"      model: {quote_yaml_value(active_model)}",
+            f"      requiresApiKey: {str(active_requires_api_key).lower()}",
+            f"      streaming: {str(active_streaming).lower()}",
+        ])
+
+    content.extend([
+        "",
+        "tts:",
+        "  default: auto",
+        "  providers:",
+        "    auto:",
+        "      type: auto",
+        "    disabled:",
+        "      type: none",
+        "    macos_say:",
+        "      type: macos_say",
+        "      voice: ${MACOS_SAY_VOICE}",
+        "      rate: ${MACOS_SAY_RATE}",
+        "      timeoutSeconds: 30",
+        "    gpt_sovits:",
+        "      type: gpt_sovits",
+        "      baseUrl: ${GPT_SOVITS_BASE_URL}",
+        "      endpoint: /tts",
+        "      textLang: ${GPT_SOVITS_TEXT_LANG}",
+        "      promptLang: ${GPT_SOVITS_PROMPT_LANG}",
+        "      promptText: ${GPT_SOVITS_PROMPT_TEXT}",
+        "      refAudioPath: ${GPT_SOVITS_REF_AUDIO_PATH}",
+        "      timeoutSeconds: 60",
+        "      streamingMode: false",
+        "",
+        "asr:",
+        "  default: disabled",
+        "  providers:",
+        "    disabled:",
+        "      type: none",
+    ])
+    PROVIDERS_CONFIG_PATH.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")
+
+
+def quote_yaml_value(value: str) -> str:
+    if not value or any(character in value for character in ":#{}[]&,*?|-<>=!%@\\\"'") or value.strip() != value:
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+def update_runtime_config_file(payload: dict[str, Any]) -> None:
+    current = agent_runtime._runtime_config_snapshot()
+    updates: dict[str, dict[str, int | float]] = {}
+    for section, section_payload in payload.items():
+        if section not in RUNTIME_CONFIG_FIELDS:
+            raise ValueError(f"unsupported runtime config section: {section}")
+        if not isinstance(section_payload, dict):
+            raise ValueError(f"{section} must be an object")
+        current_section = dict(current.get(section, {}))
+        updates[section] = {}
+        for key, value in section_payload.items():
+            field_schema = RUNTIME_CONFIG_FIELDS[section].get(key)
+            if field_schema is None:
+                raise ValueError(f"unsupported runtime config field: {section}.{key}")
+            parsed_value = coerce_runtime_config_value(section, key, value, field_schema)
+            current_section[key] = parsed_value
+            updates[section][key] = parsed_value
+        current[section] = current_section
+
+    try:
+        existing_content = agent_runtime.runtime_config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing_content = ""
+    except OSError as error:
+        raise ValueError(f"failed to read runtime config: {error}") from error
+
+    next_content = update_runtime_config_content(existing_content, current, updates)
+    agent_runtime.runtime_config_path.write_text(next_content, encoding="utf-8")
+
+
+def coerce_runtime_config_value(
+    section: str,
+    key: str,
+    value: Any,
+    field_schema: tuple[type, float | int | None, float | int | None],
+) -> int | float:
+    expected_type, minimum, maximum = field_schema
+    try:
+        parsed = expected_type(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{section}.{key} must be a {expected_type.__name__}") from error
+
+    if expected_type is int and isinstance(value, float) and not value.is_integer():
+        raise ValueError(f"{section}.{key} must be an integer")
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{section}.{key} must be >= {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{section}.{key} must be <= {maximum}")
+    return parsed
+
+
+def serialize_runtime_config(config: dict[str, dict[str, int | float]]) -> str:
+    section_comments = {
+        "context": "Context and memory injection budgets.",
+        "summary": "Automatic conversation summary compaction.",
+        "memoryReview": "Automatic durable memory candidate review.",
+        "desktop": "Desktop companion display tuning.",
+    }
+    lines: list[str] = []
+    for section in ("context", "summary", "memoryReview", "desktop"):
+        if lines:
+            lines.append("")
+        comment = section_comments.get(section)
+        if comment:
+            lines.append(f"# {comment}")
+        lines.append(f"{section}:")
+        for key, value in config.get(section, {}).items():
+            lines.append(f"  {key}: {value}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def update_runtime_config_content(
+    content: str,
+    full_config: dict[str, dict[str, int | float]],
+    updates: dict[str, dict[str, int | float]],
+) -> str:
+    if not content.strip():
+        return serialize_runtime_config(full_config)
+
+    remaining = {section: dict(values) for section, values in updates.items()}
+    next_lines: list[str] = []
+    current_section: str | None = None
+
+    def append_missing_section_keys(section: str | None) -> None:
+        if not section or not remaining.get(section):
+            return
+        for missing_key, missing_value in remaining[section].items():
+            next_lines.append(f"  {missing_key}: {missing_value}")
+        remaining[section].clear()
+
+    for raw_line in content.splitlines():
+        line_without_comment = raw_line.split("#", 1)[0].rstrip()
+        indent = len(line_without_comment) - len(line_without_comment.lstrip(" "))
+        trimmed = line_without_comment.strip()
+
+        if indent == 0 and trimmed.endswith(":"):
+            append_missing_section_keys(current_section)
+            current_section = trimmed[:-1]
+            next_lines.append(raw_line)
+            continue
+
+        if current_section in remaining and indent == 2 and ":" in trimmed:
+            key = trimmed.split(":", 1)[0].strip()
+            if key in remaining[current_section]:
+                prefix = raw_line[: len(raw_line) - len(raw_line.lstrip(" "))]
+                suffix = ""
+                if "#" in raw_line:
+                    suffix = "  #" + raw_line.split("#", 1)[1]
+                next_lines.append(f"{prefix}{key}: {remaining[current_section].pop(key)}{suffix}")
+                continue
+
+        next_lines.append(raw_line)
+
+    append_missing_section_keys(current_section)
+
+    for section, values in remaining.items():
+        if not values:
+            continue
+        if next_lines and next_lines[-1].strip():
+            next_lines.append("")
+        next_lines.append(f"{section}:")
+        for key, value in values.items():
+            next_lines.append(f"  {key}: {value}")
+
+    return "\n".join(next_lines).rstrip() + "\n"
 
 
 def main() -> None:

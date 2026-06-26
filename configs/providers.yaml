@@ -1,10 +1,12 @@
 llm:
-  default: openai_compatible
+  default: deepseek
   providers:
-    openai_compatible:
-      baseUrl: ${OPENAI_BASE_URL}
-      apiKey: ${OPENAI_API_KEY}
-      model: ${OPENAI_MODEL}
+    deepseek:
+      label: DeepSeek
+      envVar: DEEPSEEK_API_KEY
+      baseUrl: https://api.deepseek.com/v1
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
       streaming: true
 
 tts:

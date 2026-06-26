@@ -14,28 +14,305 @@
       <header class="titlebar">
         <div class="drag-region">
           <span class="status-dot" id="status-dot"></span>
-          <span>Amadeus Main UI</span>
+          <span class="app-title">Amadeus</span>
         </div>
-        <button id="minimize-button" title="Minimize">Minimize</button>
-        <button id="close-button" title="Close">Close</button>
+        <button
+          id="settings-toggle-button"
+          class="icon-button"
+          type="button"
+          title="Settings"
+          aria-label="Settings"
+          aria-controls="settings-panel"
+          aria-expanded="false"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Zm8.1 3.1-1.8-.4a7.5 7.5 0 0 0-.6-1.4l1-1.5-2.7-2.7-1.5 1a7.5 7.5 0 0 0-1.4-.6L12.7 4H9.3l-.4 1.7a7.5 7.5 0 0 0-1.4.6l-1.5-1L3.3 8l1 1.5a7.5 7.5 0 0 0-.6 1.4l-1.8.4v3.4l1.8.4c.1.5.3 1 .6 1.4l-1 1.5L6 20.7l1.5-1c.4.2.9.4 1.4.6l.4 1.7h3.4l.4-1.7c.5-.1 1-.3 1.4-.6l1.5 1 2.7-2.7-1-1.5c.2-.4.4-.9.6-1.4l1.8-.4v-3.4Z" />
+          </svg>
+        </button>
+        <button id="fullscreen-button" class="icon-button" type="button" title="Fullscreen" aria-label="Toggle fullscreen" aria-pressed="false">
+          <svg class="fullscreen-enter-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 5h6v2H7v4H5zm8 0h6v6h-2V7h-4zm4 12v-4h2v6h-6v-2zM7 13v4h4v2H5v-6z" />
+          </svg>
+          <svg class="fullscreen-exit-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 3h2v8H3V9h4.6L3.8 5.2l1.4-1.4L9 7.6zm4 0h2v4.6l3.8-3.8 1.4 1.4-3.8 3.8H21v2h-8zm8 10v2h-4.6l3.8 3.8-1.4 1.4-3.8-3.8V21h-2v-8zM3 13h8v8H9v-4.6l-3.8 3.8-1.4-1.4L7.6 15H3z" />
+          </svg>
+        </button>
+        <button id="minimize-button" class="icon-button" type="button" title="Minimize" aria-label="Minimize">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 13h12v2H6z" />
+          </svg>
+        </button>
+        <button id="close-button" class="icon-button close-icon" type="button" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m7.8 6.4 4.2 4.2 4.2-4.2 1.4 1.4-4.2 4.2 4.2 4.2-1.4 1.4-4.2-4.2-4.2 4.2-1.4-1.4 4.2-4.2-4.2-4.2z" />
+          </svg>
+        </button>
       </header>
 
       <section class="workspace">
         <section class="chat-panel main-chat">
           <div class="provider">
-            <span id="connection-label">Connecting</span>
-            <strong id="provider-label">Runtime</strong>
+            <div class="hero-copy">
+              <span class="eyebrow">desktop companion</span>
+              <strong id="provider-label">Amadeus is ready</strong>
+            </div>
+            <div class="session-switcher" id="session-switcher">
+              <button id="session-menu-button" class="session-menu-button" type="button" aria-haspopup="dialog" aria-expanded="false">
+                <span class="session-menu-kicker">Session</span>
+                <strong id="current-session-label">Loading...</strong>
+              </button>
+              <div id="session-menu" class="session-menu" hidden>
+                <div class="session-menu-header">
+                  <span>Sessions</span>
+                  <button id="new-session-main-button" type="button">New</button>
+                </div>
+                <div id="session-menu-list" class="session-menu-list">Loading sessions...</div>
+                <p class="session-menu-hint">Click to switch. Double-click a name to rename.</p>
+              </div>
+            </div>
+            <span id="connection-label" class="connection-pill" title="Connecting" aria-label="Connecting">Connecting</span>
           </div>
           <div id="stage-status" class="stage-status" hidden>State: idle</div>
           <div id="chat-log" class="chat-log"></div>
           <form id="chat-form">
             <input id="chat-input" name="message" autocomplete="off" placeholder="Type to Amadeus..." />
-            <button type="submit">Send</button>
+            <button class="send-button" type="submit" title="Send" aria-label="Send message">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3.4 20.1 21 12 3.4 3.9l1.4 6.4 9.1 1.7-9.1 1.7-1.4 6.4Z" />
+              </svg>
+            </button>
           </form>
         </section>
 
-        <aside class="side-panel">
-          <section class="runtime-card">
+        <aside id="settings-panel" class="side-panel" aria-label="Settings panel" hidden>
+          <div class="settings-heading">
+            <span class="eyebrow">settings</span>
+            <strong>Runtime Console</strong>
+          </div>
+
+          <div class="settings-console">
+            <nav class="settings-nav" aria-label="Settings sections">
+              <button class="settings-nav-button active" type="button" data-settings-target="role">Role</button>
+              <button class="settings-nav-button" type="button" data-settings-target="model">Model</button>
+              <button class="settings-nav-button" type="button" data-settings-target="live2d">Live2D</button>
+              <button class="settings-nav-button" type="button" data-settings-target="tts">TTS</button>
+              <button class="settings-nav-button" type="button" data-settings-target="skills">Skills</button>
+              <button class="settings-nav-button" type="button" data-settings-target="tools">Tools</button>
+              <button class="settings-nav-button" type="button" data-settings-target="runtime">Configs</button>
+              <button class="settings-nav-button" type="button" data-settings-target="logs">Logs</button>
+              <button class="settings-nav-button" type="button" data-settings-target="usage">Usage</button>
+            </nav>
+            <div class="settings-content">
+
+          <section class="config-panel settings-section active" data-settings-section="role" aria-label="Role configuration">
+            <div class="config-header">
+              <div>
+                <span class="eyebrow">identity</span>
+                <strong>Role Library</strong>
+              </div>
+              <span id="role-session-status" class="config-status">Loading</span>
+            </div>
+            <p class="settings-note">默认只显示已经创建过的 Role 摘要。点击 Edit 才展开详细信息；点击 New Role 会打开新建表单。</p>
+            <div class="library-actions">
+              <button id="open-new-role-button" type="button">New Role</button>
+            </div>
+            <div id="role-list" class="resource-list">Loading roles...</div>
+            <form id="role-session-form" class="config-form resource-editor" hidden>
+              <div class="editor-header">
+                <strong id="role-editor-title">Edit Role</strong>
+                <button id="close-role-editor-button" type="button">Close</button>
+              </div>
+              <label>
+                <span>Editing Role</span>
+                <select id="role-select" name="role"></select>
+              </label>
+              <label>
+                <span>Role Name</span>
+                <input id="new-role-name-input" autocomplete="off" placeholder="Coding assistant" />
+              </label>
+              <label>
+                <span>Description</span>
+                <input id="role-description-input" autocomplete="off" placeholder="What this role is for" />
+              </label>
+              <label>
+                <span>Persona</span>
+                <textarea id="new-role-persona-input" rows="3" placeholder="Describe how this role should behave."></textarea>
+              </label>
+              <label>
+                <span>Style</span>
+                <input id="role-style-input" autocomplete="off" placeholder="concise, warm, technical..." />
+              </label>
+              <label>
+                <span>Role Model</span>
+                <select id="role-model-select"></select>
+              </label>
+              <label>
+                <span>Role Live2D</span>
+                <select id="role-live2d-select"></select>
+              </label>
+              <label>
+                <span>Role TTS Voice</span>
+                <select id="role-tts-select"></select>
+              </label>
+              <div class="form-actions">
+                <button id="save-role-button" type="button">Save Role</button>
+                <button id="create-role-button" type="button">Create Role</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="config-panel settings-section" data-settings-section="model" aria-label="API configuration" hidden>
+            <div class="config-header">
+              <div>
+                <span class="eyebrow">api</span>
+                <strong>Model Library</strong>
+              </div>
+              <span id="api-config-status" class="config-status">Loading</span>
+            </div>
+            <p class="settings-note">这里只显示你实际配置过的 Model。点击 Edit 才展开 endpoint、key、env 等详细信息；点击 New Model 打开新建表单。</p>
+            <div class="library-actions">
+              <button id="new-model-button" type="button">New Model</button>
+            </div>
+            <div id="model-profile-list" class="resource-list">Loading models...</div>
+            <form id="api-config-form" class="config-form resource-editor" hidden>
+              <div class="editor-header">
+                <strong id="model-editor-title">Edit Model</strong>
+                <button id="close-model-editor-button" type="button">Close</button>
+              </div>
+              <label>
+                <span>Provider</span>
+                <select id="api-provider-select" name="provider"></select>
+              </label>
+              <label>
+                <span>Provider ID</span>
+                <input id="api-provider-id-input" name="providerId" autocomplete="off" placeholder="deepseek or my_local_model" />
+              </label>
+              <label>
+                <span>Display Name</span>
+                <input id="api-provider-label-input" name="providerLabel" autocomplete="off" placeholder="DeepSeek" />
+              </label>
+              <label>
+                <span>Base URL</span>
+                <input id="api-base-url-input" name="baseUrl" autocomplete="off" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label>
+                <span>Model</span>
+                <input id="api-model-input" name="model" autocomplete="off" placeholder="gpt-4o-mini" />
+              </label>
+              <label>
+                <span>API Key</span>
+                <input id="api-key-input" name="apiKey" type="password" autocomplete="new-password" placeholder="Leave blank to keep current key" />
+              </label>
+              <label>
+                <span>Env Var</span>
+                <input id="api-env-var-input" name="envVar" autocomplete="off" placeholder="DEEPSEEK_API_KEY" />
+              </label>
+              <label class="checkbox-label">
+                <input id="api-requires-key-input" type="checkbox" checked />
+                <span>Requires API key</span>
+              </label>
+              <label class="checkbox-label">
+                <input id="api-streaming-input" type="checkbox" checked />
+                <span>Streaming</span>
+              </label>
+              <div class="form-actions">
+                <button type="submit">Save Model</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="config-panel settings-section" data-settings-section="live2d" aria-label="Live2D configuration" hidden>
+            <div class="config-header">
+              <div>
+                <span class="eyebrow">avatar</span>
+                <strong>Live2D Library</strong>
+              </div>
+              <span class="config-status">Global + Role</span>
+            </div>
+            <p class="settings-note">Live2D 模型来自本地 <code>models/live2d</code>。已有模型会列在这里；新增模型需要先把模型文件放入该目录再刷新。</p>
+            <div class="library-actions">
+              <button id="new-live2d-button" type="button">New Live2D</button>
+            </div>
+            <div id="live2d-model-list" class="resource-list">Loading Live2D models...</div>
+            <div id="live2d-editor" class="resource-editor compact-editor" hidden>
+              <div class="editor-header">
+                <strong id="live2d-editor-title">Live2D Detail</strong>
+                <button id="close-live2d-editor-button" type="button">Close</button>
+              </div>
+              <p id="live2d-editor-detail" class="settings-note"></p>
+            </div>
+            <button id="refresh-live2d-button" type="button">Refresh Live2D</button>
+          </section>
+
+          <section class="config-panel settings-section" data-settings-section="tts" aria-label="TTS configuration" hidden>
+            <div class="config-header">
+              <div>
+                <span class="eyebrow">voice</span>
+                <strong>TTS Voices</strong>
+              </div>
+              <span class="config-status">Browser voices</span>
+            </div>
+            <p class="settings-note">TTS 声音来自系统 / 浏览器 voice 列表。已有声音会列在这里；新增声音需要先安装到系统或配置后端 TTS provider。</p>
+            <div class="library-actions">
+              <button id="new-tts-button" type="button">New TTS</button>
+            </div>
+            <div id="tts-voice-list" class="resource-list">Loading voices...</div>
+            <div id="tts-editor" class="resource-editor compact-editor" hidden>
+              <div class="editor-header">
+                <strong id="tts-editor-title">TTS Detail</strong>
+                <button id="close-tts-editor-button" type="button">Close</button>
+              </div>
+              <p id="tts-editor-detail" class="settings-note"></p>
+            </div>
+            <button id="refresh-tts-button" type="button">Refresh TTS</button>
+          </section>
+
+          <section class="config-panel settings-section" data-settings-section="runtime" aria-label="Runtime configuration" hidden>
+            <div class="config-header">
+              <div>
+                <span class="eyebrow">configs</span>
+                <strong>Runtime Tuning</strong>
+              </div>
+              <span id="runtime-config-status" class="config-status">Loading</span>
+            </div>
+            <form id="runtime-config-form" class="config-form config-grid">
+              <label>
+                <span>Context Max Tokens</span>
+                <input id="config-context-max-tokens" type="number" min="1000" step="1000" />
+              </label>
+              <label>
+                <span>Compaction Ratio</span>
+                <input id="config-compaction-ratio" type="number" min="0.1" max="1" step="0.05" />
+              </label>
+              <label>
+                <span>Memory Items</span>
+                <input id="config-memory-item-limit" type="number" min="1" step="1" />
+              </label>
+              <label>
+                <span>Summary Trigger</span>
+                <input id="config-summary-trigger" type="number" min="1" step="1" />
+              </label>
+              <label>
+                <span>Review Trigger</span>
+                <input id="config-review-trigger" type="number" min="1" step="1" />
+              </label>
+              <label>
+                <span>Live2D Scale</span>
+                <input id="config-live2d-scale" type="number" min="0.25" max="2.5" step="0.01" />
+              </label>
+              <label>
+                <span>Live2D Offset X</span>
+                <input id="config-live2d-offset-x" type="number" step="1" />
+              </label>
+              <label>
+                <span>Live2D Offset Y</span>
+                <input id="config-live2d-offset-y" type="number" step="1" />
+              </label>
+              <button type="submit">Save Configs</button>
+            </form>
+          </section>
+
+          <section class="runtime-card settings-section" data-settings-section="tools" hidden>
             <div class="runtime-row">
               <span id="memory-status">Memory unknown</span>
               <button id="reset-session-button" type="button" title="Clear this session memory">Reset</button>
@@ -53,7 +330,7 @@
             </div>
           </section>
 
-          <section class="memory-review" aria-label="Memory review">
+          <section class="memory-review settings-section" data-settings-section="logs" aria-label="Memory review" hidden>
             <div class="memory-review-header">
               <span id="memory-review-status">Memory review: loading</span>
               <button id="memory-review-run-button" type="button">Review</button>
@@ -61,7 +338,7 @@
             <div id="memory-review-list" class="memory-review-list"></div>
           </section>
 
-          <section class="skills-panel" aria-label="Suggested skills">
+          <section class="skills-panel settings-section" data-settings-section="skills" aria-label="Suggested skills" hidden>
             <div class="skills-header">
               <span id="skills-status">Suggested skills: loading...</span>
               <button id="skills-refresh-button" type="button">Refresh</button>
@@ -81,6 +358,20 @@
               <div id="skill-detail-body" class="skill-detail-body">Select a skill to preview a short summary.</div>
             </div>
           </section>
+
+          <section class="config-panel settings-section" data-settings-section="usage" aria-label="Usage" hidden>
+            <div class="config-header">
+              <div>
+                <span class="eyebrow">usage</span>
+                <strong>Usage & Cost</strong>
+              </div>
+              <span class="config-status">Local</span>
+            </div>
+            <p class="settings-note">用量面板预留给后续 token / cost / session statistics。当前可先从 Runtime 日志和 memory count 判断运行状态。</p>
+          </section>
+
+            </div>
+          </div>
         </aside>
       </section>
       <button id="voice-button" hidden type="button">Voice On</button>

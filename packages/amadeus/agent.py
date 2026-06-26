@@ -19,6 +19,7 @@ from amadeus.memory import MessageMemoryStore
 from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.model import (
     OpenAICompatibleChatModel,
+    OpenAICompatibleConfig,
     first_choice_message,
     is_context_overflow_error,
     parse_json_object_from_text,
@@ -230,6 +231,33 @@ class AgentRuntime:
     @property
     def model(self) -> str:
         return self.model_client.model
+
+    def configure_model_api(
+        self,
+        *,
+        provider: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        streaming: bool | None = None,
+    ) -> dict[str, Any]:
+        current = self.model_client.config
+        self.model_client.config = OpenAICompatibleConfig(
+            provider=provider or current.provider,
+            base_url=(base_url or current.base_url).rstrip("/"),
+            api_key=api_key if api_key is not None else current.api_key,
+            model=model or current.model,
+            streaming=streaming if streaming is not None else current.streaming,
+            default_headers=current.default_headers,
+            request_timeout_seconds=current.request_timeout_seconds,
+            stream_timeout_seconds=current.stream_timeout_seconds,
+        )
+        return {
+            "provider": self.model_client.provider,
+            "baseUrl": self.base_url,
+            "model": self.model,
+            "apiKeyConfigured": bool(self.api_key),
+        }
 
     def observe_harness_feedback(
         self,
@@ -1011,6 +1039,9 @@ class AgentRuntime:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         assembled_context = self.context_assembler.assemble(session_id, user_text)
         system_context = assembled_context.system_context
+        role_prompt = self.memory_store.role_prompt_for_session(session_id)
+        if role_prompt:
+            system_context = f"{system_context}\n\n<role-context>\n{role_prompt}\n</role-context>"
         if skill_prompt_block:
             system_context = f"{system_context}\n\n{skill_prompt_block}"
         history = self._load_history(

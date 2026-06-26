@@ -14,6 +14,7 @@ import type {
 } from '@amadeus-agent/amadeus/events'
 
 const WEB_SOCKET_OPEN = 1
+const RAW_MESSAGE_DATASET_KEY = 'rawMessage'
 
 export interface RuntimeSocketLike {
   readyState: number
@@ -143,7 +144,7 @@ export class RuntimeUiController {
   bindControls(): void {
     const { elements } = this.options
     if (elements.providerLabel) {
-      elements.providerLabel.textContent = this.options.modelLabel
+      elements.providerLabel.textContent = elements.providerLabel.dataset.roleLabel || this.options.modelLabel
     }
 
     if (this.options.speechSynthesis) {
@@ -286,7 +287,7 @@ export class RuntimeUiController {
       case 'server.hello':
         this.sessionId = event.sessionId
         if (this.options.elements.providerLabel) {
-          this.options.elements.providerLabel.textContent = event.payload.model
+          this.options.elements.providerLabel.textContent = this.options.elements.providerLabel.dataset.roleLabel || event.payload.model
         }
         this.setMemoryStatus(`Memory: ${event.payload.memoryMessages} messages`)
         this.setToolConfigStatus(formatToolConfigStatus(event.payload))
@@ -827,7 +828,8 @@ export class RuntimeUiController {
 
     const item = document.createElement('div')
     item.className = `message ${role}`
-    item.textContent = text
+    item.dataset[RAW_MESSAGE_DATASET_KEY] = text
+    renderMarkdownInto(item, text)
     chatLog.append(item)
     chatLog.scrollTop = chatLog.scrollHeight
     return item
@@ -861,7 +863,9 @@ export class RuntimeUiController {
       return
     }
 
-    this.activeAssistantMessage.textContent += text
+    const currentText = this.activeAssistantMessage.dataset[RAW_MESSAGE_DATASET_KEY] ?? ''
+    this.activeAssistantMessage.dataset[RAW_MESSAGE_DATASET_KEY] = currentText + text
+    renderMarkdownInto(this.activeAssistantMessage, currentText + text)
     if (this.options.elements.chatLog) {
       this.options.elements.chatLog.scrollTop = this.options.elements.chatLog.scrollHeight
     }
@@ -869,7 +873,11 @@ export class RuntimeUiController {
 
   private setConnection(text: string, connected: boolean): void {
     if (this.options.elements.connectionLabel) {
-      this.options.elements.connectionLabel.textContent = text
+      this.options.elements.connectionLabel.textContent = ''
+      this.options.elements.connectionLabel.dataset.connected = String(connected)
+      this.options.elements.connectionLabel.dataset.state = text.toLowerCase()
+      this.options.elements.connectionLabel.title = text
+      this.options.elements.connectionLabel.setAttribute('aria-label', text)
     }
 
     if (this.options.elements.statusDot) {
@@ -1110,6 +1118,122 @@ function formatMemoryReviewJob(job: MemoryReviewJob): string {
     : job.reason || job.error || 'no detail'
   const durationText = job.durationMs ? `, ${job.durationMs}ms` : ''
   return `last job: ${job.status} (${job.trigger}, ${countText}${durationText})`
+}
+
+function renderMarkdownInto(element: HTMLElement, markdown: string): void {
+  element.innerHTML = renderMarkdown(markdown)
+}
+
+function renderMarkdown(markdown: string): string {
+  const normalized = markdown.replace(/\r\n?/g, '\n')
+  const blocks: string[] = []
+  let cursor = 0
+
+  for (const match of normalized.matchAll(/```([^\n`]*)\n?([\s\S]*?)```/g)) {
+    const matchIndex = match.index ?? 0
+    const before = normalized.slice(cursor, matchIndex)
+    blocks.push(renderMarkdownBlocks(before))
+    const language = sanitizeClassName(match[1]?.trim() ?? '')
+    const code = escapeHtml(match[2] ?? '')
+    const languageClass = language ? ` class="language-${language}"` : ''
+    blocks.push(`<pre><code${languageClass}>${code}</code></pre>`)
+    cursor = matchIndex + match[0].length
+  }
+
+  blocks.push(renderMarkdownBlocks(normalized.slice(cursor)))
+  return blocks.join('')
+}
+
+function renderMarkdownBlocks(markdown: string): string {
+  const lines = markdown.split('\n')
+  const html: string[] = []
+  let paragraph: string[] = []
+  let listItems: string[] = []
+
+  const flushParagraph = (): void => {
+    if (!paragraph.length) {
+      return
+    }
+    html.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br>')}</p>`)
+    paragraph = []
+  }
+
+  const flushList = (): void => {
+    if (!listItems.length) {
+      return
+    }
+    html.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join('')}</ul>`)
+    listItems = []
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) {
+      flushParagraph()
+      flushList()
+      continue
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed)
+    if (heading) {
+      flushParagraph()
+      flushList()
+      const level = heading[1].length
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`)
+      continue
+    }
+
+    const listItem = /^[-*]\s+(.+)$/.exec(trimmed)
+    if (listItem) {
+      flushParagraph()
+      listItems.push(listItem[1])
+      continue
+    }
+
+    if (trimmed.startsWith('> ')) {
+      flushParagraph()
+      flushList()
+      html.push(`<blockquote>${renderInlineMarkdown(trimmed.slice(2))}</blockquote>`)
+      continue
+    }
+
+    flushList()
+    paragraph.push(trimmed)
+  }
+
+  flushParagraph()
+  flushList()
+  return html.join('')
+}
+
+function renderInlineMarkdown(text: string): string {
+  const codeSegments: string[] = []
+  let escaped = escapeHtml(text).replace(/`([^`]+)`/g, (_match, code: string) => {
+    const index = codeSegments.push(`<code>${code}</code>`) - 1
+    return `\u0000CODE${index}\u0000`
+  })
+
+  escaped = escaped
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+    .replace(/_([^_\n]+)_/g, '<em>$1</em>')
+
+  return escaped.replace(/\u0000CODE(\d+)\u0000/g, (_match, index: string) => codeSegments[Number(index)] ?? '')
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function sanitizeClassName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32)
 }
 
 function normalizeRuntimeSkillSummary(value: unknown): RuntimeSkillSummary | undefined {

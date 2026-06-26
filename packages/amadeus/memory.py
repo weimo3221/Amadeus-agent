@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 
 MessageRole = Literal["user", "assistant"]
@@ -32,6 +33,13 @@ STABLE_MEMORY_LIMITS: dict[str, int] = {
     "agent": 4000,
     "user": 2500,
 }
+DEFAULT_ROLE_ID = "amadeus"
+DEFAULT_SESSION_ID = "companion:default"
+DEFAULT_ROLE_NAME = "Amadeus"
+DEFAULT_ROLE_PERSONA = (
+    "A calm, precise, and practical desktop Live2D companion. "
+    "Help the user think, plan, search, remember, and execute tasks."
+)
 
 
 class MessageMemoryStore:
@@ -46,6 +54,31 @@ class MessageMemoryStore:
         with self.connect() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS roles (
+                  id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL,
+                  description TEXT NOT NULL DEFAULT '',
+                  persona TEXT NOT NULL DEFAULT '',
+                  style TEXT NOT NULL DEFAULT '',
+                  provider TEXT,
+                  model TEXT,
+                  live2d_model TEXT,
+                  tts_voice TEXT,
+                  archived INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sessions (
+                  id TEXT PRIMARY KEY,
+                  role_id TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  archived INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  FOREIGN KEY(role_id) REFERENCES roles(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sessions_role_updated
+                ON sessions(role_id, archived, updated_at);
                 CREATE TABLE IF NOT EXISTS messages (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   session_id TEXT NOT NULL,
@@ -130,6 +163,7 @@ class MessageMemoryStore:
                 );
                 """
             )
+            self._migrate_roles_and_sessions(connection)
             self._migrate_conversation_summaries(connection)
             self._migrate_memory_review_candidates(connection)
             connection.execute(
@@ -146,6 +180,388 @@ class MessageMemoryStore:
                 FROM messages
                 """
             )
+
+    def _migrate_roles_and_sessions(self, connection: sqlite3.Connection) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(roles)").fetchall()
+        }
+        if "tts_voice" not in columns:
+            connection.execute("ALTER TABLE roles ADD COLUMN tts_voice TEXT")
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO roles (
+              id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?, ?)
+            """,
+            (
+                DEFAULT_ROLE_ID,
+                DEFAULT_ROLE_NAME,
+                "Default desktop companion role.",
+                DEFAULT_ROLE_PERSONA,
+                "concise, warm, technically capable",
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO sessions (id, role_id, title, archived, created_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, ?)
+            """,
+            (DEFAULT_SESSION_ID, DEFAULT_ROLE_ID, "Default", now, now),
+        )
+        rows = connection.execute(
+            """
+            SELECT
+              m.session_id,
+              MIN(m.created_at) AS created_at,
+              MAX(m.created_at) AS updated_at
+            FROM messages m
+            LEFT JOIN sessions s ON s.id = m.session_id
+            WHERE s.id IS NULL
+            GROUP BY m.session_id
+            """
+        ).fetchall()
+        for row in rows:
+            session_id = normalize_session_id(str(row[0]))
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO sessions (id, role_id, title, archived, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    session_id,
+                    DEFAULT_ROLE_ID,
+                    session_title_from_id(session_id),
+                    str(row[1]) if row[1] else now,
+                    str(row[2]) if row[2] else now,
+                ),
+            )
+
+    def list_roles(self, include_archived: bool = False) -> list[dict[str, str | int | bool]]:
+        where = "1 = 1" if include_archived else "archived = 0"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                FROM roles
+                WHERE {where}
+                ORDER BY archived ASC, updated_at DESC, name ASC
+                """
+            ).fetchall()
+        return [role_response(row) for row in rows]
+
+    def create_role(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        live2d_model: str | None = None,
+        tts_voice: str | None = None,
+    ) -> dict[str, str | int | bool]:
+        normalized_name = normalize_role_name(name)
+        normalized_description = normalize_optional_text(description, "description", 500) or ""
+        normalized_persona = normalize_optional_text(persona, "persona", 4000) or ""
+        normalized_style = normalize_optional_text(style, "style", 1000) or ""
+        normalized_provider = normalize_optional_text(provider, "provider", 120)
+        normalized_model = normalize_optional_text(model, "model", 160)
+        normalized_live2d_model = normalize_optional_text(live2d_model, "live2d_model", 160)
+        normalized_tts_voice = normalize_optional_text(tts_voice, "tts_voice", 160)
+        role_id = f"role-{uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO roles (
+                  id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    role_id,
+                    normalized_name,
+                    normalized_description,
+                    normalized_persona,
+                    normalized_style,
+                    normalized_provider,
+                    normalized_model,
+                    normalized_live2d_model,
+                    normalized_tts_voice,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                FROM roles
+                WHERE id = ?
+                """,
+                (role_id,),
+            ).fetchone()
+        return role_response(row)
+
+    def get_role(self, role_id: str) -> dict[str, str | int | bool] | None:
+        normalized_role_id = normalize_role_id(role_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                FROM roles
+                WHERE id = ?
+                """,
+                (normalized_role_id,),
+            ).fetchone()
+        return role_response(row) if row else None
+
+    def update_role(
+        self,
+        role_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        live2d_model: str | None = None,
+        tts_voice: str | None = None,
+    ) -> dict[str, str | int | bool]:
+        normalized_role_id = normalize_role_id(role_id)
+        updates: dict[str, str | None] = {}
+        if name is not None:
+            updates["name"] = normalize_role_name(name)
+        if description is not None:
+            updates["description"] = normalize_optional_text(description, "description", 500) or ""
+        if persona is not None:
+            updates["persona"] = normalize_optional_text(persona, "persona", 4000) or ""
+        if style is not None:
+            updates["style"] = normalize_optional_text(style, "style", 1000) or ""
+        if provider is not None:
+            updates["provider"] = normalize_optional_text(provider, "provider", 120)
+        if model is not None:
+            updates["model"] = normalize_optional_text(model, "model", 160)
+        if live2d_model is not None:
+            updates["live2d_model"] = normalize_optional_text(live2d_model, "live2d_model", 160)
+        if tts_voice is not None:
+            updates["tts_voice"] = normalize_optional_text(tts_voice, "tts_voice", 160)
+
+        now = datetime.now(timezone.utc).isoformat()
+        updates["updated_at"] = now
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        with self.connect() as connection:
+            exists = connection.execute("SELECT id FROM roles WHERE id = ?", (normalized_role_id,)).fetchone()
+            if not exists:
+                raise ValueError("role not found")
+            connection.execute(
+                f"UPDATE roles SET {assignments} WHERE id = ?",
+                [*updates.values(), normalized_role_id],
+            )
+            row = connection.execute(
+                """
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                FROM roles
+                WHERE id = ?
+                """,
+                (normalized_role_id,),
+            ).fetchone()
+        return role_response(row)
+
+    def list_sessions(self, role_id: str | None = None, include_archived: bool = False) -> list[dict[str, str | int | bool]]:
+        where = ["s.archived = 0"] if not include_archived else ["1 = 1"]
+        params: list[object] = []
+        if role_id:
+            where.append("s.role_id = ?")
+            params.append(normalize_role_id(role_id))
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                  s.id,
+                  s.role_id,
+                  s.title,
+                  s.archived,
+                  s.created_at,
+                  s.updated_at,
+                  r.name,
+                  COUNT(m.id) AS message_count
+                FROM sessions s
+                JOIN roles r ON r.id = s.role_id
+                LEFT JOIN messages m ON m.session_id = s.id
+                WHERE {' AND '.join(where)}
+                GROUP BY s.id
+                ORDER BY s.updated_at DESC, s.created_at DESC
+                """,
+                params,
+            ).fetchall()
+        return [session_response(row) for row in rows]
+
+    def create_session(self, role_id: str, title: str | None = None) -> dict[str, str | int | bool]:
+        normalized_role_id = normalize_role_id(role_id)
+        normalized_title = normalize_session_title(title) if title else default_session_title()
+        session_id = f"session-{uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            role = connection.execute("SELECT id FROM roles WHERE id = ? AND archived = 0", (normalized_role_id,)).fetchone()
+            if not role:
+                raise ValueError("role not found")
+            connection.execute(
+                """
+                INSERT INTO sessions (id, role_id, title, archived, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?)
+                """,
+                (session_id, normalized_role_id, normalized_title, now, now),
+            )
+            row = connection.execute(
+                """
+                SELECT
+                  s.id, s.role_id, s.title, s.archived, s.created_at, s.updated_at, r.name, COUNT(m.id)
+                FROM sessions s
+                JOIN roles r ON r.id = s.role_id
+                LEFT JOIN messages m ON m.session_id = s.id
+                WHERE s.id = ?
+                GROUP BY s.id
+                """,
+                (session_id,),
+            ).fetchone()
+        return session_response(row)
+
+    def update_session(self, session_id: str, *, title: str | None = None) -> dict[str, str | int | bool]:
+        normalized_session_id = normalize_session_id(session_id)
+        updates: dict[str, str] = {}
+        if title is not None:
+            updates["title"] = normalize_session_title(title)
+        now = datetime.now(timezone.utc).isoformat()
+        updates["updated_at"] = now
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        with self.connect() as connection:
+            exists = connection.execute("SELECT id FROM sessions WHERE id = ?", (normalized_session_id,)).fetchone()
+            if not exists:
+                raise ValueError("session not found")
+            connection.execute(
+                f"UPDATE sessions SET {assignments} WHERE id = ?",
+                [*updates.values(), normalized_session_id],
+            )
+            row = connection.execute(
+                """
+                SELECT
+                  s.id, s.role_id, s.title, s.archived, s.created_at, s.updated_at, r.name, COUNT(m.id)
+                FROM sessions s
+                JOIN roles r ON r.id = s.role_id
+                LEFT JOIN messages m ON m.session_id = s.id
+                WHERE s.id = ?
+                GROUP BY s.id
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+        return session_response(row)
+
+    def archive_session(self, session_id: str) -> dict[str, str | int | bool]:
+        normalized_session_id = normalize_session_id(session_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            exists = connection.execute("SELECT id FROM sessions WHERE id = ?", (normalized_session_id,)).fetchone()
+            if not exists:
+                raise ValueError("session not found")
+            connection.execute(
+                """
+                UPDATE sessions
+                SET archived = 1, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, normalized_session_id),
+            )
+            row = connection.execute(
+                """
+                SELECT
+                  s.id, s.role_id, s.title, s.archived, s.created_at, s.updated_at, r.name, COUNT(m.id)
+                FROM sessions s
+                JOIN roles r ON r.id = s.role_id
+                LEFT JOIN messages m ON m.session_id = s.id
+                WHERE s.id = ?
+                GROUP BY s.id
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+        return session_response(row)
+
+    def get_session(self, session_id: str) -> dict[str, str | int | bool] | None:
+        normalized_session_id = normalize_session_id(session_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                  s.id, s.role_id, s.title, s.archived, s.created_at, s.updated_at, r.name, COUNT(m.id)
+                FROM sessions s
+                JOIN roles r ON r.id = s.role_id
+                LEFT JOIN messages m ON m.session_id = s.id
+                WHERE s.id = ?
+                GROUP BY s.id
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+        return session_response(row) if row else None
+
+    def ensure_session(self, session_id: str, role_id: str | None = None, title: str | None = None) -> dict[str, str | int | bool]:
+        normalized_session_id = normalize_session_id(session_id)
+        existing = self.get_session(normalized_session_id)
+        if existing:
+            return existing
+        normalized_role_id = normalize_role_id(role_id) if role_id else DEFAULT_ROLE_ID
+        normalized_title = normalize_session_title(title) if title else session_title_from_id(normalized_session_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            role = connection.execute("SELECT id FROM roles WHERE id = ?", (normalized_role_id,)).fetchone()
+            if not role:
+                normalized_role_id = DEFAULT_ROLE_ID
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO sessions (id, role_id, title, archived, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?)
+                """,
+                (normalized_session_id, normalized_role_id, normalized_title, now, now),
+            )
+        return self.get_session(normalized_session_id) or {
+            "id": normalized_session_id,
+            "roleId": normalized_role_id,
+            "title": normalized_title,
+            "archived": False,
+            "createdAt": now,
+            "updatedAt": now,
+            "roleName": DEFAULT_ROLE_NAME,
+            "messageCount": 0,
+        }
+
+    def role_prompt_for_session(self, session_id: str) -> str:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT r.name, r.description, r.persona, r.style
+                FROM sessions s
+                JOIN roles r ON r.id = s.role_id
+                WHERE s.id = ?
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+        if not row:
+            return ""
+        parts = [f"Current role: {row[0]}."]
+        if row[1]:
+            parts.append(f"Role description: {row[1]}")
+        if row[2]:
+            parts.append(f"Role persona: {row[2]}")
+        if row[3]:
+            parts.append(f"Role style: {row[3]}")
+        return "\n".join(parts)
 
     def _migrate_conversation_summaries(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -181,15 +597,50 @@ class MessageMemoryStore:
         if role not in ("user", "assistant"):
             raise ValueError("role must be user or assistant")
 
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
+            session_row = connection.execute(
+                """
+                SELECT title, COUNT(m.id)
+                FROM sessions s
+                LEFT JOIN messages m ON m.session_id = s.id AND m.role = 'user'
+                WHERE s.id = ?
+                GROUP BY s.id
+                """,
+                (normalized_session_id,),
+            ).fetchone()
             cursor = connection.execute(
                 """
                 INSERT INTO messages (session_id, role, content, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (session_id, role, content, datetime.now(timezone.utc).isoformat()),
+                (normalized_session_id, role, content, now),
             )
             row_id = cursor.lastrowid
+            connection.execute(
+                """
+                UPDATE sessions
+                SET updated_at = ?
+                WHERE id = ?
+                """,
+                (now, normalized_session_id),
+            )
+            if (
+                role == "user"
+                and session_row
+                and int(session_row[1] or 0) == 0
+                and is_auto_session_title(str(session_row[0] or ""))
+            ):
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET title = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (session_title_from_query(content), now, normalized_session_id),
+                )
             row = connection.execute(
                 """
                 SELECT content, session_id, role, created_at
@@ -1285,6 +1736,98 @@ class MessageMemoryStore:
 
     def _stable_memory_path(self, target: str) -> Path:
         return self.stable_memory_dir / STABLE_MEMORY_FILES[target]
+
+
+def role_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | bool]:
+    return {
+        "id": str(row[0]),
+        "name": str(row[1]),
+        "description": str(row[2]) if row[2] is not None else "",
+        "persona": str(row[3]) if row[3] is not None else "",
+        "style": str(row[4]) if row[4] is not None else "",
+        "provider": str(row[5]) if row[5] is not None else "",
+        "model": str(row[6]) if row[6] is not None else "",
+        "live2dModel": str(row[7]) if row[7] is not None else "",
+        "ttsVoice": str(row[8]) if row[8] is not None else "",
+        "archived": bool(row[9]),
+        "createdAt": str(row[10]),
+        "updatedAt": str(row[11]),
+    }
+
+
+def session_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | bool]:
+    return {
+        "id": str(row[0]),
+        "roleId": str(row[1]),
+        "title": str(row[2]),
+        "archived": bool(row[3]),
+        "createdAt": str(row[4]),
+        "updatedAt": str(row[5]),
+        "roleName": str(row[6]) if len(row) > 6 and row[6] is not None else "",
+        "messageCount": int(row[7]) if len(row) > 7 and row[7] is not None else 0,
+    }
+
+
+def normalize_role_id(role_id: str) -> str:
+    normalized = role_id.strip() if isinstance(role_id, str) else ""
+    if not normalized:
+        raise ValueError("role_id is required")
+    if "\x00" in normalized:
+        raise ValueError("role_id must be UTF-8 text")
+    if len(normalized) > 120:
+        raise ValueError("role_id must be at most 120 characters")
+    return normalized
+
+
+def normalize_role_name(name: str) -> str:
+    normalized = name.strip() if isinstance(name, str) else ""
+    if not normalized:
+        raise ValueError("name is required")
+    if "\x00" in normalized:
+        raise ValueError("name must be UTF-8 text")
+    if len(normalized) > 120:
+        raise ValueError("name must be at most 120 characters")
+    return normalized
+
+
+def normalize_session_title(title: str) -> str:
+    normalized = title.strip() if isinstance(title, str) else ""
+    if not normalized:
+        raise ValueError("title is required")
+    if "\x00" in normalized:
+        raise ValueError("title must be UTF-8 text")
+    if len(normalized) > 160:
+        raise ValueError("title must be at most 160 characters")
+    return normalized
+
+
+def default_session_title() -> str:
+    return f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+
+def is_auto_session_title(title: str) -> bool:
+    normalized = title.strip()
+    return (
+        not normalized
+        or normalized in {"Default", "New chat", "Imported chat"}
+        or normalized.startswith("Chat 20")
+    )
+
+
+def session_title_from_query(query: str, max_chars: int = 24) -> str:
+    normalized = " ".join(query.strip().split())
+    if not normalized:
+        return default_session_title()
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[:max_chars].rstrip()}..."
+
+
+def session_title_from_id(session_id: str) -> str:
+    normalized = session_id.strip()
+    if normalized == DEFAULT_SESSION_ID:
+        return "Default"
+    return normalized.rsplit(":", 1)[-1].replace("-", " ").replace("_", " ").strip().title() or "Imported chat"
 
 
 def make_fts_query(query: str) -> str:

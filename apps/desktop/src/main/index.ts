@@ -27,9 +27,22 @@ if (is.dev) {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
 }
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+
 function writeRuntimeLog(message: string): void {
   mkdirSync(logDir, { recursive: true })
   appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${message}\n`, 'utf8')
+}
+
+function bringWindowToFront(window: BrowserWindow | undefined): void {
+  if (!window || window.isDestroyed()) {
+    return
+  }
+  if (window.isMinimized()) {
+    window.restore()
+  }
+  window.show()
+  window.focus()
 }
 
 function rendererDevUrl(entry: 'main-ui' | 'companion'): string {
@@ -688,46 +701,70 @@ async function runCompanionHoverE2E(window: BrowserWindow): Promise<void> {
   }
 }
 
-app.whenReady().then(() => {
-  electronApp.setAppUserModelId('local.amadeus.agent')
-
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+else {
+  app.on('second-instance', () => {
+    bringWindowToFront(mainUiWindow)
+    bringWindowToFront(companionWindow)
   })
 
-  ipcMain.handle('window:set-always-on-top', (event, value: boolean) => {
-    const window = BrowserWindow.fromWebContents(event.sender)
-    window?.setAlwaysOnTop(value, 'floating')
-    return window?.isAlwaysOnTop() ?? false
-  })
+  app.whenReady().then(() => {
+    electronApp.setAppUserModelId('local.amadeus.agent')
 
-  ipcMain.handle('window:close', (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender)
-    window?.close()
-    return true
-  })
+    app.on('browser-window-created', (_, window) => {
+      optimizer.watchWindowShortcuts(window)
+    })
 
-  ipcMain.handle('window:minimize', (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender)
-    window?.setAlwaysOnTop(false)
-    window?.setSkipTaskbar(false)
-    window?.minimize()
-    return window?.isMinimized() ?? false
-  })
+    ipcMain.handle('window:set-always-on-top', (event, value: boolean) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      window?.setAlwaysOnTop(value, 'floating')
+      return window?.isAlwaysOnTop() ?? false
+    })
 
-  ipcMain.handle('window:open-main-ui', (_event, sessionId?: string) => {
-    createMainUiWindow(typeof sessionId === 'string' && sessionId.trim() ? sessionId : defaultCompanionSessionId)
-    return true
-  })
+    ipcMain.handle('window:close', (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      window?.close()
+      return true
+    })
 
-  createCompanionWindow()
+    ipcMain.handle('window:minimize', (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      window?.setAlwaysOnTop(false)
+      window?.setSkipTaskbar(false)
+      window?.minimize()
+      return window?.isMinimized() ?? false
+    })
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createCompanionWindow()
-    }
+    ipcMain.handle('window:toggle-fullscreen', (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window) {
+        return false
+      }
+      window.setFullScreen(!window.isFullScreen())
+      return window.isFullScreen()
+    })
+
+    ipcMain.handle('window:is-fullscreen', (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      return window?.isFullScreen() ?? false
+    })
+
+    ipcMain.handle('window:open-main-ui', (_event, sessionId?: string) => {
+      createMainUiWindow(typeof sessionId === 'string' && sessionId.trim() ? sessionId : defaultCompanionSessionId)
+      return true
+    })
+
+    createCompanionWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createCompanionWindow()
+      }
+    })
   })
-})
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

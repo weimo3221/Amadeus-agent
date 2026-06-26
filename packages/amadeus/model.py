@@ -65,11 +65,119 @@ class ModelError(RuntimeError):
 @dataclass(frozen=True)
 class ProviderProfile:
     name: str
+    label: str | None = None
     api_mode: str = "openai_compatible"
+    env_var: str = "OPENAI_API_KEY"
+    base_url: str = DEFAULT_BASE_URL
+    default_model: str = DEFAULT_MODEL
+    requires_api_key: bool = True
     supports_streaming: bool = True
     default_headers: dict[str, str] = field(default_factory=dict)
     request_timeout_seconds: int = 60
     stream_timeout_seconds: int = 120
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.name,
+            "label": self.label or self.name,
+            "apiMode": self.api_mode,
+            "envVar": self.env_var,
+            "baseUrl": self.base_url,
+            "defaultModel": self.default_model,
+            "requiresApiKey": self.requires_api_key,
+            "supportsStreaming": self.supports_streaming,
+        }
+
+
+PROVIDER_PRESETS: dict[str, ProviderProfile] = {
+    "deepseek": ProviderProfile(
+        name="deepseek",
+        label="DeepSeek",
+        env_var="DEEPSEEK_API_KEY",
+        base_url="https://api.deepseek.com/v1",
+        default_model="deepseek-chat",
+    ),
+    "openrouter": ProviderProfile(
+        name="openrouter",
+        label="OpenRouter",
+        env_var="OPENROUTER_API_KEY",
+        base_url="https://openrouter.ai/api/v1",
+        default_model="openai/gpt-4.1-mini",
+    ),
+    "openai": ProviderProfile(
+        name="openai",
+        label="OpenAI",
+        env_var="OPENAI_API_KEY",
+        base_url="https://api.openai.com/v1",
+        default_model="gpt-4.1-mini",
+    ),
+    "gemini": ProviderProfile(
+        name="gemini",
+        label="Gemini",
+        env_var="GEMINI_API_KEY",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        default_model="gemini-2.5-flash",
+    ),
+    "qwen": ProviderProfile(
+        name="qwen",
+        label="Qwen / DashScope",
+        env_var="DASHSCOPE_API_KEY",
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        default_model="qwen-plus",
+    ),
+    "kimi": ProviderProfile(
+        name="kimi",
+        label="Moonshot Kimi",
+        env_var="KIMI_API_KEY",
+        base_url="https://api.moonshot.ai/v1",
+        default_model="kimi-k2-0905-preview",
+    ),
+    "zai": ProviderProfile(
+        name="zai",
+        label="Z.AI / GLM",
+        env_var="ZAI_API_KEY",
+        base_url="https://api.z.ai/api/paas/v4",
+        default_model="glm-4.6",
+    ),
+    "xai": ProviderProfile(
+        name="xai",
+        label="xAI",
+        env_var="XAI_API_KEY",
+        base_url="https://api.x.ai/v1",
+        default_model="grok-4-fast-reasoning",
+    ),
+    "nvidia": ProviderProfile(
+        name="nvidia",
+        label="NVIDIA NIM",
+        env_var="NVIDIA_API_KEY",
+        base_url="https://integrate.api.nvidia.com/v1",
+        default_model="nvidia/llama-3.3-nemotron-super-49b-v1",
+    ),
+    "ollama_cloud": ProviderProfile(
+        name="ollama_cloud",
+        label="Ollama Cloud",
+        env_var="OLLAMA_API_KEY",
+        base_url="https://ollama.com/v1",
+        default_model="gpt-oss:20b",
+    ),
+    "custom": ProviderProfile(
+        name="custom",
+        label="Custom / Local",
+        env_var="AMADEUS_CUSTOM_API_KEY",
+        base_url="http://127.0.0.1:11434/v1",
+        default_model="llama3.1",
+        requires_api_key=False,
+    ),
+}
+
+
+def provider_profile(provider_name: str | None) -> ProviderProfile:
+    normalized = (provider_name or "deepseek").strip() or "deepseek"
+    return PROVIDER_PRESETS.get(normalized) or ProviderProfile(
+        name=normalized,
+        label=normalized,
+        env_var=f"{normalized.upper()}_API_KEY",
+    )
 
 
 @dataclass(frozen=True)
@@ -85,28 +193,46 @@ class OpenAICompatibleConfig:
 
     @classmethod
     def from_environment(cls) -> "OpenAICompatibleConfig":
+        provider = os.environ.get("AMADEUS_LLM_PROVIDER", "deepseek")
+        profile = provider_profile(provider)
         return cls(
-            provider="openai_compatible",
-            base_url=os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
-            model=os.environ.get("OPENAI_MODEL", DEFAULT_MODEL),
+            provider=profile.name,
+            base_url=os.environ.get("OPENAI_BASE_URL", os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_BASE_URL", profile.base_url)).rstrip("/"),
+            api_key=os.environ.get(profile.env_var, os.environ.get("OPENAI_API_KEY", "")) or ("" if profile.requires_api_key else "local"),
+            model=os.environ.get("OPENAI_MODEL", os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_MODEL", profile.default_model)),
+            streaming=profile.supports_streaming,
+            default_headers=profile.default_headers,
+            request_timeout_seconds=profile.request_timeout_seconds,
+            stream_timeout_seconds=profile.stream_timeout_seconds,
         )
 
     @classmethod
     def from_sources(cls, config_path: Path = DEFAULT_PROVIDERS_CONFIG_PATH) -> "OpenAICompatibleConfig":
         llm_config = parse_providers_config(config_path).get("llm", {})
         providers = llm_config.get("providers") if isinstance(llm_config.get("providers"), dict) else {}
-        default_provider = str(llm_config.get("default") or "openai_compatible")
+        default_provider = str(os.environ.get("AMADEUS_LLM_PROVIDER") or llm_config.get("default") or "deepseek")
         provider_entry = providers.get(default_provider) if isinstance(providers.get(default_provider), dict) else {}
+        preset = provider_profile(default_provider)
+        env_var = str(provider_entry.get("envVar") or preset.env_var)
+        base_url_env = f"{env_var.removesuffix('_API_KEY')}_BASE_URL"
+        model_env = f"{env_var.removesuffix('_API_KEY')}_MODEL"
         profile = ProviderProfile(
             name=default_provider,
-            supports_streaming=parse_bool_value(provider_entry.get("streaming"), True),
+            label=str(provider_entry.get("label") or preset.label or default_provider),
+            env_var=env_var,
+            base_url=str(provider_entry.get("baseUrl") or os.environ.get(base_url_env) or preset.base_url),
+            default_model=str(provider_entry.get("model") or os.environ.get(model_env) or preset.default_model),
+            requires_api_key=preset.requires_api_key,
+            supports_streaming=parse_bool_value(provider_entry.get("streaming"), preset.supports_streaming),
         )
+        api_key = str(provider_entry.get("apiKey") or os.environ.get(env_var) or "")
+        if not api_key and not profile.requires_api_key:
+            api_key = "local"
         return cls(
             provider=profile.name,
-            base_url=str(provider_entry.get("baseUrl") or os.environ.get("OPENAI_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
-            api_key=str(provider_entry.get("apiKey") or os.environ.get("OPENAI_API_KEY") or ""),
-            model=str(provider_entry.get("model") or os.environ.get("OPENAI_MODEL") or DEFAULT_MODEL),
+            base_url=str(provider_entry.get("baseUrl") or os.environ.get(base_url_env) or profile.base_url).rstrip("/"),
+            api_key=api_key,
+            model=str(provider_entry.get("model") or os.environ.get(model_env) or profile.default_model),
             streaming=profile.supports_streaming,
             default_headers=profile.default_headers,
             request_timeout_seconds=profile.request_timeout_seconds,
