@@ -11,6 +11,8 @@ MAX_TASK_BODY_CHARS = 8000
 MAX_TASK_RESULT_CHARS = 12000
 MAX_TASK_ERROR_CHARS = 4000
 MAX_TASK_EVENT_MESSAGE_CHARS = 2000
+DEFAULT_TASK_MAX_ATTEMPTS = 3
+MAX_TASK_MAX_ATTEMPTS = 10
 TRUNCATION_MARKER = "... [truncated]"
 
 
@@ -46,6 +48,16 @@ def normalize_task_priority(priority: Any) -> int:
     except (TypeError, ValueError):
         raise ValueError("priority must be an integer") from None
     return max(-100, min(100, parsed))
+
+
+def normalize_task_max_attempts(max_attempts: Any) -> int:
+    if max_attempts is None:
+        return DEFAULT_TASK_MAX_ATTEMPTS
+    try:
+        parsed = int(max_attempts)
+    except (TypeError, ValueError):
+        raise ValueError("max_attempts must be an integer") from None
+    return max(1, min(MAX_TASK_MAX_ATTEMPTS, parsed))
 
 
 def normalize_optional_text(value: Any, *, max_chars: int, field_name: str) -> str | None:

@@ -282,6 +282,9 @@ export interface TaskRecord {
   status: TaskStatus
   priority: number
   dueAt?: string | null
+  attemptCount?: number
+  maxAttempts?: number
+  nextRunAt?: string | null
   claimLock?: string | null
   lastHeartbeat?: string | null
   result?: string | null

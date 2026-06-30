@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -26,6 +27,19 @@ class FailingRuntime:
     def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
         yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": "turn-fail", "startedAt": "now"})
         yield AgentEvent("error", {"code": "provider_error", "message": "provider failed"})
+
+
+class FlakyRuntime:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        self.calls += 1
+        yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": f"turn-{self.calls}", "startedAt": "now"})
+        if self.calls == 1:
+            yield AgentEvent("error", {"code": "provider_error", "message": "temporary provider failure"})
+            return
+        yield AgentEvent("assistant.message", {"text": "retry completed"})
 
 
 class CancellableRuntime:
@@ -78,7 +92,7 @@ class TaskWorkerTests(unittest.TestCase):
                 max_workers=1,
                 publish_task_event=lambda task, action: published.append((str(task["status"]), action)),
             )
-            task = memory.create_task(session_id="session-1", title="Fail")
+            task = memory.create_task(session_id="session-1", title="Fail", max_attempts=1)
 
             worker.submit(str(task["id"]))
             finished = self.wait_for_status(memory, str(task["id"]), "failed")
@@ -88,6 +102,63 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(finished["error"], "provider failed")
         self.assertEqual([event["type"] for event in events], ["created", "running", "failed"])
         self.assertEqual(published, [("running", "running"), ("failed", "failed")])
+
+    def test_worker_retries_transient_failure_then_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = FlakyRuntime()
+            published: list[tuple[str, str]] = []
+            worker = TaskWorker(
+                lambda: memory,
+                lambda: runtime,
+                max_workers=1,
+                retry_base_delay_seconds=0.01,
+                retry_max_delay_seconds=0.01,
+                publish_task_event=lambda task, action: published.append((str(task["status"]), action)),
+            )
+            task = memory.create_task(session_id="session-1", title="Retry")
+
+            worker.submit(str(task["id"]))
+            finished = self.wait_for_status(memory, str(task["id"]), "succeeded")
+            worker.shutdown()
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual(finished["result"], "retry completed")
+        self.assertEqual(finished["attemptCount"], 2)
+        self.assertEqual([event["type"] for event in events], ["created", "running", "retry_scheduled", "running", "succeeded"])
+        self.assertIn(("queued", "retry_scheduled"), published)
+        self.assertIn(("succeeded", "succeeded"), published)
+
+    def test_worker_recovers_stale_running_task_on_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = SuccessfulRuntime()
+            task = memory.create_task(session_id="session-1", title="Recover")
+            memory.start_task(str(task["id"]), claim_lock="stale-worker")
+            old_heartbeat = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+            with memory.connect() as connection:
+                connection.execute(
+                    "UPDATE tasks SET last_heartbeat = ?, updated_at = ? WHERE id = ?",
+                    (old_heartbeat, old_heartbeat, str(task["id"])),
+                )
+            published: list[tuple[str, str]] = []
+            worker = TaskWorker(
+                lambda: memory,
+                lambda: runtime,
+                max_workers=1,
+                stale_after_seconds=1,
+                publish_task_event=lambda task, action: published.append((str(task["status"]), action)),
+            )
+
+            recovered = worker.recover()
+            finished = self.wait_for_status(memory, str(task["id"]), "succeeded")
+            worker.shutdown()
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual([task["id"] for task in recovered], [task["id"]])
+        self.assertEqual(finished["attemptCount"], 2)
+        self.assertEqual([event["type"] for event in events], ["created", "running", "recovered", "running", "succeeded"])
+        self.assertIn(("queued", "recovered"), published)
 
     def test_worker_cancel_marks_running_task_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

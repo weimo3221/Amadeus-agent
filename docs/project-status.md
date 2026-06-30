@@ -412,13 +412,14 @@ Started.
 
 ### Phase 11: Proactive Agent
 
-Started: the first storage/API/UI foundation and in-process worker for session-scoped tasks are in place, but autonomous scheduling and retries are not done.
+Started: the first storage/API/UI foundation and in-process worker for session-scoped tasks are in place, with first-pass worker retry and stale-running recovery. Autonomous scheduling is not done.
 
 - Added SQLite-backed `tasks` and `task_events`.
 - Task statuses now use `queued`, `running`, `blocked`, `succeeded`, `failed`, and `cancelled`; legacy `done` rows are normalized to `succeeded`.
 - Added Python runtime HTTP APIs: `GET /tasks`, `POST /tasks`, `GET /tasks/{id}/events`, and `POST /tasks/{id}/cancel`.
 - Added model-facing `create_task`, `list_tasks`, and `cancel_task` tools for explicit session background work.
 - Added a lightweight in-process task worker that claims queued tasks, runs the existing agent turn loop, writes `succeeded` / `failed` results, and cooperatively cancels running backing turns.
+- Added Hermes-inspired reliability fields and transitions: `attemptCount`, `maxAttempts`, `nextRunAt`, retry scheduling back to `queued`, final failure after the attempt cap, and startup recovery of stale `running` tasks back to `queued`.
 - Added `/runtime/events` NDJSON streaming plus TypeScript bridge subscription so worker `running` / `succeeded` / `failed` / `cancelled` updates are pushed to same-session WebSocket clients.
 - Added TypeScript bridge proxying for task HTTP APIs.
 - Main UI can restore and render active queued/running/blocked tasks.
@@ -426,11 +427,11 @@ Started: the first storage/API/UI foundation and in-process worker for session-s
 - Add scheduled reminders.
 - Add daily brief.
 - Add idle-time check-ins.
-- Add retries and richer recovery for worker restarts.
+- Add richer scheduler/restart recovery beyond in-process stale-running reclaim.
 
 ### Phase 12: Advanced Agent Features
 
-Started: the first restricted `delegate_task` research/search tool and session task worker are in place. Full sub-agent orchestration, retries, and restart recovery are not done.
+Started: the first restricted `delegate_task` research/search tool and session task worker are in place. Full sub-agent orchestration and durable multi-process task execution are not done.
 
 - Add MCP bridge.
 - Add full sub-agent orchestration abstraction.

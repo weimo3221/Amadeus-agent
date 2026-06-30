@@ -235,11 +235,12 @@ Goal: the character can help without waiting for every instruction.
 Target deliverables:
 
 - First slice complete: SQLite `tasks` / `task_events`, task create/list/cancel HTTP APIs, bridge proxying, and Main UI active task display.
+- First reliability slice complete: worker attempts, retry scheduling, stale `running` recovery, and task event broadcasting for recovered/retry states.
 - Scheduled tasks.
 - Reminder notifications.
 - Daily brief.
 - Idle-time check-ins.
-- Real background worker execution and richer task state display.
+- Richer task state display.
 
 ## Phase 12: Advanced Agent Features
 

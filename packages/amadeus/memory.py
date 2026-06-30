@@ -14,6 +14,7 @@ from amadeus.tasks import (
     MAX_TASK_RESULT_CHARS,
     normalize_optional_text,
     normalize_task_body,
+    normalize_task_max_attempts,
     normalize_task_event_type,
     normalize_task_priority,
     normalize_task_status,
@@ -183,6 +184,9 @@ class MessageMemoryStore:
                     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'succeeded', 'failed', 'cancelled')),
                     priority INTEGER NOT NULL DEFAULT 0,
                     due_at TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    next_run_at TEXT,
                     claim_lock TEXT,
                     last_heartbeat TEXT,
                     result TEXT,
@@ -221,6 +225,7 @@ class MessageMemoryStore:
             self._migrate_conversation_summaries(connection)
             self._migrate_memory_review_candidates(connection)
             self._migrate_task_statuses(connection)
+            self._migrate_task_reliability_columns(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_covered
@@ -237,7 +242,8 @@ class MessageMemoryStore:
             )
 
     def _migrate_roles_and_sessions(self, connection: sqlite3.Connection) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
         columns = {
             str(row[1])
             for row in connection.execute("PRAGMA table_info(roles)").fetchall()
@@ -315,6 +321,9 @@ class MessageMemoryStore:
               status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'succeeded', 'failed', 'cancelled')),
               priority INTEGER NOT NULL DEFAULT 0,
               due_at TEXT,
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              max_attempts INTEGER NOT NULL DEFAULT 3,
+              next_run_at TEXT,
               claim_lock TEXT,
               last_heartbeat TEXT,
               result TEXT,
@@ -345,6 +354,24 @@ class MessageMemoryStore:
             """
             CREATE INDEX IF NOT EXISTS idx_tasks_session_status_updated
             ON tasks(session_id, status, updated_at)
+            """
+        )
+
+    def _migrate_task_reliability_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "attempt_count" not in columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+        if "max_attempts" not in columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3")
+        if "next_run_at" not in columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN next_run_at TEXT")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tasks_status_next_run
+            ON tasks(status, next_run_at, due_at, priority)
             """
         )
 
@@ -382,7 +409,8 @@ class MessageMemoryStore:
         normalized_live2d_model = normalize_optional_text(live2d_model, "live2d_model", 160)
         normalized_tts_voice = normalize_optional_text(tts_voice, "tts_voice", 160)
         role_id = f"role-{uuid4().hex[:12]}"
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
         with self.connect() as connection:
             connection.execute(
                 """
@@ -1006,6 +1034,7 @@ class MessageMemoryStore:
         body: str | None = None,
         priority: int | None = None,
         due_at: str | None = None,
+        max_attempts: int | None = None,
     ) -> dict[str, object]:
         normalized_session_id = normalize_session_id(session_id)
         self.ensure_session(normalized_session_id)
@@ -1013,15 +1042,16 @@ class MessageMemoryStore:
         normalized_body = normalize_task_body(body)
         normalized_priority = normalize_task_priority(priority)
         normalized_due_at = normalize_optional_text(due_at, max_chars=80, field_name="due_at")
+        normalized_max_attempts = normalize_task_max_attempts(max_attempts)
         task_id = uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO tasks (
-                  id, session_id, title, body, status, priority, due_at, created_at, updated_at
+                  id, session_id, title, body, status, priority, due_at, max_attempts, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -1030,6 +1060,7 @@ class MessageMemoryStore:
                     normalized_body,
                     normalized_priority,
                     normalized_due_at,
+                    normalized_max_attempts,
                     now,
                     now,
                 ),
@@ -1076,7 +1107,8 @@ class MessageMemoryStore:
             rows = connection.execute(
                 f"""
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
-                       last_heartbeat, result, error, created_at, updated_at, finished_at
+                       last_heartbeat, result, error, created_at, updated_at, finished_at,
+                       attempt_count, max_attempts, next_run_at
                 FROM tasks
                 {where}
                 ORDER BY
@@ -1114,7 +1146,8 @@ class MessageMemoryStore:
             row = connection.execute(
                 """
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
-                       last_heartbeat, result, error, created_at, updated_at, finished_at
+                       last_heartbeat, result, error, created_at, updated_at, finished_at,
+                       attempt_count, max_attempts, next_run_at
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -1127,11 +1160,12 @@ class MessageMemoryStore:
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
         if not normalized_claim_lock:
             raise ValueError("claim_lock is required")
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, session_id, status
+                SELECT id, session_id, status, due_at, next_run_at
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -1141,10 +1175,14 @@ class MessageMemoryStore:
                 raise ValueError("task not found")
             if str(row[2]) != "queued":
                 return self.get_task(normalized_task_id)
+            if not task_time_is_due(str(row[3] or ""), now_dt) or not task_time_is_due(str(row[4] or ""), now_dt):
+                return self.get_task(normalized_task_id)
             connection.execute(
                 """
                 UPDATE tasks
                 SET status = 'running',
+                    attempt_count = attempt_count + 1,
+                    next_run_at = NULL,
                     claim_lock = ?,
                     last_heartbeat = ?,
                     updated_at = ?
@@ -1204,6 +1242,158 @@ class MessageMemoryStore:
             default_message="Task failed",
         )
 
+    def retry_task(
+        self,
+        task_id: str,
+        *,
+        claim_lock: str,
+        error: str | None = None,
+        next_run_at: str | None = None,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
+        if not normalized_claim_lock:
+            raise ValueError("claim_lock is required")
+        normalized_error = normalize_optional_text(error, max_chars=MAX_TASK_ERROR_CHARS, field_name="error")
+        normalized_next_run_at = normalize_optional_text(next_run_at, max_chars=80, field_name="next_run_at")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status, claim_lock, attempt_count, max_attempts
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            current_status = str(row[2])
+            if current_status in {"succeeded", "failed", "cancelled"}:
+                task = self.get_task(normalized_task_id)
+                if task is None:
+                    raise ValueError("task not found")
+                return task
+            if current_status != "running" or str(row[3] or "") != normalized_claim_lock:
+                raise ValueError("task is not claimed by this worker")
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'queued',
+                    claim_lock = NULL,
+                    last_heartbeat = NULL,
+                    next_run_at = ?,
+                    error = ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'running' AND claim_lock = ?
+                """,
+                (
+                    normalized_next_run_at,
+                    normalized_error,
+                    now,
+                    normalized_task_id,
+                    normalized_claim_lock,
+                ),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[1]),
+                event_type="retry_scheduled",
+                status="queued",
+                message=normalized_error or "Task retry scheduled",
+                metadata={
+                    "claimLock": normalized_claim_lock,
+                    "attemptCount": int(row[4] or 0),
+                    "maxAttempts": int(row[5] or 0),
+                    "nextRunAt": normalized_next_run_at,
+                },
+                created_at=now,
+            )
+        task = self.get_task(normalized_task_id)
+        if task is None:
+            raise ValueError("task not found")
+        return task
+
+    def list_runnable_tasks(self, *, limit: int = 20) -> list[dict[str, object]]:
+        normalized_limit = max(1, min(100, int(limit)))
+        now_dt = datetime.now(timezone.utc)
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
+                       last_heartbeat, result, error, created_at, updated_at, finished_at,
+                       attempt_count, max_attempts, next_run_at
+                FROM tasks
+                WHERE status = 'queued'
+                ORDER BY priority DESC, updated_at ASC
+                LIMIT 200
+                """,
+            ).fetchall()
+        runnable = [
+            task_response(row)
+            for row in rows
+            if task_time_is_due(str(row[6] or ""), now_dt) and task_time_is_due(str(row[16] or ""), now_dt)
+        ]
+        return runnable[:normalized_limit]
+
+    def recover_stale_running_tasks(self, *, stale_after_seconds: float = 300.0, limit: int = 50) -> list[dict[str, object]]:
+        normalized_limit = max(1, min(200, int(limit)))
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        stale_after = max(1.0, float(stale_after_seconds))
+        stale: list[tuple[str, str, str | None, str | None]] = []
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, claim_lock, last_heartbeat
+                FROM tasks
+                WHERE status = 'running'
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (normalized_limit,),
+            ).fetchall()
+            for row in rows:
+                heartbeat = parse_iso_datetime(str(row[3])) if row[3] else None
+                if heartbeat is not None and (now_dt - heartbeat).total_seconds() < stale_after:
+                    continue
+                stale.append((str(row[0]), str(row[1]), str(row[2]) if row[2] else None, str(row[3]) if row[3] else None))
+            for task_id, session_id, claim_lock, heartbeat in stale:
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'queued',
+                        claim_lock = NULL,
+                        last_heartbeat = NULL,
+                        next_run_at = ?,
+                        error = ?,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'running'
+                    """,
+                    (
+                        now,
+                        "Task worker recovered stale running task",
+                        now,
+                        task_id,
+                    ),
+                )
+                self._insert_task_event(
+                    connection,
+                    task_id=task_id,
+                    session_id=session_id,
+                    event_type="recovered",
+                    status="queued",
+                    message="Task worker recovered stale running task",
+                    metadata={
+                        "previousStatus": "running",
+                        "claimLock": claim_lock,
+                        "lastHeartbeat": heartbeat,
+                    },
+                    created_at=now,
+                )
+        return [task for task_id, _, _, _ in stale if (task := self.get_task(task_id)) is not None]
+
     def finish_task(
         self,
         task_id: str,
@@ -1250,6 +1440,9 @@ class MessageMemoryStore:
                 SET status = ?,
                     result = ?,
                     error = ?,
+                    claim_lock = NULL,
+                    last_heartbeat = NULL,
+                    next_run_at = NULL,
                     updated_at = ?,
                     finished_at = ?
                 WHERE id = ? AND status = 'running' AND claim_lock = ?
@@ -2403,6 +2596,25 @@ def session_title_from_id(session_id: str) -> str:
     return normalized.rsplit(":", 1)[-1].replace("-", " ").replace("_", " ").strip().title() or "Imported chat"
 
 
+def parse_iso_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def task_time_is_due(value: str, now: datetime) -> bool:
+    if not value:
+        return True
+    parsed = parse_iso_datetime(value)
+    if parsed is None:
+        return True
+    return parsed <= now
+
+
 def make_fts_query(query: str) -> str:
     terms = [term.replace('"', " ").strip() for term in query.split()]
     terms = [term for term in terms if term]
@@ -2471,6 +2683,9 @@ def normalize_task_id(task_id: str) -> str:
 
 
 def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    attempt_count = int(row[14] or 0) if len(row) > 14 else 0
+    max_attempts = int(row[15] or 3) if len(row) > 15 else 3
+    next_run_at = str(row[16]) if len(row) > 16 and row[16] else None
     return {
         "id": str(row[0]),
         "sessionId": str(row[1]),
@@ -2486,6 +2701,9 @@ def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
         "createdAt": str(row[11]),
         "updatedAt": str(row[12]),
         "finishedAt": str(row[13]) if row[13] else None,
+        "attemptCount": attempt_count,
+        "maxAttempts": max_attempts,
+        "nextRunAt": next_run_at,
     }
 
 

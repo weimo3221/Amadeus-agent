@@ -18,6 +18,7 @@ def create_task(args: dict[str, Any], context: Any) -> dict[str, Any]:
     body = args.get("body") if isinstance(args.get("body"), str) else None
     priority = args.get("priority") if args.get("priority") is not None else None
     due_at = args.get("dueAt") if isinstance(args.get("dueAt"), str) else None
+    max_attempts = args.get("maxAttempts") if args.get("maxAttempts") is not None else None
     auto_start = bool(args.get("autoStart")) if isinstance(args.get("autoStart"), bool) else True
     session_id = str(getattr(context, "session_id", "default") or "default")
 
@@ -28,6 +29,7 @@ def create_task(args: dict[str, Any], context: Any) -> dict[str, Any]:
             body=body,
             priority=priority,
             due_at=due_at,
+            max_attempts=max_attempts,
         )
     except ValueError as error:
         return {"error": str(error)}
@@ -129,6 +131,10 @@ CREATE_TASK_TOOL_SPEC = ToolSpec(
                     "priority": {
                         "type": "number",
                         "description": "Optional priority from -100 to 100. Higher runs first once queued.",
+                    },
+                    "maxAttempts": {
+                        "type": "number",
+                        "description": "Optional worker attempt cap from 1 to 10. Defaults to 3.",
                     },
                     "dueAt": {
                         "type": "string",

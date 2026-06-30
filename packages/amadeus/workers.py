@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -25,19 +26,41 @@ class TaskWorker:
         *,
         max_workers: int = 2,
         publish_task_event: TaskEventPublisher | None = None,
+        retry_base_delay_seconds: float = 1.0,
+        retry_max_delay_seconds: float = 30.0,
+        stale_after_seconds: float = 300.0,
     ) -> None:
         self._memory_store_provider = memory_store_provider
         self._agent_runtime_provider = agent_runtime_provider
         self._publish_task_event = publish_task_event
+        self._retry_base_delay_seconds = max(0.0, float(retry_base_delay_seconds))
+        self._retry_max_delay_seconds = max(self._retry_base_delay_seconds, float(retry_max_delay_seconds))
+        self._stale_after_seconds = max(1.0, float(stale_after_seconds))
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="amadeus-task")
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}
         self._turns: dict[str, tuple[str, str]] = {}
+        self._timers: dict[str, threading.Timer] = {}
 
     def submit(self, task_id: str) -> None:
         self._executor.submit(self._run_task, task_id)
 
+    def recover(self) -> list[dict[str, object]]:
+        memory_store = self._memory_store_provider()
+        recovered = memory_store.recover_stale_running_tasks(stale_after_seconds=self._stale_after_seconds)
+        for task in recovered:
+            self._publish_task_update(task, "recovered")
+        runnable = memory_store.list_runnable_tasks(limit=100)
+        for task in runnable:
+            self.submit(str(task["id"]))
+        return recovered
+
     def shutdown(self, *, wait: bool = True) -> None:
+        with self._lock:
+            timers = list(self._timers.values())
+            self._timers.clear()
+        for timer in timers:
+            timer.cancel()
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def cancel(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
@@ -62,6 +85,8 @@ class TaskWorker:
         cancel_event = threading.Event()
         task = memory_store.start_task(task_id, claim_lock=claim_lock)
         if not task or task.get("status") != "running":
+            if task and task.get("status") == "queued":
+                self._schedule_if_needed(task)
             return
         self._publish_task_update(task, "running")
 
@@ -82,6 +107,10 @@ class TaskWorker:
                     event_type = str(getattr(event, "type", ""))
                     payload = getattr(event, "payload", {})
                 if event_type == "agent.turn.started":
+                    try:
+                        memory_store.heartbeat_task(task_id, claim_lock=claim_lock)
+                    except Exception:
+                        logger.debug("Task heartbeat failed taskId=%s", task_id, exc_info=True)
                     turn_id = str(payload.get("turnId") or "")
                     if turn_id:
                         with self._lock:
@@ -103,16 +132,15 @@ class TaskWorker:
                 self._ensure_cancelled(task_id, reason="Task worker cancelled")
                 return
             if error_text:
-                failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=error_text)
-                self._publish_task_update(failed, "failed")
+                self._handle_failure(memory_store, task_id, claim_lock=claim_lock, task=task, error=error_text)
             else:
                 completed = memory_store.complete_task(task_id, claim_lock=claim_lock, result=result_text or "")
                 self._publish_task_update(completed, "succeeded")
         except Exception as error:
             logger.info("Task worker execution failed taskId=%s error=%s", task_id, error)
             try:
-                failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=str(error))
-                self._publish_task_update(failed, "failed")
+                latest = memory_store.get_task(task_id) or task
+                self._handle_failure(memory_store, task_id, claim_lock=claim_lock, task=latest, error=str(error))
             except Exception as finish_error:
                 logger.info("Task worker failed to mark task failed taskId=%s error=%s", task_id, finish_error)
         finally:
@@ -127,6 +155,75 @@ class TaskWorker:
         if body:
             return f"{title}\n\n{body}"
         return title
+
+    def _handle_failure(
+        self,
+        memory_store: MessageMemoryStore,
+        task_id: str,
+        *,
+        claim_lock: str,
+        task: dict[str, object],
+        error: str,
+    ) -> dict[str, object]:
+        attempt_count = int(task.get("attemptCount") or 0)
+        max_attempts = int(task.get("maxAttempts") or 1)
+        if attempt_count < max_attempts:
+            next_run_at = self._next_retry_at(attempt_count)
+            retried = memory_store.retry_task(
+                task_id,
+                claim_lock=claim_lock,
+                error=error,
+                next_run_at=next_run_at,
+            )
+            self._publish_task_update(retried, "retry_scheduled")
+            self._schedule_if_needed(retried)
+            return retried
+        failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=error)
+        self._publish_task_update(failed, "failed")
+        return failed
+
+    def _next_retry_at(self, attempt_count: int) -> str:
+        delay = min(
+            self._retry_max_delay_seconds,
+            self._retry_base_delay_seconds * (2 ** max(0, attempt_count - 1)),
+        )
+        return (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+
+    def _schedule_if_needed(self, task: dict[str, object]) -> None:
+        task_id = str(task.get("id") or "")
+        if not task_id:
+            return
+        candidates = [value for value in (task.get("nextRunAt"), task.get("dueAt")) if value]
+        if not candidates:
+            return
+        delay = max(0.0, max(self._delay_until(str(value)) for value in candidates))
+        if delay <= 0:
+            self.submit(task_id)
+            return
+
+        def _resubmit() -> None:
+            with self._lock:
+                self._timers.pop(task_id, None)
+            self.submit(task_id)
+
+        with self._lock:
+            existing = self._timers.pop(task_id, None)
+            if existing:
+                existing.cancel()
+            timer = threading.Timer(delay, _resubmit)
+            timer.daemon = True
+            self._timers[task_id] = timer
+            timer.start()
+
+    @staticmethod
+    def _delay_until(value: str) -> float:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return 0.0
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (parsed.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
 
     def _ensure_cancelled(self, task_id: str, *, reason: str) -> dict[str, object]:
         memory_store = self._memory_store_provider()

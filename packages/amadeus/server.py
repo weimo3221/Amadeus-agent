@@ -99,6 +99,7 @@ def publish_task_update(task: dict[str, object], action: str) -> None:
 
 task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime, publish_task_event=publish_task_update)
 agent_runtime.set_task_worker(task_worker)
+task_worker.recover()
 
 
 class RuntimeRequestHandler(BaseHTTPRequestHandler):
@@ -774,6 +775,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 body=body.get("body") if isinstance(body.get("body"), str) else None,
                 priority=body.get("priority") if body.get("priority") is not None else None,
                 due_at=body.get("dueAt") if isinstance(body.get("dueAt"), str) else None,
+                max_attempts=body.get("maxAttempts") if body.get("maxAttempts") is not None else None,
             )
             logger.info("Created task taskId=%s sessionId=%s", task["id"], task["sessionId"])
             task_worker.submit(str(task["id"]))
