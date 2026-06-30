@@ -58,9 +58,15 @@ DEFAULT_ROLE_PERSONA = (
 
 
 class MessageMemoryStore:
-    def __init__(self, database_path: Path, stable_memory_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        stable_memory_dir: Path | None = None,
+        default_workspace_path: Path | str | None = None,
+    ) -> None:
         self.database_path = database_path
         self.stable_memory_dir = stable_memory_dir or database_path.parent / "memory"
+        self.default_workspace_path = normalize_default_workspace_path(default_workspace_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.stable_memory_dir.mkdir(parents=True, exist_ok=True)
         self.initialize()
@@ -253,12 +259,13 @@ class MessageMemoryStore:
             connection.execute("ALTER TABLE roles ADD COLUMN tts_voice TEXT")
         if "workspace_path" not in columns:
             connection.execute("ALTER TABLE roles ADD COLUMN workspace_path TEXT")
+        default_workspace_path = self.default_workspace_path
         connection.execute(
             """
             INSERT OR IGNORE INTO roles (
               id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, ?, ?)
             """,
             (
                 DEFAULT_ROLE_ID,
@@ -266,10 +273,20 @@ class MessageMemoryStore:
                 "Default desktop companion role.",
                 DEFAULT_ROLE_PERSONA,
                 "concise, warm, technically capable",
+                default_workspace_path,
                 now,
                 now,
             ),
         )
+        if default_workspace_path:
+            connection.execute(
+                """
+                UPDATE roles
+                SET workspace_path = ?
+                WHERE workspace_path IS NULL OR trim(workspace_path) = ''
+                """,
+                (default_workspace_path,),
+            )
         connection.execute(
             """
             INSERT OR IGNORE INTO sessions (id, role_id, title, archived, created_at, updated_at)
@@ -412,7 +429,7 @@ class MessageMemoryStore:
         normalized_model = normalize_optional_text(model, "model", 160)
         normalized_live2d_model = normalize_optional_text(live2d_model, "live2d_model", 160)
         normalized_tts_voice = normalize_optional_text(tts_voice, "tts_voice", 160)
-        normalized_workspace_path = normalize_optional_text(workspace_path, "workspace_path", 1000)
+        normalized_workspace_path = normalize_optional_text(workspace_path, "workspace_path", 1000) or self.default_workspace_path
         role_id = f"role-{uuid4().hex[:12]}"
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
@@ -495,7 +512,7 @@ class MessageMemoryStore:
         if tts_voice is not None:
             updates["tts_voice"] = normalize_optional_text(tts_voice, "tts_voice", 160)
         if workspace_path is not None:
-            updates["workspace_path"] = normalize_optional_text(workspace_path, "workspace_path", 1000)
+            updates["workspace_path"] = normalize_optional_text(workspace_path, "workspace_path", 1000) or self.default_workspace_path
 
         now = datetime.now(timezone.utc).isoformat()
         updates["updated_at"] = now
@@ -2800,6 +2817,12 @@ def normalize_optional_text(value: str | None, field_name: str, max_chars: int) 
     if len(normalized) > max_chars:
         raise ValueError(f"{field_name} must be at most {max_chars} characters")
     return normalized
+
+
+def normalize_default_workspace_path(value: Path | str | None) -> str | None:
+    if value is None:
+        return None
+    return normalize_optional_text(str(value), "default_workspace_path", 1000)
 
 
 def normalize_memory_review_safety_labels(value: list[str] | tuple[str, ...] | None) -> list[str]:

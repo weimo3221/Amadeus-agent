@@ -77,7 +77,7 @@ RUNTIME_CONFIG_FIELDS: dict[str, dict[str, tuple[type, float | int | None, float
     },
 }
 
-memory_store = MessageMemoryStore(DATABASE_PATH)
+memory_store = MessageMemoryStore(DATABASE_PATH, default_workspace_path=REPO_ROOT)
 audio_library = LocalAudioLibrary(AUDIO_ROOT, PUBLIC_BASE_URL)
 live2d_library = LocalLive2DModelLibrary(LIVE2D_ROOT, PUBLIC_BASE_URL, HARNESSES_CONFIG_PATH)
 audio_runtime = AudioRuntime(audio_library, create_tts_provider_from_config(audio_library))

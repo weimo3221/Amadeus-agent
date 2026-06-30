@@ -118,16 +118,27 @@ Current tool baseline already delivered:
 - `read_memory`
 - `update_memory`
 - `search_memory`
+- `search_memory_items`
+- `memory_add`
+- `memory_replace`
+- `memory_forget`
 - `search_files`
 - `read_file`
 - `patch`
 - `write_file`
+- `update_plan`
+- `create_task`
+- `list_tasks`
+- `cancel_task`
+- `skills_list`
+- `skill_view`
+- `delegate_task`
 
 Planned follow-up tools:
 
 - `web_search`
 - `open_url`
-- `reminders`
+- richer reminder/scheduler tools on top of the task store
 
 ## Phase 6: Python Runtime Ownership
 
@@ -203,11 +214,12 @@ Target deliverables:
 Current status:
 
 - First slice is implemented: `packages/amadeus/harness` exists with a base contract, registry, Live2D harness, and `configs/harnesses.yaml`.
+- Runtime audio provider selection, fallback, cache, `/audio/speak`, `audio.tts-ready`, and provider/native-or-planned lipsync cue emission are implemented in `packages/amadeus/audio.py`.
 - The Python agent now emits `assistant.state` and lets the Live2D harness add `character.behavior` events for state-to-expression/motion mapping.
 - Desktop now reports `desktop.capabilities` after connection/model load and reports runtime audio playback start/end/error as `audio.playback-*` events to the bridge.
 - Python now receives those feedback events through `POST /runtime/feedback`; `HarnessFeedbackPolicy` stores per-session desktop capabilities, audio playback state, and recent feedback events.
 - Live2D now maps playback start/end/error into `character.behavior` events and the bridge sends those returned events back to desktop. The mapping is configurable in `configs/harnesses.yaml` through `live2d.audioPlaybackBehaviors`.
-- Remaining work is to grow this into the full harness layer: audio harness, richer Live2D commands, speaking-state reconciliation, and eventual amplitude/phoneme-driven lipsync cues.
+- Remaining work is to grow this into the full harness layer: richer audio harness decisions, richer Live2D commands, speaking-state reconciliation, better non-Latin phoneme mapping, and broader provider cue compatibility.
 
 ## Phase 10: Skills
 
@@ -250,9 +262,11 @@ Target deliverables:
 
 - First turn-control slice complete: session-scoped running turn state, `POST /agent/cancel`, cooperative tool cancellation, and `agent.turn.started` / `agent.turn.cancelled` events.
 - First delegation slice complete: restricted `delegate_task` research/search tool with depth 1, concurrency 2, no write tools, and summary-only parent results.
+- First prompt-surface slice complete: core prompt assembly, per-tool `prompt_hint` routing, role `workspacePath`, repository-root default workspace assignment, and workspace-level `AGENT.md` project context.
+- First task-worker reliability slice complete: persisted task attempts, retry scheduling, stale `running` recovery, startup reclaim, and worker status event broadcasting.
 - MCP bridge.
-- Sub-agent/task worker abstraction.
-- Context compression.
+- Durable multi-process task worker abstraction.
+- Richer context compression and task-state context.
 - Long task plans.
 - Human approval checkpoints.
 - Provider and harness profiles.

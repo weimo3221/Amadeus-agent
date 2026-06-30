@@ -89,13 +89,13 @@ apps/server
 packages/amadeus
   |
   +--> agent.py        (active preferred turn path)
-  +--> memory.py       (active SQLite message store)
+  +--> memory.py       (active SQLite message, role, memory, task, and audit store)
   +--> tools/          (active Python tools)
-  +--> audio.py        (active audio interface; noop TTS by default)
+  +--> audio.py        (active audio/TTS interface with auto provider selection)
   +--> server.py       (active HTTP runtime)
-  +--> model.py        (placeholder boundary)
+  +--> model.py        (active OpenAI-compatible provider boundary)
   +--> skills.py       (active skill catalog boundary)
-  +--> live2d.py       (placeholder boundary)
+  +--> live2d.py       (active local Live2D model library boundary)
 ```
 
 `packages/amadeus` also exposes TypeScript bridge modules that are active today:
@@ -107,10 +107,9 @@ apps/server
   |      +--> shared runtime event types
   |
   +--> packages/amadeus/tools.ts
-         +--> tool schema metadata
-         +--> permission metadata
-         +--> Python runtime bridge helpers
-         +--> desktop/server diagnostics scaffolding
+       +--> TypeScript tool bridge types
+       +--> Python /tools/list and /tools/execute helpers
+       +--> desktop/server diagnostics helpers
 ```
 
 ### Long-term target
@@ -214,16 +213,17 @@ Python runtime responsibilities today:
 - Own the preferred turn path.
 - Own SQLite-backed message persistence for the preferred path.
 - Own session memory count/reset semantics for the preferred path, exposed through `/memory/count` and `/memory/reset`.
+- Own roles, role `workspacePath`, default workspace assignment to the repository root, and workspace-level `AGENT.md` project-context loading for per-session prompt assembly. User-specific preferences stay in Role persona/style or memory.
 - Own concrete Python tool execution for the preferred path.
+- Own persisted session tasks and in-process worker execution with retry scheduling and stale-running recovery.
 - Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `character.behavior`, and `audio.tts-ready`.
 
 Python runtime responsibilities later:
 
-- Own model provider abstractions cleanly.
-- Own skills/workflows.
-- Load and coordinate harnesses.
 - Extend tool runtime policy for richer context propagation, semantic no-progress detection, and more per-tool result policies.
-- Assemble richer context from summaries, profile memory, retrieved memory, task state, and harness prompt fragments.
+- Mature skills/workflows beyond read-only `skills_list` / `skill_view`.
+- Mature task execution beyond the current in-process worker into durable scheduling, leases, checkpoint/resume, and user-facing notification policy.
+- Assemble richer context from task state, harness prompt fragments, and role/workspace instructions beyond the current summaries, structured memory, and retrieval path.
 
 ### packages/live2d-stage
 
@@ -248,7 +248,7 @@ Audio responsibilities:
 - Voice activity state.
 - Text-to-speech interface.
 - Local audio asset lookup under `packages/amadeus/assets/audio`.
-- Generated TTS cache management when a real provider is added.
+- Generated TTS cache management for provider-generated audio.
 
 Current behavior:
 
@@ -261,11 +261,9 @@ Current behavior:
 
 Tool responsibilities:
 
-- Define OpenAI-compatible tool schema metadata.
-- Support permission metadata.
-- Load effective config from `configs/tools.yaml`.
-- Bridge tool execution to the Python runtime in `packages/amadeus`.
-- Keep TypeScript tool metadata only as bridge diagnostics/development scaffolding while the Python runtime owns active execution.
+- Provide TypeScript bridge types and helper clients for Python `/tools/list` and `/tools/execute`.
+- Keep desktop/server diagnostics on the Python-owned effective tool state.
+- Avoid mirroring concrete tool schemas, permissions, or handlers in TypeScript. Active tool metadata and execution live in Python.
 
 ### packages/amadeus/events.ts
 
@@ -310,6 +308,8 @@ tool.started
 tool.finished
 tool.audit
 tool.permission.request
+task.plan.updated
+task.updated
 memory.review.candidates
 memory.review.jobs
 memory.review.updated
@@ -324,11 +324,19 @@ GET /runtime/health
 GET /runtime/feedback
 GET /tools/list
 GET /tools/audit
+GET /skills/list
+GET /skills/view
+GET /tasks
+GET /tasks/{id}/events
+GET /runtime/events
 POST /runtime/config/reload
 POST /runtime/feedback
 POST /agent/turn
+POST /agent/cancel
 POST /tools/execute
 POST /tools/permission
+POST /tasks
+POST /tasks/{id}/cancel
 GET /memory/count
 GET /memory/messages
 GET /memory/context/diagnostics
@@ -357,10 +365,8 @@ GET /live2d/models/{relativePath}
 
 Planned but not yet implemented as the active current protocol:
 
-- `/agent/cancel`
 - `/agent/message`
 - `audio.tts-fallback`
-- `audio.lipsync-cues`
 
 ## Implementation Principle
 
@@ -368,8 +374,8 @@ Migrate toward the Python runtime without breaking the desktop loop:
 
 - Keep Live2D model loading/rendering in the desktop adapter.
 - Keep desktop permission UI on the desktop.
-- Keep `apps/server` as the transport bridge while the Python turn path is becoming complete and well-tested.
+- Keep `apps/server` as the transport bridge now that the Python turn path is complete for the active runtime.
 - Prefer small vertical migrations: move one capability fully across the boundary before moving the next.
-- Treat the current work as Phase 6 cleanup: parity confidence, integration coverage, and continued shrinking of bridge-owned runtime scaffolding.
+- Treat the current work as desktop/runtime stabilization: parity confidence, integration coverage, and continued shrinking of bridge-owned runtime scaffolding.
 
-More complex systems such as sub-agents, vector memory, MCP, and active scheduling should be added only after the basic desktop experience feels stable.
+More complex systems such as MCP, durable multi-process task workers, richer sub-agents, and active scheduling should be added only after the basic desktop experience feels stable.

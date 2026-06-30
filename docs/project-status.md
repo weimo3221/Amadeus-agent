@@ -435,7 +435,7 @@ Started: the first restricted `delegate_task` research/search tool, session task
 
 - Split the monolithic Python system prompt into a prompt assembler with core rules, dynamic tool routing hints, role workspace instructions, stable memory, and skills catalog sections.
 - Added optional `ToolSpec.prompt_hint` metadata and registry-driven prompt hint assembly so enabled tools contribute their own short routing guidance instead of relying on hard-coded agent prompt lines.
-- Added role `workspacePath` support and workspace-level `AGENT.md` loading with truncation and explicit lower-priority project-instruction framing; `AGENT.md` cannot override system safety, permissions, or runtime enforcement.
+- Added role `workspacePath` support and workspace-level `AGENT.md` loading with truncation and explicit lower-priority project-context framing; roles without an explicit workspace default to the repository root, where the project `AGENT.md` lives. `AGENT.md` is for project architecture, conventions, constraints, status, and next-work context; user preferences belong in Role persona/style or memory, and `AGENT.md` cannot override system safety, permissions, or runtime enforcement.
 - Add MCP bridge.
 - Add full sub-agent orchestration abstraction.
 - Add context compression.

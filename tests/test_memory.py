@@ -25,6 +25,23 @@ class MessageMemoryStoreTests(unittest.TestCase):
             self.assertEqual(memory.role_workspace_path_for_session(str(session["id"])), "")
             self.assertEqual(updated["workspacePath"], "")
 
+    def test_default_workspace_path_applies_to_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            default_workspace = str(Path(tmpdir) / "project")
+            memory = MessageMemoryStore(
+                Path(tmpdir) / "amadeus.sqlite",
+                default_workspace_path=default_workspace,
+            )
+            default_role = next(role for role in memory.list_roles() if role["id"] == "amadeus")
+            role = memory.create_role("Default Workspace Role")
+            session = memory.create_session(str(role["id"]))
+            updated = memory.update_role(str(role["id"]), workspace_path="")
+
+            self.assertEqual(default_role["workspacePath"], default_workspace)
+            self.assertEqual(role["workspacePath"], default_workspace)
+            self.assertEqual(memory.role_workspace_path_for_session(str(session["id"])), default_workspace)
+            self.assertEqual(updated["workspacePath"], default_workspace)
+
     def test_conversation_summary_persists_and_loads_latest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             database_path = Path(tmpdir) / "amadeus.sqlite"
