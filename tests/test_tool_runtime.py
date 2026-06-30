@@ -654,6 +654,29 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertTrue(removed.ok)
         self.assertNotIn("AgentRuntime", removed.output["content"])
 
+    def test_update_current_role_identity_updates_session_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            role = memory.create_role("Amadeus")
+            session = memory.create_session(str(role["id"]))
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "update_current_role_identity",
+                {
+                    "name": "小艾",
+                    "soulText": "You are 小艾. You answer concisely.",
+                },
+                ToolContext(session_id=str(session["id"]), memory_store=memory),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.output["updated"])
+        self.assertEqual(result.output["identity"]["roleName"], "小艾")
+        self.assertIn("You are 小艾", result.output["identity"]["content"])
+
     def test_update_memory_rejects_ambiguous_replace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             from amadeus.memory import MessageMemoryStore

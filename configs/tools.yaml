@@ -27,6 +27,10 @@ tools:
     enabled: true
     permission: allow
 
+  update_current_role_identity:
+    enabled: true
+    permission: ask
+
   search_files:
     enabled: true
     permission: allow

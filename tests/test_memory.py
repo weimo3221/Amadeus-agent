@@ -42,6 +42,33 @@ class MessageMemoryStoreTests(unittest.TestCase):
             self.assertEqual(memory.role_workspace_path_for_session(str(session["id"])), default_workspace)
             self.assertEqual(updated["workspacePath"], default_workspace)
 
+    def test_role_soul_is_seeded_and_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            role = memory.create_role("Xiao Ai", persona="Helpful desktop agent", style="brief")
+            identity = memory.role_identity(str(role["id"]))
+            updated = memory.update_role_identity(str(role["id"]), name="小艾", soul_text="You are 小艾. Be concise.")
+
+            self.assertTrue(Path(str(identity["path"])).is_file())
+            self.assertIn("Xiao Ai", identity["content"])
+            self.assertEqual(updated["roleName"], "小艾")
+            self.assertIn("You are 小艾", updated["content"])
+
+    def test_stable_memory_is_scoped_to_session_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            role_a = memory.create_role("Role A")
+            role_b = memory.create_role("Role B")
+            session_a = memory.create_session(str(role_a["id"]))
+            session_b = memory.create_session(str(role_b["id"]))
+
+            memory.update_stable_memory("user", "add", content="Role A user memory.", session_id=str(session_a["id"]))
+            memory.update_stable_memory("user", "add", content="Role B user memory.", session_id=str(session_b["id"]))
+
+            self.assertIn("Role A user memory", memory.read_stable_memory("user", session_id=str(session_a["id"]))["content"])
+            self.assertNotIn("Role B user memory", memory.read_stable_memory("user", session_id=str(session_a["id"]))["content"])
+            self.assertIn("Role B user memory", memory.read_stable_memory("user", session_id=str(session_b["id"]))["content"])
+
     def test_conversation_summary_persists_and_loads_latest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             database_path = Path(tmpdir) / "amadeus.sqlite"

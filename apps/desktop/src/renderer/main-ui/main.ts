@@ -79,6 +79,15 @@ interface RolePayload {
   updatedAt: string
 }
 
+interface RoleIdentityPayload {
+  roleId: string
+  roleName: string
+  path: string
+  content: string
+  charCount: number
+  defaulted: boolean
+}
+
 interface SessionPayload {
   id: string
   roleId: string
@@ -159,6 +168,7 @@ const newRoleNameInput = query<HTMLInputElement>('#new-role-name-input')
 const roleDescriptionInput = query<HTMLInputElement>('#role-description-input')
 const newRolePersonaInput = query<HTMLTextAreaElement>('#new-role-persona-input')
 const roleStyleInput = query<HTMLInputElement>('#role-style-input')
+const roleSoulInput = query<HTMLTextAreaElement>('#role-soul-input')
 const roleWorkspacePathInput = query<HTMLInputElement>('#role-workspace-path-input')
 const roleModelSelect = query<HTMLSelectElement>('#role-model-select')
 const roleLive2dSelect = query<HTMLSelectElement>('#role-live2d-select')
@@ -442,6 +452,45 @@ function renderRoleOptions(roles: RolePayload[]): void {
   renderRoleList()
   renderRoleBindings()
   syncCustomSelects()
+}
+
+async function loadRoleIdentity(roleId: string): Promise<RoleIdentityPayload | undefined> {
+  if (!roleSoulInput) {
+    return undefined
+  }
+  roleSoulInput.value = 'Loading SOUL.md...'
+  const response = await fetch(`${AGENT_HTTP_URL}/roles/${encodeURIComponent(roleId)}/identity`, { method: 'GET' })
+  const payload = await response.json() as { ok?: boolean, identity?: RoleIdentityPayload, error?: string }
+  if (!response.ok || !payload.ok || !payload.identity) {
+    if (roleSelect?.value === roleId) {
+      roleSoulInput.value = ''
+      setConfigStatus(roleSessionStatus, `Identity load failed: ${payload.error || `HTTP ${response.status}`}`)
+    }
+    return undefined
+  }
+  if (roleSelect?.value === roleId) {
+    roleSoulInput.value = payload.identity.content || ''
+  }
+  return payload.identity
+}
+
+async function saveRoleIdentity(roleId: string, name: string): Promise<RoleIdentityPayload | undefined> {
+  if (!roleSoulInput) {
+    return undefined
+  }
+  const response = await fetch(`${AGENT_HTTP_URL}/roles/${encodeURIComponent(roleId)}/identity`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: name || undefined,
+      soulText: roleSoulInput.value,
+    }),
+  })
+  const payload = await response.json() as { ok?: boolean, identity?: RoleIdentityPayload, error?: string }
+  if (!response.ok || !payload.ok || !payload.identity) {
+    throw new Error(payload.error || `HTTP ${response.status}`)
+  }
+  return payload.identity
 }
 
 function renderRoleList(): void {
@@ -759,10 +808,19 @@ async function createRole(): Promise<void> {
       ttsVoice: roleTtsSelect?.value || '',
     }),
   })
-  const payload = await response.json() as { ok?: boolean, session?: SessionPayload, error?: string }
+  const payload = await response.json() as { ok?: boolean, role?: RolePayload, session?: SessionPayload, error?: string }
   if (!response.ok || !payload.ok || !payload.session?.id) {
     setConfigStatus(roleSessionStatus, `Create failed: ${payload.error || `HTTP ${response.status}`}`)
     return
+  }
+  if (payload.role?.id && roleSoulInput?.value.trim()) {
+    try {
+      await saveRoleIdentity(payload.role.id, name)
+    }
+    catch (error) {
+      setConfigStatus(roleSessionStatus, `Identity save failed: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
   }
   closeRoleEditor()
   switchSession(payload.session.id)
@@ -793,6 +851,13 @@ async function saveRoleBindings(): Promise<void> {
   const payload = await response.json() as { ok?: boolean, role?: RolePayload, error?: string }
   if (!response.ok || !payload.ok || !payload.role) {
     setConfigStatus(roleSessionStatus, `Save failed: ${payload.error || `HTTP ${response.status}`}`)
+    return
+  }
+  try {
+    await saveRoleIdentity(roleId, payload.role.name)
+  }
+  catch (error) {
+    setConfigStatus(roleSessionStatus, `Identity save failed: ${error instanceof Error ? error.message : String(error)}`)
     return
   }
   cachedRoles = cachedRoles.map((role) => role.id === payload.role?.id ? payload.role : role)
@@ -1203,6 +1268,9 @@ function clearRoleEditor(): void {
   if (roleStyleInput) {
     roleStyleInput.value = ''
   }
+  if (roleSoulInput) {
+    roleSoulInput.value = ''
+  }
   if (roleWorkspacePathInput) {
     roleWorkspacePathInput.value = ''
   }
@@ -1447,6 +1515,10 @@ function renderRoleBindings(): void {
   }
   if (roleStyleInput) {
     roleStyleInput.value = role.style || ''
+  }
+  if (roleSoulInput) {
+    roleSoulInput.value = ''
+    void loadRoleIdentity(role.id)
   }
   if (roleWorkspacePathInput) {
     roleWorkspacePathInput.value = role.workspacePath || ''

@@ -5,6 +5,7 @@ from typing import Any
 from amadeus.tools.base import ToolHandler, ToolPermission, ToolSpec, normalize_positive_int
 from amadeus.tools.delegate import DELEGATE_TASK_TOOL_SPEC, delegate_task
 from amadeus.tools.dice import DICE_TOOL_SPEC, roll_dice
+from amadeus.tools.identity import UPDATE_CURRENT_ROLE_IDENTITY_TOOL_SPEC, update_current_role_identity
 from amadeus.tools.search_files import SEARCH_FILES_TOOL_SPEC, search_files
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
 from amadeus.tools.plan import UPDATE_PLAN_TOOL_SPEC, update_plan
@@ -43,6 +44,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         CREATE_TASK_TOOL_SPEC,
         LIST_TASKS_TOOL_SPEC,
         CANCEL_TASK_TOOL_SPEC,
+        UPDATE_CURRENT_ROLE_IDENTITY_TOOL_SPEC,
         SEARCH_FILES_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
         SKILLS_LIST_TOOL_SPEC,
@@ -111,6 +113,7 @@ __all__ = [
     "search_memory_items",
     "skill_view",
     "skills_list",
+    "update_current_role_identity",
     "update_memory",
     "update_plan",
     "write_file",

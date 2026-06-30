@@ -262,7 +262,7 @@ Target deliverables:
 
 - First turn-control slice complete: session-scoped running turn state, `POST /agent/cancel`, cooperative tool cancellation, and `agent.turn.started` / `agent.turn.cancelled` events.
 - First delegation slice complete: restricted `delegate_task` research/search tool with depth 1, concurrency 2, no write tools, and summary-only parent results.
-- First prompt-surface slice complete: core prompt assembly, per-tool `prompt_hint` routing, role `workspacePath`, repository-root default workspace assignment, and workspace-level `AGENT.md` project context.
+- First prompt-surface slice complete: per-role `SOUL.md` identity, core prompt assembly, per-tool `prompt_hint` routing, role `workspacePath`, repository-root default workspace assignment, workspace-level `AGENT.md` project context, and role-scoped stable memory.
 - First task-worker reliability slice complete: persisted task attempts, retry scheduling, stale `running` recovery, startup reclaim, and worker status event broadcasting.
 - MCP bridge.
 - Durable multi-process task worker abstraction.

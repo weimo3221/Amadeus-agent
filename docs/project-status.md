@@ -55,7 +55,8 @@ Fallback path today:
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as an `ask` tool.
 - `read_memory` is registered as an `allow` tool for stable Markdown memory reads.
-- `update_memory` is registered as an `ask` tool for controlled stable memory updates.
+- `update_memory` is registered as an `ask` tool for controlled role-scoped stable memory updates.
+- `update_current_role_identity` is registered as an `ask` tool for explicit current-role name/persona/style updates through role `SOUL.md`.
 - `search_memory` is registered as an `allow` tool for searching prior SQLite conversation memory.
 - `search_memory_items` is registered as an `allow` tool for searching structured memory facts.
 - `memory_add` is registered as an `ask` tool for adding durable structured memory facts after user approval.
@@ -382,7 +383,7 @@ Started.
 - Python runtime exposes `GET /memory/search`.
 - `search_memory` lets the model search current-session memory, with optional all-session search.
 - Automatic memory prefetch injects relevant prior snippets into the current user message as non-persistent `<memory-context>`.
-- Stable long-term memory is implemented with bounded Markdown files under `data/memory/`.
+- Stable long-term memory is implemented with bounded role-scoped Markdown files under `data/roles/<roleId>/memory/`, with default-role migration fallback from the earlier `data/memory/` location.
 - `read_memory` / `update_memory` expose controlled read and add/replace/remove operations for agent facts and user preferences.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.
 - Conversation summaries now track covered message ranges, are injected as reference-only context, and can be refreshed by automatic threshold compaction or manual `POST /memory/compact`.
@@ -433,9 +434,11 @@ Started: the first storage/API/UI foundation and in-process worker for session-s
 
 Started: the first restricted `delegate_task` research/search tool, session task worker, and Hermes-style prompt surface split are in place. Full sub-agent orchestration and durable multi-process task execution are not done.
 
-- Split the monolithic Python system prompt into a prompt assembler with core rules, dynamic tool routing hints, role workspace instructions, stable memory, and skills catalog sections.
+- Split the monolithic Python system prompt into a prompt assembler with per-role identity, core rules, dynamic tool routing hints, role workspace instructions, role-scoped stable memory, and skills catalog sections.
 - Added optional `ToolSpec.prompt_hint` metadata and registry-driven prompt hint assembly so enabled tools contribute their own short routing guidance instead of relying on hard-coded agent prompt lines.
-- Added role `workspacePath` support and workspace-level `AGENT.md` loading with truncation and explicit lower-priority project-context framing; roles without an explicit workspace default to the repository root, where the project `AGENT.md` lives. `AGENT.md` is for project architecture, conventions, constraints, status, and next-work context; user preferences belong in Role persona/style or memory, and `AGENT.md` cannot override system safety, permissions, or runtime enforcement.
+- Added role `workspacePath` support and workspace-level `AGENT.md` loading with truncation and explicit lower-priority project-context framing; roles without an explicit workspace default to the repository root, where the project `AGENT.md` lives. `AGENT.md` is for project architecture, conventions, constraints, status, and next-work context; user preferences belong in role-scoped `USER.md` memory, and agent identity belongs in role `SOUL.md`. `AGENT.md` cannot override system safety, permissions, or runtime enforcement.
+- Added Hermes-style role homes under `data/roles/<roleId>/`: `SOUL.md` is seeded on default/new roles and loaded before core runtime rules, while `MEMORY.md` and `USER.md` are scoped to the current session role. The `update_current_role_identity` ask-tool, `/roles/{roleId}/identity` API, and desktop Role editor `SOUL.md` field provide controlled identity updates.
+- Verified the identity update path locally through the Python HTTP runtime: creating a new role, renaming it through `PUT /roles/{roleId}/identity`, and reading `data/roles/<roleId>/SOUL.md` confirmed the file content matches the API response.
 - Add MCP bridge.
 - Add full sub-agent orchestration abstraction.
 - Add context compression.

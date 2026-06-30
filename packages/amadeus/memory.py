@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from amadeus.identity import (
+    ensure_role_soul,
+    normalize_soul_text,
+    read_soul,
+    role_home_path,
+    role_soul_path,
+)
 from amadeus.planning import empty_plan_response, merge_plan_items, plan_response
 from amadeus.tasks import (
     MAX_TASK_ERROR_CHARS,
@@ -66,9 +73,11 @@ class MessageMemoryStore:
     ) -> None:
         self.database_path = database_path
         self.stable_memory_dir = stable_memory_dir or database_path.parent / "memory"
+        self.roles_root = self.database_path.parent / "roles"
         self.default_workspace_path = normalize_default_workspace_path(default_workspace_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.stable_memory_dir.mkdir(parents=True, exist_ok=True)
+        self.roles_root.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
     def initialize(self) -> None:
@@ -287,6 +296,13 @@ class MessageMemoryStore:
                 """,
                 (default_workspace_path,),
             )
+        ensure_role_soul(
+            self.roles_root,
+            DEFAULT_ROLE_ID,
+            role_name=DEFAULT_ROLE_NAME,
+            persona=DEFAULT_ROLE_PERSONA,
+            style="concise, warm, technically capable",
+        )
         connection.execute(
             """
             INSERT OR IGNORE INTO sessions (id, role_id, title, archived, created_at, updated_at)
@@ -464,6 +480,13 @@ class MessageMemoryStore:
                 """,
                 (role_id,),
             ).fetchone()
+        ensure_role_soul(
+            self.roles_root,
+            role_id,
+            role_name=normalized_name,
+            persona=normalized_persona,
+            style=normalized_style,
+        )
         return role_response(row)
 
     def get_role(self, role_id: str) -> dict[str, str | int | bool] | None:
@@ -723,6 +746,84 @@ class MessageMemoryStore:
         if row[3]:
             parts.append(f"Role style: {row[3]}")
         return "\n".join(parts)
+
+    def role_id_for_session(self, session_id: str) -> str:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT role_id
+                FROM sessions
+                WHERE id = ?
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+        return str(row[0]) if row else DEFAULT_ROLE_ID
+
+    def role_identity_for_session(self, session_id: str | None = None) -> dict[str, str | int | bool]:
+        role_id = self.role_id_for_session(session_id) if session_id else DEFAULT_ROLE_ID
+        return self.role_identity(role_id)
+
+    def role_identity(self, role_id: str) -> dict[str, str | int | bool]:
+        normalized_role_id = normalize_role_id(role_id)
+        role = self.get_role(normalized_role_id)
+        if role is None:
+            raise ValueError("role not found")
+        path = ensure_role_soul(
+            self.roles_root,
+            normalized_role_id,
+            role_name=str(role["name"]),
+            persona=str(role["persona"]),
+            style=str(role["style"]),
+        )
+        content = read_soul(path)
+        return {
+            "roleId": normalized_role_id,
+            "roleName": str(role["name"]),
+            "path": str(path),
+            "content": content,
+            "charCount": len(content),
+            "defaulted": not bool(content.strip()),
+        }
+
+    def update_role_identity(
+        self,
+        role_id: str,
+        *,
+        name: str | None = None,
+        soul_text: str | None = None,
+    ) -> dict[str, str | int | bool]:
+        normalized_role_id = normalize_role_id(role_id)
+        role = self.get_role(normalized_role_id)
+        if role is None:
+            raise ValueError("role not found")
+        normalized_soul = normalize_soul_text(soul_text)
+        if name is not None:
+            role = self.update_role(normalized_role_id, name=name)
+        path = ensure_role_soul(
+            self.roles_root,
+            normalized_role_id,
+            role_name=str(role["name"]),
+            persona=str(role["persona"]),
+            style=str(role["style"]),
+        )
+        if normalized_soul is not None:
+            atomic_write_text(path, normalized_soul)
+        return self.role_identity(normalized_role_id)
+
+    def update_role_identity_for_session(
+        self,
+        session_id: str,
+        *,
+        name: str | None = None,
+        soul_text: str | None = None,
+    ) -> dict[str, str | int | bool]:
+        return self.update_role_identity(
+            self.role_id_for_session(session_id),
+            name=name,
+            soul_text=soul_text,
+        )
 
     def role_workspace_path_for_session(self, session_id: str) -> str:
         normalized_session_id = normalize_session_id(session_id)
@@ -2492,16 +2593,16 @@ class MessageMemoryStore:
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)
 
-    def read_stable_memory(self, target: str) -> dict[str, str | int]:
+    def read_stable_memory(self, target: str, session_id: str | None = None) -> dict[str, str | int]:
         target = normalize_stable_memory_target(target)
-        path = self._stable_memory_path(target)
+        path = self._stable_memory_path(target, session_id=session_id)
         ensure_stable_memory_file(path, target)
         content = path.read_text(encoding="utf-8")
         return stable_memory_response(target, path, content)
 
-    def stable_memory_snapshot(self) -> dict[str, dict[str, str | int]]:
+    def stable_memory_snapshot(self, session_id: str | None = None) -> dict[str, dict[str, str | int]]:
         return {
-            target: self.read_stable_memory(target)
+            target: self.read_stable_memory(target, session_id=session_id)
             for target in STABLE_MEMORY_FILES
         }
 
@@ -2511,13 +2612,14 @@ class MessageMemoryStore:
         action: str,
         content: str | None = None,
         old_text: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, str | int | bool]:
         target = normalize_stable_memory_target(target)
         normalized_action = action.strip().lower()
         if normalized_action not in {"add", "replace", "remove"}:
             raise ValueError("action must be add, replace, or remove")
 
-        path = self._stable_memory_path(target)
+        path = self._stable_memory_path(target, session_id=session_id)
         ensure_stable_memory_file(path, target)
         before = path.read_text(encoding="utf-8")
         new_content = build_stable_memory_update(
@@ -2541,8 +2643,24 @@ class MessageMemoryStore:
         })
         return response
 
-    def _stable_memory_path(self, target: str) -> Path:
-        return self.stable_memory_dir / STABLE_MEMORY_FILES[target]
+    def _stable_memory_path(self, target: str, session_id: str | None = None) -> Path:
+        role_id = self.role_id_for_session(session_id) if session_id else DEFAULT_ROLE_ID
+        role_memory_dir = role_home_path(self.roles_root, role_id) / "memory"
+        role_memory_dir.mkdir(parents=True, exist_ok=True)
+        path = role_memory_dir / STABLE_MEMORY_FILES[target]
+        if not path.exists() and role_id == DEFAULT_ROLE_ID:
+            legacy_path = self.stable_memory_dir / STABLE_MEMORY_FILES[target]
+            if legacy_path.exists():
+                path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+        return path
+
+    def role_home(self, role_id: str) -> Path:
+        normalized_role_id = normalize_role_id(role_id)
+        return role_home_path(self.roles_root, normalized_role_id)
+
+    def role_soul_file(self, role_id: str) -> Path:
+        normalized_role_id = normalize_role_id(role_id)
+        return role_soul_path(self.roles_root, normalized_role_id)
 
 
 def role_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | bool]:

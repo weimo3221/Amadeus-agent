@@ -240,6 +240,21 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(created["role"]["workspacePath"], workspace_path)
         self.assertEqual(updated["role"]["workspacePath"], "")
 
+    def test_role_identity_http_round_trip(self) -> None:
+        created = self.post_json("/roles", {"name": "Identity Role"})
+        role_id = created["role"]["id"]
+        identity = self.get_json(f"/roles/{role_id}/identity")
+        updated = self.put_json(f"/roles/{role_id}/identity", {
+            "name": "小艾",
+            "soulText": "You are 小艾. Be direct.",
+        })
+
+        self.assertTrue(identity["ok"])
+        self.assertIn("Identity Role", identity["identity"]["content"])
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["identity"]["roleName"], "小艾")
+        self.assertIn("You are 小艾", updated["identity"]["content"])
+
     def test_session_plan_http_round_trip(self) -> None:
         saved = self.put_json("/sessions/http-test/plan", {
             "items": [

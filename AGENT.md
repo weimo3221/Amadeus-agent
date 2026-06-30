@@ -12,13 +12,13 @@ Amadeus is now a Python-first desktop agent runtime, not just an initial MVP:
 - `apps/server` is a thin Node/TypeScript bridge. It owns WebSocket/session transport and proxies Python HTTP/runtime event APIs; it should not regain model, memory, or tool-loop ownership.
 - `packages/amadeus` owns the agent loop, OpenAI-compatible model boundary, memory, tool runtime, skills, task worker, Live2D model library, and audio/TTS path.
 - Python `/agent/turn` is the preferred and only active turn path. The older TypeScript model/tool fallback loop has been removed.
-- SQLite persists sessions, messages, summaries, structured memory, roles, tasks, task events, memory review jobs, and tool audit records.
+- SQLite persists sessions, messages, summaries, structured memory, roles, tasks, task events, memory review jobs, and tool audit records; per-role identity and stable Markdown memory live under `data/roles/<roleId>/`.
 - Tool calling is model-triggered through OpenAI-compatible `tools` and `tool_calls`.
 - Python `ToolRuntime` owns enabled schemas, `allow` / `ask` / `deny` permissions, timeout/cancellation handling, audit records, result compaction, and repeated-call guardrails.
 - Role `workspacePath` selects the workspace root for project instructions and file tools. The Python server defaults missing role workspaces to the project repository root, where this `AGENT.md` lives.
 - The runtime loads only `AGENT.md` from the active workspace as lower-priority project context: architecture, conventions, constraints, current status, and recommended next work.
-- User-specific preferences belong in Role persona/style or memory, not in `AGENT.md`.
-- Current Python tools include time, dice, stable memory, structured memory, memory search, file search/read, patch/write, plan updates, session tasks, skill listing/viewing, and restricted delegation.
+- Role `SOUL.md` under `data/roles/<roleId>/SOUL.md` is the primary agent identity/persona/style layer. User-specific preferences belong in role-scoped `USER.md` memory, not in `AGENT.md`.
+- Current Python tools include time, dice, role identity update, stable memory, structured memory, memory search, file search/read, patch/write, plan updates, session tasks, skill listing/viewing, and restricted delegation.
 - Session tasks are persisted in SQLite and executed by an in-process Python worker with `queued` / `running` / `succeeded` / `failed` / `cancelled` states, retry scheduling, and stale-running recovery.
 - Local Live2D model storage is active under `models/live2d`, with Python owning `/live2d/*` and the bridge proxying those endpoints back to the desktop origin.
 - Runtime audio can use GPT-SoVITS when configured or macOS `say` as a local fallback, and emits `audio.tts-ready` plus lipsync cues when available.

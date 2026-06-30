@@ -1929,7 +1929,8 @@ class AgentRuntime:
 
     def _build_system_prompt(self, *, session_id: str | None = None) -> str:
         return build_system_prompt(
-            stable_memory=self._format_stable_memory_for_prompt(),
+            identity_prompt=self._identity_prompt_for_session(session_id),
+            stable_memory=self._format_stable_memory_for_prompt(session_id=session_id),
             skill_catalog=self.skill_catalog,
             tool_hints=self.tool_registry,
             workspace_root=self._workspace_root_for_session(session_id),
@@ -2050,8 +2051,16 @@ class AgentRuntime:
             "source": "skill_view",
         })
 
-    def _format_stable_memory_for_prompt(self) -> str:
-        snapshot = self.memory_store.stable_memory_snapshot()
+    def _identity_prompt_for_session(self, session_id: str | None = None) -> str:
+        identity = self.memory_store.role_identity_for_session(session_id)
+        return sanitize_memory_context_text(
+            str(identity.get("content", "")).strip(),
+            max_chars=12000,
+            collapse_whitespace=False,
+        )
+
+    def _format_stable_memory_for_prompt(self, *, session_id: str | None = None) -> str:
+        snapshot = self.memory_store.stable_memory_snapshot(session_id=session_id)
         sections: list[str] = []
         for target, label in (("agent", "Agent Stable Memory"), ("user", "User Profile And Preferences")):
             content = sanitize_memory_context_text(

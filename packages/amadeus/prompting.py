@@ -27,7 +27,6 @@ class ProjectInstruction:
 
 
 CORE_SYSTEM_PROMPT = [
-    "You are Amadeus, a desktop Live2D companion agent.",
     "Reply in the same language as the user unless they ask otherwise.",
     "Be concise, practical, and calm.",
     "You can use enabled safe local tools for time, memory, skills, project files, planning, background tasks, delegation, and bounded file edits.",
@@ -42,12 +41,17 @@ CORE_SYSTEM_PROMPT = [
 
 def build_system_prompt(
     *,
+    identity_prompt: str,
     stable_memory: str,
     skill_catalog: SkillCatalogPromptProvider,
     tool_hints: ToolHintProvider,
     workspace_root: Path,
 ) -> str:
-    prompt_parts = list(CORE_SYSTEM_PROMPT)
+    prompt_parts = []
+    normalized_identity = identity_prompt.strip()
+    if normalized_identity:
+        prompt_parts.append(f"<agent_identity>\n{normalized_identity}\n</agent_identity>")
+    prompt_parts.extend(CORE_SYSTEM_PROMPT)
 
     tool_policy = build_tool_policy_prompt(tool_hints)
     if tool_policy:

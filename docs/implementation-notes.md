@@ -79,8 +79,9 @@ Current active Python tools:
 
 - `get_current_time`: `allow`; returns formatted current time for an IANA timezone.
 - `roll_dice`: `ask`; rolls bounded dice counts/sides and returns rolls plus total.
-- `read_memory`: `allow`; reads stable Markdown memory from `data/memory/MEMORY.md` or `data/memory/USER.md`.
-- `update_memory`: `ask`; performs controlled `add` / `replace` / `remove` updates to stable Markdown memory, with exact-match replacement and size limits.
+- `read_memory`: `allow`; reads current-role stable Markdown memory from `data/roles/<roleId>/memory/MEMORY.md` or `data/roles/<roleId>/memory/USER.md`.
+- `update_memory`: `ask`; performs controlled `add` / `replace` / `remove` updates to current-role stable Markdown memory, with exact-match replacement and size limits.
+- `update_current_role_identity`: `ask`; updates the current session role name and/or `data/roles/<roleId>/SOUL.md` after explicit user approval.
 - `search_memory`: `allow`; searches prior SQLite conversation memory through an FTS-backed index, scoped to the current session by default, with a per-tool model-output policy for bounded snippets. The context assembler also prefetches a small sanitized FTS result set each turn and injects it as API-only `<memory-context>` on the current user message.
 - `search_memory_items`: `allow`; searches durable structured `memory_items` facts by optional scope/query, with a per-tool model-output policy for bounded fact metadata.
 - `memory_add`: `ask`; writes one durable structured memory fact after user approval, limited to `user` / `agent` / `project` scope, with duplicate detection and source-session metadata.

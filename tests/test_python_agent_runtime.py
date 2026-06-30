@@ -350,6 +350,8 @@ class AgentRuntimeTests(unittest.TestCase):
 
         runtime = FakeAgentRuntime(self.memory, skills_root=self.skills_root)
 
+        self.assertIn("<agent_identity>", runtime.system_prompt)
+        self.assertIn("You are Amadeus", runtime.system_prompt)
         self.assertIn("<stable_memory target=\"agent\"", runtime.system_prompt)
         self.assertIn("Python-first AgentRuntime", runtime.system_prompt)
         self.assertIn("<stable_memory target=\"user\"", runtime.system_prompt)
@@ -414,6 +416,22 @@ class AgentRuntimeTests(unittest.TestCase):
         system_message = runtime.decision_messages[-1][0]["content"]
         self.assertIn("Role workspace instructions.", system_message)
         self.assertNotIn("Default workspace instructions.", system_message)
+
+    def test_session_role_soul_is_loaded_per_turn(self) -> None:
+        role = self.memory.create_role("小艾")
+        session = self.memory.create_session(str(role["id"]))
+        self.memory.update_role_identity(str(role["id"]), soul_text="You are 小艾, a concise desktop agent.")
+        runtime = FakeAgentRuntime(
+            self.memory,
+            deltas=["done"],
+            skills_root=self.skills_root,
+        )
+
+        list(runtime.run_turn(str(session["id"]), "who are you", lambda _request: False))
+
+        system_message = runtime.decision_messages[-1][0]["content"]
+        self.assertIn("<agent_identity>", system_message)
+        self.assertIn("You are 小艾", system_message)
 
     def test_runtime_config_file_sets_context_summary_and_review_limits(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime.yaml"

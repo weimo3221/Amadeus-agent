@@ -140,6 +140,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, "roles": memory_store.list_roles(include_archived=include_archived)})
             return
 
+        if parsed.path.startswith("/roles/") and parsed.path.endswith("/identity"):
+            role_id = unquote(parsed.path.removeprefix("/roles/").removesuffix("/identity")).strip()
+            self.handle_role_identity_get(role_id)
+            return
+
         if parsed.path == "/sessions":
             query = parse_qs(parsed.query)
             role_id = optional_query_string(query, "roleId")
@@ -525,6 +530,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/roles/") and parsed.path.endswith("/identity"):
+            role_id = unquote(parsed.path.removeprefix("/roles/").removesuffix("/identity")).strip()
+            self.handle_role_identity_put(role_id)
+            return
         if parsed.path.startswith("/roles/"):
             role_id = unquote(parsed.path.removeprefix("/roles/")).strip()
             self.handle_role_update(role_id)
@@ -634,6 +643,32 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Role update failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_role_identity_get(self, role_id: str) -> None:
+        try:
+            identity = memory_store.role_identity(role_id)
+            self.write_json(200, {"ok": True, "identity": identity})
+        except ValueError as error:
+            self.write_json(404, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Role identity load failed roleId=%s error=%s", role_id, error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_role_identity_put(self, role_id: str) -> None:
+        try:
+            body = self.read_json_body()
+            identity = memory_store.update_role_identity(
+                role_id,
+                name=body.get("name") if isinstance(body.get("name"), str) else None,
+                soul_text=body.get("soulText") if isinstance(body.get("soulText"), str) else None,
+            )
+            logger.info("Updated role identity roleId=%s", identity["roleId"])
+            self.write_json(200, {"ok": True, "identity": identity})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Role identity update failed roleId=%s error=%s", role_id, error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_session_create(self) -> None:
@@ -1575,6 +1610,7 @@ def memory_health_check() -> dict[str, Any]:
             "databasePath": str(memory_store.database_path),
             "databaseExists": memory_store.database_path.exists(),
             "stableMemoryDir": str(memory_store.stable_memory_dir),
+            "rolesRoot": str(memory_store.roles_root),
             "messageCount": message_count,
             "memoryItemCount": memory_item_count,
             "summaryCount": summary_count,

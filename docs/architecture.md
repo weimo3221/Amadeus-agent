@@ -213,7 +213,7 @@ Python runtime responsibilities today:
 - Own the preferred turn path.
 - Own SQLite-backed message persistence for the preferred path.
 - Own session memory count/reset semantics for the preferred path, exposed through `/memory/count` and `/memory/reset`.
-- Own roles, role `workspacePath`, default workspace assignment to the repository root, and workspace-level `AGENT.md` project-context loading for per-session prompt assembly. User-specific preferences stay in Role persona/style or memory.
+- Own roles, per-role `SOUL.md` identity files, role-scoped `MEMORY.md` / `USER.md`, role `workspacePath`, default workspace assignment to the repository root, and workspace-level `AGENT.md` project-context loading for per-session prompt assembly. User-specific preferences stay in role-scoped `USER.md` memory rather than project `AGENT.md`.
 - Own concrete Python tool execution for the preferred path.
 - Own persisted session tasks and in-process worker execution with retry scheduling and stale-running recovery.
 - Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `character.behavior`, and `audio.tts-ready`.

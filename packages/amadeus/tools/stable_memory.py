@@ -12,7 +12,7 @@ def read_memory(args: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"error": "memory store is not available"}
 
     try:
-        return memory_store.read_stable_memory(target)
+        return memory_store.read_stable_memory(target, session_id=getattr(context, "session_id", None))
     except ValueError as error:
         return {"error": str(error)}
 
@@ -32,6 +32,7 @@ def update_memory(args: dict[str, Any], context: Any) -> dict[str, Any]:
             action=action,
             content=content,
             old_text=old_text,
+            session_id=getattr(context, "session_id", None),
         )
     except ValueError as error:
         return {"error": str(error)}

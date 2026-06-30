@@ -464,7 +464,8 @@ harnesses:
 任务：
 
 - 已完成第一片：`messages_fts`、`GET /memory/search`、`search_memory` 工具，以及每轮自动 `<memory-context>` prefetch 注入。
-- 已完成 stable memory 第一片：`data/memory/MEMORY.md`、`data/memory/USER.md`、`read_memory`、`update_memory`。
+- 已完成 stable memory 第一片：role-scoped `data/roles/<roleId>/memory/MEMORY.md`、`data/roles/<roleId>/memory/USER.md`、`read_memory`、`update_memory`，并保留默认 role 对旧 `data/memory/` 的迁移兜底。
+- 已完成 role identity 第一片：role-scoped `data/roles/<roleId>/SOUL.md`、启动/创建 seed、per-session prompt 加载、`update_current_role_identity` ask-tool、`/roles/{roleId}/identity` API。
 - 已完成 conversation summary 第一片：SQLite `conversation_summaries`、覆盖范围元数据、`GET /memory/summary`、`POST /memory/summary`、`POST /memory/compact`、阈值触发 compaction、context 注入。
 - 已完成 structured memory 第一片：SQLite `memory_items`、`user` / `agent` / `project` scope、显式 add/list/delete HTTP API、`<memory-items>` context 注入。
 - 已完成 explicit structured memory tools：`search_memory_items` 只读检索 durable facts，`memory_add` / `memory_replace` / `memory_forget` 通过 `ask` 权限写入、替换或删除单条 durable fact，并带重复检测、来源 session 元数据、模型输出裁剪和 no-progress guardrail。

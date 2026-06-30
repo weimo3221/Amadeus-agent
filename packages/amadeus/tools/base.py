@@ -64,6 +64,11 @@ class ToolSpec:
             memory_item_id = args.get("memoryItemId") if isinstance(args.get("memoryItemId"), int) else "(missing id)"
             return f"Allow Amadeus to forget structured memory item {memory_item_id}?"
 
+        if self.name == "update_current_role_identity":
+            name = args.get("name").strip() if isinstance(args.get("name"), str) and args.get("name").strip() else ""
+            label = f" to {name}" if name else ""
+            return f"Allow Amadeus to update the current role identity{label}?"
+
         return f"Allow Amadeus to run {self.display_name}?"
 
 
