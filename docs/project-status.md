@@ -419,13 +419,14 @@ Started: the first storage/API/UI foundation and in-process worker for session-s
 - Added Python runtime HTTP APIs: `GET /tasks`, `POST /tasks`, `GET /tasks/{id}/events`, and `POST /tasks/{id}/cancel`.
 - Added model-facing `create_task`, `list_tasks`, and `cancel_task` tools for explicit session background work.
 - Added a lightweight in-process task worker that claims queued tasks, runs the existing agent turn loop, writes `succeeded` / `failed` results, and cooperatively cancels running backing turns.
+- Added `/runtime/events` NDJSON streaming plus TypeScript bridge subscription so worker `running` / `succeeded` / `failed` / `cancelled` updates are pushed to same-session WebSocket clients.
 - Added TypeScript bridge proxying for task HTTP APIs.
 - Main UI can restore and render active queued/running/blocked tasks.
 
 - Add scheduled reminders.
 - Add daily brief.
 - Add idle-time check-ins.
-- Add retries, task-event push broadcasting, and richer recovery for worker restarts.
+- Add retries and richer recovery for worker restarts.
 
 ### Phase 12: Advanced Agent Features
 

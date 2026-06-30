@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 MemoryStoreProvider = Callable[[], MessageMemoryStore]
 AgentRuntimeProvider = Callable[[], Any]
+TaskEventPublisher = Callable[[dict[str, object], str], None]
 
 
 class TaskWorker:
@@ -23,9 +24,11 @@ class TaskWorker:
         agent_runtime_provider: AgentRuntimeProvider,
         *,
         max_workers: int = 2,
+        publish_task_event: TaskEventPublisher | None = None,
     ) -> None:
         self._memory_store_provider = memory_store_provider
         self._agent_runtime_provider = agent_runtime_provider
+        self._publish_task_event = publish_task_event
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="amadeus-task")
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}
@@ -42,6 +45,7 @@ class TaskWorker:
             cancel_event = self._running.get(task_id)
             running_turn = self._turns.get(task_id)
         task = self._memory_store_provider().cancel_task(task_id, reason=reason)
+        self._publish_task_update(task, "cancelled")
         if cancel_event:
             cancel_event.set()
         if running_turn:
@@ -59,6 +63,7 @@ class TaskWorker:
         task = memory_store.start_task(task_id, claim_lock=claim_lock)
         if not task or task.get("status") != "running":
             return
+        self._publish_task_update(task, "running")
 
         session_id = str(task["sessionId"])
         with self._lock:
@@ -98,13 +103,16 @@ class TaskWorker:
                 self._ensure_cancelled(task_id, reason="Task worker cancelled")
                 return
             if error_text:
-                memory_store.fail_task(task_id, claim_lock=claim_lock, error=error_text)
+                failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=error_text)
+                self._publish_task_update(failed, "failed")
             else:
-                memory_store.complete_task(task_id, claim_lock=claim_lock, result=result_text or "")
+                completed = memory_store.complete_task(task_id, claim_lock=claim_lock, result=result_text or "")
+                self._publish_task_update(completed, "succeeded")
         except Exception as error:
             logger.info("Task worker execution failed taskId=%s error=%s", task_id, error)
             try:
-                memory_store.fail_task(task_id, claim_lock=claim_lock, error=str(error))
+                failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=str(error))
+                self._publish_task_update(failed, "failed")
             except Exception as finish_error:
                 logger.info("Task worker failed to mark task failed taskId=%s error=%s", task_id, finish_error)
         finally:
@@ -125,7 +133,17 @@ class TaskWorker:
         task = memory_store.get_task(task_id)
         if task and task.get("status") == "cancelled":
             return task
-        return memory_store.cancel_task(task_id, reason=reason)
+        cancelled = memory_store.cancel_task(task_id, reason=reason)
+        self._publish_task_update(cancelled, "cancelled")
+        return cancelled
+
+    def _publish_task_update(self, task: dict[str, object], action: str) -> None:
+        if self._publish_task_event is None:
+            return
+        try:
+            self._publish_task_event(task, action)
+        except Exception as error:
+            logger.info("Task worker failed to publish task update taskId=%s action=%s error=%s", task.get("id"), action, error)
 
     @staticmethod
     def _deny_permission(_request: PermissionRequest) -> bool:

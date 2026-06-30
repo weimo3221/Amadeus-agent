@@ -49,7 +49,13 @@ class TaskWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
             runtime = SuccessfulRuntime()
-            worker = TaskWorker(lambda: memory, lambda: runtime, max_workers=1)
+            published: list[tuple[str, str]] = []
+            worker = TaskWorker(
+                lambda: memory,
+                lambda: runtime,
+                max_workers=1,
+                publish_task_event=lambda task, action: published.append((str(task["status"]), action)),
+            )
             task = memory.create_task(session_id="session-1", title="Summarize", body="Use the body.")
 
             worker.submit(str(task["id"]))
@@ -59,12 +65,19 @@ class TaskWorkerTests(unittest.TestCase):
 
         self.assertEqual(finished["result"], "completed: Summarize\n\nUse the body.")
         self.assertEqual([event["type"] for event in events], ["created", "running", "succeeded"])
+        self.assertEqual(published, [("running", "running"), ("succeeded", "succeeded")])
 
     def test_worker_marks_task_failed_on_runtime_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
             runtime = FailingRuntime()
-            worker = TaskWorker(lambda: memory, lambda: runtime, max_workers=1)
+            published: list[tuple[str, str]] = []
+            worker = TaskWorker(
+                lambda: memory,
+                lambda: runtime,
+                max_workers=1,
+                publish_task_event=lambda task, action: published.append((str(task["status"]), action)),
+            )
             task = memory.create_task(session_id="session-1", title="Fail")
 
             worker.submit(str(task["id"]))
@@ -74,6 +87,7 @@ class TaskWorkerTests(unittest.TestCase):
 
         self.assertEqual(finished["error"], "provider failed")
         self.assertEqual([event["type"] for event in events], ["created", "running", "failed"])
+        self.assertEqual(published, [("running", "running"), ("failed", "failed")])
 
     def test_worker_cancel_marks_running_task_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

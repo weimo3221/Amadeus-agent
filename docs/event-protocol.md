@@ -446,10 +446,11 @@ Current behavior:
 - `POST /tasks` creates a queued task, records a `created` task event, and submits it to the in-process worker.
 - The agent can also manage session tasks through `create_task`, `list_tasks`, and `cancel_task` tools. `create_task` is for explicit queued/asynchronous/tracked work, not ordinary immediate answers or internal planning.
 - Successful `create_task` and `cancel_task` tool calls emit `task.updated` runtime events for desktop sync.
-- The worker claims queued tasks as `running`, stores heartbeat/claim metadata, and records `succeeded` or `failed` terminal events from the backing agent turn.
+- The worker claims queued tasks as `running`, stores heartbeat/claim metadata, records `succeeded` or `failed` terminal events from the backing agent turn, and publishes `task.updated` runtime events for worker status changes.
 - `POST /tasks/{id}/cancel` marks active tasks as `cancelled`, records one `cancelled` task event, and asks the backing agent turn to cancel when one is running.
 - Main UI restores active tasks with `GET /tasks?sessionId={id}&activeOnly=true` and updates from `task.updated` runtime events.
-- Runtime task-event broadcasting is still a later phase; clients should refresh through HTTP when they need the full task event history.
+- Python exposes `/runtime/events` as an NDJSON runtime event stream. The TypeScript bridge subscribes to it and broadcasts worker `task.updated` events to every WebSocket client in the same session.
+- Clients should still use `GET /tasks/{id}/events` when they need the full persisted task event history.
 
 ### memory.context.used
 

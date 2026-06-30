@@ -58,6 +58,7 @@ export interface AmadeusBridgeServerOptions {
     response: import('node:http').ServerResponse,
     requestUrl: string,
   ): void | Promise<void>
+  subscribeRuntimeEvents?(emit: (event: RuntimeEvent<string, unknown>) => void): () => void
   streamChat(socket: BridgeSocket, sessionId: string, text: string, skills?: string[]): void | Promise<void>
 }
 
@@ -346,6 +347,12 @@ function sessionBroadcaster(
 
 export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): AmadeusBridgeServer {
   const clientsBySession = new Map<string, Map<string, ClientConnection>>()
+  const stopRuntimeEvents = options.subscribeRuntimeEvents?.((event) => {
+    if (typeof event.sessionId !== 'string') {
+      return
+    }
+    broadcastRaw(clientsBySession, event.sessionId, JSON.stringify(event))
+  })
 
   const httpServer = createServer((request, response) => {
     const requestUrl = request.url ?? '/'
@@ -597,6 +604,10 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
       }
     })
   })
+
+  if (stopRuntimeEvents) {
+    httpServer.once('close', stopRuntimeEvents)
+  }
 
   return { httpServer, wss }
 }

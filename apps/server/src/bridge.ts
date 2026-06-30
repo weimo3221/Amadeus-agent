@@ -23,6 +23,12 @@ export interface PythonLive2DProxyOptions extends PythonBridgeOptions {
   publicBaseUrl: string
 }
 
+export interface PythonRuntimeEventSubscriptionOptions extends PythonBridgeOptions {
+  idleTimeoutSeconds?: number
+  maxEventsPerRequest?: number
+  reconnectDelayMs?: number
+}
+
 interface MemoryReviewCandidatesResponse {
   ok?: boolean
   candidates?: unknown
@@ -189,6 +195,105 @@ export async function relayPythonTurn(
   }
 
   return true
+}
+
+export function subscribePythonRuntimeEvents(
+  onEvent: (event: RuntimeEvent<string, unknown>) => void,
+  options: PythonRuntimeEventSubscriptionOptions,
+): () => void {
+  const fetchImpl = options.fetchImpl ?? fetch
+  const idleTimeoutSeconds = options.idleTimeoutSeconds ?? 25
+  const maxEventsPerRequest = options.maxEventsPerRequest ?? 0
+  const reconnectDelayMs = options.reconnectDelayMs ?? 1000
+  let stopped = false
+  let controller: AbortController | undefined
+  let reconnectTimer: NodeJS.Timeout | undefined
+
+  async function delayReconnect(): Promise<void> {
+    if (stopped) {
+      return
+    }
+    await new Promise<void>((resolve) => {
+      reconnectTimer = setTimeout(resolve, reconnectDelayMs)
+    })
+    reconnectTimer = undefined
+  }
+
+  async function run(): Promise<void> {
+    while (!stopped) {
+      controller = new AbortController()
+      const params = new URLSearchParams({
+        idleTimeoutSeconds: String(idleTimeoutSeconds),
+        maxEvents: String(maxEventsPerRequest),
+      })
+      try {
+        const response = await fetchImpl(runtimeEndpoint(options.runtimeUrl, `/runtime/events?${params.toString()}`), {
+          method: 'GET',
+          signal: controller.signal,
+        })
+        if (!response.ok || !response.body) {
+          await delayReconnect()
+          continue
+        }
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+        for await (const chunk of response.body) {
+          if (stopped) {
+            break
+          }
+          buffer += decoder.decode(chunk, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed) {
+              continue
+            }
+            try {
+              const event = JSON.parse(trimmed) as unknown
+              if (isRuntimeEvent(event)) {
+                onEvent(event)
+              }
+            }
+            catch {
+              // Ignore malformed background events. Chat streaming has its own visible error path.
+            }
+          }
+        }
+
+        const tail = buffer.trim()
+        if (tail && !stopped) {
+          try {
+            const event = JSON.parse(tail) as unknown
+            if (isRuntimeEvent(event)) {
+              onEvent(event)
+            }
+          }
+          catch {
+            // Ignore malformed trailing events and reconnect.
+          }
+        }
+      }
+      catch {
+        if (stopped) {
+          return
+        }
+      }
+      await delayReconnect()
+    }
+  }
+
+  void run()
+
+  return () => {
+    stopped = true
+    controller?.abort()
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+  }
 }
 
 export async function forwardToolPermissionToPython(

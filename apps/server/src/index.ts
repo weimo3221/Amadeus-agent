@@ -19,6 +19,7 @@ import {
   relayPythonTurn,
   resetPythonMemory,
   runPythonMemoryReview,
+  subscribePythonRuntimeEvents,
 } from './bridge.js'
 import { createAmadeusBridgeServer, type BridgeSocket } from './websocket-server.js'
 import { randomUUID } from 'node:crypto'
@@ -104,6 +105,9 @@ const { httpServer } = createAmadeusBridgeServer({
   },
   observeDesktopFeedback(event) {
     return forwardRuntimeFeedbackToPython(event, { runtimeUrl: pythonRuntimeUrl })
+  },
+  subscribeRuntimeEvents(emit) {
+    return subscribePythonRuntimeEvents(emit, { runtimeUrl: pythonRuntimeUrl })
   },
   handleLive2DHttpRequest(request, response, requestUrl) {
     return proxyPythonLive2DRequest(request, response, requestUrl, {

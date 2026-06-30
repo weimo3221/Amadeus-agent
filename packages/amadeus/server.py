@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import queue
 import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,7 @@ from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary, create_tts_provider_from_config
 from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_providers_config, provider_profile
+from amadeus.runtime_events import RuntimeEventBus
 from amadeus.tool_runtime import ToolContext
 from amadeus.tools import list_tools
 from amadeus.workers import TaskWorker
@@ -81,7 +83,21 @@ live2d_library = LocalLive2DModelLibrary(LIVE2D_ROOT, PUBLIC_BASE_URL, HARNESSES
 audio_runtime = AudioRuntime(audio_library, create_tts_provider_from_config(audio_library))
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
-task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime)
+runtime_event_bus = RuntimeEventBus()
+
+
+def publish_task_update(task: dict[str, object], action: str) -> None:
+    runtime_event_bus.publish(
+        "task.updated",
+        str(task["sessionId"]),
+        {
+            "task": task,
+            "action": action,
+        },
+    )
+
+
+task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime, publish_task_event=publish_task_update)
 agent_runtime.set_task_worker(task_worker)
 
 
@@ -110,6 +126,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/runtime/config":
             logger.info("Handling runtime config request")
             self.write_json(200, build_runtime_config_payload())
+            return
+
+        if parsed.path == "/runtime/events":
+            self.handle_runtime_events(parsed)
             return
 
         if parsed.path == "/roles":
@@ -537,6 +557,33 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:
             logger.info("Runtime config reload failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_runtime_events(self, parsed: Any) -> None:
+        query = parse_qs(parsed.query)
+        idle_timeout_seconds = parse_int(query.get("idleTimeoutSeconds", ["25"])[0], 25, 1, 300)
+        max_events = parse_int(query.get("maxEvents", ["0"])[0], 0, 0, 1000)
+        subscriber_id, subscriber_queue = runtime_event_bus.subscribe()
+        delivered = 0
+        logger.info("Runtime event stream subscribed subscriberId=%s idleTimeoutSeconds=%s maxEvents=%s", subscriber_id, idle_timeout_seconds, max_events)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            while max_events <= 0 or delivered < max_events:
+                try:
+                    event = subscriber_queue.get(timeout=idle_timeout_seconds)
+                except queue.Empty:
+                    break
+                self.wfile.write((json.dumps(event) + "\n").encode("utf-8"))
+                self.wfile.flush()
+                delivered += 1
+        except (BrokenPipeError, ConnectionResetError):
+            logger.info("Runtime event stream disconnected subscriberId=%s delivered=%s", subscriber_id, delivered)
+        finally:
+            runtime_event_bus.unsubscribe(subscriber_id)
+            logger.info("Runtime event stream unsubscribed subscriberId=%s delivered=%s", subscriber_id, delivered)
 
     def handle_role_create(self) -> None:
         try:

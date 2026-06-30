@@ -10,6 +10,7 @@ import {
   listPythonMemoryReviewJobs,
   resetPythonMemory,
   relayPythonTurn,
+  subscribePythonRuntimeEvents,
   type SocketLike,
 } from './bridge.js'
 
@@ -147,6 +148,43 @@ describe('Python bridge relay', () => {
       inputMode: 'text',
       skills: ['runtime-debug', 'desktop-e2e'],
     })
+  })
+})
+
+describe('Python runtime event subscription', () => {
+  it('streams background runtime events from Python', async () => {
+    const event = {
+      id: 'task-event-1',
+      type: 'task.updated',
+      sessionId: 'session-1',
+      timestamp: '2026-06-19T00:00:00.000Z',
+      payload: {
+        action: 'running',
+        task: { id: 'task-1', sessionId: 'session-1', status: 'running' },
+      },
+    }
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return streamResponse([`${JSON.stringify(event)}\n`])
+    }
+
+    const received = await new Promise<Record<string, unknown>>((resolve) => {
+      let stop = (): void => {}
+      stop = subscribePythonRuntimeEvents((runtimeEvent) => {
+        stop()
+        resolve(runtimeEvent as unknown as Record<string, unknown>)
+      }, {
+        runtimeUrl: 'http://127.0.0.1:8790/',
+        fetchImpl,
+        reconnectDelayMs: 1,
+        maxEventsPerRequest: 1,
+      })
+    })
+
+    assert.equal(calls[0].url, 'http://127.0.0.1:8790/runtime/events?idleTimeoutSeconds=25&maxEvents=1')
+    assert.equal(calls[0].init?.method, 'GET')
+    assert.deepEqual(received, event)
   })
 })
 

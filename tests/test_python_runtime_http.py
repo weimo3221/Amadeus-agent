@@ -17,6 +17,7 @@ from amadeus import server as runtime_server
 from amadeus.agent import AgentRuntime, PermissionBroker
 from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.memory import MessageMemoryStore
+from amadeus.runtime_events import RuntimeEventBus
 
 
 class NoopTaskWorker:
@@ -76,6 +77,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.previous_permission_broker = runtime_server.permission_broker
         self.previous_live2d_library = runtime_server.live2d_library
         self.previous_task_worker = runtime_server.task_worker
+        self.previous_runtime_event_bus = runtime_server.runtime_event_bus
 
         database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
         self.runtime_config_path = Path(self.tmpdir.name) / "runtime.yaml"
@@ -118,6 +120,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         )
         memory_store = MessageMemoryStore(database_path)
         runtime_server.memory_store = memory_store
+        runtime_server.runtime_event_bus = RuntimeEventBus()
         runtime_server.agent_runtime = TurnRuntime(
             memory_store,
             audio_runtime=None,
@@ -144,6 +147,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.permission_broker = self.previous_permission_broker
         runtime_server.live2d_library = self.previous_live2d_library
         runtime_server.task_worker = self.previous_task_worker
+        runtime_server.runtime_event_bus = self.previous_runtime_event_bus
 
         if self.previous_api_key is None:
             os.environ.pop("OPENAI_API_KEY", None)
@@ -193,6 +197,12 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             method="POST",
         )
         with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            body = response.read().decode("utf-8")
+        return [json.loads(line) for line in body.splitlines() if line.strip()]
+
+    def get_ndjson(self, path: str) -> list[dict]:
+        with urlopen(self.url(path), timeout=5) as response:
             self.assertEqual(response.status, 200)
             body = response.read().decode("utf-8")
         return [json.loads(line) for line in body.splitlines() if line.strip()]
@@ -250,6 +260,35 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(cancelled["task"]["status"], "cancelled")
         self.assertEqual(events["eventCount"], 2)
         self.assertEqual(events["events"][1]["type"], "cancelled")
+
+    def test_runtime_events_streams_published_task_updates(self) -> None:
+        received: list[dict] = []
+
+        def read_events() -> None:
+            received.extend(self.get_ndjson("/runtime/events?maxEvents=1&idleTimeoutSeconds=2"))
+
+        reader = threading.Thread(target=read_events)
+        reader.start()
+        threading.Event().wait(0.1)
+        runtime_server.runtime_event_bus.publish(
+            "task.updated",
+            "http-test",
+            {
+                "action": "running",
+                "task": {
+                    "id": "task-1",
+                    "sessionId": "http-test",
+                    "status": "running",
+                },
+            },
+        )
+        reader.join(timeout=5)
+
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["type"], "task.updated")
+        self.assertEqual(received[0]["sessionId"], "http-test")
+        self.assertEqual(received[0]["payload"]["action"], "running")
 
     def test_agent_turn_accepts_explicit_skills(self) -> None:
         events = self.post_ndjson("/agent/turn", {

@@ -1068,6 +1068,66 @@ describe('WebSocket Python-first integration', () => {
     assert.deepEqual(companionEvent.payload, { text: 'hello everyone' })
   })
 
+  it('broadcasts subscribed Python runtime task events to every client in the same session', async (t) => {
+    let emitRuntimeEvent: ((event: RuntimeEvent<string, unknown>) => void) | undefined
+    let stopped = false
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      subscribeRuntimeEvents(emit) {
+        emitRuntimeEvent = emit
+        return () => {
+          stopped = true
+        }
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const mainSocket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=main-ui`)
+    const companionSocket = await openWebSocket(`ws://127.0.0.1:${bridgePort}/ws?surface=companion`)
+    t.after(() => {
+      closeWebSocket(mainSocket)
+      closeWebSocket(companionSocket)
+    })
+
+    const mainTaskUpdate = waitForEvent(mainSocket, (event) => event.type === 'task.updated')
+    const companionTaskUpdate = waitForEvent(companionSocket, (event) => event.type === 'task.updated')
+    assert(emitRuntimeEvent)
+    emitRuntimeEvent({
+      id: 'task-running-event',
+      type: 'task.updated',
+      sessionId: 'default',
+      timestamp: '2026-06-19T00:00:01.000Z',
+      payload: {
+        action: 'running',
+        task: { id: 'task-1', sessionId: 'default', status: 'running' },
+      },
+    })
+
+    const [mainEvent, companionEvent] = await Promise.all([mainTaskUpdate, companionTaskUpdate])
+
+    assert.equal(mainEvent.id, 'task-running-event')
+    assert.equal(companionEvent.id, 'task-running-event')
+    assert.deepEqual(mainEvent.payload, {
+      action: 'running',
+      task: { id: 'task-1', sessionId: 'default', status: 'running' },
+    })
+
+    closeWebSocket(mainSocket)
+    closeWebSocket(companionSocket)
+    await closeServer(bridge.httpServer)
+    assert.equal(stopped, true)
+  })
+
   it('forwards desktop permission responses to Python', async (t) => {
     let resolvePermissionBody: (body: Record<string, unknown>) => void
     const permissionBody = new Promise<Record<string, unknown>>((resolve) => {
