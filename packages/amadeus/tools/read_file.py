@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from amadeus.tools.base import ToolSpec, normalize_positive_int
-from amadeus.tools.search_files import REPO_ROOT, SEARCHABLE_EXTENSIONS, is_inside
+from amadeus.tools.search_files import SEARCHABLE_EXTENSIONS, is_inside, workspace_root_from_context
 
 
 MAX_READ_FILE_BYTES = 512 * 1024
@@ -86,8 +86,8 @@ def _file_kind(path: Path) -> str:
     return "unknown"
 
 
-def _unsupported_file_response(path: Path, size_bytes: int, kind: str) -> dict[str, Any]:
-    relative_path = path.relative_to(REPO_ROOT).as_posix()
+def _unsupported_file_response(path: Path, size_bytes: int, kind: str, workspace_root: Path) -> dict[str, Any]:
+    relative_path = path.relative_to(workspace_root).as_posix()
     if kind == "image":
         hint = "This looks like an image. A future vision/read_image tool should inspect it; read_file only reads UTF-8 text."
     elif kind == "pdf":
@@ -107,14 +107,15 @@ def _unsupported_file_response(path: Path, size_bytes: int, kind: str) -> dict[s
     }
 
 
-def read_file(args: dict[str, Any]) -> dict[str, Any]:
+def read_file(args: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    workspace_root = workspace_root_from_context(context)
     requested_path = args.get("path")
     path_text = requested_path.strip() if isinstance(requested_path, str) else ""
     if not path_text:
         return {"error": "path is required"}
 
-    target_path = (REPO_ROOT / path_text).resolve()
-    if not is_inside(target_path, REPO_ROOT):
+    target_path = (workspace_root / path_text).resolve()
+    if not is_inside(target_path, workspace_root):
         return {"error": "path must be inside the project workspace"}
     if not target_path.exists() or not target_path.is_file():
         return {"error": "path must point to an existing file"}
@@ -126,7 +127,7 @@ def read_file(args: dict[str, Any]) -> dict[str, Any]:
 
     kind = _file_kind(target_path)
     if kind != "text":
-        return _unsupported_file_response(target_path, size_bytes, kind)
+        return _unsupported_file_response(target_path, size_bytes, kind, workspace_root)
 
     if size_bytes > MAX_READ_FILE_BYTES:
         return {"error": "file is too large to read safely"}
@@ -165,7 +166,7 @@ def read_file(args: dict[str, Any]) -> dict[str, Any]:
     has_more = end_index < total_lines or truncated_by_chars
 
     return {
-        "path": target_path.relative_to(REPO_ROOT).as_posix(),
+        "path": target_path.relative_to(workspace_root).as_posix(),
         "kind": "text",
         "supported": True,
         "sizeBytes": size_bytes,

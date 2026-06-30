@@ -227,6 +227,19 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(viewed["skill"]["name"], "runtime-debug")
         self.assertIn("Use tests before fixes.", viewed["skill"]["instructions"])
 
+    def test_roles_http_round_trip_workspace_path(self) -> None:
+        workspace_path = str(Path(self.tmpdir.name) / "workspace")
+        created = self.post_json("/roles", {
+            "name": "Workspace Role",
+            "workspacePath": workspace_path,
+        })
+        role_id = created["role"]["id"]
+        updated = self.put_json(f"/roles/{role_id}", {"workspacePath": ""})
+
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["role"]["workspacePath"], workspace_path)
+        self.assertEqual(updated["role"]["workspacePath"], "")
+
     def test_session_plan_http_round_trip(self) -> None:
         saved = self.put_json("/sessions/http-test/plan", {
             "items": [

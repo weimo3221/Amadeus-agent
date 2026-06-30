@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from amadeus.tools.base import ToolSpec
-from amadeus.tools.search_files import REPO_ROOT, SKIPPED_SEARCH_DIRS, is_inside
+from amadeus.tools.search_files import SKIPPED_SEARCH_DIRS, is_inside, workspace_root_from_context
 from amadeus.tools.read_file import READABLE_TEXT_EXTENSIONS
 
 
@@ -21,8 +21,8 @@ def _bool_arg(args: dict[str, Any], *names: str) -> bool:
     return False
 
 
-def _is_restricted_path(path: Path) -> bool:
-    relative_parts = path.relative_to(REPO_ROOT).parts
+def _is_restricted_path(path: Path, workspace_root: Path) -> bool:
+    relative_parts = path.relative_to(workspace_root).parts
     return any(part in SKIPPED_SEARCH_DIRS for part in relative_parts)
 
 
@@ -41,7 +41,8 @@ def _diff_preview(path: str, before: str, after: str) -> tuple[str, bool]:
     return diff[:MAX_WRITE_DIFF_CHARS], True
 
 
-def write_file(args: dict[str, Any]) -> dict[str, Any]:
+def write_file(args: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    workspace_root = workspace_root_from_context(context)
     requested_path = args.get("path")
     path_text = requested_path.strip() if isinstance(requested_path, str) else ""
     if not path_text:
@@ -51,10 +52,10 @@ def write_file(args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(content, str):
         return {"error": "content is required"}
 
-    target_path = (REPO_ROOT / path_text).resolve()
-    if not is_inside(target_path, REPO_ROOT):
+    target_path = (workspace_root / path_text).resolve()
+    if not is_inside(target_path, workspace_root):
         return {"error": "path must be inside the project workspace"}
-    if _is_restricted_path(target_path):
+    if _is_restricted_path(target_path, workspace_root):
         return {"error": "path is restricted and cannot be written"}
     if target_path.suffix.casefold() not in READABLE_TEXT_EXTENSIONS:
         return {"error": "file type is not writable by this tool"}
@@ -64,9 +65,9 @@ def write_file(args: dict[str, Any]) -> dict[str, Any]:
         return {"error": "content is too large to write safely"}
 
     parent_path = target_path.parent
-    if not is_inside(parent_path, REPO_ROOT):
+    if not is_inside(parent_path, workspace_root):
         return {"error": "parent directory must be inside the project workspace"}
-    if _is_restricted_path(parent_path):
+    if _is_restricted_path(parent_path, workspace_root):
         return {"error": "parent directory is restricted and cannot be written"}
     if parent_path.exists() and not parent_path.is_dir():
         return {"error": "parent path exists and is not a directory"}
@@ -90,7 +91,7 @@ def write_file(args: dict[str, Any]) -> dict[str, Any]:
         if size_before > MAX_WRITE_FILE_BYTES:
             return {"error": "existing file is too large to overwrite safely"}
 
-    relative_path = target_path.relative_to(REPO_ROOT).as_posix()
+    relative_path = target_path.relative_to(workspace_root).as_posix()
     diff, diff_truncated = _diff_preview(relative_path, before, content)
 
     try:

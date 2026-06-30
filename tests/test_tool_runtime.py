@@ -970,6 +970,23 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertLessEqual(len(output["content"]), 200)
         self.assertGreater(output["sizeBytes"], 0)
 
+    def test_file_tools_use_context_workspace_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            (workspace / "notes.md").write_text("# Workspace Note\nbody\n", encoding="utf-8")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "read_file",
+                {"path": "notes.md", "lineLimit": 1, "maxChars": 200},
+                ToolContext(session_id="session-1", cwd=workspace),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["path"], "notes.md")
+        self.assertIn("# Workspace Note", result.output["content"])
+
     def test_read_file_blocks_paths_outside_workspace(self) -> None:
         output = execute_tool("read_file", {"path": "../outside.txt"})
 

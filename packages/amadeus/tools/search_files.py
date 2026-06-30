@@ -32,7 +32,15 @@ def is_inside(path: Path, parent: Path) -> bool:
         return False
 
 
-def search_files(args: dict[str, Any]) -> dict[str, Any]:
+def workspace_root_from_context(context: Any = None) -> Path:
+    cwd = getattr(context, "cwd", None)
+    if isinstance(cwd, Path):
+        return cwd.resolve()
+    return REPO_ROOT
+
+
+def search_files(args: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    workspace_root = workspace_root_from_context(context)
     requested_query = args.get("query")
     query = requested_query.strip() if isinstance(requested_query, str) else ""
     if not query:
@@ -45,8 +53,8 @@ def search_files(args: dict[str, Any]) -> dict[str, Any]:
 
     requested_root = args.get("root")
     root_text = requested_root.strip() if isinstance(requested_root, str) and requested_root.strip() else "."
-    search_root = (REPO_ROOT / root_text).resolve()
-    if not is_inside(search_root, REPO_ROOT) or not search_root.exists():
+    search_root = (workspace_root / root_text).resolve()
+    if not is_inside(search_root, workspace_root) or not search_root.exists():
         return {"error": "root must be inside the project workspace"}
 
     max_results = normalize_positive_int(args.get("maxResults"), 10, 1, 30)
@@ -72,7 +80,7 @@ def search_files(args: dict[str, Any]) -> dict[str, Any]:
             continue
 
         scanned_files += 1
-        relative_path = current.relative_to(REPO_ROOT).as_posix()
+        relative_path = current.relative_to(workspace_root).as_posix()
         if target in {"all", "files"} and normalized_query in relative_path.casefold():
             results.append({"path": relative_path, "preview": relative_path, "match": "path"})
             continue

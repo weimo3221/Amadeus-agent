@@ -205,7 +205,7 @@ class AgentRuntime:
         self.harness_feedback_policy = HarnessFeedbackPolicy()
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
-        self.workspace_root = workspace_root
+        self.workspace_root = workspace_root.resolve()
         self.system_prompt = self._build_system_prompt()
         self.context_assembler = ContextAssembler(self.memory_store, self.system_prompt)
         self.context_diagnostics_limit = CONTEXT_DIAGNOSTICS_LIMIT
@@ -1208,7 +1208,11 @@ class AgentRuntime:
         current_user_already_saved: bool = False,
         skill_prompt_block: str = "",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        assembled_context = self.context_assembler.assemble(session_id, user_text)
+        assembled_context = self.context_assembler.assemble(
+            session_id,
+            user_text,
+            base_system_prompt=self._build_system_prompt(session_id=session_id),
+        )
         system_context = assembled_context.system_context
         role_prompt = self.memory_store.role_prompt_for_session(session_id)
         if role_prompt:
@@ -1239,7 +1243,11 @@ class AgentRuntime:
         return history, diagnostics
 
     def _load_history_for_budget(self, session_id: str) -> list[dict[str, Any]]:
-        assembled_context = self.context_assembler.assemble(session_id, "")
+        assembled_context = self.context_assembler.assemble(
+            session_id,
+            "",
+            base_system_prompt=self._build_system_prompt(session_id=session_id),
+        )
         return self._load_history(
             session_id,
             system_context=assembled_context.system_context,
@@ -1780,7 +1788,7 @@ class AgentRuntime:
             args,
             ToolContext(
                 session_id=session_id,
-                cwd=REPO_ROOT,
+                cwd=self._workspace_root_for_session(session_id),
                 memory_store=self.memory_store,
                 task_worker=self.task_worker,
                 turn_id=turn_id,
@@ -1904,12 +1912,27 @@ class AgentRuntime:
             if isinstance(event_type, str) and isinstance(payload, dict):
                 yield AgentEvent(event_type, payload)
 
-    def _build_system_prompt(self) -> str:
+    def _workspace_root_for_session(self, session_id: str | None = None) -> Path:
+        if not session_id:
+            return self.workspace_root
+        workspace_path = self.memory_store.role_workspace_path_for_session(session_id)
+        if not workspace_path:
+            return self.workspace_root
+        candidate = Path(workspace_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.workspace_root / candidate
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return self.workspace_root
+        return resolved if resolved.is_dir() else self.workspace_root
+
+    def _build_system_prompt(self, *, session_id: str | None = None) -> str:
         return build_system_prompt(
             stable_memory=self._format_stable_memory_for_prompt(),
             skill_catalog=self.skill_catalog,
             tool_hints=self.tool_registry,
-            workspace_root=self.workspace_root,
+            workspace_root=self._workspace_root_for_session(session_id),
         )
 
     def _maybe_inject_loaded_skill(

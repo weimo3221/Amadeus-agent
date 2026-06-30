@@ -602,6 +602,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 model=body.get("model") if isinstance(body.get("model"), str) else None,
                 live2d_model=body.get("live2dModel") if isinstance(body.get("live2dModel"), str) else None,
                 tts_voice=body.get("ttsVoice") if isinstance(body.get("ttsVoice"), str) else None,
+                workspace_path=body.get("workspacePath") if isinstance(body.get("workspacePath"), str) else None,
             )
             session = memory_store.create_session(str(role["id"]))
             logger.info("Created role roleId=%s defaultSessionId=%s", role["id"], session["id"])
@@ -625,6 +626,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 model=body.get("model") if isinstance(body.get("model"), str) else None,
                 live2d_model=body.get("live2dModel") if isinstance(body.get("live2dModel"), str) else None,
                 tts_voice=body.get("ttsVoice") if isinstance(body.get("ttsVoice"), str) else None,
+                workspace_path=body.get("workspacePath") if isinstance(body.get("workspacePath"), str) else None,
             )
             logger.info("Updated role roleId=%s", role["id"])
             self.write_json(200, {"ok": True, "role": role})

@@ -72,7 +72,7 @@ class ContextAssembler:
         self.base_system_prompt = base_system_prompt
         self.config = config or ContextAssemblerConfig()
 
-    def assemble(self, session_id: str, user_text: str) -> AssembledContext:
+    def assemble(self, session_id: str, user_text: str, *, base_system_prompt: str | None = None) -> AssembledContext:
         summary = self.memory_store.load_conversation_summary(session_id)
         active_plan = self.memory_store.load_session_plan(session_id)
         memory_items = self.memory_store.list_memory_items(limit=self.config.memory_item_limit)
@@ -84,7 +84,7 @@ class ContextAssembler:
         ][:self.config.retrieval_limit]
 
         sources: list[ContextSource] = []
-        sections = [self.base_system_prompt]
+        sections = [base_system_prompt or self.base_system_prompt]
 
         memory_items_block, memory_item_sources = self._format_memory_items(memory_items)
         if memory_items_block:

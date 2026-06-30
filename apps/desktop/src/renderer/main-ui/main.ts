@@ -73,6 +73,7 @@ interface RolePayload {
   model: string
   live2dModel: string
   ttsVoice: string
+  workspacePath: string
   archived: boolean
   createdAt: string
   updatedAt: string
@@ -158,6 +159,7 @@ const newRoleNameInput = query<HTMLInputElement>('#new-role-name-input')
 const roleDescriptionInput = query<HTMLInputElement>('#role-description-input')
 const newRolePersonaInput = query<HTMLTextAreaElement>('#new-role-persona-input')
 const roleStyleInput = query<HTMLInputElement>('#role-style-input')
+const roleWorkspacePathInput = query<HTMLInputElement>('#role-workspace-path-input')
 const roleModelSelect = query<HTMLSelectElement>('#role-model-select')
 const roleLive2dSelect = query<HTMLSelectElement>('#role-live2d-select')
 const roleTtsSelect = query<HTMLSelectElement>('#role-tts-select')
@@ -455,6 +457,7 @@ function renderRoleList(): void {
       role.model ? `${role.provider || 'model'} · ${role.model}` : 'Global model',
       role.live2dModel ? `Live2D: ${role.live2dModel}` : 'Global Live2D',
       role.ttsVoice ? `TTS: ${role.ttsVoice}` : 'Global TTS',
+      role.workspacePath ? `Workspace: ${role.workspacePath}` : 'Default workspace',
     ].join(' / ')
     return resourceCard(role.name, detail, () => {
       if (roleSelect) {
@@ -749,6 +752,7 @@ async function createRole(): Promise<void> {
       description: roleDescriptionInput?.value.trim() || '',
       persona: newRolePersonaInput?.value.trim() || '',
       style: roleStyleInput?.value.trim() || '',
+      workspacePath: roleWorkspacePathInput?.value.trim() || '',
       provider: roleModelSelect?.selectedOptions[0]?.dataset.provider || '',
       model: roleModelSelect?.value || '',
       live2dModel: roleLive2dSelect?.value || '',
@@ -779,6 +783,7 @@ async function saveRoleBindings(): Promise<void> {
       description: roleDescriptionInput?.value.trim() || '',
       persona: newRolePersonaInput?.value.trim() || '',
       style: roleStyleInput?.value.trim() || '',
+      workspacePath: roleWorkspacePathInput?.value.trim() || '',
       provider: roleModelSelect?.selectedOptions[0]?.dataset.provider || '',
       model: roleModelSelect?.value || '',
       live2dModel: roleLive2dSelect?.value || '',
@@ -1198,6 +1203,9 @@ function clearRoleEditor(): void {
   if (roleStyleInput) {
     roleStyleInput.value = ''
   }
+  if (roleWorkspacePathInput) {
+    roleWorkspacePathInput.value = ''
+  }
   if (roleModelSelect) {
     roleModelSelect.value = ''
   }
@@ -1439,6 +1447,9 @@ function renderRoleBindings(): void {
   }
   if (roleStyleInput) {
     roleStyleInput.value = role.style || ''
+  }
+  if (roleWorkspacePathInput) {
+    roleWorkspacePathInput.value = role.workspacePath || ''
   }
   if (roleModelSelect) {
     const selected = Array.from(roleModelSelect.options).find((option) => option.value === role.model && option.dataset.provider === role.provider)

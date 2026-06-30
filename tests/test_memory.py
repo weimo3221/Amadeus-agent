@@ -13,6 +13,18 @@ from amadeus.memory import MessageMemoryStore
 
 
 class MessageMemoryStoreTests(unittest.TestCase):
+    def test_role_workspace_path_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            workspace_path = str(Path(tmpdir) / "workspace")
+            role = memory.create_role("Workspace Role", workspace_path=workspace_path)
+            session = memory.create_session(str(role["id"]))
+            updated = memory.update_role(str(role["id"]), workspace_path="")
+
+            self.assertEqual(role["workspacePath"], workspace_path)
+            self.assertEqual(memory.role_workspace_path_for_session(str(session["id"])), "")
+            self.assertEqual(updated["workspacePath"], "")
+
     def test_conversation_summary_persists_and_loads_latest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             database_path = Path(tmpdir) / "amadeus.sqlite"

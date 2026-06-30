@@ -79,6 +79,7 @@ class MessageMemoryStore:
                   model TEXT,
                   live2d_model TEXT,
                   tts_voice TEXT,
+                  workspace_path TEXT,
                   archived INTEGER NOT NULL DEFAULT 0,
                   created_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL
@@ -250,12 +251,14 @@ class MessageMemoryStore:
         }
         if "tts_voice" not in columns:
             connection.execute("ALTER TABLE roles ADD COLUMN tts_voice TEXT")
+        if "workspace_path" not in columns:
+            connection.execute("ALTER TABLE roles ADD COLUMN workspace_path TEXT")
         connection.execute(
             """
             INSERT OR IGNORE INTO roles (
-              id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+              id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, ?, ?)
             """,
             (
                 DEFAULT_ROLE_ID,
@@ -380,7 +383,7 @@ class MessageMemoryStore:
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
                 FROM roles
                 WHERE {where}
                 ORDER BY archived ASC, updated_at DESC, name ASC
@@ -399,6 +402,7 @@ class MessageMemoryStore:
         model: str | None = None,
         live2d_model: str | None = None,
         tts_voice: str | None = None,
+        workspace_path: str | None = None,
     ) -> dict[str, str | int | bool]:
         normalized_name = normalize_role_name(name)
         normalized_description = normalize_optional_text(description, "description", 500) or ""
@@ -408,6 +412,7 @@ class MessageMemoryStore:
         normalized_model = normalize_optional_text(model, "model", 160)
         normalized_live2d_model = normalize_optional_text(live2d_model, "live2d_model", 160)
         normalized_tts_voice = normalize_optional_text(tts_voice, "tts_voice", 160)
+        normalized_workspace_path = normalize_optional_text(workspace_path, "workspace_path", 1000)
         role_id = f"role-{uuid4().hex[:12]}"
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
@@ -415,9 +420,9 @@ class MessageMemoryStore:
             connection.execute(
                 """
                 INSERT INTO roles (
-                  id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                  id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     role_id,
@@ -429,13 +434,14 @@ class MessageMemoryStore:
                     normalized_model,
                     normalized_live2d_model,
                     normalized_tts_voice,
+                    normalized_workspace_path,
                     now,
                     now,
                 ),
             )
             row = connection.execute(
                 """
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
                 FROM roles
                 WHERE id = ?
                 """,
@@ -448,7 +454,7 @@ class MessageMemoryStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
                 FROM roles
                 WHERE id = ?
                 """,
@@ -468,6 +474,7 @@ class MessageMemoryStore:
         model: str | None = None,
         live2d_model: str | None = None,
         tts_voice: str | None = None,
+        workspace_path: str | None = None,
     ) -> dict[str, str | int | bool]:
         normalized_role_id = normalize_role_id(role_id)
         updates: dict[str, str | None] = {}
@@ -487,6 +494,8 @@ class MessageMemoryStore:
             updates["live2d_model"] = normalize_optional_text(live2d_model, "live2d_model", 160)
         if tts_voice is not None:
             updates["tts_voice"] = normalize_optional_text(tts_voice, "tts_voice", 160)
+        if workspace_path is not None:
+            updates["workspace_path"] = normalize_optional_text(workspace_path, "workspace_path", 1000)
 
         now = datetime.now(timezone.utc).isoformat()
         updates["updated_at"] = now
@@ -501,7 +510,7 @@ class MessageMemoryStore:
             )
             row = connection.execute(
                 """
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
                 FROM roles
                 WHERE id = ?
                 """,
@@ -697,6 +706,21 @@ class MessageMemoryStore:
         if row[3]:
             parts.append(f"Role style: {row[3]}")
         return "\n".join(parts)
+
+    def role_workspace_path_for_session(self, session_id: str) -> str:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT r.workspace_path
+                FROM sessions s
+                JOIN roles r ON r.id = s.role_id
+                WHERE s.id = ?
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+        return str(row[0]).strip() if row and row[0] else ""
 
     def _migrate_conversation_summaries(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -2515,9 +2539,10 @@ def role_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int 
         "model": str(row[6]) if row[6] is not None else "",
         "live2dModel": str(row[7]) if row[7] is not None else "",
         "ttsVoice": str(row[8]) if row[8] is not None else "",
-        "archived": bool(row[9]),
-        "createdAt": str(row[10]),
-        "updatedAt": str(row[11]),
+        "workspacePath": str(row[9]) if row[9] is not None else "",
+        "archived": bool(row[10]),
+        "createdAt": str(row[11]),
+        "updatedAt": str(row[12]),
     }
 
 

@@ -387,8 +387,31 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("<workspace_instructions", runtime.system_prompt)
         self.assertIn('source path="AGENT.md"', runtime.system_prompt)
         self.assertIn("Prefer focused Python tests", runtime.system_prompt)
-        self.assertIn('source path="CLAUDE.md"', runtime.system_prompt)
+        self.assertNotIn("CLAUDE.md", runtime.system_prompt)
+        self.assertNotIn("Check event protocol changes", runtime.system_prompt)
         self.assertIn("cannot override system, safety, permission, or runtime policies", runtime.system_prompt)
+
+    def test_session_role_workspace_agent_instructions_are_loaded_per_turn(self) -> None:
+        default_workspace = Path(self.tmpdir.name) / "default-workspace"
+        default_workspace.mkdir()
+        role_workspace = Path(self.tmpdir.name) / "role-workspace"
+        role_workspace.mkdir()
+        (default_workspace / "AGENT.md").write_text("Default workspace instructions.", encoding="utf-8")
+        (role_workspace / "AGENT.md").write_text("Role workspace instructions.", encoding="utf-8")
+        role = self.memory.create_role("Workspace Role", workspace_path=str(role_workspace))
+        session = self.memory.create_session(str(role["id"]))
+        runtime = FakeAgentRuntime(
+            self.memory,
+            deltas=["done"],
+            skills_root=self.skills_root,
+            workspace_root=default_workspace,
+        )
+
+        list(runtime.run_turn(str(session["id"]), "use workspace", lambda _request: False))
+
+        system_message = runtime.decision_messages[-1][0]["content"]
+        self.assertIn("Role workspace instructions.", system_message)
+        self.assertNotIn("Default workspace instructions.", system_message)
 
     def test_runtime_config_file_sets_context_summary_and_review_limits(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime.yaml"

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from amadeus.tools.base import ToolSpec
-from amadeus.tools.search_files import REPO_ROOT, SEARCHABLE_EXTENSIONS, SKIPPED_SEARCH_DIRS, is_inside
+from amadeus.tools.search_files import SEARCHABLE_EXTENSIONS, SKIPPED_SEARCH_DIRS, is_inside, workspace_root_from_context
 
 
 MAX_PATCH_FILE_BYTES = 512 * 1024
@@ -29,8 +29,8 @@ def _bool_arg(args: dict[str, Any], *names: str) -> bool:
     return False
 
 
-def _is_restricted_path(path: Path) -> bool:
-    relative_parts = path.relative_to(REPO_ROOT).parts
+def _is_restricted_path(path: Path, workspace_root: Path) -> bool:
+    relative_parts = path.relative_to(workspace_root).parts
     return any(part in SKIPPED_SEARCH_DIRS for part in relative_parts)
 
 
@@ -62,7 +62,8 @@ def _diff_preview(path: str, before: str, after: str) -> tuple[str, bool]:
     return diff[:MAX_DIFF_CHARS], True
 
 
-def patch(args: dict[str, Any]) -> dict[str, Any]:
+def patch(args: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    workspace_root = workspace_root_from_context(context)
     requested_path = args.get("path")
     path_text = requested_path.strip() if isinstance(requested_path, str) else ""
     if not path_text:
@@ -77,10 +78,10 @@ def patch(args: dict[str, Any]) -> dict[str, Any]:
     if old_text == new_text:
         return {"error": "oldText and newText are identical"}
 
-    target_path = (REPO_ROOT / path_text).resolve()
-    if not is_inside(target_path, REPO_ROOT):
+    target_path = (workspace_root / path_text).resolve()
+    if not is_inside(target_path, workspace_root):
         return {"error": "path must be inside the project workspace"}
-    if _is_restricted_path(target_path):
+    if _is_restricted_path(target_path, workspace_root):
         return {"error": "path is restricted and cannot be patched"}
     if not target_path.exists() or not target_path.is_file():
         return {"error": "path must point to an existing file"}
@@ -117,7 +118,7 @@ def patch(args: dict[str, Any]) -> dict[str, Any]:
     if new_size_bytes > MAX_PATCH_TEXT_BYTES:
         return {"error": "patched file would be too large"}
 
-    relative_path = target_path.relative_to(REPO_ROOT).as_posix()
+    relative_path = target_path.relative_to(workspace_root).as_posix()
     diff, diff_truncated = _diff_preview(relative_path, content, new_content)
 
     try:

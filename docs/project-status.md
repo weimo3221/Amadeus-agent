@@ -433,9 +433,9 @@ Started: the first storage/API/UI foundation and in-process worker for session-s
 
 Started: the first restricted `delegate_task` research/search tool, session task worker, and Hermes-style prompt surface split are in place. Full sub-agent orchestration and durable multi-process task execution are not done.
 
-- Split the monolithic Python system prompt into a prompt assembler with core rules, dynamic tool routing hints, workspace instructions, stable memory, and skills catalog sections.
+- Split the monolithic Python system prompt into a prompt assembler with core rules, dynamic tool routing hints, role workspace instructions, stable memory, and skills catalog sections.
 - Added optional `ToolSpec.prompt_hint` metadata and registry-driven prompt hint assembly so enabled tools contribute their own short routing guidance instead of relying on hard-coded agent prompt lines.
-- Added workspace-level `AGENT.md` / `CLAUDE.md` loading with truncation and explicit lower-priority project-instruction framing; these files cannot override system safety, permissions, or runtime enforcement.
+- Added role `workspacePath` support and workspace-level `AGENT.md` loading with truncation and explicit lower-priority project-instruction framing; `AGENT.md` cannot override system safety, permissions, or runtime enforcement.
 - Add MCP bridge.
 - Add full sub-agent orchestration abstraction.
 - Add context compression.
