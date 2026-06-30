@@ -379,6 +379,72 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in events], ["created", "cancelled"])
         self.assertEqual(events[1]["metadata"], {"previousStatus": "queued"})
 
+    def test_task_worker_state_transitions_can_succeed_fail_and_ignore_finished_cancels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            succeeded_task = memory.create_task(session_id="session-1", title="Succeed")
+            running = memory.start_task(str(succeeded_task["id"]), claim_lock="worker-1")
+            succeeded = memory.complete_task(str(succeeded_task["id"]), claim_lock="worker-1", result="Finished")
+            unchanged = memory.cancel_task(str(succeeded_task["id"]), reason="Too late")
+
+            failed_task = memory.create_task(session_id="session-1", title="Fail")
+            memory.start_task(str(failed_task["id"]), claim_lock="worker-2")
+            failed = memory.fail_task(str(failed_task["id"]), claim_lock="worker-2", error="Boom")
+            events = memory.list_task_events(str(succeeded_task["id"]))
+
+        self.assertEqual(running["status"], "running")
+        self.assertIsNotNone(running["lastHeartbeat"])
+        self.assertEqual(succeeded["status"], "succeeded")
+        self.assertEqual(succeeded["result"], "Finished")
+        self.assertEqual(unchanged["status"], "succeeded")
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["error"], "Boom")
+        self.assertEqual([event["type"] for event in events], ["created", "running", "succeeded"])
+
+    def test_task_status_migration_maps_legacy_done_to_succeeded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "amadeus.sqlite"
+            now = "2026-06-30T00:00:00+00:00"
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE tasks (
+                      id TEXT PRIMARY KEY,
+                      session_id TEXT NOT NULL,
+                      title TEXT NOT NULL,
+                      body TEXT NOT NULL DEFAULT '',
+                      status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'done', 'failed', 'cancelled')),
+                      priority INTEGER NOT NULL DEFAULT 0,
+                      due_at TEXT,
+                      claim_lock TEXT,
+                      last_heartbeat TEXT,
+                      result TEXT,
+                      error TEXT,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      finished_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO tasks (
+                      id, session_id, title, body, status, priority, created_at, updated_at, finished_at
+                    )
+                    VALUES ('task-legacy', 'session-1', 'Legacy done', '', 'done', 0, ?, ?, ?)
+                    """,
+                    (now, now, now),
+                )
+
+            memory = MessageMemoryStore(database_path)
+            task = memory.get_task("task-legacy")
+            listed = memory.list_tasks(session_id="session-1", status="succeeded")
+
+        self.assertIsNotNone(task)
+        assert task is not None
+        self.assertEqual(task["status"], "succeeded")
+        self.assertEqual(listed["summary"]["succeeded"], 1)
+
     def test_replace_memory_item_updates_active_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

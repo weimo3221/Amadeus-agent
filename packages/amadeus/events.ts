@@ -272,7 +272,7 @@ export interface TaskPlanPayload {
   merge?: boolean
 }
 
-export type TaskStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled'
+export type TaskStatus = 'queued' | 'running' | 'blocked' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface TaskRecord {
   id: string
@@ -296,14 +296,14 @@ export interface TaskSummary {
   queued: number
   running: number
   blocked: number
-  done: number
+  succeeded: number
   failed: number
   cancelled: number
 }
 
 export interface TaskUpdatedPayload {
   task: TaskRecord
-  action: 'created' | 'updated' | 'cancelled' | 'completed' | 'failed' | 'blocked'
+  action: 'created' | 'updated' | 'running' | 'cancelled' | 'succeeded' | 'failed' | 'blocked'
 }
 
 export interface MemoryReviewCandidate {

@@ -192,6 +192,7 @@ class AgentRuntime:
         load_dotenv()
         self.memory_store = memory_store
         self.audio_runtime = audio_runtime
+        self.task_worker: Any | None = None
         self.model_client = OpenAICompatibleChatModel()
         self.tool_registry = ToolRegistry(config_path=tools_config_path)
         self.harness_registry = HarnessRegistry.from_config(
@@ -225,6 +226,9 @@ class AgentRuntime:
             harnesses_config_path,
             memory_store.database_path,
         )
+
+    def set_task_worker(self, task_worker: Any | None) -> None:
+        self.task_worker = task_worker
 
     @property
     def base_url(self) -> str:
@@ -1775,6 +1779,7 @@ class AgentRuntime:
                 session_id=session_id,
                 cwd=REPO_ROOT,
                 memory_store=self.memory_store,
+                task_worker=self.task_worker,
                 turn_id=turn_id,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
@@ -1827,6 +1832,11 @@ class AgentRuntime:
             yield event
         if tool_name == "update_plan" and result.ok:
             yield AgentEvent("task.plan.updated", result.output)
+        if tool_name in {"create_task", "cancel_task"} and result.ok:
+            task = result.output.get("task")
+            action = result.output.get("action")
+            if isinstance(task, dict) and isinstance(action, str):
+                yield AgentEvent("task.updated", {"task": task, "action": action})
         yield AgentEvent("tool.finished", self._tool_finished_payload(
             tool_name,
             ok=result.ok,
@@ -1896,10 +1906,11 @@ class AgentRuntime:
             "You are Amadeus, a desktop Live2D companion agent.",
             "Reply in the same language as the user unless they ask otherwise.",
             "Be concise, practical, and calm.",
-            "You can use safe local tools for current time, dice rolls, listing installed skills, viewing skill instructions, reading stable memory, updating stable memory, searching conversation memory, searching project files, reading bounded project text files, delegating restricted research/search subtasks, patching project text files, and writing new project text files.",
+            "You can use safe local tools for current time, dice rolls, listing installed skills, viewing skill instructions, reading stable memory, updating stable memory, searching conversation memory, searching project files, reading bounded project text files, creating/listing/cancelling session background tasks, delegating restricted research/search subtasks, patching project text files, and writing new project text files.",
             "When the user asks for the current time, current date, today, now, or scheduling context, you must call get_current_time before answering.",
             "When the user asks to roll dice or generate a dice result, call roll_dice.",
             "For multi-step work where a visible plan would help, you may call update_plan to create or update the current session plan. Do not call update_plan for simple one-step questions or casual chat.",
+            "Use create_task/list_tasks/cancel_task only for explicit session background work: queued, asynchronous, longer-running, tracked, or user-requested task management. Do not create background tasks for ordinary immediate answers or internal planning.",
             "Use delegate_task only for bounded research/search subtasks that can be answered from memory, file search, or explicit file reads. Do not use it for file writes, shell execution, UI control, recursive delegation, or broad autonomous work.",
             "A compact catalog of installed skills is always available below.",
             "Before replying, scan the available_skills catalog. If a skill matches or is even partially relevant, call skill_view(name) and follow that skill's instructions for the rest of the turn.",

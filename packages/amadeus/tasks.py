@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 
-TASK_STATUSES = {"queued", "running", "blocked", "done", "failed", "cancelled"}
+TASK_STATUSES = {"queued", "running", "blocked", "succeeded", "failed", "cancelled"}
+LEGACY_TASK_STATUS_ALIASES = {"done": "succeeded"}
 ACTIVE_TASK_STATUSES = {"queued", "running", "blocked"}
 MAX_TASK_TITLE_CHARS = 200
 MAX_TASK_BODY_CHARS = 8000
@@ -15,6 +16,7 @@ TRUNCATION_MARKER = "... [truncated]"
 
 def normalize_task_status(status: Any, *, default: str = "queued") -> str:
     normalized = str(status or default).strip().lower()
+    normalized = LEGACY_TASK_STATUS_ALIASES.get(normalized, normalized)
     if normalized not in TASK_STATUSES:
         raise ValueError(f"invalid task status: {normalized}")
     return normalized
@@ -79,12 +81,12 @@ def task_summary(tasks: list[dict[str, Any]]) -> dict[str, int]:
         "queued": 0,
         "running": 0,
         "blocked": 0,
-        "done": 0,
+        "succeeded": 0,
         "failed": 0,
         "cancelled": 0,
     }
     for task in tasks:
-        status = str(task.get("status") or "")
+        status = normalize_task_status(task.get("status"), default="queued")
         if status in counts:
             counts[status] += 1
     return counts

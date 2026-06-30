@@ -25,6 +25,7 @@ from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_providers_config, provider_profile
 from amadeus.tool_runtime import ToolContext
 from amadeus.tools import list_tools
+from amadeus.workers import TaskWorker
 
 
 HOST = os.environ.get("AMADEUS_PYTHON_RUNTIME_HOST", os.environ.get("AMADEUS_PYTHON_TOOLS_HOST", "127.0.0.1"))
@@ -80,6 +81,8 @@ live2d_library = LocalLive2DModelLibrary(LIVE2D_ROOT, PUBLIC_BASE_URL, HARNESSES
 audio_runtime = AudioRuntime(audio_library, create_tts_provider_from_config(audio_library))
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
+task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime)
+agent_runtime.set_task_worker(task_worker)
 
 
 class RuntimeRequestHandler(BaseHTTPRequestHandler):
@@ -726,6 +729,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 due_at=body.get("dueAt") if isinstance(body.get("dueAt"), str) else None,
             )
             logger.info("Created task taskId=%s sessionId=%s", task["id"], task["sessionId"])
+            task_worker.submit(str(task["id"]))
             self.write_json(201, {
                 "ok": True,
                 "task": task,
@@ -751,7 +755,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 return
             body = self.read_json_body()
             reason = body.get("reason") if isinstance(body.get("reason"), str) else None
-            task = memory_store.cancel_task(task_id, reason=reason)
+            task = task_worker.cancel(task_id, reason=reason)
             logger.info("Cancelled task taskId=%s sessionId=%s", task["id"], task["sessionId"])
             self.write_json(200, {
                 "ok": True,
@@ -960,6 +964,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 ToolContext(
                     session_id="default",
                     memory_store=memory_store,
+                    task_worker=task_worker,
                     tool_name=tool_name,
                     permission_decision="direct_execute",
                     audit_metadata={"source": "http_tools_execute"},

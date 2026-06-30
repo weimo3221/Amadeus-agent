@@ -15,6 +15,18 @@ tools:
     enabled: true
     permission: allow
 
+  create_task:
+    enabled: true
+    permission: allow
+
+  list_tasks:
+    enabled: true
+    permission: allow
+
+  cancel_task:
+    enabled: true
+    permission: allow
+
   search_files:
     enabled: true
     permission: allow

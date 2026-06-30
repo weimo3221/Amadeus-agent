@@ -864,6 +864,37 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(plan_events[0]["items"][0]["id"], "implement")
         self.assertEqual(self.memory.load_session_plan("default")["summary"]["inProgress"], 1)
 
+    def test_create_task_tool_emits_runtime_task_event(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_create_task",
+                    "type": "function",
+                    "function": {
+                        "name": "create_task",
+                        "arguments": json.dumps({
+                            "title": "Background research",
+                            "body": "Inspect docs later.",
+                            "autoStart": False,
+                        }),
+                    },
+                }],
+            },
+        )
+
+        events = list(runtime.run_turn("default", "queue this", lambda _request: False))
+
+        task_events = [event.payload for event in events if event.type == "task.updated"]
+        self.assertEqual(len(task_events), 1)
+        self.assertEqual(task_events[0]["action"], "created")
+        self.assertEqual(task_events[0]["task"]["title"], "Background research")
+        self.assertEqual(task_events[0]["task"]["status"], "queued")
+        listed = self.memory.list_tasks(session_id="default", active_only=True)
+        self.assertEqual(listed["summary"]["queued"], 1)
+
     def test_persisted_audit_records_survive_runtime_recreation(self) -> None:
         runtime = FakeAgentRuntime(
             self.memory,

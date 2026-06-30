@@ -19,6 +19,14 @@ from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.memory import MessageMemoryStore
 
 
+class NoopTaskWorker:
+    def submit(self, task_id: str) -> None:
+        return None
+
+    def cancel(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
+        return runtime_server.memory_store.cancel_task(task_id, reason=reason)
+
+
 class SummaryRuntime(AgentRuntime):
     def _request_conversation_summary(self, previous_summary: dict | None, messages: list[dict]) -> str:
         return "HTTP compacted summary"
@@ -67,6 +75,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.previous_agent_runtime = runtime_server.agent_runtime
         self.previous_permission_broker = runtime_server.permission_broker
         self.previous_live2d_library = runtime_server.live2d_library
+        self.previous_task_worker = runtime_server.task_worker
 
         database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
         self.runtime_config_path = Path(self.tmpdir.name) / "runtime.yaml"
@@ -118,6 +127,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         )
         runtime_server.permission_broker = PermissionBroker()
         runtime_server.live2d_library = LocalLive2DModelLibrary(live2d_root, "http://runtime", self.harnesses_config_path)
+        runtime_server.task_worker = NoopTaskWorker()
+        runtime_server.agent_runtime.set_task_worker(runtime_server.task_worker)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), runtime_server.RuntimeRequestHandler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -132,6 +143,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.agent_runtime = self.previous_agent_runtime
         runtime_server.permission_broker = self.previous_permission_broker
         runtime_server.live2d_library = self.previous_live2d_library
+        runtime_server.task_worker = self.previous_task_worker
 
         if self.previous_api_key is None:
             os.environ.pop("OPENAI_API_KEY", None)

@@ -180,7 +180,7 @@ class MessageMemoryStore:
                     session_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     body TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'done', 'failed', 'cancelled')),
+                    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'succeeded', 'failed', 'cancelled')),
                     priority INTEGER NOT NULL DEFAULT 0,
                     due_at TEXT,
                     claim_lock TEXT,
@@ -220,6 +220,7 @@ class MessageMemoryStore:
             self._migrate_roles_and_sessions(connection)
             self._migrate_conversation_summaries(connection)
             self._migrate_memory_review_candidates(connection)
+            self._migrate_task_statuses(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_covered
@@ -294,6 +295,58 @@ class MessageMemoryStore:
                     str(row[2]) if row[2] else now,
                 ),
             )
+
+    def _migrate_task_statuses(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+        ).fetchone()
+        schema_sql = str(row[0] or "") if row else ""
+        if "'succeeded'" in schema_sql and "'done'" not in schema_sql:
+            return
+
+        connection.execute("ALTER TABLE tasks RENAME TO tasks_legacy")
+        connection.execute(
+            """
+            CREATE TABLE tasks (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              title TEXT NOT NULL,
+              body TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'succeeded', 'failed', 'cancelled')),
+              priority INTEGER NOT NULL DEFAULT 0,
+              due_at TEXT,
+              claim_lock TEXT,
+              last_heartbeat TEXT,
+              result TEXT,
+              error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              finished_at TEXT,
+              FOREIGN KEY(session_id) REFERENCES sessions(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+              id, session_id, title, body, status, priority, due_at, claim_lock,
+              last_heartbeat, result, error, created_at, updated_at, finished_at
+            )
+            SELECT
+              id, session_id, title, body,
+              CASE status WHEN 'done' THEN 'succeeded' ELSE status END,
+              priority, due_at, claim_lock, last_heartbeat, result, error,
+              created_at, updated_at, finished_at
+            FROM tasks_legacy
+            """
+        )
+        connection.execute("DROP TABLE tasks_legacy")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tasks_session_status_updated
+            ON tasks(session_id, status, updated_at)
+            """
+        )
 
     def list_roles(self, include_archived: bool = False) -> list[dict[str, str | int | bool]]:
         where = "1 = 1" if include_archived else "archived = 0"
@@ -1032,7 +1085,7 @@ class MessageMemoryStore:
                     WHEN 'blocked' THEN 1
                     WHEN 'queued' THEN 2
                     WHEN 'failed' THEN 3
-                    WHEN 'done' THEN 4
+                    WHEN 'succeeded' THEN 4
                     WHEN 'cancelled' THEN 5
                     ELSE 6
                   END,
@@ -1069,6 +1122,163 @@ class MessageMemoryStore:
             ).fetchone()
         return task_response(row) if row else None
 
+    def start_task(self, task_id: str, *, claim_lock: str) -> dict[str, object] | None:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
+        if not normalized_claim_lock:
+            raise ValueError("claim_lock is required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            if str(row[2]) != "queued":
+                return self.get_task(normalized_task_id)
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'running',
+                    claim_lock = ?,
+                    last_heartbeat = ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'queued'
+                """,
+                (normalized_claim_lock, now, now, normalized_task_id),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[1]),
+                event_type="running",
+                status="running",
+                message="Task worker started",
+                metadata={"claimLock": normalized_claim_lock},
+                created_at=now,
+            )
+        return self.get_task(normalized_task_id)
+
+    def heartbeat_task(self, task_id: str, *, claim_lock: str) -> dict[str, object] | None:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
+        if not normalized_claim_lock:
+            raise ValueError("claim_lock is required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE tasks
+                SET last_heartbeat = ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'running' AND claim_lock = ?
+                """,
+                (now, now, normalized_task_id, normalized_claim_lock),
+            )
+        return self.get_task(normalized_task_id)
+
+    def complete_task(self, task_id: str, *, claim_lock: str, result: str | None = None) -> dict[str, object]:
+        return self.finish_task(
+            task_id,
+            claim_lock=claim_lock,
+            status="succeeded",
+            result=result,
+            error=None,
+            event_type="succeeded",
+            default_message="Task succeeded",
+        )
+
+    def fail_task(self, task_id: str, *, claim_lock: str, error: str | None = None) -> dict[str, object]:
+        return self.finish_task(
+            task_id,
+            claim_lock=claim_lock,
+            status="failed",
+            result=None,
+            error=error,
+            event_type="failed",
+            default_message="Task failed",
+        )
+
+    def finish_task(
+        self,
+        task_id: str,
+        *,
+        claim_lock: str,
+        status: str,
+        result: str | None,
+        error: str | None,
+        event_type: str,
+        default_message: str,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
+        if not normalized_claim_lock:
+            raise ValueError("claim_lock is required")
+        normalized_status = normalize_task_status(status)
+        if normalized_status not in {"succeeded", "failed"}:
+            raise ValueError("finish status must be succeeded or failed")
+        normalized_result = normalize_optional_text(result, max_chars=MAX_TASK_RESULT_CHARS, field_name="result")
+        normalized_error = normalize_optional_text(error, max_chars=MAX_TASK_ERROR_CHARS, field_name="error")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status, claim_lock
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            current_status = str(row[2])
+            if current_status in {"succeeded", "failed", "cancelled"}:
+                task = self.get_task(normalized_task_id)
+                if task is None:
+                    raise ValueError("task not found")
+                return task
+            if current_status != "running" or str(row[3] or "") != normalized_claim_lock:
+                raise ValueError("task is not claimed by this worker")
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = ?,
+                    result = ?,
+                    error = ?,
+                    updated_at = ?,
+                    finished_at = ?
+                WHERE id = ? AND status = 'running' AND claim_lock = ?
+                """,
+                (
+                    normalized_status,
+                    normalized_result,
+                    normalized_error,
+                    now,
+                    now,
+                    normalized_task_id,
+                    normalized_claim_lock,
+                ),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[1]),
+                event_type=event_type,
+                status=normalized_status,
+                message=normalized_error or normalized_result or default_message,
+                metadata={"claimLock": normalized_claim_lock},
+                created_at=now,
+            )
+        task = self.get_task(normalized_task_id)
+        if task is None:
+            raise ValueError("task not found")
+        return task
+
     def cancel_task(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
         normalized_reason = normalize_optional_text(
@@ -1089,7 +1299,7 @@ class MessageMemoryStore:
             if not row:
                 raise ValueError("task not found")
             current_status = str(row[2])
-            if current_status in {"done", "failed", "cancelled"}:
+            if current_status in {"succeeded", "failed", "cancelled"}:
                 task = self.get_task(normalized_task_id)
                 if task is None:
                     raise ValueError("task not found")
@@ -2266,7 +2476,7 @@ def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
         "sessionId": str(row[1]),
         "title": str(row[2]),
         "body": str(row[3] or ""),
-        "status": str(row[4]),
+        "status": normalize_task_status(row[4]),
         "priority": int(row[5] or 0),
         "dueAt": str(row[6]) if row[6] else None,
         "claimLock": str(row[7]) if row[7] else None,

@@ -425,7 +425,7 @@ describe('WebSocket Python-first integration', () => {
             createdAt: '2026-06-30T00:00:00Z',
             updatedAt: '2026-06-30T00:00:00Z',
           }],
-          summary: { total: 1, queued: 1, running: 0, blocked: 0, done: 0, failed: 0, cancelled: 0 },
+          summary: { total: 1, queued: 1, running: 0, blocked: 0, succeeded: 0, failed: 0, cancelled: 0 },
         }))
         return
       }

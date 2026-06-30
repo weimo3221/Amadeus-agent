@@ -802,6 +802,61 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertIn("The corrected fact", replace_request)
         self.assertIn("forget structured memory item 7", forget_request)
 
+    def test_task_tools_create_list_and_cancel_session_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            context = ToolContext(session_id="session-1", memory_store=memory)
+
+            created = registry.execute(
+                "create_task",
+                {
+                    "title": "Run background research",
+                    "body": "Check the project docs.",
+                    "priority": 4,
+                    "autoStart": False,
+                },
+                context,
+            )
+            listed = registry.execute("list_tasks", {"activeOnly": True}, context)
+            cancelled = registry.execute(
+                "cancel_task",
+                {"taskId": created.output["task"]["id"], "reason": "User changed direction"},
+                context,
+            )
+            listed_cancelled = registry.execute(
+                "list_tasks",
+                {"status": "cancelled", "activeOnly": False},
+                context,
+            )
+
+        self.assertTrue(created.ok)
+        self.assertEqual(created.output["action"], "created")
+        self.assertFalse(created.output["workerSubmitted"])
+        self.assertEqual(created.output["task"]["status"], "queued")
+        self.assertTrue(listed.ok)
+        self.assertEqual(listed.output["summary"]["queued"], 1)
+        self.assertTrue(cancelled.ok)
+        self.assertEqual(cancelled.output["action"], "cancelled")
+        self.assertEqual(cancelled.output["task"]["status"], "cancelled")
+        self.assertEqual(listed_cancelled.output["summary"]["cancelled"], 1)
+
+    def test_cancel_task_tool_rejects_cross_session_task_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(session_id="session-1", title="Private task")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            other_context = ToolContext(session_id="session-2", memory_store=memory)
+
+            result = registry.execute("cancel_task", {"taskId": task["id"]}, other_context)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output["error"], "task not found")
+
     def test_execute_applies_search_memory_result_policy(self) -> None:
         output = {
             "query": "preference",

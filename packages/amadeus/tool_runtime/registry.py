@@ -36,6 +36,7 @@ class ToolContext:
     session_id: str
     cwd: Path = REPO_ROOT
     memory_store: Any | None = None
+    task_worker: Any | None = None
     turn_id: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None

@@ -22,6 +22,14 @@ from amadeus.tools.structured_memory import (
     memory_replace,
     search_memory_items,
 )
+from amadeus.tools.tasks import (
+    CANCEL_TASK_TOOL_SPEC,
+    CREATE_TASK_TOOL_SPEC,
+    LIST_TASKS_TOOL_SPEC,
+    cancel_task,
+    create_task,
+    list_tasks,
+)
 from amadeus.tools.time import TIME_TOOL_SPEC, get_current_time
 from amadeus.tools.write_file import WRITE_FILE_TOOL_SPEC, write_file
 
@@ -32,6 +40,9 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         TIME_TOOL_SPEC,
         DICE_TOOL_SPEC,
         DELEGATE_TASK_TOOL_SPEC,
+        CREATE_TASK_TOOL_SPEC,
+        LIST_TASKS_TOOL_SPEC,
+        CANCEL_TASK_TOOL_SPEC,
         SEARCH_FILES_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
         SKILLS_LIST_TOOL_SPEC,
@@ -78,12 +89,15 @@ __all__ = [
     "ToolHandler",
     "ToolPermission",
     "ToolSpec",
+    "cancel_task",
+    "create_task",
     "execute_tool",
     "delegate_task",
     "get_current_time",
     "get_tool_spec",
     "list_tool_specs",
     "list_tools",
+    "list_tasks",
     "memory_add",
     "memory_forget",
     "memory_replace",

@@ -442,10 +442,14 @@ Current behavior:
 Current behavior:
 
 - Python persists lightweight `tasks` and `task_events` rows in SQLite.
-- `POST /tasks` creates a queued task and records a `created` task event.
-- `POST /tasks/{id}/cancel` marks active tasks as `cancelled` and records a `cancelled` task event.
+- Task statuses are `queued`, `running`, `blocked`, `succeeded`, `failed`, and `cancelled`. Legacy `done` rows are normalized to `succeeded`.
+- `POST /tasks` creates a queued task, records a `created` task event, and submits it to the in-process worker.
+- The agent can also manage session tasks through `create_task`, `list_tasks`, and `cancel_task` tools. `create_task` is for explicit queued/asynchronous/tracked work, not ordinary immediate answers or internal planning.
+- Successful `create_task` and `cancel_task` tool calls emit `task.updated` runtime events for desktop sync.
+- The worker claims queued tasks as `running`, stores heartbeat/claim metadata, and records `succeeded` or `failed` terminal events from the backing agent turn.
+- `POST /tasks/{id}/cancel` marks active tasks as `cancelled`, records one `cancelled` task event, and asks the backing agent turn to cancel when one is running.
 - Main UI restores active tasks with `GET /tasks?sessionId={id}&activeOnly=true` and updates from `task.updated` runtime events.
-- This is the storage/API/UI foundation only; autonomous scheduler/worker execution is still a later phase.
+- Runtime task-event broadcasting is still a later phase; clients should refresh through HTTP when they need the full task event history.
 
 ### memory.context.used
 
