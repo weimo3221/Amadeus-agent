@@ -188,6 +188,7 @@ READ_FILE_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=read_file,
+    prompt_hint="Use after locating or being given a specific project text file whose contents are needed.",
     schema={
         "type": "function",
         "function": {

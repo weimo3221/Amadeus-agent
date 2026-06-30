@@ -37,6 +37,7 @@ UPDATE_PLAN_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=update_plan,
+    prompt_hint="Use for visible multi-step planning or progress tracking; skip it for simple one-step questions and casual chat.",
     schema={
         "type": "function",
         "function": {

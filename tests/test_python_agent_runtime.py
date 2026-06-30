@@ -28,6 +28,7 @@ class FakeAgentRuntime(AgentRuntime):
         runtime_config_path: Path | None = None,
         audio_runtime: AudioRuntime | None = None,
         skills_root: Path | None = None,
+        workspace_root: Path | None = None,
         summary_error: str | None = None,
         memory_review_response: list[dict[str, Any]] | None = None,
         memory_review_error: str | None = None,
@@ -48,6 +49,7 @@ class FakeAgentRuntime(AgentRuntime):
             tools_config_path=tools_config_path or Path(tempfile.mkdtemp()) / "missing-tools.yaml",
             runtime_config_path=runtime_config_path or Path(tempfile.mkdtemp()) / "missing-runtime.yaml",
             skills_root=skills_root or Path(tempfile.mkdtemp()) / "skills",
+            workspace_root=workspace_root or Path(tempfile.mkdtemp()) / "workspace",
         )
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -354,6 +356,39 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("concise Chinese", runtime.system_prompt)
         self.assertIn("<available_skills>", runtime.system_prompt)
         self.assertIn("development/runtime-debug", runtime.system_prompt)
+
+    def test_system_prompt_uses_tool_prompt_hints(self) -> None:
+        runtime = FakeAgentRuntime(self.memory, skills_root=self.skills_root)
+
+        self.assertIn("<tool_routing>", runtime.system_prompt)
+        self.assertIn("get_current_time", runtime.system_prompt)
+        self.assertIn("create_task", runtime.system_prompt)
+        self.assertIn("delegate_task", runtime.system_prompt)
+        self.assertIn("ordinary immediate answers", runtime.system_prompt)
+
+    def test_system_prompt_includes_workspace_agent_instructions(self) -> None:
+        workspace_root = Path(self.tmpdir.name) / "workspace"
+        workspace_root.mkdir()
+        (workspace_root / "AGENT.md").write_text(
+            "# Agent Guide\n\nPrefer focused Python tests for runtime changes.",
+            encoding="utf-8",
+        )
+        (workspace_root / "CLAUDE.md").write_text(
+            "# Claude Guide\n\nCheck event protocol changes before UI updates.",
+            encoding="utf-8",
+        )
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            skills_root=self.skills_root,
+            workspace_root=workspace_root,
+        )
+
+        self.assertIn("<workspace_instructions", runtime.system_prompt)
+        self.assertIn('source path="AGENT.md"', runtime.system_prompt)
+        self.assertIn("Prefer focused Python tests", runtime.system_prompt)
+        self.assertIn('source path="CLAUDE.md"', runtime.system_prompt)
+        self.assertIn("cannot override system, safety, permission, or runtime policies", runtime.system_prompt)
 
     def test_runtime_config_file_sets_context_summary_and_review_limits(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime.yaml"

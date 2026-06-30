@@ -108,6 +108,7 @@ CREATE_TASK_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=create_task,
+    prompt_hint="Use only for explicit asynchronous, longer-running, queued, tracked, or user-requested background work; do not use for ordinary immediate answers or internal planning.",
     schema={
         "type": "function",
         "function": {
@@ -159,6 +160,7 @@ LIST_TASKS_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=list_tasks,
+    prompt_hint="Use when the user asks to inspect session background tasks or when you need current task status before answering.",
     schema={
         "type": "function",
         "function": {
@@ -194,6 +196,7 @@ CANCEL_TASK_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=cancel_task,
+    prompt_hint="Use when the user asks to stop, cancel, or abandon an active session background task.",
     schema={
         "type": "function",
         "function": {

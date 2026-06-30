@@ -25,6 +25,7 @@ DICE_TOOL_SPEC = ToolSpec(
     permission="ask",
     enabled=True,
     handler=roll_dice,
+    prompt_hint="Call this when the user asks to roll dice or generate a dice result.",
     schema={
         "type": "function",
         "function": {

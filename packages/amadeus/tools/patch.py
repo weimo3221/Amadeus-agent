@@ -143,6 +143,7 @@ PATCH_TOOL_SPEC = ToolSpec(
     permission="ask",
     enabled=True,
     handler=patch,
+    prompt_hint="Use for targeted edits to existing project text files after reading the current contents.",
     schema={
         "type": "function",
         "function": {

@@ -113,6 +113,7 @@ SEARCH_FILES_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=search_files,
+    prompt_hint="Use to find workspace files, docs, code, configuration, or matching local project text before reading specific files.",
     schema={
         "type": "function",
         "function": {

@@ -44,6 +44,7 @@ SKILLS_LIST_TOOL_SPEC = ToolSpec(
         },
     },
     handler=skills_list,
+    prompt_hint="Use when the user asks what skills or workflows are available.",
 )
 
 
@@ -71,4 +72,5 @@ SKILL_VIEW_TOOL_SPEC = ToolSpec(
         },
     },
     handler=skill_view,
+    prompt_hint="Use before relying on a relevant installed skill, and when the user asks to inspect, compare, debug, or use a specific skill.",
 )

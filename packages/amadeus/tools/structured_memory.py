@@ -117,6 +117,7 @@ MEMORY_ADD_TOOL_SPEC = ToolSpec(
     permission="ask",
     enabled=True,
     handler=memory_add,
+    prompt_hint="Use only for durable structured facts after user approval; never store transient progress, secrets, guesses, or raw transcripts.",
     schema={
         "type": "function",
         "function": {
@@ -161,6 +162,7 @@ MEMORY_REPLACE_TOOL_SPEC = ToolSpec(
     permission="ask",
     enabled=True,
     handler=memory_replace,
+    prompt_hint="Use only when a durable structured memory item needs correction after user approval.",
     schema={
         "type": "function",
         "function": {
@@ -201,6 +203,7 @@ MEMORY_FORGET_TOOL_SPEC = ToolSpec(
     permission="ask",
     enabled=True,
     handler=memory_forget,
+    prompt_hint="Use only when a durable structured memory item should be removed after user approval.",
     schema={
         "type": "function",
         "function": {
@@ -228,6 +231,7 @@ SEARCH_MEMORY_ITEMS_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=search_memory_items,
+    prompt_hint="Use to search durable structured memory facts by scope or query.",
     schema={
         "type": "function",
         "function": {

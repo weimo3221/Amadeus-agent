@@ -31,6 +31,7 @@ TIME_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=get_current_time,
+    prompt_hint="Call this before answering questions about current time, current date, today, now, or scheduling context.",
     schema={
         "type": "function",
         "function": {

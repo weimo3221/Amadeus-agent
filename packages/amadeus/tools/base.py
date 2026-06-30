@@ -16,6 +16,7 @@ class ToolSpec:
     enabled: bool
     schema: dict[str, Any]
     handler: ToolHandler
+    prompt_hint: str | None = None
 
     def describe_request(self, args: dict[str, Any]) -> str:
         if self.name == "roll_dice":

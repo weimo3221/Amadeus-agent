@@ -192,6 +192,16 @@ class ToolRegistry:
             if spec.enabled and spec.permission != "deny"
         ]
 
+    def enabled_prompt_hints(self) -> list[dict[str, str]]:
+        return [
+            {
+                "name": spec.name,
+                "hint": spec.prompt_hint,
+            }
+            for spec in self._specs.values()
+            if spec.enabled and spec.permission != "deny" and spec.prompt_hint
+        ]
+
     def _apply_config(self, config: dict[str, dict[str, Any]]) -> None:
         for configured_name, entry in config.items():
             tool_name = TOOL_NAME_ALIASES.get(configured_name, configured_name)

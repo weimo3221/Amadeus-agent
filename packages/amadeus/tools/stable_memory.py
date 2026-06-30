@@ -43,6 +43,7 @@ READ_MEMORY_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=read_memory,
+    prompt_hint="Use when stable agent or user profile memory must be read explicitly.",
     schema={
         "type": "function",
         "function": {
@@ -70,6 +71,7 @@ UPDATE_MEMORY_TOOL_SPEC = ToolSpec(
     permission="ask",
     enabled=True,
     handler=update_memory,
+    prompt_hint="Use only when the user explicitly asks to remember, update, or remove durable facts, preferences, or important project decisions.",
     schema={
         "type": "function",
         "function": {

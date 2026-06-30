@@ -40,6 +40,7 @@ SEARCH_MEMORY_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=search_memory,
+    prompt_hint="Use when the user asks about earlier messages, remembered preferences, past decisions, or conversation history.",
     schema={
         "type": "function",
         "function": {

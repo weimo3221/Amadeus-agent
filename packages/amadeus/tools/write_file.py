@@ -119,6 +119,7 @@ WRITE_FILE_TOOL_SPEC = ToolSpec(
     permission="ask",
     enabled=True,
     handler=write_file,
+    prompt_hint="Use for new project text files or intentional full-file replacement; prefer patch for small edits to existing files.",
     schema={
         "type": "function",
         "function": {

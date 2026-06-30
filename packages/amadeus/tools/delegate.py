@@ -165,6 +165,7 @@ DELEGATE_TASK_TOOL_SPEC = ToolSpec(
     permission="allow",
     enabled=True,
     handler=delegate_task,
+    prompt_hint="Use only for bounded research/search subtasks answerable from memory, file search, or explicit file reads; never for writes, shell execution, UI control, recursive delegation, or broad autonomous work.",
     schema={
         "type": "function",
         "function": {
