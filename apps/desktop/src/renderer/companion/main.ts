@@ -94,10 +94,40 @@ let activeLive2DModelId = ''
 let live2dDisplayConfig = { ...DEFAULT_LIVE2D_DISPLAY_CONFIG }
 let companionPanelHideTimer: number | undefined
 let companionPanelVisible = false
+let companionInteractive = true
+let companionCursorInside = false
 
 interface DesktopGlobalCursorPayload {
   cursor: { x: number; y: number }
   window: { x: number; y: number; width: number; height: number }
+}
+
+interface MainUiInteractionStatus {
+  exists: boolean
+  destroyed: boolean
+  visible: boolean
+  minimized: boolean
+  focused: boolean
+  fullscreen: boolean
+}
+
+interface CompanionInteractionModePayload {
+  interactive: boolean
+  reason: string
+  mainUi: MainUiInteractionStatus
+}
+
+let latestCompanionInteractionMode: CompanionInteractionModePayload = {
+  interactive: true,
+  reason: 'initial',
+  mainUi: {
+    exists: false,
+    destroyed: false,
+    visible: false,
+    minimized: false,
+    focused: false,
+    fullscreen: false,
+  },
 }
 
 interface Live2DCoreModel {
@@ -862,6 +892,10 @@ function focusLive2DFromWindowPoint(windowX: number, windowY: number): void {
 }
 
 function showCompanionPanel(): void {
+  if (!companionInteractive) {
+    hideCompanionPanel()
+    return
+  }
   if (companionPanelHideTimer !== undefined) {
     window.clearTimeout(companionPanelHideTimer)
     companionPanelHideTimer = undefined
@@ -901,7 +935,23 @@ function isCursorInsideWindow(payload: DesktopGlobalCursorPayload): boolean {
 function handleGlobalCursor(payload: DesktopGlobalCursorPayload): void {
   focusLive2DFromWindowPoint(payload.cursor.x - payload.window.x, payload.cursor.y - payload.window.y)
 
-  if (isCursorInsideWindow(payload)) {
+  const cursorInside = isCursorInsideWindow(payload)
+  if (cursorInside && !companionCursorInside) {
+    console.info(`[companion] bubble trigger mainUi=${JSON.stringify({
+      ...latestCompanionInteractionMode.mainUi,
+      interactive: companionInteractive,
+      reason: latestCompanionInteractionMode.reason,
+      blocked: !companionInteractive,
+    })}`)
+  }
+  companionCursorInside = cursorInside
+
+  if (!companionInteractive) {
+    hideCompanionPanel()
+    return
+  }
+
+  if (cursorInside) {
     showCompanionPanel()
     return
   }
@@ -911,6 +961,22 @@ function handleGlobalCursor(payload: DesktopGlobalCursorPayload): void {
 
 function bindGlobalCursorTracking(): void {
   window.amadeus?.onGlobalCursor?.(handleGlobalCursor)
+}
+
+function setCompanionInteractionMode(payload: CompanionInteractionModePayload): void {
+  latestCompanionInteractionMode = payload
+  companionInteractive = payload.interactive
+  companionCursorInside = false
+  document.body.dataset.companionInteractive = String(payload.interactive)
+  document.body.dataset.companionInteractionReason = payload.reason
+  chatLog?.replaceChildren()
+  if (!payload.interactive) {
+    hideCompanionPanel()
+  }
+}
+
+function bindCompanionInteractionMode(): void {
+  window.amadeus?.onCompanionInteractionMode?.(setCompanionInteractionMode)
 }
 
 function scheduleLive2DRetry(reason: string): void {
@@ -1260,6 +1326,7 @@ function undefinedStorage() {
 
 bootControls()
 bindGlobalCursorTracking()
+bindCompanionInteractionMode()
 runtimeUi.bindControls()
 runtimeUi.connectAgentRuntime()
 if (SKIP_LIVE2D) {

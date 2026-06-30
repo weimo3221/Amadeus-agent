@@ -788,6 +788,12 @@ body.companion-panel-open #app::before {
   -webkit-app-region: no-drag;
 }
 
+body[data-companion-interactive="false"] .companion-hover-panel,
+body[data-companion-interactive="false"] .companion-transient-log {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .companion-transient-log .message {
   max-width: min(330px, 92%);
   border: 1px solid rgba(255, 205, 239, 0.18);

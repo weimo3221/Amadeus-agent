@@ -45,6 +45,58 @@ function bringWindowToFront(window: BrowserWindow | undefined): void {
   window.focus()
 }
 
+function isMainUiBlockingCompanion(): boolean {
+  return Boolean(
+    mainUiWindow
+    && !mainUiWindow.isDestroyed()
+    && mainUiWindow.isVisible()
+    && !mainUiWindow.isMinimized(),
+  )
+}
+
+function mainUiInteractionStatus(): Record<string, boolean> {
+  if (!mainUiWindow) {
+    return {
+      exists: false,
+      destroyed: false,
+      visible: false,
+      minimized: false,
+      focused: false,
+      fullscreen: false,
+    }
+  }
+  if (mainUiWindow.isDestroyed()) {
+    return {
+      exists: true,
+      destroyed: true,
+      visible: false,
+      minimized: false,
+      focused: false,
+      fullscreen: false,
+    }
+  }
+  return {
+    exists: true,
+    destroyed: false,
+    visible: mainUiWindow.isVisible(),
+    minimized: mainUiWindow.isMinimized(),
+    focused: mainUiWindow.isFocused(),
+    fullscreen: mainUiWindow.isFullScreen(),
+  }
+}
+
+function publishCompanionInteractionMode(): void {
+  if (!companionWindow || companionWindow.isDestroyed()) {
+    return
+  }
+  const mainUiBlocking = isMainUiBlockingCompanion()
+  companionWindow.webContents.send('companion:interaction-mode', {
+    interactive: !mainUiBlocking,
+    reason: mainUiBlocking ? 'main-ui-visible' : 'main-ui-unavailable',
+    mainUi: mainUiInteractionStatus(),
+  })
+}
+
 function rendererDevUrl(entry: 'main-ui' | 'companion'): string {
   const baseUrl = process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173/'
   return new URL(`${entry}/index.html`, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString()
@@ -172,6 +224,7 @@ function createCompanionWindow(): BrowserWindow {
 
   window.webContents.on('did-finish-load', () => {
     writeRuntimeLog('Renderer finished loading')
+    publishCompanionInteractionMode()
     if (isE2eSmoke) {
       console.log('AMADEUS_E2E_SMOKE renderer-ready')
       setTimeout(() => app.quit(), 100)
@@ -241,6 +294,7 @@ function createMainUiWindow(sessionId = defaultCompanionSessionId): BrowserWindo
   if (mainUiWindow && !mainUiWindow.isDestroyed()) {
     mainUiWindow.show()
     mainUiWindow.focus()
+    publishCompanionInteractionMode()
     return mainUiWindow
   }
 
@@ -282,7 +336,12 @@ function createMainUiWindow(sessionId = defaultCompanionSessionId): BrowserWindo
     if (mainUiWindow === window) {
       mainUiWindow = undefined
     }
+    publishCompanionInteractionMode()
   })
+  window.on('show', publishCompanionInteractionMode)
+  window.on('hide', publishCompanionInteractionMode)
+  window.on('minimize', publishCompanionInteractionMode)
+  window.on('restore', publishCompanionInteractionMode)
 
   if (process.env.AMADEUS_DESKTOP_DEV === '1') {
     const url = new URL(rendererDevUrl('main-ui'))
@@ -708,6 +767,7 @@ else {
   app.on('second-instance', () => {
     bringWindowToFront(mainUiWindow)
     bringWindowToFront(companionWindow)
+    publishCompanionInteractionMode()
   })
 
   app.whenReady().then(() => {
@@ -734,6 +794,7 @@ else {
       window?.setAlwaysOnTop(false)
       window?.setSkipTaskbar(false)
       window?.minimize()
+      publishCompanionInteractionMode()
       return window?.isMinimized() ?? false
     })
 
@@ -753,6 +814,7 @@ else {
 
     ipcMain.handle('window:open-main-ui', (_event, sessionId?: string) => {
       createMainUiWindow(typeof sessionId === 'string' && sessionId.trim() ? sessionId : defaultCompanionSessionId)
+      publishCompanionInteractionMode()
       return true
     })
 
