@@ -7,7 +7,7 @@ import { WebSocket } from 'ws'
 
 import type { RuntimeEvent } from '@amadeus-agent/amadeus/events'
 
-import { forwardToolPermissionToPython, proxyPythonLive2DRequest, proxyPythonSessionRequest, proxyPythonSkillsRequest, proxyPythonTaskRequest, relayPythonTurn } from './bridge.js'
+import { forwardToolPermissionToPython, proxyPythonAgentRequest, proxyPythonLive2DRequest, proxyPythonSessionRequest, proxyPythonSkillsRequest, proxyPythonTaskRequest, relayPythonTurn } from './bridge.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -499,6 +499,61 @@ describe('WebSocket Python-first integration', () => {
     })
     assert.equal(cancelResponse.status, 200)
     assert.deepEqual(JSON.parse(cancelBody), { reason: 'stop' })
+  })
+
+  it('proxies agent cancel HTTP requests through the Python runtime', async (t) => {
+    let cancelBody = ''
+    const pythonRuntime = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+      if (request.method === 'POST' && request.url === '/agent/cancel') {
+        cancelBody = await readBody(request)
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          sessionId: 'companion:default',
+          turnId: JSON.parse(cancelBody).turnId,
+          cancelled: true,
+          reason: 'cancel_requested',
+        }))
+        return
+      }
+      response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: 'not_found' }))
+    })
+    const runtimePort = await listen(pythonRuntime)
+    t.after(() => {
+      void closeServer(pythonRuntime)
+    })
+
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      handleAgentHttpRequest(request, response, requestUrl) {
+        return proxyPythonAgentRequest(request, response, requestUrl, {
+          runtimeUrl: `http://127.0.0.1:${runtimePort}`,
+        })
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const cancelResponse = await fetch(`http://127.0.0.1:${bridgePort}/agent/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'companion:default', turnId: 'turn-1' }),
+    })
+    assert.equal(cancelResponse.status, 200)
+    const payload = await cancelResponse.json() as { ok: boolean; cancelled: boolean }
+    assert.equal(payload.ok, true)
+    assert.equal(payload.cancelled, true)
+    assert.deepEqual(JSON.parse(cancelBody), { sessionId: 'companion:default', turnId: 'turn-1' })
   })
 
   it('allows browser CORS preflight for Live2D model switching', async (t) => {

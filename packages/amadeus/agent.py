@@ -100,6 +100,14 @@ class PermissionRequest:
     reason: str
 
 
+@dataclass
+class RunningTurn:
+    session_id: str
+    turn_id: str
+    cancel_event: threading.Event
+    started_at: str
+
+
 PermissionRequester = Callable[[PermissionRequest], bool]
 
 
@@ -201,6 +209,8 @@ class AgentRuntime:
         self._context_diagnostics_lock = threading.Lock()
         self._workspace_epoch_by_session: dict[str, int] = {}
         self._workspace_epoch_lock = threading.Lock()
+        self._running_turns_by_session: dict[str, RunningTurn] = {}
+        self._running_turns_lock = threading.Lock()
         self.runtime_config_path = runtime_config_path
         self._load_runtime_config(reason="startup")
         self._summary_failure_until: dict[str, float] = {}
@@ -437,6 +447,80 @@ class AgentRuntime:
             "config": self._load_runtime_config(reason="reload"),
         }
 
+    def running_turn_snapshot(self, session_id: str) -> dict[str, Any]:
+        with self._running_turns_lock:
+            running = self._running_turns_by_session.get(session_id)
+            if not running:
+                return {
+                    "sessionId": session_id,
+                    "running": False,
+                    "turnId": None,
+                    "startedAt": None,
+                    "cancelRequested": False,
+                }
+            return {
+                "sessionId": running.session_id,
+                "running": True,
+                "turnId": running.turn_id,
+                "startedAt": running.started_at,
+                "cancelRequested": running.cancel_event.is_set(),
+            }
+
+    def cancel_turn(self, session_id: str, turn_id: str | None = None) -> dict[str, Any]:
+        with self._running_turns_lock:
+            running = self._running_turns_by_session.get(session_id)
+            if not running:
+                return {
+                    "sessionId": session_id,
+                    "turnId": turn_id,
+                    "cancelled": False,
+                    "reason": "no_running_turn",
+                }
+            if turn_id and running.turn_id != turn_id:
+                return {
+                    "sessionId": session_id,
+                    "turnId": turn_id,
+                    "runningTurnId": running.turn_id,
+                    "cancelled": False,
+                    "reason": "turn_id_mismatch",
+                }
+            running.cancel_event.set()
+            return {
+                "sessionId": running.session_id,
+                "turnId": running.turn_id,
+                "cancelled": True,
+                "reason": "cancel_requested",
+            }
+
+    def _register_running_turn(self, session_id: str, turn_id: str) -> threading.Event:
+        cancel_event = threading.Event()
+        running = RunningTurn(
+            session_id=session_id,
+            turn_id=turn_id,
+            cancel_event=cancel_event,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        with self._running_turns_lock:
+            self._running_turns_by_session[session_id] = running
+        return cancel_event
+
+    def _finish_running_turn(self, session_id: str, turn_id: str) -> None:
+        with self._running_turns_lock:
+            running = self._running_turns_by_session.get(session_id)
+            if running and running.turn_id == turn_id:
+                self._running_turns_by_session.pop(session_id, None)
+
+    def _turn_cancelled_event(self, session_id: str, turn_id: str, phase: str) -> AgentEvent:
+        logger.info("Agent turn cancelled sessionId=%s turnId=%s phase=%s", session_id, turn_id, phase)
+        return AgentEvent(
+            "agent.turn.cancelled",
+            {
+                "sessionId": session_id,
+                "turnId": turn_id,
+                "phase": phase,
+            },
+        )
+
     def run_turn(
         self,
         session_id: str,
@@ -449,13 +533,73 @@ class AgentRuntime:
             logger.info("Rejecting empty turn sessionId=%s", session_id)
             yield AgentEvent("error", {"code": "empty_message", "message": "Message text is required."})
             return
+        if not self.api_key:
+            logger.info("Rejecting turn due to missing API key sessionId=%s", session_id)
+            yield AgentEvent("error", {"code": "missing_api_key", "message": "OPENAI_API_KEY is not configured."})
+            return
+        normalized_skills = normalize_requested_skills(active_skills)
+        _skill_prompt_block, resolved_skills = self.skill_catalog.build_prompt_block(normalized_skills)
+        if not resolved_skills.ok:
+            if resolved_skills.ambiguous:
+                logger.info(
+                    "Rejecting turn due to ambiguous skills before start sessionId=%s ambiguous=%s",
+                    session_id,
+                    list(resolved_skills.ambiguous),
+                )
+                yield AgentEvent(
+                    "error",
+                    {
+                        "code": "ambiguous_skill",
+                        "message": f"Ambiguous skills requested: {', '.join(resolved_skills.ambiguous)}",
+                    },
+                )
+                return
+            logger.info(
+                "Rejecting turn due to missing skills before start sessionId=%s missing=%s",
+                session_id,
+                list(resolved_skills.missing),
+            )
+            yield AgentEvent(
+                "error",
+                {
+                    "code": "skill_not_found",
+                    "message": f"Unknown skills requested: {', '.join(resolved_skills.missing)}",
+                },
+            )
+            return
+
+        turn_id = str(uuid4())
+        cancel_event = self._register_running_turn(session_id, turn_id)
+        yield AgentEvent("agent.turn.started", {
+            "sessionId": session_id,
+            "turnId": turn_id,
+            "startedAt": datetime.now(timezone.utc).isoformat(),
+        })
+        try:
+            yield from self._run_turn_impl(session_id, user_text, request_permission, active_skills, turn_id, cancel_event)
+        finally:
+            self._finish_running_turn(session_id, turn_id)
+
+    def _run_turn_impl(
+        self,
+        session_id: str,
+        user_text: str,
+        request_permission: PermissionRequester,
+        active_skills: list[str] | None,
+        turn_id: str,
+        cancel_event: threading.Event,
+    ) -> Iterable[AgentEvent]:
+        normalized_text = user_text.strip()
+        if not normalized_text:
+            logger.info("Rejecting empty turn sessionId=%s", session_id)
+            yield AgentEvent("error", {"code": "empty_message", "message": "Message text is required."})
+            return
 
         if not self.api_key:
             logger.info("Rejecting turn due to missing API key sessionId=%s", session_id)
             yield AgentEvent("error", {"code": "missing_api_key", "message": "OPENAI_API_KEY is not configured."})
             return
 
-        turn_id = str(uuid4())
         normalized_skills = normalize_requested_skills(active_skills)
         skill_prompt_block, resolved_skills = self.skill_catalog.build_prompt_block(normalized_skills)
         if not resolved_skills.ok:
@@ -542,6 +686,10 @@ class AgentRuntime:
 
         tool_calls = tool_decision.get("tool_calls") or []
         logger.info("Received tool decision sessionId=%s turnId=%s toolCallCount=%s", session_id, turn_id, len(tool_calls))
+        if cancel_event.is_set():
+            yield self._turn_cancelled_event(session_id, turn_id, "tool_decision")
+            yield from self._emit_assistant_state(session_id, turn_id, "idle")
+            return
         if tool_calls:
             history.append({
                 "role": "assistant",
@@ -551,13 +699,25 @@ class AgentRuntime:
 
             guardrail = ToolLoopGuardrail()
             for tool_call in tool_calls:
-                for event in self._execute_tool_call(session_id, turn_id, tool_call, request_permission, history, guardrail):
+                if cancel_event.is_set():
+                    yield self._turn_cancelled_event(session_id, turn_id, "before_tool")
+                    yield from self._emit_assistant_state(session_id, turn_id, "idle")
+                    return
+                for event in self._execute_tool_call(session_id, turn_id, tool_call, request_permission, history, guardrail, cancel_event):
                     yield event
+                if cancel_event.is_set():
+                    yield self._turn_cancelled_event(session_id, turn_id, "after_tool")
+                    yield from self._emit_assistant_state(session_id, turn_id, "idle")
+                    return
 
         yield from self._emit_assistant_state(session_id, turn_id, "speaking")
         assistant_text = ""
         try:
             for delta in self._stream_final_response(history):
+                if cancel_event.is_set():
+                    yield self._turn_cancelled_event(session_id, turn_id, "final_response")
+                    yield from self._emit_assistant_state(session_id, turn_id, "idle")
+                    return
                 assistant_text += delta
                 yield AgentEvent("assistant.delta", {"text": delta})
         except RuntimeError as error:
@@ -572,6 +732,10 @@ class AgentRuntime:
                 assistant_text = ""
                 try:
                     for delta in self._stream_final_response(history):
+                        if cancel_event.is_set():
+                            yield self._turn_cancelled_event(session_id, turn_id, "final_response_retry")
+                            yield from self._emit_assistant_state(session_id, turn_id, "idle")
+                            return
                         assistant_text += delta
                         yield AgentEvent("assistant.delta", {"text": delta})
                 except RuntimeError as retry_error:
@@ -1403,6 +1567,7 @@ class AgentRuntime:
         request_permission: PermissionRequester,
         history: list[dict[str, Any]],
         guardrail: ToolLoopGuardrail,
+        cancel_event: threading.Event,
     ) -> Iterable[AgentEvent]:
         function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
         tool_name = function.get("name") if isinstance(function.get("name"), str) else ""
@@ -1614,6 +1779,7 @@ class AgentRuntime:
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 workspace_epoch=workspace_epoch,
+                cancel_event=cancel_event,
                 permission_request_id=permission_request_id,
                 permission_decision=permission_decision,
                 audit_metadata={

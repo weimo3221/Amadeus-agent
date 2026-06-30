@@ -80,6 +80,7 @@ Fallback path today:
   - emits desktop-compatible runtime events
   - emits `memory.context.used` diagnostics for per-turn memory source selection and keeps the most recent diagnostics per session in an in-memory ring buffer
   - requests Python audio output after the assistant message
+- Python tracks the active running turn per session, emits `agent.turn.started` / `agent.turn.cancelled`, and exposes `POST /agent/cancel` for cooperative cancellation. This does not yet provide checkpoint/resume or forced provider-request termination.
 - Ask-tool permission requests cross the Python runtime boundary:
   - Python emits `tool.permission.request`
   - the TypeScript bridge relays it to desktop

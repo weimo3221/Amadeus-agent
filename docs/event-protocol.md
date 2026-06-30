@@ -379,6 +379,39 @@ Current behavior:
 - Main UI renders the active items from runtime events and restores the latest plan with `GET /sessions/{id}/plan`.
 - Companion does not render the full plan in the Live2D bubble.
 
+### agent.turn.started
+
+```json
+{
+  "type": "agent.turn.started",
+  "payload": {
+    "sessionId": "default",
+    "turnId": "turn-uuid",
+    "startedAt": "2026-06-30T00:00:00+00:00"
+  }
+}
+```
+
+### agent.turn.cancelled
+
+```json
+{
+  "type": "agent.turn.cancelled",
+  "payload": {
+    "sessionId": "default",
+    "turnId": "turn-uuid",
+    "phase": "after_tool"
+  }
+}
+```
+
+Current behavior:
+
+- Python registers a running turn before entering the model/tool loop and clears it when the generator finishes.
+- `POST /agent/cancel` sets the active turn's cooperative cancel event.
+- Tool execution receives the same cancel event through `ToolContext`.
+- Cancellation is cooperative: it is checked between model/tool phases and by tools that call `context.is_cancelled()`. It does not forcibly terminate an in-flight provider HTTP request.
+
 ### task.updated
 
 ```json
@@ -556,6 +589,7 @@ These are discussed elsewhere in the docs but are not part of the current implem
 
 Current task endpoints:
 
+- `POST /agent/cancel`
 - `GET /tasks`
 - `POST /tasks`
 - `GET /tasks/{id}/events`
@@ -563,7 +597,6 @@ Current task endpoints:
 
 Planned:
 
-- `POST /agent/cancel`
 - `POST /agent/message`
 
 These planned items should be documented as current only after they are added to the active shared event types and wired in code.

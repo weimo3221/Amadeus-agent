@@ -251,6 +251,13 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertIn("<suggested-skills>", runtime_server.agent_runtime.decision_messages[-1][0]["content"])
         self.assertIn("<available_skills>", runtime_server.agent_runtime.decision_messages[-1][0]["content"])
 
+    def test_agent_cancel_reports_when_no_turn_is_running(self) -> None:
+        payload = self.post_json("/agent/cancel", {"sessionId": "http-test"})
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["cancelled"])
+        self.assertEqual(payload["reason"], "no_running_turn")
+
     def test_live2d_config_returns_current_model_url(self) -> None:
         payload = self.get_json("/live2d/config")
 

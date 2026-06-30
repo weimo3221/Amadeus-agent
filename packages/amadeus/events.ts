@@ -57,6 +57,8 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'server.hello', HelloPayload>
   | RuntimeEvent<'memory.updated', MemoryUpdatedPayload>
   | RuntimeEvent<'memory.context.used', MemoryContextUsedPayload>
+  | RuntimeEvent<'agent.turn.started', AgentTurnStartedPayload>
+  | RuntimeEvent<'agent.turn.cancelled', AgentTurnCancelledPayload>
   | RuntimeEvent<'assistant.delta', AssistantDeltaPayload>
   | RuntimeEvent<'assistant.message', AssistantMessagePayload>
   | RuntimeEvent<'assistant.state', AssistantStatePayload>
@@ -80,6 +82,18 @@ export interface UserMessagePayload {
   text: string
   inputMode: 'text' | 'voice'
   skills?: string[]
+}
+
+export interface AgentTurnStartedPayload {
+  sessionId: string
+  turnId: string
+  startedAt: string
+}
+
+export interface AgentTurnCancelledPayload {
+  sessionId: string
+  turnId: string
+  phase: string
 }
 
 export interface AssistantDeltaPayload {

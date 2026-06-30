@@ -53,6 +53,11 @@ export interface AmadeusBridgeServerOptions {
     response: import('node:http').ServerResponse,
     requestUrl: string,
   ): void | Promise<void>
+  handleAgentHttpRequest?(
+    request: IncomingMessage,
+    response: import('node:http').ServerResponse,
+    requestUrl: string,
+  ): void | Promise<void>
   streamChat(socket: BridgeSocket, sessionId: string, text: string, skills?: string[]): void | Promise<void>
 }
 
@@ -404,6 +409,17 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         })
         return
       }
+    }
+
+    if (requestUrl.startsWith('/agent/') && options.handleAgentHttpRequest) {
+      void Promise.resolve(options.handleAgentHttpRequest(request, response, requestUrl)).catch(() => {
+        if (response.headersSent) {
+          return
+        }
+        response.writeHead(502, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ ok: false, error: 'agent_proxy_unavailable' }))
+      })
+      return
     }
 
     response.writeHead(404, { 'Content-Type': 'application/json' })

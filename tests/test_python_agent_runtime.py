@@ -164,6 +164,21 @@ class AgentRuntimeTests(unittest.TestCase):
             {"role": "assistant", "content": "Hello there"},
         ])
 
+    def test_cancel_running_turn_stops_before_final_response_and_clears_state(self) -> None:
+        runtime = FakeAgentRuntime(self.memory, deltas=["should not stream"], skills_root=self.skills_root)
+        turn_events = runtime.run_turn("default", "cancel this", lambda _request: False)
+        started = next(iter(turn_events))
+
+        self.assertEqual(started.type, "agent.turn.started")
+        self.assertTrue(runtime.running_turn_snapshot("default")["running"])
+        cancel_result = runtime.cancel_turn("default")
+        remaining_events = list(turn_events)
+
+        self.assertTrue(cancel_result["cancelled"])
+        self.assertIn("agent.turn.cancelled", [event.type for event in remaining_events])
+        self.assertFalse(runtime.running_turn_snapshot("default")["running"])
+        self.assertEqual(runtime.final_messages, [])
+
     def test_active_plan_is_injected_into_turn_system_context(self) -> None:
         self.memory.save_session_plan(
             "planned",

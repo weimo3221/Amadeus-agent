@@ -437,6 +437,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_agent_turn()
             return
 
+        if self.path == "/agent/cancel":
+            self.handle_agent_cancel()
+            return
+
         if self.path == "/tools/execute":
             self.handle_tool_execute()
             return
@@ -913,6 +917,30 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 })
             except Exception:
                 return
+
+    def handle_agent_cancel(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId", "default")
+            turn_id = body.get("turnId")
+            if not isinstance(session_id, str):
+                self.write_json(400, {"ok": False, "error": "sessionId must be a string"})
+                return
+            if turn_id is not None and not isinstance(turn_id, str):
+                self.write_json(400, {"ok": False, "error": "turnId must be a string when provided"})
+                return
+            result = agent_runtime.cancel_turn(session_id, turn_id=turn_id)
+            logger.info(
+                "Handled agent cancel sessionId=%s turnId=%s cancelled=%s reason=%s",
+                session_id,
+                turn_id,
+                result.get("cancelled"),
+                result.get("reason"),
+            )
+            self.write_json(200, {"ok": True, **result})
+        except Exception as error:
+            logger.info("Agent cancel failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_tool_execute(self) -> None:
         try:

@@ -539,6 +539,43 @@ export async function proxyPythonTaskRequest(
   }
 }
 
+export async function proxyPythonAgentRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requestUrl: string,
+  options: PythonBridgeOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  if (requestUrl !== '/agent/cancel') {
+    writeJson(response, 404, { ok: false, error: 'not_found' })
+    return
+  }
+  if (request.method !== 'POST') {
+    writeJson(response, 405, { ok: false, error: 'method_not_allowed' })
+    return
+  }
+
+  try {
+    const body = await readIncomingJson(request)
+    const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, requestUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body ?? {}),
+    })
+    const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+    if (!payload || !isRecord(payload)) {
+      writeJson(response, 502, { ok: false, error: 'agent_proxy_invalid_response' })
+      return
+    }
+    writeJson(response, runtimeResponse.status, payload)
+  }
+  catch {
+    writeJson(response, 502, { ok: false, error: 'agent_proxy_unavailable' })
+  }
+}
+
 function isRuntimeEvent(value: unknown): value is RuntimeEvent<string, unknown> {
   const event = isRecord(value) ? value as Partial<RuntimeEvent<string, unknown>> : undefined
   if (!event) {
