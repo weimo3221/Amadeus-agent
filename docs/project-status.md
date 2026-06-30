@@ -64,6 +64,7 @@ Fallback path today:
 - `read_file` is implemented as an `allow` tool for reading bounded UTF-8 workspace files after search, with structured unsupported responses for image/PDF/binary/unknown file types.
 - `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
+- `delegate_task` is implemented as a first restricted research/search delegate: max depth 1, max concurrency 2, memory search, file search, explicit bounded file reads, no write tools, no shell, no recursive delegation, and summary-only results to the parent agent.
 - `AgentRuntime` maintains a per-session `workspace_epoch` for file-observing tool guardrails; successful `patch` / `write_file` mutations advance the epoch so repeated reads/searches after an edit are not treated as stale duplicates.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
@@ -425,10 +426,10 @@ Started: the first storage/API/UI foundation for session-scoped tasks is in plac
 
 ### Phase 12: Advanced Agent Features
 
-Not started.
+Started: the first restricted `delegate_task` research/search tool is in place. Full sub-agent/task-worker orchestration is not done.
 
 - Add MCP bridge.
-- Add sub-agent/task worker abstraction.
+- Add full sub-agent/task worker abstraction.
 - Add context compression.
 - Add long-task planning.
 - Add human approval checkpoints.

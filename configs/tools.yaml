@@ -11,6 +11,10 @@ tools:
     enabled: true
     permission: allow
 
+  delegate_task:
+    enabled: true
+    permission: allow
+
   search_files:
     enabled: true
     permission: allow

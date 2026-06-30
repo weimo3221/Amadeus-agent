@@ -96,6 +96,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["update_plan"]["permission"], "allow")
         self.assertIn("update_plan", schema_names)
 
+        self.assertIn("delegate_task", list_tools())
+        self.assertIn("delegate_task", tool_state)
+        self.assertEqual(tool_state["delegate_task"]["permission"], "allow")
+        self.assertIn("delegate_task", schema_names)
+
     def test_config_alias_updates_effective_tool_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "tools.yaml"
@@ -476,6 +481,36 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.output["sessionId"], "session-1")
         self.assertEqual(result.output["resultCount"], 1)
         self.assertIn("concise", result.output["results"][0]["content"])
+
+    def test_delegate_task_runs_restricted_research_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "user", "The task system uses SQLite task_events for state history.")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            context = ToolContext(session_id="session-1", memory_store=memory)
+
+            result = registry.execute(
+                "delegate_task",
+                {
+                    "task": "Find evidence about the task event system.",
+                    "queries": ["task_events"],
+                    "paths": ["packages/amadeus/tasks.py"],
+                    "maxResults": 3,
+                },
+                context,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["delegateType"], "restricted_research")
+        self.assertEqual(result.output["maxDepth"], 1)
+        self.assertEqual(result.output["maxConcurrency"], 2)
+        self.assertEqual(result.output["allowedTools"], ["search_files", "read_file", "search_memory"])
+        self.assertNotIn("write_file", result.output["allowedTools"])
+        self.assertGreaterEqual(result.output["findingCount"], 1)
+        self.assertIn("Restricted research delegate completed", result.output["summary"])
+        self.assertIn("task_events", result.output["summary"])
 
     def test_update_plan_persists_session_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -248,6 +248,7 @@ Goal: support complex long-running tasks.
 Target deliverables:
 
 - First turn-control slice complete: session-scoped running turn state, `POST /agent/cancel`, cooperative tool cancellation, and `agent.turn.started` / `agent.turn.cancelled` events.
+- First delegation slice complete: restricted `delegate_task` research/search tool with depth 1, concurrency 2, no write tools, and summary-only parent results.
 - MCP bridge.
 - Sub-agent/task worker abstraction.
 - Context compression.

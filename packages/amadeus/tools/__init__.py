@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from amadeus.tools.base import ToolHandler, ToolPermission, ToolSpec, normalize_positive_int
+from amadeus.tools.delegate import DELEGATE_TASK_TOOL_SPEC, delegate_task
 from amadeus.tools.dice import DICE_TOOL_SPEC, roll_dice
 from amadeus.tools.search_files import SEARCH_FILES_TOOL_SPEC, search_files
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
@@ -30,6 +31,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
     for spec in (
         TIME_TOOL_SPEC,
         DICE_TOOL_SPEC,
+        DELEGATE_TASK_TOOL_SPEC,
         SEARCH_FILES_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
         SKILLS_LIST_TOOL_SPEC,
@@ -77,6 +79,7 @@ __all__ = [
     "ToolPermission",
     "ToolSpec",
     "execute_tool",
+    "delegate_task",
     "get_current_time",
     "get_tool_spec",
     "list_tool_specs",
