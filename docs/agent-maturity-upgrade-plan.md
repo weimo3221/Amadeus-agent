@@ -83,6 +83,66 @@ Amadeus 应借鉴这些结构，但不要原样引入全部复杂度。第一版
 
 Amadeus 应借鉴可靠性机制：tool guardrail、job store、session search、background memory review、provider transport、plugin/harness 装配。
 
+## 当前 Agent 补齐路线
+
+对照 `deepagents` 和 `hermes-agent` 后，Amadeus 当前最需要补的不是“会调用工具”，而是“任务化、持久化、可取消、可恢复、可委托、可后台运行”的执行系统。现阶段不要先搬 Hermes Kanban swarm，也不要一次性引入 deepagents 的完整 LangGraph/harness 栈；应先把当前 turn/session 的状态做稳，再逐层扩展。
+
+### 已进入当前主线
+
+- Session plan 持久化：第一版使用 SQLite JSON 表即可，形态为 `session_plans(session_id TEXT PRIMARY KEY, items_json TEXT, updated_at TEXT)`。后续如果需要单项审计、依赖、claim lock，再拆成 `session_plan_items`。
+- Context assembly 注入 active plan：只注入 `pending` / `in_progress`，不要把 `completed` 全塞回模型上下文。
+- Runtime event 同步 plan：通过 `task.plan.updated` 发给桌面；Main UI 负责完整清单显示，Companion 只显示必要的短状态。
+- HTTP 查询/恢复接口：`GET /sessions/{id}/plan` 和 `PUT /sessions/{id}/plan` 用于刷新、切 session 和重启恢复；WebSocket 继续只承载 runtime event。
+
+### 下一阶段优先补齐
+
+1. 轻量任务系统，而不是完整 Kanban：
+   - `tasks`：`queued` / `running` / `blocked` / `done` / `failed`
+   - `task_events`：记录状态流
+   - `POST /tasks`
+   - `POST /tasks/{id}/cancel`
+   - 一个简单 in-process worker
+   - Main UI 任务状态面板和 runtime task events
+2. Agent turn 控制：
+   - `turn_id`
+   - running turn 状态
+   - `/agent/cancel`
+   - 工具执行中的取消传播
+   - 长任务失败/刷新后的状态恢复
+3. `delegate_task` MVP：
+   - 只支持研究/搜索型子任务
+   - `max_depth=1`
+   - `max_concurrency=2`
+   - 子 agent 不给写文件工具
+   - 父 agent 只接收 summary，不接收完整子对话
+4. Agent harness/middleware 化：
+   - context providers
+   - tool execution middleware
+   - permission middleware
+   - runtime event observers
+   - post-tool hooks
+   - memory write hooks
+   - harness/eval hooks
+5. Tool executor 增强：
+   - 独立 tool call 并发执行
+   - per-tool timeout
+   - tool result storage/offload
+   - 大输出摘要化或引用化
+   - before/after/error middleware
+6. Context compression 加固：
+   - active task/plan 只注入当前相关状态
+   - completed 进入摘要或检索，不进入 active context
+   - 大型工具输出用引用，不长期占上下文
+   - 历史任务摘要明确避免旧任务被误当成当前任务
+
+### 明确延后
+
+- Hermes Kanban swarm、claim/review/synthesizer 全套流程。
+- 自动 skill self-improvement。
+- 可写文件的 subagent。
+- 完整 MCP/plugin marketplace。
+- 多平台 proactive delivery。Amadeus 第一版应优先走 Desktop Main UI 和本地 runtime events。
+
 ## 目标架构
 
 ### 分层
@@ -624,15 +684,19 @@ config_schema: {}
 1. Python 接管 `/agent/turn`。
 2. Python ToolRuntime + permissions + guardrails。
 3. Memory v2：summary、profile、session_search、context assembly、diagnostics。
-4. Live2D/audio harness registry。
-5. Audio harness、丰富 Live2D 命令与 amplitude/phoneme lipsync。
-6. Skills。
-7. Reminder/task scheduler。
-8. Subagent/delegate_task。
-9. MCP/plugin/provider profiles。
-10. Eval harness 优化闭环。
+4. Session plan 持久化、active plan context 注入、plan runtime events、plan HTTP 恢复接口。
+5. 轻量 `tasks` / `task_events` / in-process worker。
+6. `/agent/cancel`、turn state、长任务恢复。
+7. `delegate_task` MVP：研究/搜索型、深度 1、低并发、无写文件工具。
+8. Agent harness/middleware 化。
+9. Tool executor 并发、result offload、middleware。
+10. Context compression 加固。
+11. Skills lifecycle。
+12. Reminder/task scheduler 和 proactive desktop events。
+13. MCP/plugin/provider profiles。
+14. Eval harness 优化闭环。
 
-不要先做 MCP、subagent、复杂 UI。当前最大架构债是 runtime ownership，不先迁掉，后面的能力都会同时散落在 TS server、Python runtime 和 desktop renderer。
+不要先做 MCP、复杂 subagent swarm、复杂 UI 或 Hermes Kanban。当前最大架构债已经从 runtime ownership 转移到 task/job/subagent/control plane：先把当前 session/turn/task 状态做成可见、可保存、可恢复，再做长期自动化。
 
 ## 近期 2 周可执行计划
 

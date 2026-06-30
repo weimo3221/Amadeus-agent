@@ -1,3 +1,4 @@
+import type { ServerRuntimeEvent, TaskPlanPayload } from '@amadeus-agent/amadeus/events'
 import { RuntimeUiController, type RuntimeAudioLike } from '../runtime-ui'
 import './styles.css'
 
@@ -88,6 +89,12 @@ interface SessionPayload {
   updatedAt: string
 }
 
+interface SessionPlanResponse {
+  ok?: boolean
+  plan?: TaskPlanPayload
+  error?: string
+}
+
 class MockAudio implements RuntimeAudioLike {
   private readonly listeners = new Map<string, Array<() => void>>()
 
@@ -123,6 +130,9 @@ const sessionMenu = query<HTMLElement>('#session-menu')
 const currentSessionLabel = query<HTMLElement>('#current-session-label')
 const sessionMenuList = query<HTMLElement>('#session-menu-list')
 const newSessionMainButton = query<HTMLButtonElement>('#new-session-main-button')
+const sessionPlanPanel = query<HTMLElement>('#session-plan-panel')
+const sessionPlanSummary = query<HTMLElement>('#session-plan-summary')
+const sessionPlanList = query<HTMLOListElement>('#session-plan-list')
 const settingsNavButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.settings-nav-button'))
 const settingsSections = Array.from(document.querySelectorAll<HTMLElement>('[data-settings-section]'))
 const apiConfigForm = query<HTMLFormElement>('#api-config-form')
@@ -455,6 +465,66 @@ async function loadSessionLibrary(): Promise<SessionPayload[]> {
   cachedSessions = payload.sessions
   renderSessionMenu()
   return cachedSessions
+}
+
+async function loadSessionPlan(): Promise<void> {
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/sessions/${encodeURIComponent(SESSION_ID)}/plan`, { method: 'GET' })
+    const payload = await response.json() as SessionPlanResponse
+    if (!response.ok || !payload.ok || !payload.plan) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    renderSessionPlan(payload.plan)
+  }
+  catch {
+    renderSessionPlan()
+  }
+}
+
+function handleRuntimePlanEvent(event: ServerRuntimeEvent): void {
+  if (event.type !== 'task.plan.updated' || event.sessionId !== SESSION_ID) {
+    return
+  }
+  renderSessionPlan(event.payload)
+}
+
+function renderSessionPlan(plan?: TaskPlanPayload): void {
+  if (!sessionPlanPanel || !sessionPlanSummary || !sessionPlanList) {
+    return
+  }
+
+  const activeItems = (plan?.items ?? []).filter((item) => item.status === 'pending' || item.status === 'in_progress')
+  if (!activeItems.length) {
+    sessionPlanPanel.hidden = true
+    sessionPlanList.replaceChildren()
+    sessionPlanSummary.textContent = 'No active plan'
+    return
+  }
+
+  sessionPlanPanel.hidden = false
+  const inProgress = activeItems.filter((item) => item.status === 'in_progress').length
+  const pending = activeItems.filter((item) => item.status === 'pending').length
+  sessionPlanSummary.textContent = inProgress
+    ? `${inProgress} in progress / ${pending} pending`
+    : `${pending} pending`
+
+  sessionPlanList.replaceChildren(...activeItems.map((item) => {
+    const row = document.createElement('li')
+    row.className = 'session-plan-item'
+    row.dataset.status = item.status
+
+    const marker = document.createElement('span')
+    marker.className = 'session-plan-marker'
+    marker.textContent = item.status === 'in_progress' ? '>' : ''
+    marker.setAttribute('aria-hidden', 'true')
+
+    const content = document.createElement('span')
+    content.className = 'session-plan-content'
+    content.textContent = item.content
+
+    row.append(marker, content)
+    return row
+  }))
 }
 
 function renderSessionMenu(): void {
@@ -1363,12 +1433,14 @@ const runtimeUi = new RuntimeUiController({
   fetchImpl: fetch.bind(window),
   storage: DISABLE_SKILL_PERSISTENCE ? undefined : window.localStorage,
   speechSynthesis: window.speechSynthesis,
+  onServerEvent: handleRuntimePlanEvent,
 })
 
 async function bootstrapMainUi(): Promise<void> {
   enhanceSettingsSelects()
   setCurrentRoleLabel('Amadeus')
   await loadCurrentSessionRoleLabel()
+  await loadSessionPlan()
   runtimeUi.bindControls()
   runtimeUi.connectAgentRuntime()
 }

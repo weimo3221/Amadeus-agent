@@ -93,6 +93,7 @@ export interface RuntimeUiControllerOptions {
   storage?: RuntimeStorageLike
   speechSynthesis?: RuntimeSpeechSynthesisLike
   live2d?: RuntimeLive2DAdapter
+  onServerEvent?(event: ServerRuntimeEvent): void
 }
 
 interface RuntimeSkillSummary {
@@ -283,6 +284,7 @@ export class RuntimeUiController {
   }
 
   handleServerEvent(event: ServerRuntimeEvent): void {
+    this.options.onServerEvent?.(event)
     switch (event.type) {
       case 'server.hello':
         this.sessionId = event.sessionId

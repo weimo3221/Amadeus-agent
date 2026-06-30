@@ -43,6 +43,11 @@ export interface AmadeusBridgeServerOptions {
     response: import('node:http').ServerResponse,
     requestUrl: string,
   ): void | Promise<void>
+  handleSessionHttpRequest?(
+    request: IncomingMessage,
+    response: import('node:http').ServerResponse,
+    requestUrl: string,
+  ): void | Promise<void>
   streamChat(socket: BridgeSocket, sessionId: string, text: string, skills?: string[]): void | Promise<void>
 }
 
@@ -337,7 +342,7 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
       })
       response.end()
@@ -368,6 +373,17 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         }
         response.writeHead(502, { 'Content-Type': 'application/json' })
         response.end(JSON.stringify({ ok: false, error: 'skills_proxy_unavailable' }))
+      })
+      return
+    }
+
+    if (requestUrl.startsWith('/sessions/') && options.handleSessionHttpRequest) {
+      void Promise.resolve(options.handleSessionHttpRequest(request, response, requestUrl)).catch(() => {
+        if (response.headersSent) {
+          return
+        }
+        response.writeHead(502, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ ok: false, error: 'session_proxy_unavailable' }))
       })
       return
     }

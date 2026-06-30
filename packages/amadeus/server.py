@@ -127,6 +127,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path.startswith("/sessions/") and parsed.path.endswith("/plan"):
+            session_id = unquote(parsed.path.removeprefix("/sessions/").removesuffix("/plan")).strip()
+            self.handle_session_plan_get(session_id)
+            return
+
         if parsed.path == "/runtime/feedback":
             query = parse_qs(parsed.query)
             session_id = query.get("sessionId", ["default"])[0]
@@ -477,6 +482,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             role_id = unquote(parsed.path.removeprefix("/roles/")).strip()
             self.handle_role_update(role_id)
             return
+        if parsed.path.startswith("/sessions/") and parsed.path.endswith("/plan"):
+            session_id = unquote(parsed.path.removeprefix("/sessions/").removesuffix("/plan")).strip()
+            self.handle_session_plan_put(session_id)
+            return
         if parsed.path.startswith("/sessions/"):
             session_id = unquote(parsed.path.removeprefix("/sessions/")).strip()
             self.handle_session_update(session_id)
@@ -596,6 +605,40 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Session delete failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_session_plan_get(self, session_id: str) -> None:
+        try:
+            if not session_id:
+                self.write_json(400, {"ok": False, "error": "session id is required"})
+                return
+            plan = memory_store.load_session_plan(session_id)
+            logger.info("Loaded session plan sessionId=%s itemCount=%s", plan["sessionId"], len(plan["items"]))
+            self.write_json(200, {"ok": True, "plan": plan})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Session plan load failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_session_plan_put(self, session_id: str) -> None:
+        try:
+            if not session_id:
+                self.write_json(400, {"ok": False, "error": "session id is required"})
+                return
+            body = self.read_json_body()
+            items = body.get("items")
+            merge = bool(body.get("merge")) if isinstance(body.get("merge"), bool) else False
+            if not isinstance(items, list):
+                self.write_json(400, {"ok": False, "error": "items must be an array"})
+                return
+            plan = memory_store.save_session_plan(session_id, items, merge=merge)
+            logger.info("Saved session plan sessionId=%s itemCount=%s merge=%s", plan["sessionId"], len(plan["items"]), merge)
+            self.write_json(200, {"ok": True, "plan": plan})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Session plan save failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_runtime_config_update(self) -> None:

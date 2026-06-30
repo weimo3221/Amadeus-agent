@@ -6,6 +6,7 @@ from amadeus.tools.base import ToolHandler, ToolPermission, ToolSpec, normalize_
 from amadeus.tools.dice import DICE_TOOL_SPEC, roll_dice
 from amadeus.tools.search_files import SEARCH_FILES_TOOL_SPEC, search_files
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
+from amadeus.tools.plan import UPDATE_PLAN_TOOL_SPEC, update_plan
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
 from amadeus.tools.search_memory import SEARCH_MEMORY_TOOL_SPEC, search_memory
 from amadeus.tools.skills import SKILLS_LIST_TOOL_SPEC, SKILL_VIEW_TOOL_SPEC, skill_view, skills_list
@@ -33,6 +34,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         READ_FILE_TOOL_SPEC,
         SKILLS_LIST_TOOL_SPEC,
         SKILL_VIEW_TOOL_SPEC,
+        UPDATE_PLAN_TOOL_SPEC,
         SEARCH_MEMORY_TOOL_SPEC,
         READ_MEMORY_TOOL_SPEC,
         UPDATE_MEMORY_TOOL_SPEC,
@@ -93,5 +95,6 @@ __all__ = [
     "skill_view",
     "skills_list",
     "update_memory",
+    "update_plan",
     "write_file",
 ]

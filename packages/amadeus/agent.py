@@ -1659,6 +1659,8 @@ class AgentRuntime:
             result.output,
         ):
             yield event
+        if tool_name == "update_plan" and result.ok:
+            yield AgentEvent("task.plan.updated", result.output)
         yield AgentEvent("tool.finished", self._tool_finished_payload(
             tool_name,
             ok=result.ok,
@@ -1731,6 +1733,7 @@ class AgentRuntime:
             "You can use safe local tools for current time, dice rolls, listing installed skills, viewing skill instructions, reading stable memory, updating stable memory, searching conversation memory, searching project files, reading bounded project text files, patching project text files, and writing new project text files.",
             "When the user asks for the current time, current date, today, now, or scheduling context, you must call get_current_time before answering.",
             "When the user asks to roll dice or generate a dice result, call roll_dice.",
+            "For multi-step work where a visible plan would help, you may call update_plan to create or update the current session plan. Do not call update_plan for simple one-step questions or casual chat.",
             "A compact catalog of installed skills is always available below.",
             "Before replying, scan the available_skills catalog. If a skill matches or is even partially relevant, call skill_view(name) and follow that skill's instructions for the rest of the turn.",
             "When the user asks what skills or workflows are available, call skills_list.",

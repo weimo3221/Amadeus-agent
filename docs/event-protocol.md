@@ -340,6 +340,45 @@ Current flow:
 - Desktop responds with `tool.permission.response`.
 - `apps/server` forwards that response to Python `/tools/permission`.
 
+### task.plan.updated
+
+```json
+{
+  "type": "task.plan.updated",
+  "payload": {
+    "sessionId": "default",
+    "items": [
+      {
+        "id": "wire-context",
+        "content": "Inject active plan into context assembly",
+        "status": "in_progress"
+      },
+      {
+        "id": "wire-ui",
+        "content": "Show active plan in Main UI",
+        "status": "pending"
+      }
+    ],
+    "summary": {
+      "total": 2,
+      "pending": 1,
+      "inProgress": 1,
+      "completed": 0,
+      "cancelled": 0
+    },
+    "updatedAt": "2026-06-30T00:00:00+00:00",
+    "changed": true
+  }
+}
+```
+
+Current behavior:
+
+- Python emits this after the `update_plan` tool successfully reads or writes the SQLite-backed session plan.
+- Only `pending` and `in_progress` items are injected into model context as `<active-plan>`.
+- Main UI renders the active items from runtime events and restores the latest plan with `GET /sessions/{id}/plan`.
+- Companion does not render the full plan in the Live2D bubble.
+
 ### memory.context.used
 
 ```json
@@ -377,6 +416,7 @@ Current behavior:
 
 - Python emits this diagnostic after assembling per-turn model context.
 - Summary and accepted structured memory are injected into the temporary system message.
+- Active plan items may be injected into the temporary system message as `<active-plan>` and reported as an `active_plan` source.
 - FTS retrieval snippets are injected into the temporary current user message as `<memory-context>`.
 - Injected context is API-call-time only and is not written back to SQLite message history.
 - The runtime also stores the most recent `context.diagnosticsLimit` diagnostics per session in an in-memory ring buffer for developer diagnostics. This buffer is not persisted across runtime restarts.

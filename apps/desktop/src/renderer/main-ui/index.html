@@ -73,6 +73,13 @@
             <span id="connection-label" class="connection-pill" title="Connecting" aria-label="Connecting">Connecting</span>
           </div>
           <div id="stage-status" class="stage-status" hidden>State: idle</div>
+          <section id="session-plan-panel" class="session-plan-panel" aria-label="Session plan" hidden>
+            <div class="session-plan-header">
+              <span class="eyebrow">plan</span>
+              <span id="session-plan-summary">No active plan</span>
+            </div>
+            <ol id="session-plan-list" class="session-plan-list"></ol>
+          </section>
           <div id="chat-log" class="chat-log"></div>
           <form id="chat-form">
             <input id="chat-input" name="message" autocomplete="off" placeholder="Type to Amadeus..." />

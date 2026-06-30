@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from amadeus.memory import MessageMemoryStore
+from amadeus.planning import format_active_plan_for_context
 
 
 CONVERSATION_SUMMARY_CONTEXT_CHARS = 4000
@@ -73,6 +74,7 @@ class ContextAssembler:
 
     def assemble(self, session_id: str, user_text: str) -> AssembledContext:
         summary = self.memory_store.load_conversation_summary(session_id)
+        active_plan = self.memory_store.load_session_plan(session_id)
         memory_items = self.memory_store.list_memory_items(limit=self.config.memory_item_limit)
         normalized_user_text = user_text.strip()
         retrievals = [
@@ -88,6 +90,12 @@ class ContextAssembler:
         if memory_items_block:
             sections.append(memory_items_block)
             sources.extend(memory_item_sources)
+
+        active_plan_block, active_plan_source = self._format_active_plan(active_plan)
+        if active_plan_block:
+            sections.append(active_plan_block)
+            if active_plan_source:
+                sources.append(active_plan_source)
 
         covered_through_id = int(summary.get("coveredThroughMessageId", 0)) if summary else 0
         summary_block, summary_source = self._format_summary(summary)
@@ -105,6 +113,29 @@ class ContextAssembler:
             user_content=user_content,
             covered_through_message_id=covered_through_id,
             sources=tuple(sources),
+        )
+
+    def _format_active_plan(self, plan: dict[str, Any]) -> tuple[str, ContextSource | None]:
+        content = format_active_plan_for_context(plan)
+        if not content:
+            return "", None
+
+        items = plan.get("items") if isinstance(plan, dict) else []
+        active_count = sum(
+            1
+            for item in items
+            if isinstance(item, dict) and item.get("status") in {"pending", "in_progress"}
+        ) if isinstance(items, list) else 0
+        block = f"<active-plan>\n{content}\n</active-plan>"
+        return block, ContextSource(
+            kind="active_plan",
+            source_id=str(plan.get("sessionId", "")),
+            content_chars=len(content),
+            reason="pending and in-progress session plan items",
+            metadata={
+                "activeItemCount": active_count,
+                "updatedAt": plan.get("updatedAt"),
+            },
         )
 
     def _format_memory_items(

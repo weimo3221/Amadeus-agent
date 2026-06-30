@@ -745,6 +745,73 @@ body[data-settings-open="true"] .workspace {
   margin-bottom: 6px;
 }
 
+.session-plan-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(153, 220, 255, 0.22);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(29, 63, 94, 0.34), rgba(72, 50, 88, 0.28)),
+    rgba(9, 16, 30, 0.22);
+}
+
+.session-plan-panel[hidden] {
+  display: none;
+}
+
+.session-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgba(236, 248, 255, 0.78);
+  font-size: 12px;
+}
+
+.session-plan-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-plan-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-height: 22px;
+  color: rgba(255, 250, 255, 0.88);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.session-plan-marker {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1px solid rgba(236, 248, 255, 0.36);
+  border-radius: 4px;
+  color: #f8fdff;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.session-plan-item[data-status="in_progress"] .session-plan-marker {
+  border-color: rgba(255, 202, 99, 0.72);
+  background: rgba(255, 202, 99, 0.18);
+}
+
+.session-plan-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .session-switcher {
   position: relative;
   flex: 0 1 260px;

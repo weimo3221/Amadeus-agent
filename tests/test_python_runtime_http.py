@@ -159,6 +159,17 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             return json.loads(response.read().decode("utf-8"))
 
+    def put_json(self, path: str, payload: dict) -> dict:
+        request = Request(
+            self.url(path),
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            return json.loads(response.read().decode("utf-8"))
+
     def post_ndjson(self, path: str, payload: dict) -> list[dict]:
         request = Request(
             self.url(path),
@@ -190,6 +201,21 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(viewed["ok"])
         self.assertEqual(viewed["skill"]["name"], "runtime-debug")
         self.assertIn("Use tests before fixes.", viewed["skill"]["instructions"])
+
+    def test_session_plan_http_round_trip(self) -> None:
+        saved = self.put_json("/sessions/http-test/plan", {
+            "items": [
+                {"id": "inspect", "content": "Inspect plan endpoints", "status": "completed"},
+                {"id": "wire", "content": "Wire HTTP plan persistence", "status": "in_progress"},
+            ],
+        })
+        loaded = self.get_json("/sessions/http-test/plan")
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["plan"]["summary"]["inProgress"], 1)
+        self.assertTrue(loaded["ok"])
+        self.assertEqual(loaded["plan"]["sessionId"], "http-test")
+        self.assertEqual(loaded["plan"]["items"][1]["id"], "wire")
 
     def test_agent_turn_accepts_explicit_skills(self) -> None:
         events = self.post_ndjson("/agent/turn", {

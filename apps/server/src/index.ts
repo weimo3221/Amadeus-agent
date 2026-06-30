@@ -11,6 +11,7 @@ import {
   listPythonMemoryReviewCandidates,
   listPythonMemoryReviewJobs,
   proxyPythonSkillsRequest,
+  proxyPythonSessionRequest,
   proxyPythonLive2DRequest,
   rejectPythonMemoryReviewCandidate,
   relayPythonTurn,
@@ -110,6 +111,11 @@ const { httpServer } = createAmadeusBridgeServer({
   },
   handleSkillsHttpRequest(request, response, requestUrl) {
     return proxyPythonSkillsRequest(request, response, requestUrl, {
+      runtimeUrl: pythonRuntimeUrl,
+    })
+  },
+  handleSessionHttpRequest(request, response, requestUrl) {
+    return proxyPythonSessionRequest(request, response, requestUrl, {
       runtimeUrl: pythonRuntimeUrl,
     })
   },

@@ -7,7 +7,7 @@ import { WebSocket } from 'ws'
 
 import type { RuntimeEvent } from '@amadeus-agent/amadeus/events'
 
-import { forwardToolPermissionToPython, proxyPythonLive2DRequest, proxyPythonSkillsRequest, relayPythonTurn } from './bridge.js'
+import { forwardToolPermissionToPython, proxyPythonLive2DRequest, proxyPythonSessionRequest, proxyPythonSkillsRequest, relayPythonTurn } from './bridge.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -323,6 +323,87 @@ describe('WebSocket Python-first integration', () => {
     assert.equal(viewPayload.ok, true)
     assert.equal(viewPayload.skill.identifier, 'development/runtime-debug')
     assert.equal(viewPayload.skill.instructions, 'Use evidence.')
+  })
+
+  it('proxies session plan HTTP requests through the Python runtime', async (t) => {
+    let savedBody = ''
+    const pythonRuntime = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+      if (request.method === 'GET' && request.url === '/sessions/companion%3Adefault/plan') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          plan: {
+            sessionId: 'companion:default',
+            items: [{ id: 'wire', content: 'Wire session plan proxy', status: 'in_progress' }],
+            summary: { total: 1, pending: 0, inProgress: 1, completed: 0, cancelled: 0 },
+            updatedAt: '2026-06-30T00:00:00Z',
+          },
+        }))
+        return
+      }
+
+      if (request.method === 'PUT' && request.url === '/sessions/companion%3Adefault/plan') {
+        savedBody = await readBody(request)
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          plan: {
+            sessionId: 'companion:default',
+            items: JSON.parse(savedBody).items,
+            summary: { total: 1, pending: 1, inProgress: 0, completed: 0, cancelled: 0 },
+            updatedAt: '2026-06-30T00:00:00Z',
+          },
+        }))
+        return
+      }
+
+      response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: 'not_found' }))
+    })
+    const runtimePort = await listen(pythonRuntime)
+    t.after(() => {
+      void closeServer(pythonRuntime)
+    })
+
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      handleSessionHttpRequest(request, response, requestUrl) {
+        return proxyPythonSessionRequest(request, response, requestUrl, {
+          runtimeUrl: `http://127.0.0.1:${runtimePort}`,
+        })
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const getResponse = await fetch(`http://127.0.0.1:${bridgePort}/sessions/companion%3Adefault/plan`)
+    assert.equal(getResponse.status, 200)
+    const getPayload = await getResponse.json() as {
+      ok: boolean
+      plan: { sessionId: string; summary: { inProgress: number } }
+    }
+    assert.equal(getPayload.ok, true)
+    assert.equal(getPayload.plan.sessionId, 'companion:default')
+    assert.equal(getPayload.plan.summary.inProgress, 1)
+
+    const putResponse = await fetch(`http://127.0.0.1:${bridgePort}/sessions/companion%3Adefault/plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ id: 'next', content: 'Restore plan on session switch', status: 'pending' }] }),
+    })
+    assert.equal(putResponse.status, 200)
+    assert.deepEqual(JSON.parse(savedBody), {
+      items: [{ id: 'next', content: 'Restore plan on session switch', status: 'pending' }],
+    })
   })
 
   it('allows browser CORS preflight for Live2D model switching', async (t) => {

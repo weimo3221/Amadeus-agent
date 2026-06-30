@@ -7,6 +7,10 @@ tools:
     enabled: true
     permission: ask
 
+  update_plan:
+    enabled: true
+    permission: allow
+
   search_files:
     enabled: true
     permission: allow

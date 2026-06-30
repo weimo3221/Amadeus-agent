@@ -65,6 +65,28 @@ class ContextAssemblerTests(unittest.TestCase):
             self.assertIn("…", assembled.user_content)
             self.assertIn("…", assembled.system_context)
 
+    def test_injects_only_active_plan_items_as_context_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_session_plan(
+                "session-1",
+                [
+                    {"id": "done", "content": "Completed setup", "status": "completed"},
+                    {"id": "active", "content": "Wire plan into context", "status": "in_progress"},
+                    {"id": "next", "content": "Expose plan over HTTP", "status": "pending"},
+                ],
+            )
+            assembler = ContextAssembler(memory, "Base")
+
+            assembled = assembler.assemble("session-1", "continue")
+
+            self.assertIn("<active-plan>", assembled.system_context)
+            self.assertIn("Wire plan into context", assembled.system_context)
+            self.assertIn("Expose plan over HTTP", assembled.system_context)
+            self.assertNotIn("Completed setup", assembled.system_context)
+            diagnostics = assembled.diagnostics()
+            self.assertEqual(diagnostics["sourceCounts"]["active_plan"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

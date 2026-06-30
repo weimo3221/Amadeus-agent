@@ -69,6 +69,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'tool.finished', ToolFinishedPayload>
   | RuntimeEvent<'tool.audit', ToolAuditPayload>
   | RuntimeEvent<'tool.permission.request', ToolPermissionRequestPayload>
+  | RuntimeEvent<'task.plan.updated', TaskPlanPayload>
   | RuntimeEvent<'memory.review.candidates', MemoryReviewCandidatesPayload>
   | RuntimeEvent<'memory.review.jobs', MemoryReviewJobsPayload>
   | RuntimeEvent<'memory.review.updated', MemoryReviewUpdatedPayload>
@@ -229,6 +230,31 @@ export interface MemoryContextUsedPayload {
   phase: 'turn_start' | 'tool_decision_retry' | 'final_response_retry' | string
   timestamp: string
   sources: MemoryContextSource[]
+}
+
+export type TaskPlanItemStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
+
+export interface TaskPlanItem {
+  id: string
+  content: string
+  status: TaskPlanItemStatus
+}
+
+export interface TaskPlanSummary {
+  total: number
+  pending: number
+  inProgress: number
+  completed: number
+  cancelled: number
+}
+
+export interface TaskPlanPayload {
+  sessionId: string
+  items: TaskPlanItem[]
+  summary: TaskPlanSummary
+  updatedAt?: string | null
+  changed?: boolean
+  merge?: boolean
 }
 
 export interface MemoryReviewCandidate {

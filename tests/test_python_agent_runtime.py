@@ -130,10 +130,23 @@ class AgentRuntimeTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_missing_api_key_returns_structured_error(self) -> None:
-        os.environ["OPENAI_API_KEY"] = ""
-        runtime = AgentRuntime(self.memory, audio_runtime=None, tools_config_path=Path(self.tmpdir.name) / "missing.yaml")
+        previous_provider = os.environ.get("AMADEUS_LLM_PROVIDER")
+        previous_api_key = os.environ.get("OPENAI_API_KEY")
+        try:
+            os.environ["AMADEUS_LLM_PROVIDER"] = "openai"
+            os.environ["OPENAI_API_KEY"] = ""
+            runtime = AgentRuntime(self.memory, audio_runtime=None, tools_config_path=Path(self.tmpdir.name) / "missing.yaml")
 
-        events = list(runtime.run_turn("default", "hello", lambda _request: False))
+            events = list(runtime.run_turn("default", "hello", lambda _request: False))
+        finally:
+            if previous_provider is None:
+                os.environ.pop("AMADEUS_LLM_PROVIDER", None)
+            else:
+                os.environ["AMADEUS_LLM_PROVIDER"] = previous_provider
+            if previous_api_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_api_key
 
         self.assertEqual(events[0].type, "error")
         self.assertEqual(events[0].payload["code"], "missing_api_key")
@@ -150,6 +163,25 @@ class AgentRuntimeTests(unittest.TestCase):
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "Hello there"},
         ])
+
+    def test_active_plan_is_injected_into_turn_system_context(self) -> None:
+        self.memory.save_session_plan(
+            "planned",
+            [
+                {"id": "inspect", "content": "Inspect existing planning code", "status": "completed"},
+                {"id": "implement", "content": "Implement update_plan tool", "status": "in_progress"},
+                {"id": "test", "content": "Run focused tests", "status": "pending"},
+            ],
+        )
+        runtime = FakeAgentRuntime(self.memory, deltas=["done"], skills_root=self.skills_root)
+
+        list(runtime.run_turn("planned", "continue", lambda _request: False))
+
+        system_message = runtime.decision_messages[-1][0]
+        self.assertIn("<active-plan>", system_message["content"])
+        self.assertIn("[>] implement: Implement update_plan tool", system_message["content"])
+        self.assertIn("[ ] test: Run focused tests", system_message["content"])
+        self.assertNotIn("Inspect existing planning code", system_message["content"])
 
     def test_explicit_skills_are_injected_into_turn_system_context(self) -> None:
         runtime = FakeAgentRuntime(self.memory, deltas=["done"], skills_root=self.skills_root)
@@ -787,6 +819,35 @@ class AgentRuntimeTests(unittest.TestCase):
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_time")
         self.assertIn("formatted", tool_messages[0]["content"])
+
+    def test_update_plan_tool_emits_plan_updated_event(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_plan",
+                    "type": "function",
+                    "function": {
+                        "name": "update_plan",
+                        "arguments": json.dumps({
+                            "items": [
+                                {"id": "implement", "content": "Implement planning", "status": "in_progress"},
+                            ],
+                        }),
+                    },
+                }],
+            },
+        )
+
+        events = list(runtime.run_turn("default", "plan the work", lambda _request: False))
+
+        plan_events = [event.payload for event in events if event.type == "task.plan.updated"]
+        self.assertEqual(len(plan_events), 1)
+        self.assertEqual(plan_events[0]["sessionId"], "default")
+        self.assertEqual(plan_events[0]["items"][0]["id"], "implement")
+        self.assertEqual(self.memory.load_session_plan("default")["summary"]["inProgress"], 1)
 
     def test_persisted_audit_records_survive_runtime_recreation(self) -> None:
         runtime = FakeAgentRuntime(

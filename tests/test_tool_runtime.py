@@ -91,6 +91,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["write_file"]["permission"], "ask")
         self.assertIn("write_file", schema_names)
 
+        self.assertIn("update_plan", list_tools())
+        self.assertIn("update_plan", tool_state)
+        self.assertEqual(tool_state["update_plan"]["permission"], "allow")
+        self.assertIn("update_plan", schema_names)
+
     def test_config_alias_updates_effective_tool_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "tools.yaml"
@@ -471,6 +476,90 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.output["sessionId"], "session-1")
         self.assertEqual(result.output["resultCount"], 1)
         self.assertIn("concise", result.output["results"][0]["content"])
+
+    def test_update_plan_persists_session_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            context = ToolContext(session_id="session-1", memory_store=memory)
+
+            created = registry.execute(
+                "update_plan",
+                {
+                    "items": [
+                        {"id": "inspect", "content": "Inspect existing task planning code", "status": "completed"},
+                        {"id": "implement", "content": "Implement Amadeus planning module", "status": "in_progress"},
+                    ]
+                },
+                context,
+            )
+            loaded = registry.execute("update_plan", {}, context)
+
+        self.assertTrue(created.ok)
+        self.assertTrue(created.output["changed"])
+        self.assertEqual(created.output["summary"]["total"], 2)
+        self.assertEqual(created.output["summary"]["inProgress"], 1)
+        self.assertTrue(loaded.ok)
+        self.assertFalse(loaded.output["changed"])
+        self.assertEqual(loaded.output["items"][1]["id"], "implement")
+
+    def test_update_plan_merge_updates_existing_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            context = ToolContext(session_id="session-1", memory_store=memory)
+
+            registry.execute(
+                "update_plan",
+                {
+                    "items": [
+                        {"id": "a", "content": "First step", "status": "in_progress"},
+                        {"id": "b", "content": "Second step", "status": "pending"},
+                    ]
+                },
+                context,
+            )
+            merged = registry.execute(
+                "update_plan",
+                {
+                    "merge": True,
+                    "items": [
+                        {"id": "a", "content": "First step", "status": "completed"},
+                        {"id": "b", "content": "Second step", "status": "in_progress"},
+                    ],
+                },
+                context,
+            )
+
+        self.assertTrue(merged.ok)
+        self.assertEqual([item["status"] for item in merged.output["items"]], ["completed", "in_progress"])
+        self.assertEqual(merged.output["summary"]["completed"], 1)
+
+    def test_update_plan_rejects_multiple_in_progress_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "update_plan",
+                {
+                    "items": [
+                        {"id": "a", "content": "First step", "status": "in_progress"},
+                        {"id": "b", "content": "Second step", "status": "in_progress"},
+                    ]
+                },
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_code, "tool_error")
+        self.assertIn("only one", result.output["error"])
 
     def test_read_memory_uses_stable_markdown_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

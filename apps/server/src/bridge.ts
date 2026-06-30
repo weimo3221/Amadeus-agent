@@ -87,7 +87,7 @@ function writeJson(response: ServerResponse, status: number, payload: Record<str
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   })
   response.end(JSON.stringify(payload))
@@ -458,6 +458,44 @@ export async function proxyPythonSkillsRequest(
   }
 
   writeJson(response, 404, { ok: false, error: 'not_found' })
+}
+
+export async function proxyPythonSessionRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requestUrl: string,
+  options: PythonBridgeOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+
+  if (!/^\/sessions\/[^/]+\/plan$/.test(requestUrl)) {
+    writeJson(response, 404, { ok: false, error: 'not_found' })
+    return
+  }
+
+  if (request.method !== 'GET' && request.method !== 'PUT') {
+    writeJson(response, 405, { ok: false, error: 'method_not_allowed' })
+    return
+  }
+
+  try {
+    const body = request.method === 'PUT' ? await readIncomingJson(request) : undefined
+    const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, requestUrl), {
+      method: request.method,
+      headers: request.method === 'PUT' ? { 'Content-Type': 'application/json' } : undefined,
+      body: request.method === 'PUT' ? JSON.stringify(body ?? {}) : undefined,
+    })
+    const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+    if (!payload || !isRecord(payload)) {
+      writeJson(response, 502, { ok: false, error: 'session_proxy_invalid_response' })
+      return
+    }
+    writeJson(response, runtimeResponse.status, payload)
+    return
+  }
+  catch {
+    writeJson(response, 502, { ok: false, error: 'session_proxy_unavailable' })
+  }
 }
 
 function isRuntimeEvent(value: unknown): value is RuntimeEvent<string, unknown> {

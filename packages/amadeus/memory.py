@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from amadeus.planning import empty_plan_response, merge_plan_items, plan_response
+
 
 MessageRole = Literal["user", "assistant"]
 StableMemoryTarget = Literal["agent", "user"]
@@ -154,6 +156,13 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_memory_review_jobs_session_started
                   ON memory_review_jobs(session_id, started_at);
+                  CREATE TABLE IF NOT EXISTS session_plans (
+                    session_id TEXT PRIMARY KEY,
+                    items_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                  );
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -829,6 +838,67 @@ class MessageMemoryStore:
             ).fetchone()
 
         return int(row[0]) if row else 0
+
+    def load_session_plan(self, session_id: str) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT items_json, updated_at
+                FROM session_plans
+                WHERE session_id = ?
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+
+        if not row:
+            return empty_plan_response(normalized_session_id)
+
+        try:
+            items = json.loads(str(row[0]))
+        except json.JSONDecodeError:
+            items = []
+        return plan_response(normalized_session_id, items, updated_at=str(row[1]))
+
+    def save_session_plan(
+        self,
+        session_id: str,
+        items: list[dict[str, object]],
+        *,
+        merge: bool = False,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        current = self.load_session_plan(normalized_session_id)
+        normalized_items = merge_plan_items(current["items"], items) if merge else merge_plan_items([], items)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT created_at
+                FROM session_plans
+                WHERE session_id = ?
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+            created_at = str(existing[0]) if existing else now
+            connection.execute(
+                """
+                INSERT INTO session_plans (session_id, items_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                  items_json = excluded.items_json,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_session_id,
+                    json.dumps(normalized_items, ensure_ascii=False),
+                    created_at,
+                    now,
+                ),
+            )
+        return plan_response(normalized_session_id, normalized_items, updated_at=now)
 
     def save_conversation_summary(
         self,
@@ -1677,6 +1747,13 @@ class MessageMemoryStore:
             connection.execute(
                 """
                 DELETE FROM memory_review_jobs
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM session_plans
                 WHERE session_id = ?
                 """,
                 (session_id,),
