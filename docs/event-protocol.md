@@ -379,6 +379,41 @@ Current behavior:
 - Main UI renders the active items from runtime events and restores the latest plan with `GET /sessions/{id}/plan`.
 - Companion does not render the full plan in the Live2D bubble.
 
+### task.updated
+
+```json
+{
+  "type": "task.updated",
+  "payload": {
+    "action": "created",
+    "task": {
+      "id": "7a4d6f0d5fd1450d95e8b8fb5e4b1e22",
+      "sessionId": "default",
+      "title": "Research task persistence",
+      "body": "Check SQLite task storage.",
+      "status": "queued",
+      "priority": 5,
+      "dueAt": null,
+      "claimLock": null,
+      "lastHeartbeat": null,
+      "result": null,
+      "error": null,
+      "createdAt": "2026-06-30T00:00:00+00:00",
+      "updatedAt": "2026-06-30T00:00:00+00:00",
+      "finishedAt": null
+    }
+  }
+}
+```
+
+Current behavior:
+
+- Python persists lightweight `tasks` and `task_events` rows in SQLite.
+- `POST /tasks` creates a queued task and records a `created` task event.
+- `POST /tasks/{id}/cancel` marks active tasks as `cancelled` and records a `cancelled` task event.
+- Main UI restores active tasks with `GET /tasks?sessionId={id}&activeOnly=true` and updates from `task.updated` runtime events.
+- This is the storage/API/UI foundation only; autonomous scheduler/worker execution is still a later phase.
+
 ### memory.context.used
 
 ```json
@@ -518,6 +553,15 @@ These are discussed elsewhere in the docs but are not part of the current implem
 - `audio.tts-fallback`
 
 ### Planned bridge/runtime endpoints
+
+Current task endpoints:
+
+- `GET /tasks`
+- `POST /tasks`
+- `GET /tasks/{id}/events`
+- `POST /tasks/{id}/cancel`
+
+Planned:
 
 - `POST /agent/cancel`
 - `POST /agent/message`

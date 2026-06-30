@@ -498,6 +498,47 @@ export async function proxyPythonSessionRequest(
   }
 }
 
+export async function proxyPythonTaskRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requestUrl: string,
+  options: PythonBridgeOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  const isSupportedPath = requestUrl === '/tasks'
+    || /^\/tasks\/[^/]+\/cancel$/.test(requestUrl)
+    || /^\/tasks\/[^/]+\/events(?:\?.*)?$/.test(requestUrl)
+    || requestUrl.startsWith('/tasks?')
+
+  if (!isSupportedPath) {
+    writeJson(response, 404, { ok: false, error: 'not_found' })
+    return
+  }
+
+  if (request.method !== 'GET' && request.method !== 'POST') {
+    writeJson(response, 405, { ok: false, error: 'method_not_allowed' })
+    return
+  }
+
+  try {
+    const body = request.method === 'POST' ? await readIncomingJson(request) : undefined
+    const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, requestUrl), {
+      method: request.method,
+      headers: request.method === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
+      body: request.method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+    })
+    const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+    if (!payload || !isRecord(payload)) {
+      writeJson(response, 502, { ok: false, error: 'task_proxy_invalid_response' })
+      return
+    }
+    writeJson(response, runtimeResponse.status, payload)
+  }
+  catch {
+    writeJson(response, 502, { ok: false, error: 'task_proxy_unavailable' })
+  }
+}
+
 function isRuntimeEvent(value: unknown): value is RuntimeEvent<string, unknown> {
   const event = isRecord(value) ? value as Partial<RuntimeEvent<string, unknown>> : undefined
   if (!event) {

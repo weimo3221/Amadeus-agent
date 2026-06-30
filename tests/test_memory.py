@@ -358,6 +358,27 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(finished["reason"], "below_threshold")
         self.assertEqual(len(skipped), 1)
 
+    def test_tasks_can_be_created_listed_cancelled_and_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(
+                session_id="session-1",
+                title="Research task persistence",
+                body="Check SQLite task storage.",
+                priority=5,
+            )
+            listed = memory.list_tasks(session_id="session-1", active_only=True)
+            cancelled = memory.cancel_task(str(task["id"]), reason="User stopped the task")
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual(task["status"], "queued")
+        self.assertEqual(listed["summary"]["queued"], 1)
+        self.assertEqual(listed["tasks"][0]["title"], "Research task persistence")
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["error"], "User stopped the task")
+        self.assertEqual([event["type"] for event in events], ["created", "cancelled"])
+        self.assertEqual(events[1]["metadata"], {"previousStatus": "queued"})
+
     def test_replace_memory_item_updates_active_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

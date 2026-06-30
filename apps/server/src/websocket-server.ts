@@ -48,6 +48,11 @@ export interface AmadeusBridgeServerOptions {
     response: import('node:http').ServerResponse,
     requestUrl: string,
   ): void | Promise<void>
+  handleTaskHttpRequest?(
+    request: IncomingMessage,
+    response: import('node:http').ServerResponse,
+    requestUrl: string,
+  ): void | Promise<void>
   streamChat(socket: BridgeSocket, sessionId: string, text: string, skills?: string[]): void | Promise<void>
 }
 
@@ -386,6 +391,19 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         response.end(JSON.stringify({ ok: false, error: 'session_proxy_unavailable' }))
       })
       return
+    }
+
+    if (requestUrl === '/tasks' || requestUrl.startsWith('/tasks?') || requestUrl.startsWith('/tasks/')) {
+      if (options.handleTaskHttpRequest) {
+        void Promise.resolve(options.handleTaskHttpRequest(request, response, requestUrl)).catch(() => {
+          if (response.headersSent) {
+            return
+          }
+          response.writeHead(502, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({ ok: false, error: 'task_proxy_unavailable' }))
+        })
+        return
+      }
     }
 
     response.writeHead(404, { 'Content-Type': 'application/json' })

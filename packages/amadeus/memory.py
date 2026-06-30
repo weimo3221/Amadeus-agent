@@ -8,6 +8,18 @@ from typing import Literal
 from uuid import uuid4
 
 from amadeus.planning import empty_plan_response, merge_plan_items, plan_response
+from amadeus.tasks import (
+    MAX_TASK_ERROR_CHARS,
+    MAX_TASK_EVENT_MESSAGE_CHARS,
+    MAX_TASK_RESULT_CHARS,
+    normalize_optional_text,
+    normalize_task_body,
+    normalize_task_event_type,
+    normalize_task_priority,
+    normalize_task_status,
+    normalize_task_title,
+    task_summary,
+)
 
 
 MessageRole = Literal["user", "assistant"]
@@ -163,6 +175,39 @@ class MessageMemoryStore:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(id)
                   );
+                  CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'done', 'failed', 'cancelled')),
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    due_at TEXT,
+                    claim_lock TEXT,
+                    last_heartbeat TEXT,
+                    result TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_tasks_session_status_updated
+                  ON tasks(session_id, status, updated_at);
+                  CREATE TABLE IF NOT EXISTS task_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    status TEXT,
+                    message TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id),
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_task_events_task_created
+                  ON task_events(task_id, created_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -899,6 +944,233 @@ class MessageMemoryStore:
                 ),
             )
         return plan_response(normalized_session_id, normalized_items, updated_at=now)
+
+    def create_task(
+        self,
+        *,
+        session_id: str,
+        title: str,
+        body: str | None = None,
+        priority: int | None = None,
+        due_at: str | None = None,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        normalized_title = normalize_task_title(title)
+        normalized_body = normalize_task_body(body)
+        normalized_priority = normalize_task_priority(priority)
+        normalized_due_at = normalize_optional_text(due_at, max_chars=80, field_name="due_at")
+        task_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                  id, session_id, title, body, status, priority, due_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    normalized_session_id,
+                    normalized_title,
+                    normalized_body,
+                    normalized_priority,
+                    normalized_due_at,
+                    now,
+                    now,
+                ),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=task_id,
+                session_id=normalized_session_id,
+                event_type="created",
+                status="queued",
+                message="Task created",
+                metadata=None,
+                created_at=now,
+            )
+        task = self.get_task(task_id)
+        if task is None:
+            raise RuntimeError("created task could not be loaded")
+        return task
+
+    def list_tasks(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+        active_only: bool = False,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id) if session_id else None
+        normalized_status = normalize_task_status(status) if status else None
+        normalized_limit = max(1, min(200, int(limit)))
+        clauses: list[str] = []
+        params: list[object] = []
+        if normalized_session_id:
+            self.ensure_session(normalized_session_id)
+            clauses.append("session_id = ?")
+            params.append(normalized_session_id)
+        if normalized_status:
+            clauses.append("status = ?")
+            params.append(normalized_status)
+        elif active_only:
+            clauses.append("status IN ('queued', 'running', 'blocked')")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
+                       last_heartbeat, result, error, created_at, updated_at, finished_at
+                FROM tasks
+                {where}
+                ORDER BY
+                  CASE status
+                    WHEN 'running' THEN 0
+                    WHEN 'blocked' THEN 1
+                    WHEN 'queued' THEN 2
+                    WHEN 'failed' THEN 3
+                    WHEN 'done' THEN 4
+                    WHEN 'cancelled' THEN 5
+                    ELSE 6
+                  END,
+                  priority DESC,
+                  updated_at DESC
+                LIMIT ?
+                """,
+                (*params, normalized_limit),
+            ).fetchall()
+        tasks = [task_response(row) for row in rows]
+        return {
+            "sessionId": normalized_session_id,
+            "tasks": tasks,
+            "summary": task_summary(tasks),
+            "filters": {
+                "sessionId": normalized_session_id,
+                "status": normalized_status,
+                "activeOnly": active_only,
+                "limit": normalized_limit,
+            },
+        }
+
+    def get_task(self, task_id: str) -> dict[str, object] | None:
+        normalized_task_id = normalize_task_id(task_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
+                       last_heartbeat, result, error, created_at, updated_at, finished_at
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+        return task_response(row) if row else None
+
+    def cancel_task(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_reason = normalize_optional_text(
+            reason,
+            max_chars=MAX_TASK_EVENT_MESSAGE_CHARS,
+            field_name="reason",
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            current_status = str(row[2])
+            if current_status in {"done", "failed", "cancelled"}:
+                task = self.get_task(normalized_task_id)
+                if task is None:
+                    raise ValueError("task not found")
+                return task
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'cancelled',
+                    error = ?,
+                    updated_at = ?,
+                    finished_at = ?
+                WHERE id = ?
+                """,
+                (normalized_reason, now, now, normalized_task_id),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[1]),
+                event_type="cancelled",
+                status="cancelled",
+                message=normalized_reason or "Task cancelled",
+                metadata={"previousStatus": current_status},
+                created_at=now,
+            )
+        task = self.get_task(normalized_task_id)
+        if task is None:
+            raise ValueError("task not found")
+        return task
+
+    def list_task_events(self, task_id: str, *, limit: int = 100) -> list[dict[str, object]]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_limit = max(1, min(500, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, session_id, type, status, message, metadata_json, created_at
+                FROM task_events
+                WHERE task_id = ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (normalized_task_id, normalized_limit),
+            ).fetchall()
+        return [task_event_response(row) for row in rows]
+
+    def _insert_task_event(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        task_id: str,
+        session_id: str,
+        event_type: str,
+        status: str | None,
+        message: str | None,
+        metadata: dict[str, object] | None,
+        created_at: str,
+    ) -> None:
+        normalized_event_type = normalize_task_event_type(event_type)
+        normalized_status = normalize_task_status(status) if status else None
+        normalized_message = normalize_optional_text(
+            message,
+            max_chars=MAX_TASK_EVENT_MESSAGE_CHARS,
+            field_name="message",
+        )
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        connection.execute(
+            """
+            INSERT INTO task_events (task_id, session_id, type, status, message, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                session_id,
+                normalized_event_type,
+                normalized_status,
+                normalized_message,
+                metadata_json,
+                created_at,
+            ),
+        )
 
     def save_conversation_summary(
         self,
@@ -1758,6 +2030,20 @@ class MessageMemoryStore:
                 """,
                 (session_id,),
             )
+            connection.execute(
+                """
+                DELETE FROM task_events
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM tasks
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
 
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)
@@ -1961,6 +2247,55 @@ def normalize_session_id(session_id: str) -> str:
     if len(normalized) > 200:
         raise ValueError("session_id must be at most 200 characters")
     return normalized
+
+
+def normalize_task_id(task_id: str) -> str:
+    normalized = task_id.strip() if isinstance(task_id, str) else ""
+    if not normalized:
+        raise ValueError("task id is required")
+    if "\x00" in normalized:
+        raise ValueError("task id must be UTF-8 text")
+    if len(normalized) > 80:
+        raise ValueError("task id must be at most 80 characters")
+    return normalized
+
+
+def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    return {
+        "id": str(row[0]),
+        "sessionId": str(row[1]),
+        "title": str(row[2]),
+        "body": str(row[3] or ""),
+        "status": str(row[4]),
+        "priority": int(row[5] or 0),
+        "dueAt": str(row[6]) if row[6] else None,
+        "claimLock": str(row[7]) if row[7] else None,
+        "lastHeartbeat": str(row[8]) if row[8] else None,
+        "result": normalize_optional_text(row[9], max_chars=MAX_TASK_RESULT_CHARS, field_name="result"),
+        "error": normalize_optional_text(row[10], max_chars=MAX_TASK_ERROR_CHARS, field_name="error"),
+        "createdAt": str(row[11]),
+        "updatedAt": str(row[12]),
+        "finishedAt": str(row[13]) if row[13] else None,
+    }
+
+
+def task_event_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    metadata: object | None = None
+    if row[6]:
+        try:
+            metadata = json.loads(str(row[6]))
+        except json.JSONDecodeError:
+            metadata = None
+    return {
+        "eventId": int(row[0]),
+        "taskId": str(row[1]),
+        "sessionId": str(row[2]),
+        "type": str(row[3]),
+        "status": str(row[4]) if row[4] else None,
+        "message": str(row[5]) if row[5] else None,
+        "metadata": metadata,
+        "createdAt": str(row[7]),
+    }
 
 
 def normalize_conversation_summary(content: str) -> str:

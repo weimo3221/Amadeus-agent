@@ -7,7 +7,7 @@ import { WebSocket } from 'ws'
 
 import type { RuntimeEvent } from '@amadeus-agent/amadeus/events'
 
-import { forwardToolPermissionToPython, proxyPythonLive2DRequest, proxyPythonSessionRequest, proxyPythonSkillsRequest, relayPythonTurn } from './bridge.js'
+import { forwardToolPermissionToPython, proxyPythonLive2DRequest, proxyPythonSessionRequest, proxyPythonSkillsRequest, proxyPythonTaskRequest, relayPythonTurn } from './bridge.js'
 import { createAmadeusBridgeServer } from './websocket-server.js'
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -404,6 +404,101 @@ describe('WebSocket Python-first integration', () => {
     assert.deepEqual(JSON.parse(savedBody), {
       items: [{ id: 'next', content: 'Restore plan on session switch', status: 'pending' }],
     })
+  })
+
+  it('proxies task HTTP requests through the Python runtime', async (t) => {
+    let createBody = ''
+    let cancelBody = ''
+    const pythonRuntime = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+      if (request.method === 'GET' && request.url === '/tasks?sessionId=companion%3Adefault&activeOnly=true') {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          sessionId: 'companion:default',
+          tasks: [{
+            id: 'task-1',
+            sessionId: 'companion:default',
+            title: 'Task proxy',
+            body: '',
+            status: 'queued',
+            priority: 0,
+            createdAt: '2026-06-30T00:00:00Z',
+            updatedAt: '2026-06-30T00:00:00Z',
+          }],
+          summary: { total: 1, queued: 1, running: 0, blocked: 0, done: 0, failed: 0, cancelled: 0 },
+        }))
+        return
+      }
+
+      if (request.method === 'POST' && request.url === '/tasks') {
+        createBody = await readBody(request)
+        response.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          task: { id: 'task-1', sessionId: 'companion:default', title: JSON.parse(createBody).title, body: '', status: 'queued', priority: 0, createdAt: '2026-06-30T00:00:00Z', updatedAt: '2026-06-30T00:00:00Z' },
+        }))
+        return
+      }
+
+      if (request.method === 'POST' && request.url === '/tasks/task-1/cancel') {
+        cancelBody = await readBody(request)
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: true,
+          task: { id: 'task-1', sessionId: 'companion:default', title: 'Task proxy', body: '', status: 'cancelled', priority: 0, createdAt: '2026-06-30T00:00:00Z', updatedAt: '2026-06-30T00:00:01Z' },
+        }))
+        return
+      }
+
+      response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: 'not_found' }))
+    })
+    const runtimePort = await listen(pythonRuntime)
+    t.after(() => {
+      void closeServer(pythonRuntime)
+    })
+
+    const bridge = createAmadeusBridgeServer({
+      model: 'test-model',
+      defaultSessionId: 'default',
+      getMemoryMessageCount: () => 0,
+      getToolPermissions: () => [],
+      resetSession: () => {},
+      forwardToolPermissionToPython: () => {},
+      handleTaskHttpRequest(request, response, requestUrl) {
+        return proxyPythonTaskRequest(request, response, requestUrl, {
+          runtimeUrl: `http://127.0.0.1:${runtimePort}`,
+        })
+      },
+      streamChat: () => {},
+    })
+    const bridgePort = await listen(bridge.httpServer)
+    t.after(() => {
+      bridge.wss.close()
+      void closeServer(bridge.httpServer)
+    })
+
+    const listResponse = await fetch(`http://127.0.0.1:${bridgePort}/tasks?sessionId=companion%3Adefault&activeOnly=true`)
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json() as { ok: boolean; summary: { queued: number } }
+    assert.equal(listPayload.ok, true)
+    assert.equal(listPayload.summary.queued, 1)
+
+    const createResponse = await fetch(`http://127.0.0.1:${bridgePort}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'companion:default', title: 'Task proxy' }),
+    })
+    assert.equal(createResponse.status, 201)
+    assert.equal(JSON.parse(createBody).title, 'Task proxy')
+
+    const cancelResponse = await fetch(`http://127.0.0.1:${bridgePort}/tasks/task-1/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'stop' }),
+    })
+    assert.equal(cancelResponse.status, 200)
+    assert.deepEqual(JSON.parse(cancelBody), { reason: 'stop' })
   })
 
   it('allows browser CORS preflight for Live2D model switching', async (t) => {

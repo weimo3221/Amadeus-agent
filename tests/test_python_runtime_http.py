@@ -149,6 +149,9 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             return json.loads(response.read().decode("utf-8"))
 
     def post_json(self, path: str, payload: dict) -> dict:
+        return self.post_json_status(path, payload, expected_status=200)
+
+    def post_json_status(self, path: str, payload: dict, *, expected_status: int) -> dict:
         request = Request(
             self.url(path),
             data=json.dumps(payload).encode("utf-8"),
@@ -156,7 +159,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             method="POST",
         )
         with urlopen(request, timeout=5) as response:
-            self.assertEqual(response.status, 200)
+            self.assertEqual(response.status, expected_status)
             return json.loads(response.read().decode("utf-8"))
 
     def put_json(self, path: str, payload: dict) -> dict:
@@ -216,6 +219,25 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(loaded["ok"])
         self.assertEqual(loaded["plan"]["sessionId"], "http-test")
         self.assertEqual(loaded["plan"]["items"][1]["id"], "wire")
+
+    def test_tasks_http_create_list_cancel_and_events(self) -> None:
+        created = self.post_json_status("/tasks", {
+            "sessionId": "http-test",
+            "title": "Wire task HTTP",
+            "body": "Expose task store to desktop.",
+            "priority": 3,
+        }, expected_status=201)
+        task_id = created["task"]["id"]
+        listed = self.get_json("/tasks?sessionId=http-test&activeOnly=true")
+        cancelled = self.post_json(f"/tasks/{task_id}/cancel", {"reason": "No longer needed"})
+        events = self.get_json(f"/tasks/{task_id}/events")
+
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["event"]["type"], "task.updated")
+        self.assertEqual(listed["summary"]["queued"], 1)
+        self.assertEqual(cancelled["task"]["status"], "cancelled")
+        self.assertEqual(events["eventCount"], 2)
+        self.assertEqual(events["events"][1]["type"], "cancelled")
 
     def test_agent_turn_accepts_explicit_skills(self) -> None:
         events = self.post_ndjson("/agent/turn", {

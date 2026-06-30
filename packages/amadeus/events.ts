@@ -70,6 +70,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'tool.audit', ToolAuditPayload>
   | RuntimeEvent<'tool.permission.request', ToolPermissionRequestPayload>
   | RuntimeEvent<'task.plan.updated', TaskPlanPayload>
+  | RuntimeEvent<'task.updated', TaskUpdatedPayload>
   | RuntimeEvent<'memory.review.candidates', MemoryReviewCandidatesPayload>
   | RuntimeEvent<'memory.review.jobs', MemoryReviewJobsPayload>
   | RuntimeEvent<'memory.review.updated', MemoryReviewUpdatedPayload>
@@ -255,6 +256,40 @@ export interface TaskPlanPayload {
   updatedAt?: string | null
   changed?: boolean
   merge?: boolean
+}
+
+export type TaskStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled'
+
+export interface TaskRecord {
+  id: string
+  sessionId: string
+  title: string
+  body: string
+  status: TaskStatus
+  priority: number
+  dueAt?: string | null
+  claimLock?: string | null
+  lastHeartbeat?: string | null
+  result?: string | null
+  error?: string | null
+  createdAt: string
+  updatedAt: string
+  finishedAt?: string | null
+}
+
+export interface TaskSummary {
+  total: number
+  queued: number
+  running: number
+  blocked: number
+  done: number
+  failed: number
+  cancelled: number
+}
+
+export interface TaskUpdatedPayload {
+  task: TaskRecord
+  action: 'created' | 'updated' | 'cancelled' | 'completed' | 'failed' | 'blocked'
 }
 
 export interface MemoryReviewCandidate {

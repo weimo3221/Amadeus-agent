@@ -1,4 +1,4 @@
-import type { ServerRuntimeEvent, TaskPlanPayload } from '@amadeus-agent/amadeus/events'
+import type { ServerRuntimeEvent, TaskRecord, TaskSummary, TaskUpdatedPayload, TaskPlanPayload } from '@amadeus-agent/amadeus/events'
 import { RuntimeUiController, type RuntimeAudioLike } from '../runtime-ui'
 import './styles.css'
 
@@ -95,6 +95,13 @@ interface SessionPlanResponse {
   error?: string
 }
 
+interface TasksResponse {
+  ok?: boolean
+  tasks?: TaskRecord[]
+  summary?: TaskSummary
+  error?: string
+}
+
 class MockAudio implements RuntimeAudioLike {
   private readonly listeners = new Map<string, Array<() => void>>()
 
@@ -133,6 +140,9 @@ const newSessionMainButton = query<HTMLButtonElement>('#new-session-main-button'
 const sessionPlanPanel = query<HTMLElement>('#session-plan-panel')
 const sessionPlanSummary = query<HTMLElement>('#session-plan-summary')
 const sessionPlanList = query<HTMLOListElement>('#session-plan-list')
+const sessionTasksPanel = query<HTMLElement>('#session-tasks-panel')
+const sessionTasksSummary = query<HTMLElement>('#session-tasks-summary')
+const sessionTasksList = query<HTMLOListElement>('#session-tasks-list')
 const settingsNavButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.settings-nav-button'))
 const settingsSections = Array.from(document.querySelectorAll<HTMLElement>('[data-settings-section]'))
 const apiConfigForm = query<HTMLFormElement>('#api-config-form')
@@ -488,6 +498,28 @@ function handleRuntimePlanEvent(event: ServerRuntimeEvent): void {
   renderSessionPlan(event.payload)
 }
 
+async function loadSessionTasks(): Promise<void> {
+  try {
+    const params = new URLSearchParams({ sessionId: SESSION_ID, activeOnly: 'true', limit: '20' })
+    const response = await fetch(`${AGENT_HTTP_URL}/tasks?${params.toString()}`, { method: 'GET' })
+    const payload = await response.json() as TasksResponse
+    if (!response.ok || !payload.ok || !Array.isArray(payload.tasks)) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    renderSessionTasks(payload.tasks, payload.summary)
+  }
+  catch {
+    renderSessionTasks([])
+  }
+}
+
+function handleRuntimeTaskEvent(event: ServerRuntimeEvent): void {
+  if (event.type !== 'task.updated' || event.sessionId !== SESSION_ID) {
+    return
+  }
+  renderSessionTaskUpdate(event.payload)
+}
+
 function renderSessionPlan(plan?: TaskPlanPayload): void {
   if (!sessionPlanPanel || !sessionPlanSummary || !sessionPlanList) {
     return
@@ -521,6 +553,61 @@ function renderSessionPlan(plan?: TaskPlanPayload): void {
     const content = document.createElement('span')
     content.className = 'session-plan-content'
     content.textContent = item.content
+
+    row.append(marker, content)
+    return row
+  }))
+}
+
+let cachedActiveTasks: TaskRecord[] = []
+
+function renderSessionTaskUpdate(payload: TaskUpdatedPayload): void {
+  const task = payload.task
+  const activeStatuses = new Set<TaskRecord['status']>(['queued', 'running', 'blocked'])
+  const nextTasks = cachedActiveTasks.filter((item) => item.id !== task.id)
+  if (activeStatuses.has(task.status)) {
+    nextTasks.unshift(task)
+  }
+  renderSessionTasks(nextTasks.slice(0, 20))
+}
+
+function renderSessionTasks(tasks: TaskRecord[], summary?: TaskSummary): void {
+  if (!sessionTasksPanel || !sessionTasksSummary || !sessionTasksList) {
+    return
+  }
+
+  const activeTasks = tasks.filter((task) => task.status === 'queued' || task.status === 'running' || task.status === 'blocked')
+  cachedActiveTasks = activeTasks
+  if (!activeTasks.length) {
+    sessionTasksPanel.hidden = true
+    sessionTasksList.replaceChildren()
+    sessionTasksSummary.textContent = 'No active tasks'
+    return
+  }
+
+  sessionTasksPanel.hidden = false
+  const running = summary?.running ?? activeTasks.filter((task) => task.status === 'running').length
+  const queued = summary?.queued ?? activeTasks.filter((task) => task.status === 'queued').length
+  const blocked = summary?.blocked ?? activeTasks.filter((task) => task.status === 'blocked').length
+  sessionTasksSummary.textContent = [
+    running ? `${running} running` : '',
+    queued ? `${queued} queued` : '',
+    blocked ? `${blocked} blocked` : '',
+  ].filter(Boolean).join(' / ') || `${activeTasks.length} active`
+
+  sessionTasksList.replaceChildren(...activeTasks.map((task) => {
+    const row = document.createElement('li')
+    row.className = 'session-plan-item'
+    row.dataset.status = task.status
+
+    const marker = document.createElement('span')
+    marker.className = 'session-plan-marker'
+    marker.textContent = task.status === 'running' ? '>' : task.status === 'blocked' ? '!' : ''
+    marker.setAttribute('aria-hidden', 'true')
+
+    const content = document.createElement('span')
+    content.className = 'session-plan-content'
+    content.textContent = task.title
 
     row.append(marker, content)
     return row
@@ -1433,14 +1520,20 @@ const runtimeUi = new RuntimeUiController({
   fetchImpl: fetch.bind(window),
   storage: DISABLE_SKILL_PERSISTENCE ? undefined : window.localStorage,
   speechSynthesis: window.speechSynthesis,
-  onServerEvent: handleRuntimePlanEvent,
+  onServerEvent(event) {
+    handleRuntimePlanEvent(event)
+    handleRuntimeTaskEvent(event)
+  },
 })
 
 async function bootstrapMainUi(): Promise<void> {
   enhanceSettingsSelects()
   setCurrentRoleLabel('Amadeus')
   await loadCurrentSessionRoleLabel()
-  await loadSessionPlan()
+  await Promise.all([
+    loadSessionPlan(),
+    loadSessionTasks(),
+  ])
   runtimeUi.bindControls()
   runtimeUi.connectAgentRuntime()
 }

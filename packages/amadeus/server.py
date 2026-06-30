@@ -93,7 +93,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {
                 "ok": True,
                 "runtime": "python",
-                "modules": ["agent", "memory", "model", "tools", "skills", "live2d", "audio"],
+                "modules": ["agent", "memory", "model", "tools", "skills", "tasks", "live2d", "audio"],
                 "tools": list_tools(),
                 "model": agent_runtime.model,
             })
@@ -125,6 +125,15 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "sessions": memory_store.list_sessions(role_id=role_id, include_archived=include_archived),
             })
+            return
+
+        if parsed.path == "/tasks":
+            self.handle_tasks_list(parsed)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/events"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/events")).strip()
+            self.handle_task_events_list(task_id, parsed)
             return
 
         if parsed.path.startswith("/sessions/") and parsed.path.endswith("/plan"):
@@ -410,6 +419,16 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_session_create()
             return
 
+        if self.path == "/tasks":
+            self.handle_task_create()
+            return
+
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/cancel"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/cancel")).strip()
+            self.handle_task_cancel(task_id)
+            return
+
         if self.path == "/runtime/feedback":
             self.handle_runtime_feedback()
             return
@@ -639,6 +658,114 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Session plan save failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_tasks_list(self, parsed: Any) -> None:
+        try:
+            query = parse_qs(parsed.query)
+            session_id = optional_query_string(query, "sessionId")
+            status = optional_query_string(query, "status")
+            active_only = parse_optional_bool(optional_query_string(query, "activeOnly")) or False
+            limit = parse_int(query.get("limit", ["50"])[0], 50, 1, 200)
+            result = memory_store.list_tasks(
+                session_id=session_id,
+                status=status,
+                active_only=active_only,
+                limit=limit,
+            )
+            logger.info(
+                "Listed tasks sessionId=%s status=%s activeOnly=%s count=%s",
+                session_id,
+                status,
+                active_only,
+                len(result["tasks"]),
+            )
+            self.write_json(200, {"ok": True, **result})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Tasks list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_events_list(self, task_id: str, parsed: Any) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            query = parse_qs(parsed.query)
+            limit = parse_int(query.get("limit", ["100"])[0], 100, 1, 500)
+            events = memory_store.list_task_events(task_id, limit=limit)
+            logger.info("Listed task events taskId=%s count=%s", task_id, len(events))
+            self.write_json(200, {"ok": True, "taskId": task_id, "events": events, "eventCount": len(events)})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task events list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_create(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId")
+            title = body.get("title")
+            if not isinstance(session_id, str) or not session_id.strip():
+                self.write_json(400, {"ok": False, "error": "sessionId is required"})
+                return
+            if not isinstance(title, str) or not title.strip():
+                self.write_json(400, {"ok": False, "error": "title is required"})
+                return
+            task = memory_store.create_task(
+                session_id=session_id,
+                title=title,
+                body=body.get("body") if isinstance(body.get("body"), str) else None,
+                priority=body.get("priority") if body.get("priority") is not None else None,
+                due_at=body.get("dueAt") if isinstance(body.get("dueAt"), str) else None,
+            )
+            logger.info("Created task taskId=%s sessionId=%s", task["id"], task["sessionId"])
+            self.write_json(201, {
+                "ok": True,
+                "task": task,
+                "event": {
+                    "type": "task.updated",
+                    "sessionId": task["sessionId"],
+                    "payload": {
+                        "task": task,
+                        "action": "created",
+                    },
+                },
+            })
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task create failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_cancel(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            body = self.read_json_body()
+            reason = body.get("reason") if isinstance(body.get("reason"), str) else None
+            task = memory_store.cancel_task(task_id, reason=reason)
+            logger.info("Cancelled task taskId=%s sessionId=%s", task["id"], task["sessionId"])
+            self.write_json(200, {
+                "ok": True,
+                "task": task,
+                "event": {
+                    "type": "task.updated",
+                    "sessionId": task["sessionId"],
+                    "payload": {
+                        "task": task,
+                        "action": "cancelled",
+                    },
+                },
+            })
+        except ValueError as error:
+            status = 404 if str(error) == "task not found" else 400
+            self.write_json(status, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task cancel failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_runtime_config_update(self) -> None:

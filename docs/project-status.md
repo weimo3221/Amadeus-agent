@@ -410,12 +410,17 @@ Started.
 
 ### Phase 11: Proactive Agent
 
-Not started.
+Started: the first storage/API/UI foundation for session-scoped tasks is in place, but autonomous scheduling and worker execution are not done.
+
+- Added SQLite-backed `tasks` and `task_events`.
+- Added Python runtime HTTP APIs: `GET /tasks`, `POST /tasks`, `GET /tasks/{id}/events`, and `POST /tasks/{id}/cancel`.
+- Added TypeScript bridge proxying for task HTTP APIs.
+- Main UI can restore and render active queued/running/blocked tasks.
 
 - Add scheduled reminders.
 - Add daily brief.
 - Add idle-time check-ins.
-- Add background task state display.
+- Add real background task worker execution and state transitions.
 
 ### Phase 12: Advanced Agent Features
 

@@ -807,6 +807,16 @@ body[data-settings-open="true"] .workspace {
   background: rgba(255, 202, 99, 0.18);
 }
 
+.session-plan-item[data-status="running"] .session-plan-marker {
+  border-color: rgba(255, 202, 99, 0.72);
+  background: rgba(255, 202, 99, 0.18);
+}
+
+.session-plan-item[data-status="blocked"] .session-plan-marker {
+  border-color: rgba(255, 119, 140, 0.72);
+  background: rgba(255, 119, 140, 0.16);
+}
+
 .session-plan-content {
   min-width: 0;
   overflow-wrap: anywhere;
