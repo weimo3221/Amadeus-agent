@@ -24,6 +24,7 @@ from amadeus.model import (
 
 class ModelBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.previous_provider = os.environ.get("AMADEUS_LLM_PROVIDER")
         self.previous_base_url = os.environ.get("OPENAI_BASE_URL")
         self.previous_api_key = os.environ.get("OPENAI_API_KEY")
         self.previous_model = os.environ.get("OPENAI_MODEL")
@@ -32,6 +33,7 @@ class ModelBoundaryTests(unittest.TestCase):
         self.previous_deepseek_model = os.environ.get("DEEPSEEK_MODEL")
 
     def tearDown(self) -> None:
+        self._restore_env("AMADEUS_LLM_PROVIDER", self.previous_provider)
         self._restore_env("OPENAI_BASE_URL", self.previous_base_url)
         self._restore_env("OPENAI_API_KEY", self.previous_api_key)
         self._restore_env("OPENAI_MODEL", self.previous_model)
@@ -40,18 +42,23 @@ class ModelBoundaryTests(unittest.TestCase):
         self._restore_env("DEEPSEEK_MODEL", self.previous_deepseek_model)
 
     def test_openai_compatible_config_loads_environment_defaults(self) -> None:
+        os.environ.pop("AMADEUS_LLM_PROVIDER", None)
         os.environ.pop("OPENAI_BASE_URL", None)
         os.environ.pop("OPENAI_API_KEY", None)
         os.environ.pop("OPENAI_MODEL", None)
+        os.environ.pop("DEEPSEEK_BASE_URL", None)
+        os.environ.pop("DEEPSEEK_API_KEY", None)
+        os.environ.pop("DEEPSEEK_MODEL", None)
 
         config = OpenAICompatibleConfig.from_environment()
 
-        self.assertEqual(config.provider, "openai_compatible")
-        self.assertEqual(config.base_url, "https://api.deepseek.com")
+        self.assertEqual(config.provider, "deepseek")
+        self.assertEqual(config.base_url, "https://api.deepseek.com/v1")
         self.assertEqual(config.api_key, "")
-        self.assertEqual(config.model, "deepseek-v4-flash")
+        self.assertEqual(config.model, "deepseek-chat")
 
     def test_openai_compatible_config_loads_environment_overrides(self) -> None:
+        os.environ["AMADEUS_LLM_PROVIDER"] = "openai"
         os.environ["OPENAI_BASE_URL"] = "https://example.test/"
         os.environ["OPENAI_API_KEY"] = "test-key"
         os.environ["OPENAI_MODEL"] = "test-model"

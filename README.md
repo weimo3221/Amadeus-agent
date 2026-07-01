@@ -30,6 +30,23 @@ Runtime failure behavior:
 
 - If Python `/agent/turn` is unavailable, `apps/server` reports a runtime error by default.
 
+## Run
+
+Development stack:
+
+```bash
+npm run dev
+```
+
+This starts the Python runtime, waits for `/runtime/health`, starts the TypeScript bridge, waits for `/health`, then starts the Electron desktop. If a required child process exits, the supervisor terminates the rest of the stack so the local runtime does not silently split into half-running processes.
+
+Useful variants:
+
+```bash
+npm run dev:stack -- --no-desktop
+npm run dev:legacy
+```
+
 ## Design References
 
 - `../airi`: primary reference for desktop Live2D, Electron, character UI, audio, and runtime packaging.

@@ -186,8 +186,10 @@ Fallback path today:
 - Local GPT-SoVITS project and Vivian model weights have been located for the first concrete TTS provider test.
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
-- Typecheck, desktop build, allow-path WebSocket test, and deny-path WebSocket test have passed.
-- Current validation for the scheduled-message/todo/UI pass: `python -m unittest tests.test_scheduling`, `python -m unittest tests.test_todos`, related Python memory/context tests, `npm --workspace apps/server test`, `npm --workspace apps/desktop test`, `npm --workspace apps/desktop run typecheck`, and `npm --workspace apps/desktop run build` pass. Full `npm test` is currently blocked by pre-existing `tests.test_model` provider-default assertions versus the current DeepSeek `.env`.
+- Added a supervised development stack entrypoint at `scripts/dev_stack.py`. `npm run dev` now starts the Python runtime, waits for `/runtime/health`, starts the TypeScript bridge, waits for `/health`, and then starts Electron; `npm run dev:legacy` preserves the old raw concurrent startup path.
+- The dev supervisor fails fast on occupied runtime/bridge health endpoints by default, and supports `--reuse-existing` for intentionally attaching to already-running local services.
+- Provider config tests now isolate `AMADEUS_LLM_PROVIDER` and provider-specific environment variables, so local `.env` credentials no longer break `tests.test_model`.
+- Current validation passes: `python -m unittest tests.test_model`, `python -m py_compile scripts/dev_stack.py`, `npm run typecheck`, `npm test`, and `python scripts/eval_runtime_contracts.py`. The supervised no-desktop stack was also verified on temporary ports `8890` / `8888`, with both health checks passing and ports released after shutdown.
 
 ### Still Needed
 
@@ -451,6 +453,7 @@ Started: the first restricted `delegate_task` research/search tool, session task
 - Added first task runner abstraction: `TaskWorker` now delegates execution to a `TaskRunner` boundary, with the existing thread-pool behavior represented by `InProcessTaskRunner`. This keeps the current in-process worker behavior intact while creating the seam needed for a future process-backed runner.
 - Added task-state context: each turn can inject current queued/running/blocked session tasks into a reference-only `<active-tasks>` system block and recent succeeded/failed/cancelled outcomes into `<recent-tasks>`, with `taskLimit`, `recentTaskLimit`, and `taskResultChars` runtime config plus `memory.context.used` diagnostics sources.
 - Added deterministic runtime contract eval script at `scripts/eval_runtime_contracts.py` covering role identity, active/recent task context, task lifecycle, and MCP tool schema/execution contracts.
+- Added supervised dev-stack startup through `scripts/dev_stack.py`, restoring the local P0 health signal and replacing the default raw concurrent `npm run dev` path with ordered startup plus health checks.
 - Add full sub-agent orchestration abstraction.
 - Add context compression.
 - Add long-task planning.
@@ -475,6 +478,8 @@ npm install
 npm test
 npm run test:e2e
 npm run typecheck
+npm run dev:stack -- --no-desktop
+npm run dev:stack -- --reuse-existing
 npm --workspace apps/server run dev
 npm --workspace apps/desktop run dev
 npm run dev

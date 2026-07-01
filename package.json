@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Desktop Live2D interactive agent",
   "scripts": {
-    "dev": "concurrently \"npm run dev:amadeus\" \"npm run dev:server\" \"npm run dev:desktop\"",
+    "dev": "python scripts/dev_stack.py",
+    "dev:legacy": "concurrently \"npm run dev:amadeus\" \"npm run dev:server\" \"npm run dev:desktop\"",
+    "dev:stack": "python scripts/dev_stack.py",
     "dev:amadeus": "python packages/amadeus/server.py",
     "dev:desktop": "npm --workspace apps/desktop run dev",
     "dev:python-runtime": "python packages/amadeus/server.py",
