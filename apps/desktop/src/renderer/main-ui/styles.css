@@ -1603,3 +1603,416 @@ body[data-settings-open="true"] .workspace {
     transform: rotate(360deg);
   }
 }
+
+/* Main UI workbench pass. */
+body {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 22%),
+    linear-gradient(135deg, #141720 0%, #1d1f2a 45%, #10131a 100%);
+}
+
+body::before {
+  opacity: 0.16;
+}
+
+body::after {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 30%),
+    linear-gradient(90deg, rgba(45, 212, 191, 0.06), transparent 42%, rgba(245, 158, 11, 0.05));
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.28);
+}
+
+.titlebar {
+  background:
+    linear-gradient(90deg, rgba(28, 32, 42, 0.92), rgba(22, 25, 34, 0.78)),
+    rgba(16, 19, 26, 0.8);
+}
+
+.workspace {
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 460px);
+  justify-content: stretch;
+}
+
+body:not([data-settings-open="true"]) .workspace {
+  grid-template-columns: minmax(0, 980px);
+  justify-content: center;
+}
+
+body[data-settings-open="true"] .workspace {
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 460px);
+}
+
+.chat-panel,
+.side-panel,
+.runtime-card,
+.memory-review,
+.skills-panel,
+.tasks-panel,
+.skill-detail,
+.config-panel,
+.resource-editor {
+  border-radius: 8px;
+  border-color: rgba(220, 230, 240, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.035)),
+    rgba(25, 29, 39, 0.74);
+}
+
+.chat-panel::before {
+  display: none;
+}
+
+.side-panel {
+  animation: none;
+}
+
+.settings-heading {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 2px;
+}
+
+.settings-console {
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.settings-nav,
+.session-plan-panel,
+.session-menu-item,
+.status-tile,
+.resource-card {
+  border-radius: 8px;
+}
+
+.settings-nav-button {
+  border-radius: 6px;
+}
+
+.overview-section {
+  display: grid;
+  gap: 12px;
+}
+
+.overview-section[hidden] {
+  display: none;
+}
+
+.runtime-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.runtime-card-header strong {
+  display: block;
+  margin-top: 4px;
+  color: #fff8ff;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.status-tile {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(220, 230, 240, 0.12);
+  background: rgba(8, 12, 18, 0.24);
+}
+
+.status-tile span {
+  color: rgba(232, 238, 246, 0.62);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status-tile strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(250, 253, 255, 0.9);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.diagnostics-line {
+  margin-top: 10px;
+  color: rgba(232, 238, 246, 0.64);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tool-permission {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.tool-permission span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.skills-list,
+.memory-review-list {
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.tasks-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.tasks-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tasks-header strong {
+  display: block;
+  margin-top: 4px;
+  color: #fff8ff;
+}
+
+.new-task-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.new-task-form input,
+.new-task-form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(220, 230, 240, 0.14);
+  border-radius: 8px;
+  color: #fff8ff;
+  outline: none;
+  background: rgba(8, 12, 18, 0.26);
+}
+
+.new-task-form textarea {
+  grid-column: 1 / -1;
+  resize: vertical;
+}
+
+.new-task-form input:focus,
+.new-task-form textarea:focus {
+  border-color: rgba(45, 212, 191, 0.44);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.09);
+}
+
+.new-task-form input::placeholder,
+.new-task-form textarea::placeholder {
+  color: rgba(232, 238, 246, 0.42);
+}
+
+.tasks-summary {
+  color: rgba(232, 238, 246, 0.64);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tasks-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0 4px 0 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.task-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(220, 230, 240, 0.12);
+  border-radius: 8px;
+  background: rgba(8, 12, 18, 0.22);
+}
+
+.task-status-marker {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1px solid rgba(232, 238, 246, 0.32);
+  border-radius: 4px;
+  color: #f8fdff;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.task-item[data-status="running"] .task-status-marker {
+  border-color: rgba(45, 212, 191, 0.66);
+  background: rgba(45, 212, 191, 0.14);
+}
+
+.task-item[data-status="blocked"] .task-status-marker {
+  border-color: rgba(245, 158, 11, 0.7);
+  background: rgba(245, 158, 11, 0.15);
+}
+
+.task-item-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.task-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(250, 253, 255, 0.9);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.task-meta {
+  color: rgba(232, 238, 246, 0.56);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.task-cancel-button {
+  padding: 6px 9px;
+  border-radius: 6px;
+  color: rgba(250, 253, 255, 0.78);
+}
+
+.mcp-server-list {
+  display: grid;
+  gap: 10px;
+}
+
+.mcp-server-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid rgba(220, 230, 240, 0.12);
+  border-radius: 8px;
+  background: rgba(8, 12, 18, 0.22);
+}
+
+.mcp-server-editor-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mcp-server-editor-header strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(250, 253, 255, 0.9);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-editor-header button {
+  padding: 6px 9px;
+  border-radius: 6px;
+}
+
+.mcp-server-editor label:nth-child(4) {
+  grid-column: 1 / -1;
+}
+
+.chat-log:empty::before {
+  border-radius: 8px;
+  content: "Start a conversation here. Runtime status, skills, permissions, and memory review stay visible in the Main Console.";
+}
+
+@media (max-width: 980px) {
+  body {
+    overflow: auto;
+  }
+
+  .main-ui {
+    min-height: 100vh;
+    height: auto;
+  }
+
+  .workspace,
+  body[data-settings-open="true"] .workspace,
+  body:not([data-settings-open="true"]) .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .side-panel {
+    max-height: none;
+  }
+
+  .settings-console {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-nav {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .settings-nav-button {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
+  .provider {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .session-switcher {
+    order: 3;
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .workspace {
+    padding: 10px;
+  }
+
+  .titlebar {
+    padding: 6px 8px;
+  }
+
+  .drag-region span:last-child {
+    display: none;
+  }
+
+  .status-grid,
+  .config-grid,
+  .new-task-form,
+  .mcp-server-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mcp-server-editor-header,
+  .mcp-server-editor label:nth-child(4) {
+    grid-column: auto;
+  }
+
+  #chat-form {
+    border-radius: 8px;
+  }
+}

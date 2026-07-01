@@ -112,6 +112,35 @@ interface TasksResponse {
   error?: string
 }
 
+interface TaskMutationResponse {
+  ok?: boolean
+  task?: TaskRecord
+  event?: {
+    type: 'task.updated'
+    sessionId: string
+    payload: TaskUpdatedPayload
+  }
+  error?: string
+}
+
+interface McpServerPayload {
+  name: string
+  url: string
+  enabled: boolean
+  permission?: 'allow' | 'ask' | 'deny' | null
+  timeoutSeconds: number
+}
+
+interface ToolsConfigPayload {
+  ok?: boolean
+  mcp?: {
+    enabled: boolean
+    permission: 'allow' | 'ask' | 'deny'
+    servers: McpServerPayload[]
+  }
+  error?: string
+}
+
 class MockAudio implements RuntimeAudioLike {
   private readonly listeners = new Map<string, Array<() => void>>()
 
@@ -153,6 +182,10 @@ const sessionPlanList = query<HTMLOListElement>('#session-plan-list')
 const sessionTasksPanel = query<HTMLElement>('#session-tasks-panel')
 const sessionTasksSummary = query<HTMLElement>('#session-tasks-summary')
 const sessionTasksList = query<HTMLOListElement>('#session-tasks-list')
+const tasksRefreshButton = query<HTMLButtonElement>('#tasks-refresh-button')
+const newTaskForm = query<HTMLFormElement>('#new-task-form')
+const newTaskTitleInput = query<HTMLInputElement>('#new-task-title-input')
+const newTaskBodyInput = query<HTMLTextAreaElement>('#new-task-body-input')
 const settingsNavButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.settings-nav-button'))
 const settingsSections = Array.from(document.querySelectorAll<HTMLElement>('[data-settings-section]'))
 const apiConfigForm = query<HTMLFormElement>('#api-config-form')
@@ -212,12 +245,19 @@ const configReviewTrigger = query<HTMLInputElement>('#config-review-trigger')
 const configLive2dScale = query<HTMLInputElement>('#config-live2d-scale')
 const configLive2dOffsetX = query<HTMLInputElement>('#config-live2d-offset-x')
 const configLive2dOffsetY = query<HTMLInputElement>('#config-live2d-offset-y')
+const mcpConfigForm = query<HTMLFormElement>('#mcp-config-form')
+const mcpConfigStatus = query<HTMLElement>('#mcp-config-status')
+const mcpEnabledInput = query<HTMLInputElement>('#mcp-enabled-input')
+const mcpPermissionSelect = query<HTMLSelectElement>('#mcp-permission-select')
+const mcpServerList = query<HTMLElement>('#mcp-server-list')
+const addMcpServerButton = query<HTMLButtonElement>('#add-mcp-server-button')
 let configLoaded = false
 let cachedRoles: RolePayload[] = []
 let cachedSessions: SessionPayload[] = []
 let cachedProviders: RuntimeConfigPayload['providers'] = []
 let cachedLive2dModels: Array<{ id: string, label?: string, active?: boolean }> = []
 let cachedVoices: SpeechSynthesisVoice[] = []
+let cachedMcpServers: McpServerPayload[] = []
 const customSelects = new WeakMap<HTMLSelectElement, {
   root: HTMLDivElement
   button: HTMLButtonElement
@@ -257,6 +297,9 @@ settingsToggleButton?.addEventListener('click', () => {
 for (const button of settingsNavButtons) {
   button.addEventListener('click', () => {
     activateSettingsSection(button.dataset.settingsTarget || 'model')
+    if (!configLoaded && button.dataset.settingsTarget !== 'overview') {
+      void loadRuntimeConfig()
+    }
   })
 }
 
@@ -319,6 +362,23 @@ runtimeConfigForm?.addEventListener('submit', (event) => {
   void saveRuntimeConfig()
 })
 
+mcpConfigForm?.addEventListener('submit', (event) => {
+  event.preventDefault()
+  void saveMcpConfig()
+})
+
+addMcpServerButton?.addEventListener('click', () => {
+  cachedMcpServers.push({
+    name: uniqueMcpServerName(),
+    url: 'http://127.0.0.1:9000/mcp',
+    enabled: true,
+    permission: null,
+    timeoutSeconds: 10,
+  })
+  renderMcpConfig()
+  setConfigStatus(mcpConfigStatus, 'Editing')
+})
+
 roleSelect?.addEventListener('change', () => {
   renderRoleBindings()
 })
@@ -371,6 +431,15 @@ refreshTtsButton?.addEventListener('click', () => {
   renderTtsVoices()
 })
 
+tasksRefreshButton?.addEventListener('click', () => {
+  void loadSessionTasks()
+})
+
+newTaskForm?.addEventListener('submit', (event) => {
+  event.preventDefault()
+  void createTaskFromOverview()
+})
+
 async function loadCurrentSessionRoleLabel(): Promise<void> {
   try {
     const sessions = await loadSessionLibrary()
@@ -388,11 +457,13 @@ async function loadRuntimeConfig(): Promise<void> {
   setConfigStatus(apiConfigStatus, 'Loading')
   setConfigStatus(runtimeConfigStatus, 'Loading')
   setConfigStatus(roleSessionStatus, 'Loading')
+  setConfigStatus(mcpConfigStatus, 'Loading')
   try {
     const [response] = await Promise.all([
       fetch(`${AGENT_HTTP_URL}/runtime/config`, { method: 'GET' }),
       loadRolesAndSessions(),
       loadLive2dModels(),
+      loadToolsConfig(),
     ])
     const payload = await response.json() as RuntimeConfigPayload
     if (!response.ok || !payload.ok) {
@@ -631,7 +702,7 @@ function renderSessionTasks(tasks: TaskRecord[], summary?: TaskSummary): void {
   const activeTasks = tasks.filter((task) => task.status === 'queued' || task.status === 'running' || task.status === 'blocked')
   cachedActiveTasks = activeTasks
   if (!activeTasks.length) {
-    sessionTasksPanel.hidden = true
+    sessionTasksPanel.hidden = false
     sessionTasksList.replaceChildren()
     sessionTasksSummary.textContent = 'No active tasks'
     return
@@ -649,21 +720,137 @@ function renderSessionTasks(tasks: TaskRecord[], summary?: TaskSummary): void {
 
   sessionTasksList.replaceChildren(...activeTasks.map((task) => {
     const row = document.createElement('li')
-    row.className = 'session-plan-item'
+    row.className = 'task-item'
     row.dataset.status = task.status
 
     const marker = document.createElement('span')
-    marker.className = 'session-plan-marker'
+    marker.className = 'task-status-marker'
     marker.textContent = task.status === 'running' ? '>' : task.status === 'blocked' ? '!' : ''
     marker.setAttribute('aria-hidden', 'true')
 
+    const text = document.createElement('div')
+    text.className = 'task-item-text'
+
     const content = document.createElement('span')
-    content.className = 'session-plan-content'
+    content.className = 'task-title'
     content.textContent = task.title
 
-    row.append(marker, content)
+    const meta = document.createElement('span')
+    meta.className = 'task-meta'
+    meta.textContent = formatTaskMeta(task)
+
+    text.append(content, meta)
+
+    const cancelButton = document.createElement('button')
+    cancelButton.type = 'button'
+    cancelButton.className = 'task-cancel-button'
+    cancelButton.textContent = 'Cancel'
+    cancelButton.title = `Cancel ${task.title}`
+    cancelButton.addEventListener('click', () => {
+      void cancelTaskFromOverview(task.id)
+    })
+
+    row.append(marker, text, cancelButton)
     return row
   }))
+}
+
+async function createTaskFromOverview(): Promise<void> {
+  const title = newTaskTitleInput?.value.trim() || ''
+  if (!title) {
+    setTaskSummary('Task title required')
+    newTaskTitleInput?.focus()
+    return
+  }
+  setTaskSummary('Creating task...')
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: SESSION_ID,
+        title,
+        body: newTaskBodyInput?.value.trim() || undefined,
+      }),
+    })
+    const payload = await response.json() as TaskMutationResponse
+    if (!response.ok || !payload.ok || !payload.task) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    if (newTaskTitleInput) {
+      newTaskTitleInput.value = ''
+    }
+    if (newTaskBodyInput) {
+      newTaskBodyInput.value = ''
+    }
+    renderSessionTaskUpdate(payload.event?.payload ?? { task: payload.task, action: 'created' })
+    void loadSessionTasks()
+  }
+  catch (error) {
+    setTaskSummary(`Create failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function cancelTaskFromOverview(taskId: string): Promise<void> {
+  if (!taskId) {
+    return
+  }
+  setTaskSummary('Cancelling task...')
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Cancelled from Main UI' }),
+    })
+    const payload = await response.json() as TaskMutationResponse
+    if (!response.ok || !payload.ok || !payload.task) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    renderSessionTaskUpdate(payload.event?.payload ?? { task: payload.task, action: 'cancelled' })
+    void loadSessionTasks()
+  }
+  catch (error) {
+    setTaskSummary(`Cancel failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function setTaskSummary(message: string): void {
+  if (sessionTasksPanel) {
+    sessionTasksPanel.hidden = false
+  }
+  if (sessionTasksSummary) {
+    sessionTasksSummary.textContent = message
+  }
+}
+
+function formatTaskMeta(task: TaskRecord): string {
+  const parts: string[] = [task.status]
+  if (typeof task.attemptCount === 'number' && typeof task.maxAttempts === 'number') {
+    parts.push(`attempt ${task.attemptCount}/${task.maxAttempts}`)
+  }
+  else if (typeof task.attemptCount === 'number') {
+    parts.push(`attempt ${task.attemptCount}`)
+  }
+  if (task.nextRunAt) {
+    parts.push(`next ${formatShortDateTime(task.nextRunAt)}`)
+  }
+  else if (task.dueAt) {
+    parts.push(`due ${formatShortDateTime(task.dueAt)}`)
+  }
+  return parts.join(' / ')
+}
+
+function formatShortDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function renderSessionMenu(): void {
@@ -1036,6 +1223,181 @@ function renderRuntimeConfig(payload: RuntimeConfigPayload): void {
   setNumberInput(configLive2dOffsetX, payload.runtime?.desktop?.companionLive2dOffsetX)
   setNumberInput(configLive2dOffsetY, payload.runtime?.desktop?.companionLive2dOffsetY)
   setConfigStatus(runtimeConfigStatus, 'Loaded')
+}
+
+async function loadToolsConfig(): Promise<void> {
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/tools/config`, { method: 'GET' })
+    const payload = await response.json() as ToolsConfigPayload
+    if (!response.ok || !payload.ok || !payload.mcp) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    applyMcpConfig(payload)
+  }
+  catch (error) {
+    setConfigStatus(mcpConfigStatus, `Load failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function applyMcpConfig(payload: ToolsConfigPayload): void {
+  if (!payload.mcp) {
+    return
+  }
+  if (mcpEnabledInput) {
+    mcpEnabledInput.checked = Boolean(payload.mcp.enabled)
+  }
+  if (mcpPermissionSelect) {
+    mcpPermissionSelect.value = payload.mcp.permission || 'ask'
+  }
+  cachedMcpServers = payload.mcp.servers.map((server) => ({
+    name: server.name,
+    url: server.url,
+    enabled: server.enabled !== false,
+    permission: server.permission || null,
+    timeoutSeconds: server.timeoutSeconds || 10,
+  }))
+  renderMcpConfig()
+  setConfigStatus(mcpConfigStatus, payload.mcp.enabled
+    ? `${cachedMcpServers.length} servers`
+    : 'Disabled')
+  syncCustomSelects()
+}
+
+function renderMcpConfig(): void {
+  if (!mcpServerList) {
+    return
+  }
+  if (!cachedMcpServers.length) {
+    const empty = document.createElement('div')
+    empty.className = 'settings-note'
+    empty.textContent = 'No MCP servers configured.'
+    mcpServerList.replaceChildren(empty)
+    return
+  }
+  mcpServerList.replaceChildren(...cachedMcpServers.map((server, index) => createMcpServerEditor(server, index)))
+}
+
+function createMcpServerEditor(server: McpServerPayload, index: number): HTMLElement {
+  const row = document.createElement('section')
+  row.className = 'mcp-server-editor'
+  row.dataset.index = String(index)
+
+  const header = document.createElement('div')
+  header.className = 'mcp-server-editor-header'
+  const title = document.createElement('strong')
+  title.textContent = server.name || `Server ${index + 1}`
+  const removeButton = document.createElement('button')
+  removeButton.type = 'button'
+  removeButton.textContent = 'Remove'
+  removeButton.addEventListener('click', () => {
+    cachedMcpServers.splice(index, 1)
+    renderMcpConfig()
+    setConfigStatus(mcpConfigStatus, 'Editing')
+  })
+  header.append(title, removeButton)
+
+  const enabledLabel = document.createElement('label')
+  enabledLabel.className = 'checkbox-label'
+  const enabledInput = document.createElement('input')
+  enabledInput.type = 'checkbox'
+  enabledInput.checked = server.enabled !== false
+  enabledInput.dataset.mcpField = 'enabled'
+  const enabledText = document.createElement('span')
+  enabledText.textContent = 'Enabled'
+  enabledLabel.append(enabledInput, enabledText)
+
+  const nameLabel = mcpTextField('Name', 'name', server.name, 'local_tools')
+  const urlLabel = mcpTextField('URL', 'url', server.url, 'http://127.0.0.1:9000/mcp')
+  const timeoutLabel = mcpTextField('Timeout Seconds', 'timeoutSeconds', String(server.timeoutSeconds || 10), '10', 'number')
+
+  const permissionLabel = document.createElement('label')
+  const permissionText = document.createElement('span')
+  permissionText.textContent = 'Permission'
+  const permissionSelect = document.createElement('select')
+  permissionSelect.dataset.mcpField = 'permission'
+  permissionSelect.append(
+    new Option('Use default', ''),
+    new Option('Ask', 'ask'),
+    new Option('Allow', 'allow'),
+    new Option('Deny', 'deny'),
+  )
+  permissionSelect.value = server.permission || ''
+  permissionLabel.append(permissionText, permissionSelect)
+
+  row.append(header, enabledLabel, nameLabel, urlLabel, permissionLabel, timeoutLabel)
+  return row
+}
+
+function mcpTextField(labelText: string, field: string, value: string, placeholder: string, type = 'text'): HTMLLabelElement {
+  const label = document.createElement('label')
+  const span = document.createElement('span')
+  span.textContent = labelText
+  const input = document.createElement('input')
+  input.dataset.mcpField = field
+  input.type = type
+  input.value = value
+  input.placeholder = placeholder
+  if (type === 'number') {
+    input.min = '1'
+    input.max = '120'
+    input.step = '1'
+  }
+  label.append(span, input)
+  return label
+}
+
+async function saveMcpConfig(): Promise<void> {
+  setConfigStatus(mcpConfigStatus, 'Saving')
+  try {
+    const mcp = collectMcpConfig()
+    const response = await fetch(`${AGENT_HTTP_URL}/tools/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcp }),
+    })
+    const payload = await response.json() as ToolsConfigPayload
+    if (!response.ok || !payload.ok || !payload.mcp) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    applyMcpConfig(payload)
+    setConfigStatus(mcpConfigStatus, payload.mcp.enabled
+      ? `Saved / ${payload.mcp.servers.length} servers`
+      : 'Saved / disabled')
+    runtimeUi.reportDesktopCapabilities()
+  }
+  catch (error) {
+    setConfigStatus(mcpConfigStatus, `Save failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function collectMcpConfig(): NonNullable<ToolsConfigPayload['mcp']> {
+  const servers = Array.from(document.querySelectorAll<HTMLElement>('.mcp-server-editor')).map((row) => {
+    const field = (name: string): HTMLInputElement | HTMLSelectElement | null => row.querySelector(`[data-mcp-field="${name}"]`)
+    const timeoutValue = Number((field('timeoutSeconds') as HTMLInputElement | null)?.value || 10)
+    return {
+      name: ((field('name') as HTMLInputElement | null)?.value || '').trim(),
+      url: ((field('url') as HTMLInputElement | null)?.value || '').trim(),
+      enabled: Boolean((field('enabled') as HTMLInputElement | null)?.checked),
+      permission: ((field('permission') as HTMLSelectElement | null)?.value || null) as McpServerPayload['permission'],
+      timeoutSeconds: Number.isFinite(timeoutValue) ? timeoutValue : 10,
+    }
+  })
+  return {
+    enabled: Boolean(mcpEnabledInput?.checked),
+    permission: (mcpPermissionSelect?.value || 'ask') as 'allow' | 'ask' | 'deny',
+    servers,
+  }
+}
+
+function uniqueMcpServerName(): string {
+  const existing = new Set(cachedMcpServers.map((server) => server.name.toLowerCase()))
+  let index = cachedMcpServers.length + 1
+  let candidate = `mcp_${index}`
+  while (existing.has(candidate.toLowerCase())) {
+    index += 1
+    candidate = `mcp_${index}`
+  }
+  return candidate
 }
 
 async function saveApiConfig(): Promise<void> {

@@ -9,7 +9,7 @@
     />
     <title>Amadeus Main UI</title>
   </head>
-  <body>
+  <body data-settings-open="true">
     <main id="app" class="main-ui">
       <header class="titlebar">
         <div class="drag-region">
@@ -23,7 +23,7 @@
           title="Settings"
           aria-label="Settings"
           aria-controls="settings-panel"
-          aria-expanded="false"
+          aria-expanded="true"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Zm8.1 3.1-1.8-.4a7.5 7.5 0 0 0-.6-1.4l1-1.5-2.7-2.7-1.5 1a7.5 7.5 0 0 0-1.4-.6L12.7 4H9.3l-.4 1.7a7.5 7.5 0 0 0-1.4.6l-1.5-1L3.3 8l1 1.5a7.5 7.5 0 0 0-.6 1.4l-1.8.4v3.4l1.8.4c.1.5.3 1 .6 1.4l-1 1.5L6 20.7l1.5-1c.4.2.9.4 1.4.6l.4 1.7h3.4l.4-1.7c.5-.1 1-.3 1.4-.6l1.5 1 2.7-2.7-1-1.5c.2-.4.4-.9.6-1.4l1.8-.4v-3.4Z" />
@@ -80,13 +80,6 @@
             </div>
             <ol id="session-plan-list" class="session-plan-list"></ol>
           </section>
-          <section id="session-tasks-panel" class="session-plan-panel session-tasks-panel" aria-label="Session tasks" hidden>
-            <div class="session-plan-header">
-              <span class="eyebrow">tasks</span>
-              <span id="session-tasks-summary">No active tasks</span>
-            </div>
-            <ol id="session-tasks-list" class="session-plan-list"></ol>
-          </section>
           <div id="chat-log" class="chat-log"></div>
           <form id="chat-form">
             <input id="chat-input" name="message" autocomplete="off" placeholder="Type to Amadeus..." />
@@ -98,27 +91,108 @@
           </form>
         </section>
 
-        <aside id="settings-panel" class="side-panel" aria-label="Settings panel" hidden>
+        <aside id="settings-panel" class="side-panel" aria-label="Workspace panel">
           <div class="settings-heading">
-            <span class="eyebrow">settings</span>
-            <strong>Runtime Console</strong>
+            <span class="eyebrow">workspace</span>
+            <strong>Main Console</strong>
           </div>
 
           <div class="settings-console">
             <nav class="settings-nav" aria-label="Settings sections">
-              <button class="settings-nav-button active" type="button" data-settings-target="role">Role</button>
+              <button class="settings-nav-button active" type="button" data-settings-target="overview">Overview</button>
+              <button class="settings-nav-button" type="button" data-settings-target="role">Role</button>
               <button class="settings-nav-button" type="button" data-settings-target="model">Model</button>
               <button class="settings-nav-button" type="button" data-settings-target="live2d">Live2D</button>
               <button class="settings-nav-button" type="button" data-settings-target="tts">TTS</button>
-              <button class="settings-nav-button" type="button" data-settings-target="skills">Skills</button>
-              <button class="settings-nav-button" type="button" data-settings-target="tools">Tools</button>
+              <button class="settings-nav-button" type="button" data-settings-target="mcp">MCP</button>
               <button class="settings-nav-button" type="button" data-settings-target="runtime">Configs</button>
-              <button class="settings-nav-button" type="button" data-settings-target="logs">Logs</button>
               <button class="settings-nav-button" type="button" data-settings-target="usage">Usage</button>
             </nav>
             <div class="settings-content">
 
-          <section class="config-panel settings-section active" data-settings-section="role" aria-label="Role configuration">
+          <section class="settings-section active overview-section" data-settings-section="overview" aria-label="Runtime overview">
+            <section class="runtime-card">
+              <div class="runtime-card-header">
+                <div>
+                  <span class="eyebrow">runtime</span>
+                  <strong>Status</strong>
+                </div>
+                <button id="reset-session-button" type="button" title="Clear this session memory">Reset</button>
+              </div>
+              <div class="status-grid">
+                <div class="status-tile">
+                  <span>Memory</span>
+                  <strong id="memory-status">Memory unknown</strong>
+                </div>
+                <div class="status-tile">
+                  <span>Tools</span>
+                  <strong id="tool-status" class="tool-status">Tools idle</strong>
+                </div>
+                <div class="status-tile">
+                  <span>Skills</span>
+                  <strong id="skill-status" class="skill-status">Skills idle</strong>
+                </div>
+                <div class="status-tile">
+                  <span>Voice</span>
+                  <strong id="voice-status" class="voice-status">Voice idle</strong>
+                </div>
+              </div>
+              <div id="tool-config-status" class="tool-config-status diagnostics-line">Tool config unknown</div>
+              <div id="tool-permission" class="tool-permission" hidden>
+                <span id="tool-permission-text"></span>
+                <button id="tool-allow-button" type="button">Allow</button>
+                <button id="tool-deny-button" type="button">Deny</button>
+              </div>
+            </section>
+
+            <section id="session-tasks-panel" class="tasks-panel" aria-label="Session tasks">
+              <div class="tasks-header">
+                <div>
+                  <span class="eyebrow">tasks</span>
+                  <strong>Background Work</strong>
+                </div>
+                <button id="tasks-refresh-button" type="button">Refresh</button>
+              </div>
+              <form id="new-task-form" class="new-task-form">
+                <input id="new-task-title-input" autocomplete="off" placeholder="Create a background task..." />
+                <textarea id="new-task-body-input" rows="2" placeholder="Optional details"></textarea>
+                <button type="submit">Create</button>
+              </form>
+              <div id="session-tasks-summary" class="tasks-summary">No active tasks</div>
+              <ol id="session-tasks-list" class="tasks-list"></ol>
+            </section>
+
+            <section class="skills-panel" aria-label="Suggested skills">
+              <div class="skills-header">
+                <span id="skills-status">Suggested skills: loading...</span>
+                <button id="skills-refresh-button" type="button">Refresh</button>
+              </div>
+              <input
+                id="skills-search-input"
+                class="skills-search-input"
+                type="search"
+                autocomplete="off"
+                placeholder="Search skills..."
+              />
+              <div id="skills-list" class="skills-list"></div>
+              <div class="skill-detail">
+                <div class="skill-detail-header">
+                  <span id="skill-detail-title">Skill Summary</span>
+                </div>
+                <div id="skill-detail-body" class="skill-detail-body">Select a skill to preview a short summary.</div>
+              </div>
+            </section>
+
+            <section class="memory-review" aria-label="Memory review">
+              <div class="memory-review-header">
+                <span id="memory-review-status">Memory review: loading</span>
+                <button id="memory-review-run-button" type="button">Review</button>
+              </div>
+              <div id="memory-review-list" class="memory-review-list"></div>
+            </section>
+          </section>
+
+          <section class="config-panel settings-section" data-settings-section="role" aria-label="Role configuration" hidden>
             <div class="config-header">
               <div>
                 <span class="eyebrow">identity</span>
@@ -334,51 +408,34 @@
             </form>
           </section>
 
-          <section class="runtime-card settings-section" data-settings-section="tools" hidden>
-            <div class="runtime-row">
-              <span id="memory-status">Memory unknown</span>
-              <button id="reset-session-button" type="button" title="Clear this session memory">Reset</button>
-            </div>
-            <div class="diagnostics">
-              <div id="tool-status" class="tool-status">Tools idle</div>
-              <div id="skill-status" class="skill-status">Skills idle</div>
-              <div id="tool-config-status" class="tool-config-status">Tool config unknown</div>
-              <div id="voice-status" class="voice-status">Voice idle</div>
-            </div>
-            <div id="tool-permission" class="tool-permission" hidden>
-              <span id="tool-permission-text"></span>
-              <button id="tool-allow-button" type="button">Allow</button>
-              <button id="tool-deny-button" type="button">Deny</button>
-            </div>
-          </section>
-
-          <section class="memory-review settings-section" data-settings-section="logs" aria-label="Memory review" hidden>
-            <div class="memory-review-header">
-              <span id="memory-review-status">Memory review: loading</span>
-              <button id="memory-review-run-button" type="button">Review</button>
-            </div>
-            <div id="memory-review-list" class="memory-review-list"></div>
-          </section>
-
-          <section class="skills-panel settings-section" data-settings-section="skills" aria-label="Suggested skills" hidden>
-            <div class="skills-header">
-              <span id="skills-status">Suggested skills: loading...</span>
-              <button id="skills-refresh-button" type="button">Refresh</button>
-            </div>
-            <input
-              id="skills-search-input"
-              class="skills-search-input"
-              type="search"
-              autocomplete="off"
-              placeholder="Search skills..."
-            />
-            <div id="skills-list" class="skills-list"></div>
-            <div class="skill-detail">
-              <div class="skill-detail-header">
-                <span id="skill-detail-title">Skill Summary</span>
+          <section class="config-panel settings-section" data-settings-section="mcp" aria-label="MCP configuration" hidden>
+            <div class="config-header">
+              <div>
+                <span class="eyebrow">external tools</span>
+                <strong>MCP Servers</strong>
               </div>
-              <div id="skill-detail-body" class="skill-detail-body">Select a skill to preview a short summary.</div>
+              <span id="mcp-config-status" class="config-status">Loading</span>
             </div>
+            <p class="settings-note">HTTP JSON-RPC MCP servers expose tools through <code>tools/list</code> and <code>tools/call</code>. External tools should usually stay on ask permission.</p>
+            <form id="mcp-config-form" class="config-form">
+              <label class="checkbox-label">
+                <input id="mcp-enabled-input" type="checkbox" />
+                <span>Enable MCP discovery</span>
+              </label>
+              <label>
+                <span>Default Permission</span>
+                <select id="mcp-permission-select">
+                  <option value="ask">Ask</option>
+                  <option value="allow">Allow</option>
+                  <option value="deny">Deny</option>
+                </select>
+              </label>
+              <div id="mcp-server-list" class="mcp-server-list"></div>
+              <div class="form-actions">
+                <button id="add-mcp-server-button" type="button">Add Server</button>
+                <button type="submit">Save MCP</button>
+              </div>
+            </form>
           </section>
 
           <section class="config-panel settings-section" data-settings-section="usage" aria-label="Usage" hidden>

@@ -216,6 +216,53 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertIn("get_current_time", tool_names)
         self.assertIn("get_current_time", schema_names)
 
+    def test_tools_config_updates_mcp_and_reloads_registry(self) -> None:
+        from amadeus.mcp import McpServerConfig, build_mcp_tool_specs
+        from amadeus.tool_runtime import registry as registry_module
+
+        discovered: list[McpServerConfig] = []
+        original_builder = registry_module.build_mcp_tool_specs
+
+        def fake_builder(servers: list[McpServerConfig], *, default_permission: str = "ask"):
+            def fake_list_tools(server: McpServerConfig) -> list[dict[str, object]]:
+                discovered.append(server)
+                return [{
+                    "name": "lookup",
+                    "description": "Lookup from test MCP",
+                    "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}},
+                }]
+
+            return build_mcp_tool_specs(servers, default_permission=default_permission, list_tools=fake_list_tools)
+
+        registry_module.build_mcp_tool_specs = fake_builder
+        try:
+            payload = self.post_json("/tools/config", {
+                "mcp": {
+                    "enabled": True,
+                    "permission": "ask",
+                    "servers": [{
+                        "name": "local",
+                        "url": "http://127.0.0.1:9999/mcp",
+                        "enabled": True,
+                        "permission": "allow",
+                        "timeoutSeconds": 7,
+                    }],
+                },
+            })
+            listed = self.get_json("/tools/list")
+        finally:
+            registry_module.build_mcp_tool_specs = original_builder
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["mcp"]["enabled"])
+        self.assertEqual(payload["mcp"]["servers"][0]["name"], "local")
+        self.assertEqual(discovered[0].timeout_seconds, 7)
+        tool_names = {entry["name"]: entry for entry in listed["tools"]}
+        schema_names = {entry["function"]["name"] for entry in listed["schemas"]}
+        self.assertIn("mcp__local__lookup", tool_names)
+        self.assertEqual(tool_names["mcp__local__lookup"]["permission"], "allow")
+        self.assertIn("mcp__local__lookup", schema_names)
+
     def test_skills_list_and_view_expose_runtime_skills(self) -> None:
         listed = self.get_json("/skills/list")
         viewed = self.get_json("/skills/view?name=runtime-debug")

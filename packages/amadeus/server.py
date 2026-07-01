@@ -6,6 +6,7 @@ import mimetypes
 import os
 import queue
 import sys
+import yaml
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,6 +38,7 @@ AUDIO_ROOT = Path(os.environ.get("AMADEUS_AUDIO_ROOT", str(RUNTIME_DIR / "assets
 LIVE2D_ROOT = Path(os.environ.get("AMADEUS_LIVE2D_ROOT", str(REPO_ROOT / "models" / "live2d")))
 HARNESSES_CONFIG_PATH = Path(os.environ.get("AMADEUS_HARNESSES_CONFIG", str(REPO_ROOT / "configs" / "harnesses.yaml")))
 PROVIDERS_CONFIG_PATH = REPO_ROOT / "configs" / "providers.yaml"
+TOOLS_CONFIG_PATH = REPO_ROOT / "configs" / "tools.yaml"
 ENV_CONFIG_PATH = REPO_ROOT / ".env"
 PUBLIC_BASE_URL = os.environ.get("AMADEUS_PYTHON_RUNTIME_URL", f"http://{HOST}:{PORT}")
 LOG_LEVEL = os.environ.get("AMADEUS_LOG_LEVEL", "INFO").upper()
@@ -192,6 +194,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "tools": agent_runtime.tool_permission_state(),
                 "schemas": agent_runtime.enabled_tool_schemas(),
             })
+            return
+
+        if parsed.path == "/tools/config":
+            logger.info("Handling tools config request")
+            self.write_json(200, build_tools_config_payload())
             return
 
         if parsed.path == "/skills/list":
@@ -443,6 +450,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_runtime_config_update()
             return
 
+        if self.path == "/tools/config":
+            self.handle_tools_config_update()
+            return
+
         if self.path == "/roles":
             self.handle_role_create()
             return
@@ -569,6 +580,35 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, {"ok": True, **result})
         except Exception as error:
             logger.info("Runtime config reload failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_tools_config_update(self) -> None:
+        try:
+            body = self.read_json_body()
+            mcp_payload = body.get("mcp")
+            if mcp_payload is None:
+                self.write_json(400, {"ok": False, "error": "mcp config is required"})
+                return
+            if not isinstance(mcp_payload, dict):
+                self.write_json(400, {"ok": False, "error": "mcp must be an object"})
+                return
+
+            update_mcp_tools_config(mcp_payload)
+            reload_result = agent_runtime.reload_tool_registry()
+            payload = build_tools_config_payload()
+            payload["reloaded"] = reload_result
+            logger.info(
+                "Handled tools config update mcpEnabled=%s serverCount=%s toolCount=%s",
+                payload.get("mcp", {}).get("enabled"),
+                len(payload.get("mcp", {}).get("servers", [])),
+                reload_result.get("toolCount"),
+            )
+            self.write_json(200, payload)
+        except ValueError as error:
+            logger.info("Tools config update rejected error=%s", error)
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Tools config update failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_runtime_events(self, parsed: Any) -> None:
@@ -1740,6 +1780,153 @@ def build_runtime_config_payload() -> dict[str, Any]:
             "runtimeConfig": str(agent_runtime.runtime_config_path),
         },
     }
+
+
+def build_tools_config_payload() -> dict[str, Any]:
+    config = read_tools_config_file()
+    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    mcp = normalize_mcp_config_for_payload(tools.get("mcp") if isinstance(tools, dict) else None)
+    return {
+        "ok": True,
+        "mcp": mcp,
+        "paths": {
+            "toolsConfig": str(agent_runtime.tools_config_path),
+        },
+        "tools": agent_runtime.tool_permission_state(),
+        "schemas": agent_runtime.enabled_tool_schemas(),
+    }
+
+
+def read_tools_config_file() -> dict[str, Any]:
+    path = agent_runtime.tools_config_path
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"tools": {}}
+    except OSError as error:
+        raise ValueError(f"failed to read tools config: {error}") from error
+
+    try:
+        parsed = yaml.safe_load(raw) if raw.strip() else {}
+    except yaml.YAMLError as error:
+        raise ValueError(f"failed to parse tools config: {error}") from error
+    if parsed is None:
+        return {"tools": {}}
+    if not isinstance(parsed, dict):
+        raise ValueError("tools config must be a YAML object")
+    return parsed
+
+
+def write_tools_config_file(config: dict[str, Any]) -> None:
+    path = agent_runtime.tools_config_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def normalize_mcp_config_for_payload(raw_mcp: Any) -> dict[str, Any]:
+    if not isinstance(raw_mcp, dict):
+        raw_mcp = {}
+    servers = raw_mcp.get("servers") if isinstance(raw_mcp.get("servers"), list) else []
+    return {
+        "enabled": bool(raw_mcp.get("enabled")),
+        "permission": normalize_tool_permission(raw_mcp.get("permission"), fallback="ask"),
+        "servers": [
+            normalize_mcp_server_for_payload(server)
+            for server in servers
+            if isinstance(server, dict)
+        ],
+    }
+
+
+def normalize_mcp_server_for_payload(raw_server: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(raw_server.get("name") or ""),
+        "url": str(raw_server.get("url") or ""),
+        "enabled": raw_server.get("enabled") is not False,
+        "permission": normalize_tool_permission(raw_server.get("permission"), fallback=None),
+        "timeoutSeconds": normalize_timeout_seconds(raw_server.get("timeoutSeconds"), fallback=10),
+    }
+
+
+def update_mcp_tools_config(payload: dict[str, Any]) -> None:
+    config = read_tools_config_file()
+    tools = config.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+    tools["mcp"] = validate_mcp_config_payload(payload)
+    config["tools"] = tools
+    write_tools_config_file(config)
+
+
+def validate_mcp_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    enabled = parse_required_bool(payload.get("enabled"), "mcp.enabled")
+    permission = normalize_tool_permission(payload.get("permission"), fallback="ask")
+    servers_payload = payload.get("servers")
+    if not isinstance(servers_payload, list):
+        raise ValueError("mcp.servers must be an array")
+
+    servers: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for index, raw_server in enumerate(servers_payload):
+        if not isinstance(raw_server, dict):
+            raise ValueError(f"mcp.servers[{index}] must be an object")
+        server = validate_mcp_server_payload(raw_server, index)
+        name_key = server["name"].lower()
+        if name_key in seen_names:
+            raise ValueError(f"duplicate MCP server name: {server['name']}")
+        seen_names.add(name_key)
+        servers.append(server)
+
+    return {
+        "enabled": enabled,
+        "permission": permission,
+        "servers": servers,
+    }
+
+
+def validate_mcp_server_payload(payload: dict[str, Any], index: int) -> dict[str, Any]:
+    name = optional_non_empty_string(payload.get("name"), f"mcp.servers[{index}].name")
+    url = optional_non_empty_string(payload.get("url"), f"mcp.servers[{index}].url")
+    if not name:
+        raise ValueError(f"mcp.servers[{index}].name is required")
+    if not url:
+        raise ValueError(f"mcp.servers[{index}].url is required")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError(f"mcp.servers[{index}].url must start with http:// or https://")
+    return {
+        "name": name,
+        "url": url,
+        "enabled": parse_required_bool(payload.get("enabled", True), f"mcp.servers[{index}].enabled"),
+        "permission": normalize_tool_permission(payload.get("permission"), fallback=None),
+        "timeoutSeconds": normalize_timeout_seconds(payload.get("timeoutSeconds"), fallback=10),
+    }
+
+
+def parse_required_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be a boolean")
+
+
+def normalize_tool_permission(value: Any, *, fallback: str | None) -> str | None:
+    if value in {"allow", "ask", "deny"}:
+        return str(value)
+    if value in {None, ""}:
+        return fallback
+    raise ValueError("permission must be one of allow, ask, deny")
+
+
+def normalize_timeout_seconds(value: Any, *, fallback: int) -> int:
+    if value in {None, ""}:
+        return fallback
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("timeoutSeconds must be an integer") from error
+    if parsed < 1 or parsed > 120:
+        raise ValueError("timeoutSeconds must be between 1 and 120")
+    return parsed
 
 
 def configured_provider_profiles() -> list[dict[str, Any]]:

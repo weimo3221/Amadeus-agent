@@ -282,7 +282,7 @@ def parse_mcp_config_line(entry: dict[str, Any], indent: int, trimmed: str) -> N
     if not isinstance(servers, list):
         return
 
-    if indent == 6 and trimmed.startswith("- "):
+    if indent in {4, 6} and trimmed.startswith("- "):
         item = trimmed[2:].strip()
         server: dict[str, Any] = {}
         if item and ":" in item:
@@ -295,7 +295,7 @@ def parse_mcp_config_line(entry: dict[str, Any], indent: int, trimmed: str) -> N
         entry[trimmed[:-1].strip()] = {}
         return
 
-    if indent == 8 and servers and ":" in trimmed:
+    if indent in {6, 8} and servers and ":" in trimmed:
         key, value = trimmed.split(":", 1)
         servers[-1][key.strip()] = parse_config_scalar(value.strip())
 

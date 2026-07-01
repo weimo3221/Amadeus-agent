@@ -199,6 +199,7 @@ class AgentRuntime:
         self.audio_runtime = audio_runtime
         self.task_worker: Any | None = None
         self.model_client = OpenAICompatibleChatModel()
+        self.tools_config_path = tools_config_path
         self.tool_registry = ToolRegistry(config_path=tools_config_path)
         self.harness_registry = HarnessRegistry.from_config(
             harnesses_config_path,
@@ -470,6 +471,17 @@ class AgentRuntime:
         return {
             "runtimeConfig": str(self.runtime_config_path),
             "config": self._load_runtime_config(reason="reload"),
+        }
+
+    def reload_tool_registry(self) -> dict[str, Any]:
+        logger.info("Reloading tool registry toolsConfig=%s", self.tools_config_path)
+        self.tool_registry = ToolRegistry(config_path=self.tools_config_path)
+        self.system_prompt = self._build_system_prompt()
+        self.context_assembler = ContextAssembler(self.memory_store, self.system_prompt)
+        return {
+            "toolsConfig": str(self.tools_config_path),
+            "toolCount": len(self.tool_permission_state()),
+            "schemaCount": len(self.enabled_tool_schemas()),
         }
 
     def running_turn_snapshot(self, session_id: str) -> dict[str, Any]:

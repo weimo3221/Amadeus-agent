@@ -12,13 +12,14 @@ This file is the forward-looking plan. For live implementation status, use `docs
 
 The next implementation pass should proceed in this order:
 
-1. Current: polish the split desktop surfaces. Companion should stay lightweight, transparent, Live2D-focused, and transient; Main UI should absorb the larger chat, context, skills, diagnostics, permissions, and future session-switching workflows.
-2. Current: finish the missing entry-point semantics: implement the real CLI client with its own default session ID, then add Main UI session switching and explicit attach/view flows for Companion sessions.
+1. Current: continue hardening Main UI as the primary workbench. Companion should stay lightweight, transparent, Live2D-focused, and transient; Main UI should own larger chat, active tasks, skills, memory review, diagnostics, permissions, model/runtime configuration, and MCP server management.
+2. Current: turn MCP from a configured runtime bridge into a practical user-facing capability. The first Main UI MCP tab now manages HTTP JSON-RPC servers and reloads the Python ToolRegistry; next MCP work should add a deterministic local example server, clearer discovery/error diagnostics, and then evaluate stdio/SSE support.
 3. Current: tighten the skills UI semantics around "available", "suggested", and "active" so the desktop keeps exposing only lightweight user-facing state while the runtime logs keep the deeper activation details.
 4. Next: keep shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
-5. Next: keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, and user-facing runtime flows.
-6. Later: after the desktop UI shape settles, add a real skill import/install flow, run `validate_skills.py` as part of that flow, and support runtime refresh so newly added skills become available without a full manual restart.
-7. Later: fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
+5. Next: keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, MCP, and user-facing runtime flows.
+6. Later: implement the real CLI client only after the basic Main UI workflows are stable. It should default to its own session ID unless explicitly attached elsewhere.
+7. Later: after the desktop UI shape settles, add a real skill import/install flow, run `validate_skills.py` as part of that flow, and support runtime refresh so newly added skills become available without a full manual restart.
+8. Later: fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
 
 ## Phase 0: Project Skeleton
 
