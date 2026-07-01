@@ -1,4 +1,13 @@
-import type { ServerRuntimeEvent, TaskRecord, TaskSummary, TaskUpdatedPayload, TaskPlanPayload } from '@amadeus-agent/amadeus/events'
+import type {
+  ScheduledJobRecord,
+  ScheduledJobSummary,
+  ScheduledJobUpdatedPayload,
+  ServerRuntimeEvent,
+  TaskPlanPayload,
+  TaskRecord,
+  TaskSummary,
+  TaskUpdatedPayload,
+} from '@amadeus-agent/amadeus/events'
 import { RuntimeUiController, type RuntimeAudioLike } from '../runtime-ui'
 import './styles.css'
 
@@ -112,6 +121,22 @@ interface TasksResponse {
   error?: string
 }
 
+interface ScheduledJobsResponse {
+  ok?: boolean
+  jobs?: ScheduledJobRecord[]
+  summary?: ScheduledJobSummary
+  error?: string
+}
+
+interface SessionMessagesResponse {
+  ok?: boolean
+  messages?: Array<{
+    role?: string
+    content?: string
+  }>
+  error?: string
+}
+
 interface TaskMutationResponse {
   ok?: boolean
   task?: TaskRecord
@@ -119,6 +144,17 @@ interface TaskMutationResponse {
     type: 'task.updated'
     sessionId: string
     payload: TaskUpdatedPayload
+  }
+  error?: string
+}
+
+interface ScheduledJobMutationResponse {
+  ok?: boolean
+  job?: ScheduledJobRecord
+  event?: {
+    type: 'scheduled.updated'
+    sessionId: string
+    payload: ScheduledJobUpdatedPayload
   }
   error?: string
 }
@@ -194,6 +230,15 @@ const tasksRefreshButton = query<HTMLButtonElement>('#tasks-refresh-button')
 const newTaskForm = query<HTMLFormElement>('#new-task-form')
 const newTaskTitleInput = query<HTMLInputElement>('#new-task-title-input')
 const newTaskBodyInput = query<HTMLTextAreaElement>('#new-task-body-input')
+const scheduledJobsPanel = query<HTMLElement>('#scheduled-jobs-panel')
+const scheduledJobsSummary = query<HTMLElement>('#scheduled-jobs-summary')
+const scheduledJobsList = query<HTMLOListElement>('#scheduled-jobs-list')
+const scheduledRefreshButton = query<HTMLButtonElement>('#scheduled-refresh-button')
+const newScheduledForm = query<HTMLFormElement>('#new-scheduled-form')
+const newScheduledTitleInput = query<HTMLInputElement>('#new-scheduled-title-input')
+const newScheduledMessageInput = query<HTMLTextAreaElement>('#new-scheduled-message-input')
+const newScheduledScheduleInput = query<HTMLInputElement>('#new-scheduled-schedule-input')
+const newScheduledRepeatInput = query<HTMLInputElement>('#new-scheduled-repeat-input')
 const settingsNavButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.settings-nav-button'))
 const settingsSections = Array.from(document.querySelectorAll<HTMLElement>('[data-settings-section]'))
 const apiConfigForm = query<HTMLFormElement>('#api-config-form')
@@ -443,9 +488,18 @@ tasksRefreshButton?.addEventListener('click', () => {
   void loadSessionTasks()
 })
 
+scheduledRefreshButton?.addEventListener('click', () => {
+  void loadScheduledJobs()
+})
+
 newTaskForm?.addEventListener('submit', (event) => {
   event.preventDefault()
   void createTaskFromOverview()
+})
+
+newScheduledForm?.addEventListener('submit', (event) => {
+  event.preventDefault()
+  void createScheduledJobFromOverview()
 })
 
 async function loadCurrentSessionRoleLabel(): Promise<void> {
@@ -644,11 +698,48 @@ async function loadSessionTasks(): Promise<void> {
   }
 }
 
+async function loadSessionMessages(): Promise<void> {
+  try {
+    const params = new URLSearchParams({ sessionId: SESSION_ID, limit: '80' })
+    const response = await fetch(`${AGENT_HTTP_URL}/memory/messages?${params.toString()}`, { method: 'GET' })
+    const payload = await response.json() as SessionMessagesResponse
+    if (!response.ok || !payload.ok || !Array.isArray(payload.messages)) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    runtimeUi.renderSessionMessages(payload.messages)
+  }
+  catch {
+    runtimeUi.renderSessionMessages([])
+  }
+}
+
 function handleRuntimeTaskEvent(event: ServerRuntimeEvent): void {
   if (event.type !== 'task.updated' || event.sessionId !== SESSION_ID) {
     return
   }
   renderSessionTaskUpdate(event.payload)
+}
+
+async function loadScheduledJobs(): Promise<void> {
+  try {
+    const params = new URLSearchParams({ sessionId: SESSION_ID, activeOnly: 'true', limit: '20' })
+    const response = await fetch(`${AGENT_HTTP_URL}/scheduled-jobs?${params.toString()}`, { method: 'GET' })
+    const payload = await response.json() as ScheduledJobsResponse
+    if (!response.ok || !payload.ok || !Array.isArray(payload.jobs)) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    renderScheduledJobs(payload.jobs, payload.summary)
+  }
+  catch {
+    renderScheduledJobs([])
+  }
+}
+
+function handleRuntimeScheduledEvent(event: ServerRuntimeEvent): void {
+  if (event.type !== 'scheduled.updated' || event.sessionId !== SESSION_ID) {
+    return
+  }
+  renderScheduledJobUpdate(event.payload)
 }
 
 function renderSessionPlan(plan?: TaskPlanPayload): void {
@@ -831,6 +922,176 @@ function setTaskSummary(message: string): void {
   }
 }
 
+let cachedScheduledJobs: ScheduledJobRecord[] = []
+
+function renderScheduledJobUpdate(payload: ScheduledJobUpdatedPayload): void {
+  const job = payload.job
+  const activeStatuses = new Set<ScheduledJobRecord['status']>(['scheduled', 'running', 'paused', 'failed'])
+  const nextJobs = cachedScheduledJobs.filter((item) => item.id !== job.id)
+  if (activeStatuses.has(job.status)) {
+    nextJobs.unshift(job)
+  }
+  renderScheduledJobs(nextJobs.slice(0, 20))
+}
+
+function renderScheduledJobs(jobs: ScheduledJobRecord[], summary?: ScheduledJobSummary): void {
+  if (!scheduledJobsPanel || !scheduledJobsSummary || !scheduledJobsList) {
+    return
+  }
+
+  const visibleJobs = jobs.filter((job) => job.status === 'scheduled' || job.status === 'running' || job.status === 'paused' || job.status === 'failed')
+  cachedScheduledJobs = visibleJobs
+  scheduledJobsPanel.hidden = false
+  if (!visibleJobs.length) {
+    scheduledJobsList.replaceChildren()
+    scheduledJobsSummary.textContent = 'No scheduled messages'
+    return
+  }
+
+  const scheduled = summary?.scheduled ?? visibleJobs.filter((job) => job.status === 'scheduled').length
+  const running = summary?.running ?? visibleJobs.filter((job) => job.status === 'running').length
+  const paused = summary?.paused ?? visibleJobs.filter((job) => job.status === 'paused').length
+  const failed = summary?.failed ?? visibleJobs.filter((job) => job.status === 'failed').length
+  scheduledJobsSummary.textContent = [
+    running ? `${running} running` : '',
+    scheduled ? `${scheduled} scheduled` : '',
+    paused ? `${paused} paused` : '',
+    failed ? `${failed} failed` : '',
+  ].filter(Boolean).join(' / ') || `${visibleJobs.length} active`
+
+  scheduledJobsList.replaceChildren(...visibleJobs.map((job) => {
+    const row = document.createElement('li')
+    row.className = 'task-item scheduled-item'
+    row.dataset.status = job.status
+
+    const marker = document.createElement('span')
+    marker.className = 'task-status-marker'
+    marker.textContent = job.status === 'running' ? '>' : job.status === 'paused' ? 'Ⅱ' : job.status === 'failed' ? '!' : ''
+    marker.setAttribute('aria-hidden', 'true')
+
+    const text = document.createElement('div')
+    text.className = 'task-item-text'
+
+    const title = document.createElement('span')
+    title.className = 'task-title'
+    title.textContent = job.title
+
+    const meta = document.createElement('span')
+    meta.className = 'task-meta'
+    meta.textContent = formatScheduledJobMeta(job)
+
+    text.append(title, meta)
+
+    const actions = document.createElement('div')
+    actions.className = 'scheduled-actions'
+
+    const pauseButton = document.createElement('button')
+    pauseButton.type = 'button'
+    pauseButton.className = 'task-cancel-button scheduled-action-button'
+    pauseButton.textContent = job.status === 'paused' || job.status === 'failed' ? 'Resume' : 'Pause'
+    pauseButton.addEventListener('click', () => {
+      void updateScheduledJobStatus(job.id, job.status === 'paused' || job.status === 'failed' ? 'resume' : 'pause')
+    })
+
+    const cancelButton = document.createElement('button')
+    cancelButton.type = 'button'
+    cancelButton.className = 'task-cancel-button scheduled-action-button'
+    cancelButton.textContent = 'Cancel'
+    cancelButton.addEventListener('click', () => {
+      void updateScheduledJobStatus(job.id, 'cancel')
+    })
+
+    actions.append(pauseButton, cancelButton)
+    row.append(marker, text, actions)
+    return row
+  }))
+}
+
+async function createScheduledJobFromOverview(): Promise<void> {
+  const message = newScheduledMessageInput?.value.trim() || ''
+  const schedule = newScheduledScheduleInput?.value.trim() || ''
+  const title = newScheduledTitleInput?.value.trim() || message.slice(0, 48)
+  const repeatText = newScheduledRepeatInput?.value.trim() || ''
+  if (!message) {
+    setScheduledSummary('Message required')
+    newScheduledMessageInput?.focus()
+    return
+  }
+  if (!schedule) {
+    setScheduledSummary('Schedule required')
+    newScheduledScheduleInput?.focus()
+    return
+  }
+
+  setScheduledSummary('Creating scheduled message...')
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/scheduled-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: SESSION_ID,
+        title,
+        message,
+        schedule,
+        repeatCount: repeatText ? Number.parseInt(repeatText, 10) : undefined,
+      }),
+    })
+    const payload = await response.json() as ScheduledJobMutationResponse
+    if (!response.ok || !payload.ok || !payload.job) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    if (newScheduledTitleInput) {
+      newScheduledTitleInput.value = ''
+    }
+    if (newScheduledMessageInput) {
+      newScheduledMessageInput.value = ''
+    }
+    if (newScheduledScheduleInput) {
+      newScheduledScheduleInput.value = ''
+    }
+    if (newScheduledRepeatInput) {
+      newScheduledRepeatInput.value = ''
+    }
+    renderScheduledJobUpdate(payload.event?.payload ?? { job: payload.job, action: 'created' })
+    void loadScheduledJobs()
+  }
+  catch (error) {
+    setScheduledSummary(`Schedule failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function updateScheduledJobStatus(jobId: string, action: 'pause' | 'resume' | 'cancel'): Promise<void> {
+  if (!jobId) {
+    return
+  }
+  setScheduledSummary(`${action === 'cancel' ? 'Cancelling' : action === 'pause' ? 'Pausing' : 'Resuming'} scheduled message...`)
+  try {
+    const response = await fetch(`${AGENT_HTTP_URL}/scheduled-jobs/${encodeURIComponent(jobId)}/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(action === 'cancel' ? { reason: 'Cancelled from Main UI' } : {}),
+    })
+    const payload = await response.json() as ScheduledJobMutationResponse
+    if (!response.ok || !payload.ok || !payload.job) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
+    }
+    renderScheduledJobUpdate(payload.event?.payload ?? { job: payload.job, action: action === 'pause' ? 'paused' : action === 'resume' ? 'resumed' : 'cancelled' })
+    void loadScheduledJobs()
+  }
+  catch (error) {
+    setScheduledSummary(`${action} failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function setScheduledSummary(message: string): void {
+  if (scheduledJobsPanel) {
+    scheduledJobsPanel.hidden = false
+  }
+  if (scheduledJobsSummary) {
+    scheduledJobsSummary.textContent = message
+  }
+}
+
 function formatTaskMeta(task: TaskRecord): string {
   const parts: string[] = [task.status]
   if (typeof task.attemptCount === 'number' && typeof task.maxAttempts === 'number') {
@@ -846,6 +1107,20 @@ function formatTaskMeta(task: TaskRecord): string {
     parts.push(`due ${formatShortDateTime(task.dueAt)}`)
   }
   return parts.join(' / ')
+}
+
+function formatScheduledJobMeta(job: ScheduledJobRecord): string {
+  const parts: string[] = [job.status, job.scheduleDisplay || 'scheduled']
+  if (typeof job.completedRuns === 'number') {
+    parts.push(job.repeatCount ? `${job.completedRuns}/${job.repeatCount}` : `${job.completedRuns} sent`)
+  }
+  if (job.nextRunAt) {
+    parts.push(`next ${formatShortDateTime(job.nextRunAt)}`)
+  }
+  if (job.lastError) {
+    parts.push(job.lastError)
+  }
+  return parts.filter(Boolean).join(' / ')
 }
 
 function formatShortDateTime(value: string): string {
@@ -2030,6 +2305,7 @@ const runtimeUi = new RuntimeUiController({
   onServerEvent(event) {
     handleRuntimePlanEvent(event)
     handleRuntimeTaskEvent(event)
+    handleRuntimeScheduledEvent(event)
   },
 })
 
@@ -2038,8 +2314,10 @@ async function bootstrapMainUi(): Promise<void> {
   setCurrentRoleLabel('Amadeus')
   await loadCurrentSessionRoleLabel()
   await Promise.all([
+    loadSessionMessages(),
     loadSessionPlan(),
     loadSessionTasks(),
+    loadScheduledJobs(),
   ])
   runtimeUi.bindControls()
   runtimeUi.connectAgentRuntime()

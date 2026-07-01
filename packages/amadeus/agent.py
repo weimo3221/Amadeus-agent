@@ -1878,6 +1878,11 @@ class AgentRuntime:
             action = result.output.get("action")
             if isinstance(task, dict) and isinstance(action, str):
                 yield AgentEvent("task.updated", {"task": task, "action": action})
+        if tool_name == "schedule_message" and result.ok:
+            job = result.output.get("job")
+            action = result.output.get("action")
+            if isinstance(job, dict) and isinstance(action, str):
+                yield AgentEvent("scheduled.updated", {"job": job, "action": action})
         yield AgentEvent("tool.finished", self._tool_finished_payload(
             tool_name,
             ok=result.ok,

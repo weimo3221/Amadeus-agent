@@ -852,3 +852,333 @@ body[data-companion-interactive="false"] .companion-transient-log {
     transform: translateY(-8px) scale(0.98);
   }
 }
+
+/* Natural companion refinement aligned with the Main UI workbench. */
+:root {
+  --companion-panel: rgba(34, 31, 25, 0.82);
+  --companion-panel-strong: rgba(42, 38, 30, 0.92);
+  --companion-border: rgba(236, 229, 212, 0.16);
+  --companion-border-strong: rgba(236, 229, 212, 0.26);
+  --companion-text: #f4efe5;
+  --companion-muted: rgba(244, 239, 229, 0.68);
+  --companion-faint: rgba(244, 239, 229, 0.48);
+  --companion-accent: #5fd0bd;
+  --companion-warm: #d9aa63;
+  --companion-danger: #d98590;
+}
+
+button {
+  border-color: var(--companion-border);
+  border-radius: 8px;
+  color: var(--companion-text);
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: none;
+}
+
+button:hover {
+  border-color: rgba(95, 208, 189, 0.42);
+  background: rgba(95, 208, 189, 0.1);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--companion-accent);
+  box-shadow: 0 0 0 4px rgba(95, 208, 189, 0.12);
+}
+
+.status-dot[data-connected="false"] {
+  background: var(--companion-warm);
+  box-shadow: 0 0 0 4px rgba(217, 170, 99, 0.12);
+}
+
+.stage-status {
+  border-color: var(--companion-border);
+  border-radius: 10px;
+  color: var(--companion-text);
+  background: var(--companion-panel);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(16px);
+}
+
+.companion-hover-panel {
+  width: min(320px, calc(100% - 36px));
+  border-color: var(--companion-border);
+  border-radius: 12px;
+  background: var(--companion-panel);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.companion-hover-panel::before {
+  display: none;
+}
+
+.companion-hover-panel .provider {
+  color: var(--companion-muted);
+}
+
+.companion-hover-panel #connection-label {
+  border-color: var(--companion-border);
+  border-radius: 8px;
+  color: var(--companion-muted);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.companion-hover-panel #open-main-ui-button,
+.companion-hover-panel #chat-form button,
+.companion-hover-panel button {
+  border-color: var(--companion-border);
+  border-radius: 8px;
+  color: var(--companion-text);
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: none;
+}
+
+.companion-hover-panel #open-main-ui-button {
+  color: #10120f;
+  background: var(--companion-accent);
+}
+
+.companion-hover-panel #open-main-ui-button:hover {
+  background: #74dccb;
+}
+
+.companion-hover-panel #chat-form {
+  gap: 8px;
+  padding: 7px;
+  border-color: var(--companion-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.companion-hover-panel #chat-input {
+  color: var(--companion-text);
+}
+
+.companion-hover-panel #chat-input::placeholder {
+  color: var(--companion-faint);
+}
+
+.companion-hover-panel #chat-form button {
+  min-width: 54px;
+  color: #10120f;
+  background: var(--companion-warm);
+}
+
+.companion-hover-panel #chat-form button:hover {
+  background: #e6bd78;
+}
+
+.companion-transient-log .message {
+  border-color: var(--companion-border);
+  border-radius: 12px;
+  color: var(--companion-text);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+}
+
+.companion-transient-log .message.user {
+  border-bottom-right-radius: 4px;
+  color: #10120f;
+  background: linear-gradient(135deg, #7fe3d3, #d8c58b);
+}
+
+.companion-transient-log .message.assistant {
+  border-bottom-left-radius: 4px;
+  background: var(--companion-panel-strong);
+}
+
+.companion-hover-panel ::-webkit-scrollbar-thumb {
+  background: rgba(244, 239, 229, 0.28);
+}
+
+/* Light anime companion skin aligned with Main UI. */
+:root {
+  --companion-panel: rgba(255, 255, 255, 0.78);
+  --companion-panel-strong: rgba(255, 255, 255, 0.92);
+  --companion-border: rgba(163, 145, 170, 0.2);
+  --companion-border-strong: rgba(143, 125, 164, 0.3);
+  --companion-text: #3f3546;
+  --companion-muted: rgba(63, 53, 70, 0.66);
+  --companion-faint: rgba(63, 53, 70, 0.46);
+  --companion-accent: #9bcbe8;
+  --companion-pink: #e9a7c0;
+  --companion-lavender: #b9a7df;
+  --companion-warm: #d9aa63;
+  --companion-danger: #d88897;
+}
+
+button {
+  border-color: var(--companion-border);
+  color: var(--companion-text);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+button:hover {
+  border-color: rgba(185, 167, 223, 0.44);
+  background: rgba(238, 232, 251, 0.78);
+}
+
+.status-dot {
+  background: #78c9b8;
+  box-shadow: 0 0 0 4px rgba(120, 201, 184, 0.16);
+}
+
+.status-dot[data-connected="false"] {
+  background: var(--companion-warm);
+  box-shadow: 0 0 0 4px rgba(217, 170, 99, 0.16);
+}
+
+.stage-status {
+  border-color: var(--companion-border);
+  color: var(--companion-text);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(248, 220, 232, 0.46)),
+    var(--companion-panel);
+  box-shadow: 0 14px 34px rgba(129, 112, 146, 0.16);
+}
+
+.companion-hover-panel {
+  width: min(326px, calc(100% - 36px));
+  border-color: var(--companion-border);
+  border-radius: 12px;
+  color: var(--companion-text);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(227, 243, 251, 0.46)),
+    var(--companion-panel);
+  box-shadow:
+    0 18px 42px rgba(129, 112, 146, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.companion-hover-panel::after {
+  position: absolute;
+  top: -10px;
+  right: 18px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(233, 167, 192, 0.34);
+  border-radius: 8px;
+  color: #9b7aa4;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 8px 20px rgba(129, 112, 146, 0.14);
+  content: "☆";
+  font-size: 13px;
+}
+
+.companion-hover-panel .provider {
+  color: var(--companion-muted);
+}
+
+.companion-hover-panel #connection-label {
+  border-color: var(--companion-border);
+  color: var(--companion-muted);
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.companion-hover-panel #open-main-ui-button,
+.companion-hover-panel #chat-form button,
+.companion-hover-panel button {
+  border-color: var(--companion-border);
+  color: var(--companion-text);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.companion-hover-panel #open-main-ui-button {
+  color: #5f4564;
+  background: linear-gradient(135deg, #f8dce8, #e3f3fb);
+}
+
+.companion-hover-panel #open-main-ui-button:hover {
+  background: linear-gradient(135deg, #f4c9da, #d7eefb);
+}
+
+.companion-hover-panel #chat-form {
+  border-color: var(--companion-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.companion-hover-panel #chat-input {
+  color: var(--companion-text);
+}
+
+.companion-hover-panel #chat-input::placeholder {
+  color: var(--companion-faint);
+}
+
+.companion-hover-panel #chat-form button {
+  color: #4f3b57;
+  background: linear-gradient(135deg, #f8dce8, #eee8fb);
+}
+
+.companion-hover-panel #chat-form button:hover {
+  background: linear-gradient(135deg, #f4c9da, #e3f3fb);
+}
+
+.companion-transient-log .message {
+  border-color: var(--companion-border);
+  color: var(--companion-text);
+  background: var(--companion-panel-strong);
+  box-shadow: 0 12px 30px rgba(129, 112, 146, 0.16);
+}
+
+.companion-transient-log .message.user {
+  color: #5f4564;
+  background: linear-gradient(135deg, #f8dce8, #e3f3fb);
+}
+
+.companion-transient-log .message.assistant {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.companion-hover-panel ::-webkit-scrollbar-thumb {
+  background: rgba(185, 167, 223, 0.36);
+}
+
+/* Rounded typography pass for the anime companion surface. */
+:root {
+  --companion-font:
+    "M PLUS Rounded 1c",
+    Nunito,
+    "Hiragino Maru Gothic ProN",
+    "Yu Gothic UI",
+    "Segoe UI Rounded",
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    ui-rounded,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+
+body,
+button,
+input,
+select,
+textarea,
+.companion-hover-panel,
+.companion-transient-log .message,
+.stage-status {
+  font-family: var(--companion-font);
+  letter-spacing: 0;
+}
+
+button,
+.companion-hover-panel #open-main-ui-button,
+.companion-hover-panel #chat-form button {
+  font-weight: 650;
+}
+
+.companion-hover-panel .provider,
+.companion-hover-panel #connection-label {
+  font-weight: 680;
+}
+
+.companion-transient-log .message {
+  font-weight: 520;
+}

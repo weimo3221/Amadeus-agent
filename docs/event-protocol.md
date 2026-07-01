@@ -165,6 +165,34 @@ Desktop can request memory review data and actions through the bridge:
 
 The bridge emits memory review state in response to desktop `memory.review.*` requests and after review actions. Candidates are pending proposals only; durable memory is written only after an accept action.
 
+### scheduled.updated
+
+```json
+{
+  "type": "scheduled.updated",
+  "payload": {
+    "action": "created",
+    "job": {
+      "id": "scheduled-job-id",
+      "sessionId": "companion:default",
+      "title": "Four pings",
+      "message": "我在",
+      "scheduleDisplay": "Every 10 seconds",
+      "status": "scheduled",
+      "repeatCount": 4,
+      "completedRuns": 0,
+      "nextRunAt": "2026-07-02T10:00:10+00:00"
+    }
+  }
+}
+```
+
+Current behavior:
+
+- Python emits `scheduled.updated` for scheduled companion-message lifecycle changes such as created, running, fired, paused, resumed, cancelled, completed, and failed.
+- When a scheduled message fires, Python also persists the assistant message and broadcasts a normal `assistant.message` to every client in the session.
+- Main UI listens for `scheduled.updated` to refresh the Timed Messages panel.
+
 ### assistant.delta
 
 ```json

@@ -528,6 +528,23 @@ describe('Runtime UI controller', () => {
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
   })
 
+  it('renders saved session messages into the chat log', () => {
+    const { controller, elements } = createHarness()
+
+    controller.handleServerEvent(makeEvent('assistant.message', { text: 'old live message' }))
+    controller.renderSessionMessages([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: '**hi**' },
+      { role: 'system', content: 'hidden' },
+    ])
+
+    assert.equal(elements.chatLog.children.length, 2)
+    assert.equal(elements.chatLog.children[0].className, 'message user')
+    assert.equal(elements.chatLog.children[0].innerHTML, '<p>hello</p>')
+    assert.equal(elements.chatLog.children[1].className, 'message assistant')
+    assert.equal(elements.chatLog.children[1].innerHTML, '<p><strong>hi</strong></p>')
+  })
+
   it('shows permission prompts and sends Allow or Deny responses', () => {
     const { controller, elements, socket } = createHarness()
     controller.connectAgentRuntime()

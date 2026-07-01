@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-06-26
+Last updated: 2026-07-02
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -10,9 +10,9 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 
 ## Current Snapshot
 
-Amadeus is now a working desktop MVP with a Python-first turn path, split Electron desktop surfaces, and a mostly landed runtime reliability foundation.
+Amadeus is now a working desktop MVP with a Python-first turn path, split Electron desktop surfaces, scheduled companion messages, persistent session todos, and a mostly landed runtime reliability foundation.
 
-The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The desktop product surface now has separate `companion` and `main-ui` renderer entries: Companion owns Live2D and lightweight desktop presence, while Main UI owns the larger workbench/chat surface. The next large product step is desktop/runtime stabilization: finish CLI/session switching, polish the two desktop surfaces, improve lipsync, continue TypeScript bridge shrinkage, and harden ToolRuntime/Memory only where real usage exposes gaps.
+The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The desktop product surface now has separate `companion` and `main-ui` renderer entries: Companion owns Live2D and lightweight desktop presence, while Main UI owns the larger workbench/chat surface. Main UI now restores current session history, displays active background work and timed messages, and uses a light anime plus modern SaaS visual treatment. The next large product step is desktop/runtime stabilization: finish CLI/session switching, polish the two desktop surfaces, improve lipsync, continue TypeScript bridge shrinkage, and harden ToolRuntime/Memory only where real usage exposes gaps.
 
 ### Current Runtime Flow
 
@@ -49,6 +49,9 @@ Fallback path today:
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
 - Desktop shows memory count, tool status, tool config status, voice status, visible chat messages, and has a Reset Session button.
+- Main UI restores the current session's persisted chat history from Python `/memory/messages` when opened or switched by `sessionId`.
+- Main UI includes a Timed Messages panel for creating, listing, pausing, resuming, and cancelling scheduled companion messages.
+- Main UI and Companion have a first-pass light anime plus modern SaaS visual refresh with softer typography, pastel surfaces, and higher-contrast interactive states.
 - `apps/server` no longer owns a separate local message-count/reset SQLite path; it now reads `GET /memory/count` and forwards `POST /memory/reset` to the Python runtime while keeping the desktop protocol unchanged.
 - Tool calling is model-triggered through OpenAI-compatible `tools` / `tool_calls`, not keyword matching.
 - Tool execution now goes through a formal registry with `allow`, `ask`, and `deny` metadata.
@@ -66,6 +69,8 @@ Fallback path today:
 - `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
 - `delegate_task` is implemented as a first restricted research/search delegate: max depth 1, max concurrency 2, memory search, file search, explicit bounded file reads, no write tools, no shell, no recursive delegation, and summary-only results to the parent agent.
+- `schedule_message` is implemented as an `allow` tool for reminders, alarms, countdowns, recurring check-ins, and proactive companion messages. Scheduled messages are persisted in SQLite, broadcast as `assistant.message` when fired, and emit `scheduled.updated` lifecycle events.
+- `todo` is implemented as an `allow` tool for persistent user-facing session todo lists. Active todos are injected into API-call-time context through `<active-todos>`.
 - `AgentRuntime` maintains a per-session `workspace_epoch` for file-observing tool guardrails; successful `patch` / `write_file` mutations advance the epoch so repeated reads/searches after an edit are not treated as stale duplicates.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
@@ -182,17 +187,18 @@ Fallback path today:
 - Desktop shows inline Allow / Deny prompts for `ask` tools.
 - `configs/tools.yaml` mirrors the current intended tool permissions.
 - Typecheck, desktop build, allow-path WebSocket test, and deny-path WebSocket test have passed.
+- Current validation for the scheduled-message/todo/UI pass: `python -m unittest tests.test_scheduling`, `python -m unittest tests.test_todos`, related Python memory/context tests, `npm --workspace apps/server test`, `npm --workspace apps/desktop test`, `npm --workspace apps/desktop run typecheck`, and `npm --workspace apps/desktop run build` pass. Full `npm test` is currently blocked by pre-existing `tests.test_model` provider-default assertions versus the current DeepSeek `.env`.
 
 ### Still Needed
 
 - Continue consolidating the desktop UI now that Main UI and Companion are split. The current priority is to keep Companion lightweight and make Main UI the place for richer context, skills, diagnostics, permissions, and future session switching.
 - Implement the real CLI entry as an independent session client, defaulting to its own session ID unless explicitly attached elsewhere.
-- Add Main UI session switching and an explicit attach/view flow for Companion sessions.
+- Keep improving Main UI session switching and the explicit attach/view flow for Companion sessions now that current-session history restore is in place.
 - Keep Electron end-to-end coverage aligned with that UI pass so layout and interaction regressions are caught while the surface is being simplified.
 - Keep improving lipsync from the current provider-native plus phoneme-planned path, especially broader provider cue compatibility and better non-Latin mapping, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
 - Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/proxy layer, not an owner of agent, model-library, tool, memory, or audio turn logic.
 - `tool.permission.response` is now always forwarded through the bridge to Python; the old “maybe a local TypeScript tool loop owns this request” branch has been removed from the production server path.
-- Add more practical `ask` tools such as opening URLs or reminders.
+- Add more practical tools only where they fit the desktop companion product boundary, such as safe URL opening, web search, or user-approved desktop actions.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
 - After the UI pass, the next product step for skills should be a real import/install flow that runs `scripts/validate_skills.py` during add/import, then refreshes runtime discovery without forcing a full manual restart.

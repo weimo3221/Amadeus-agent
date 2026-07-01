@@ -6,7 +6,7 @@ The project is now in a Python-first migration stage:
 
 - `apps/desktop`: desktop Live2D shell, chat UI, runtime audio playback, and permission UI
 - `apps/server`: TypeScript bridge between the desktop and Python runtime, plus local Live2D/audio static serving for the renderer
-- `packages/amadeus`: preferred Python agent turn path, provider boundary, Memory v2 context assembly, ToolRuntime, audio/Live2D runtime helpers, and runtime HTTP API
+- `packages/amadeus`: preferred Python agent turn path, provider boundary, Memory v2 context assembly, ToolRuntime, scheduled messages, persistent todos, audio/Live2D runtime helpers, and runtime HTTP API
 - `packages/live2d-stage`: intended desktop Live2D rendering adapter boundary, not yet the active implementation package
 
 ## Current flow
@@ -23,6 +23,8 @@ Developer diagnostics:
 
 - `GET /runtime/health` reports structured local health for runtime, model config, memory DB, tools, Live2D, audio, and effective config.
 - `GET /memory/context/diagnostics?sessionId=default&limit=10` reports recent per-session Memory v2 context assembly decisions.
+- `GET /scheduled-jobs?sessionId=companion:default&activeOnly=true` reports active scheduled companion messages.
+- `GET /todos?sessionId=companion:default&activeOnly=true` reports persistent session todo items.
 
 Runtime failure behavior:
 

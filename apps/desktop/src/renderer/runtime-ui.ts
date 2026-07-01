@@ -108,6 +108,11 @@ interface RuntimeSkillsListResponse {
   skills?: unknown
 }
 
+export interface RuntimeSessionMessage {
+  role?: string
+  content?: string
+}
+
 export interface RuntimeStorageLike {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
@@ -140,6 +145,26 @@ export class RuntimeUiController {
   constructor(private readonly options: RuntimeUiControllerOptions) {
     this.sessionId = options.randomUUID()
     this.restorePersistedSkillState()
+  }
+
+  renderSessionMessages(messages: RuntimeSessionMessage[]): void {
+    const { chatLog } = this.options.elements
+    if (!chatLog) {
+      return
+    }
+
+    chatLog.replaceChildren()
+    this.activeAssistantMessage = undefined
+    this.pendingAssistantText = ''
+    this.lastAssistantSpeechText = ''
+
+    for (const message of messages) {
+      if (message.role !== 'user' && message.role !== 'assistant') {
+        continue
+      }
+      const content = typeof message.content === 'string' ? message.content : ''
+      this.appendMessage(message.role, content)
+    }
   }
 
   bindControls(): void {

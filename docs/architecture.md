@@ -90,6 +90,7 @@ packages/amadeus
   |
   +--> agent.py        (active preferred turn path)
   +--> memory.py       (active SQLite message, role, memory, task, and audit store)
+  +--> scheduling.py   (active scheduled companion-message parser/worker)
   +--> tools/          (active Python tools)
   +--> audio.py        (active audio/TTS interface with auto provider selection)
   +--> server.py       (active HTTP runtime)
@@ -135,7 +136,8 @@ packages/amadeus
   +--> tools
   |      +--> concrete local tools
   |      +--> MCP bridge
-  |      +--> scheduled tasks
+  |      +--> scheduled companion messages
+  |      +--> persistent session todos
   |
   +--> tool_runtime
   |      +--> effective tool registry
@@ -153,8 +155,9 @@ packages/amadeus
 `packages/amadeus` is the long-term agent brain. Current module status:
 
 - `agent.py`: active conversation loop, tool-use policy, response/event streaming.
-- `context.py`: active API-call-time context assembler for conversation summaries, accepted structured memories, relevant FTS retrieval, source budgets, and diagnostics. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
-- `memory.py`: active SQLite-backed message history.
+- `context.py`: active API-call-time context assembler for conversation summaries, accepted structured memories, active todos, task state, relevant FTS retrieval, source budgets, and diagnostics. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
+- `memory.py`: active SQLite-backed message history, roles/sessions, structured memory, task state, scheduled messages, persistent todos, and audit records.
+- `scheduling.py`: active schedule parser plus in-process scheduled-message worker. It supports one-shot durations/timestamps, recurring intervals, common daily/weekly/monthly cron shapes, repeat counts, and lifecycle event publication.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, session workspace epoch propagation, and repeated-call guardrails.
 - `audio.py`: active TTS/audio interface with an `auto` provider selector, config-gated GPT-SoVITS HTTP provider, and macOS `say` provider that can cache generated wav audio under the local audio library.
@@ -216,13 +219,14 @@ Python runtime responsibilities today:
 - Own roles, per-role `SOUL.md` identity files, role-scoped `MEMORY.md` / `USER.md`, role `workspacePath`, default workspace assignment to the repository root, and workspace-level `AGENT.md` project-context loading for per-session prompt assembly. User-specific preferences stay in role-scoped `USER.md` memory rather than project `AGENT.md`.
 - Own concrete Python tool execution for the preferred path.
 - Own persisted session tasks and in-process worker execution with retry scheduling and stale-running recovery.
-- Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `character.behavior`, and `audio.tts-ready`.
+- Own persisted scheduled companion messages and persistent session todos.
+- Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `scheduled.updated`, `character.behavior`, and `audio.tts-ready`.
 
 Python runtime responsibilities later:
 
 - Extend tool runtime policy for richer context propagation, semantic no-progress detection, and more per-tool result policies.
 - Mature skills/workflows beyond read-only `skills_list` / `skill_view`.
-- Mature task execution beyond the current in-process worker into durable scheduling, leases, checkpoint/resume, and user-facing notification policy.
+- Mature long-running execution beyond the current in-process task and scheduled-message workers into durable leases, checkpoint/resume, and richer user-facing notification policy.
 - Assemble richer context from task state, harness prompt fragments, and role/workspace instructions beyond the current summaries, structured memory, and retrieval path.
 
 ### packages/live2d-stage

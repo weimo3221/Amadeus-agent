@@ -12,7 +12,7 @@ This file is the forward-looking plan. For live implementation status, use `docs
 
 The next implementation pass should proceed in this order:
 
-1. Current: continue hardening Main UI as the primary workbench. Companion should stay lightweight, transparent, Live2D-focused, and transient; Main UI should own larger chat, active tasks, skills, memory review, diagnostics, permissions, model/runtime configuration, and MCP server management.
+1. Current: continue hardening Main UI as the primary workbench. Companion should stay lightweight, transparent, Live2D-focused, and transient; Main UI should own larger chat, session history, active tasks, timed messages, skills, memory review, diagnostics, permissions, model/runtime configuration, and MCP server management.
 2. Current: turn MCP from a configured runtime bridge into a practical user-facing capability. The Main UI MCP tab now manages HTTP JSON-RPC servers, tests discovery, and reloads the Python ToolRegistry; `scripts/dev_mcp_server.py` provides a local verification target. Next MCP work should improve persisted diagnostics/audit surfaces and then evaluate stdio/SSE support.
 3. Current: tighten the skills UI semantics around "available", "suggested", and "active" so the desktop keeps exposing only lightweight user-facing state while the runtime logs keep the deeper activation details.
 4. Next: keep shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
@@ -131,6 +131,8 @@ Current tool baseline already delivered:
 - `create_task`
 - `list_tasks`
 - `cancel_task`
+- `schedule_message`
+- `todo`
 - `skills_list`
 - `skill_view`
 - `delegate_task`
@@ -139,7 +141,7 @@ Planned follow-up tools:
 
 - `web_search`
 - `open_url`
-- richer reminder/scheduler tools on top of the task store
+- richer safe desktop/user-action tools after the core companion workflows stabilize
 
 ## Phase 6: Python Runtime Ownership
 
@@ -249,8 +251,9 @@ Target deliverables:
 
 - First slice complete: SQLite `tasks` / `task_events`, task create/list/cancel HTTP APIs, bridge proxying, and Main UI active task display.
 - First reliability slice complete: worker attempts, retry scheduling, stale `running` recovery, and task event broadcasting for recovered/retry states.
-- Scheduled tasks.
-- Reminder notifications.
+- First scheduled-message slice complete: SQLite `scheduled_jobs` / `scheduled_job_events`, schedule parsing, repeat counts, in-process scheduler worker, `schedule_message` tool, HTTP APIs, `scheduled.updated` events, assistant-message delivery, and Main UI timed-message controls.
+- First persistent todo slice complete: SQLite `todo_items`, `todo` tool, HTTP APIs, active todo context injection, and bounds on item count/content.
+- Richer reminder notifications.
 - Daily brief.
 - Idle-time check-ins.
 - Richer task state display.

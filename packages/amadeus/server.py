@@ -27,6 +27,7 @@ from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.mcp import McpServerConfig, list_mcp_tools
 from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_providers_config, provider_profile
 from amadeus.runtime_events import RuntimeEventBus
+from amadeus.scheduling import ScheduledJobWorker
 from amadeus.tool_runtime import ToolContext
 from amadeus.tools import list_tools
 from amadeus.workers import TaskWorker
@@ -103,9 +104,26 @@ def publish_task_update(task: dict[str, object], action: str) -> None:
     )
 
 
+def publish_scheduled_job_update(job: dict[str, object], action: str) -> None:
+    session_id = str(job.get("sessionId") or "companion:default")
+    if action == "message":
+        runtime_event_bus.publish("assistant.message", session_id, {"text": str(job.get("message") or "")})
+        return
+    runtime_event_bus.publish(
+        "scheduled.updated",
+        session_id,
+        {
+            "job": job,
+            "action": action,
+        },
+    )
+
+
 task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime, publish_task_event=publish_task_update)
 agent_runtime.set_task_worker(task_worker)
 task_worker.recover()
+scheduled_job_worker = ScheduledJobWorker(lambda: memory_store, publish_job_event=publish_scheduled_job_update)
+scheduled_job_worker.start()
 
 
 class RuntimeRequestHandler(BaseHTTPRequestHandler):
@@ -164,6 +182,19 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/tasks":
             self.handle_tasks_list(parsed)
+            return
+
+        if parsed.path == "/scheduled-jobs":
+            self.handle_scheduled_jobs_list(parsed)
+            return
+
+        if parsed.path == "/todos":
+            self.handle_todos_get(parsed)
+            return
+
+        if parsed.path.startswith("/scheduled-jobs/") and parsed.path.endswith("/events"):
+            job_id = unquote(parsed.path.removeprefix("/scheduled-jobs/").removesuffix("/events")).strip()
+            self.handle_scheduled_job_events_list(job_id, parsed)
             return
 
         if parsed.path.startswith("/tasks/") and parsed.path.endswith("/events"):
@@ -471,7 +502,26 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_task_create()
             return
 
+        if self.path == "/scheduled-jobs":
+            self.handle_scheduled_job_create()
+            return
+
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/scheduled-jobs/") and parsed.path.endswith("/pause"):
+            job_id = unquote(parsed.path.removeprefix("/scheduled-jobs/").removesuffix("/pause")).strip()
+            self.handle_scheduled_job_pause(job_id)
+            return
+
+        if parsed.path.startswith("/scheduled-jobs/") and parsed.path.endswith("/resume"):
+            job_id = unquote(parsed.path.removeprefix("/scheduled-jobs/").removesuffix("/resume")).strip()
+            self.handle_scheduled_job_resume(job_id)
+            return
+
+        if parsed.path.startswith("/scheduled-jobs/") and parsed.path.endswith("/cancel"):
+            job_id = unquote(parsed.path.removeprefix("/scheduled-jobs/").removesuffix("/cancel")).strip()
+            self.handle_scheduled_job_cancel(job_id)
+            return
+
         if parsed.path.startswith("/tasks/") and parsed.path.endswith("/cancel"):
             task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/cancel")).strip()
             self.handle_task_cancel(task_id)
@@ -564,6 +614,9 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/sessions/"):
             session_id = unquote(parsed.path.removeprefix("/sessions/")).strip()
             self.handle_session_update(session_id)
+            return
+        if parsed.path == "/todos":
+            self.handle_todos_put()
             return
         self.write_json(404, {"ok": False, "error": "not_found"})
 
@@ -952,6 +1005,158 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(status, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Task cancel failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_scheduled_jobs_list(self, parsed: Any) -> None:
+        try:
+            query = parse_qs(parsed.query)
+            session_id = optional_query_string(query, "sessionId")
+            status = optional_query_string(query, "status")
+            active_only = parse_optional_bool(optional_query_string(query, "activeOnly")) or False
+            limit = parse_int(query.get("limit", ["50"])[0], 50, 1, 200)
+            result = memory_store.list_scheduled_jobs(
+                session_id=session_id,
+                status=status,
+                active_only=active_only,
+                limit=limit,
+            )
+            logger.info(
+                "Listed scheduled jobs sessionId=%s status=%s activeOnly=%s count=%s",
+                session_id,
+                status,
+                active_only,
+                len(result["jobs"]),
+            )
+            self.write_json(200, {"ok": True, **result})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Scheduled jobs list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_scheduled_job_events_list(self, job_id: str, parsed: Any) -> None:
+        try:
+            if not job_id:
+                self.write_json(400, {"ok": False, "error": "scheduled job id is required"})
+                return
+            query = parse_qs(parsed.query)
+            limit = parse_int(query.get("limit", ["100"])[0], 100, 1, 500)
+            events = memory_store.list_scheduled_job_events(job_id, limit=limit)
+            self.write_json(200, {"ok": True, "jobId": job_id, "events": events, "eventCount": len(events)})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Scheduled job events list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_scheduled_job_create(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId")
+            message = body.get("message")
+            schedule = body.get("schedule")
+            title = body.get("title") if isinstance(body.get("title"), str) else None
+            repeat_count = body.get("repeatCount") if body.get("repeatCount") is not None else None
+            if not isinstance(session_id, str) or not session_id.strip():
+                self.write_json(400, {"ok": False, "error": "sessionId is required"})
+                return
+            if not isinstance(message, str) or not message.strip():
+                self.write_json(400, {"ok": False, "error": "message is required"})
+                return
+            if not isinstance(schedule, str) or not schedule.strip():
+                self.write_json(400, {"ok": False, "error": "schedule is required"})
+                return
+            job = memory_store.create_scheduled_job(
+                session_id=session_id,
+                title=title,
+                message=message,
+                schedule=schedule,
+                repeat_count=repeat_count if isinstance(repeat_count, int) else None,
+            )
+            logger.info("Created scheduled job jobId=%s sessionId=%s", job["id"], job["sessionId"])
+            self.write_json(201, {
+                "ok": True,
+                "job": job,
+                "event": scheduled_job_event_payload(job, "created"),
+            })
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Scheduled job create failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_scheduled_job_pause(self, job_id: str) -> None:
+        self.handle_scheduled_job_status_update(job_id, "pause")
+
+    def handle_scheduled_job_resume(self, job_id: str) -> None:
+        self.handle_scheduled_job_status_update(job_id, "resume")
+
+    def handle_scheduled_job_cancel(self, job_id: str) -> None:
+        self.handle_scheduled_job_status_update(job_id, "cancel")
+
+    def handle_scheduled_job_status_update(self, job_id: str, action: str) -> None:
+        try:
+            if not job_id:
+                self.write_json(400, {"ok": False, "error": "scheduled job id is required"})
+                return
+            body = self.read_json_body()
+            if action == "pause":
+                job = memory_store.pause_scheduled_job(job_id)
+                event_action = "paused"
+            elif action == "resume":
+                job = memory_store.resume_scheduled_job(job_id)
+                event_action = "resumed"
+            elif action == "cancel":
+                reason = body.get("reason") if isinstance(body.get("reason"), str) else None
+                job = memory_store.cancel_scheduled_job(job_id, reason=reason)
+                event_action = "cancelled"
+            else:
+                self.write_json(400, {"ok": False, "error": "unsupported scheduled job action"})
+                return
+            self.write_json(200, {
+                "ok": True,
+                "job": job,
+                "event": scheduled_job_event_payload(job, event_action),
+            })
+        except ValueError as error:
+            status = 404 if str(error) == "scheduled job not found" else 400
+            self.write_json(status, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Scheduled job status update failed action=%s error=%s", action, error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_todos_get(self, parsed: Any) -> None:
+        try:
+            query = parse_qs(parsed.query)
+            session_id = query.get("sessionId", ["companion:default"])[0]
+            active_only = parse_optional_bool(optional_query_string(query, "activeOnly")) or False
+            limit = parse_int(query.get("limit", ["100"])[0], 100, 1, 256)
+            result = memory_store.list_todos(session_id=session_id, active_only=active_only, limit=limit)
+            self.write_json(200, {"ok": True, **result})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Todos get failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_todos_put(self) -> None:
+        try:
+            body = self.read_json_body()
+            session_id = body.get("sessionId")
+            todos = body.get("todos")
+            merge = bool(body.get("merge")) if isinstance(body.get("merge"), bool) else False
+            if not isinstance(session_id, str) or not session_id.strip():
+                self.write_json(400, {"ok": False, "error": "sessionId is required"})
+                return
+            if not isinstance(todos, list):
+                self.write_json(400, {"ok": False, "error": "todos must be an array"})
+                return
+            result = memory_store.save_todos(session_id=session_id, todos=todos, merge=merge)
+            self.write_json(200, {"ok": True, **result})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Todos put failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_runtime_config_update(self) -> None:
@@ -2311,6 +2516,17 @@ def update_runtime_config_content(
             next_lines.append(f"  {key}: {value}")
 
     return "\n".join(next_lines).rstrip() + "\n"
+
+
+def scheduled_job_event_payload(job: dict[str, object], action: str) -> dict[str, object]:
+    return {
+        "type": "scheduled.updated",
+        "sessionId": job.get("sessionId"),
+        "payload": {
+            "job": job,
+            "action": action,
+        },
+    }
 
 
 def main() -> None:

@@ -73,6 +73,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'tool.permission.request', ToolPermissionRequestPayload>
   | RuntimeEvent<'task.plan.updated', TaskPlanPayload>
   | RuntimeEvent<'task.updated', TaskUpdatedPayload>
+  | RuntimeEvent<'scheduled.updated', ScheduledJobUpdatedPayload>
   | RuntimeEvent<'memory.review.candidates', MemoryReviewCandidatesPayload>
   | RuntimeEvent<'memory.review.jobs', MemoryReviewJobsPayload>
   | RuntimeEvent<'memory.review.updated', MemoryReviewUpdatedPayload>
@@ -307,6 +308,41 @@ export interface TaskSummary {
 export interface TaskUpdatedPayload {
   task: TaskRecord
   action: 'created' | 'updated' | 'running' | 'cancelled' | 'succeeded' | 'failed' | 'blocked'
+}
+
+export type ScheduledJobStatus = 'scheduled' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed'
+
+export interface ScheduledJobRecord {
+  id: string
+  sessionId: string
+  title: string
+  message: string
+  schedule: Record<string, unknown>
+  scheduleDisplay: string
+  status: ScheduledJobStatus
+  repeatCount?: number | null
+  completedRuns: number
+  nextRunAt?: string | null
+  lastRunAt?: string | null
+  lastError?: string | null
+  createdAt: string
+  updatedAt: string
+  finishedAt?: string | null
+}
+
+export interface ScheduledJobSummary {
+  total: number
+  scheduled: number
+  running: number
+  paused: number
+  completed: number
+  cancelled: number
+  failed: number
+}
+
+export interface ScheduledJobUpdatedPayload {
+  job: ScheduledJobRecord
+  action: 'created' | 'running' | 'fired' | 'scheduled' | 'paused' | 'resumed' | 'cancelled' | 'completed' | 'failed'
 }
 
 export interface MemoryReviewCandidate {

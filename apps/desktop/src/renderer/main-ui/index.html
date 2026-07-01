@@ -162,6 +162,27 @@
               <ol id="session-tasks-list" class="tasks-list"></ol>
             </section>
 
+            <section id="scheduled-jobs-panel" class="tasks-panel scheduled-panel" aria-label="Scheduled messages">
+              <div class="tasks-header">
+                <div>
+                  <span class="eyebrow">schedule</span>
+                  <strong>Timed Messages</strong>
+                </div>
+                <button id="scheduled-refresh-button" type="button">Refresh</button>
+              </div>
+              <form id="new-scheduled-form" class="new-task-form scheduled-form">
+                <input id="new-scheduled-title-input" autocomplete="off" placeholder="Reminder title..." />
+                <textarea id="new-scheduled-message-input" rows="2" placeholder="Message to say later"></textarea>
+                <div class="scheduled-form-row">
+                  <input id="new-scheduled-schedule-input" autocomplete="off" placeholder="every 10s, 30m, 0 9 * * *" />
+                  <input id="new-scheduled-repeat-input" min="1" type="number" placeholder="Repeat" />
+                  <button type="submit">Schedule</button>
+                </div>
+              </form>
+              <div id="scheduled-jobs-summary" class="tasks-summary">No scheduled messages</div>
+              <ol id="scheduled-jobs-list" class="tasks-list scheduled-list"></ol>
+            </section>
+
             <section class="skills-panel" aria-label="Suggested skills">
               <div class="skills-header">
                 <span id="skills-status">Suggested skills: loading...</span>

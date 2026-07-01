@@ -15,6 +15,7 @@ from amadeus.identity import (
     role_soul_path,
 )
 from amadeus.planning import empty_plan_response, merge_plan_items, plan_response
+from amadeus.scheduling import compute_next_run_at, parse_schedule
 from amadeus.tasks import (
     MAX_TASK_ERROR_CHARS,
     MAX_TASK_EVENT_MESSAGE_CHARS,
@@ -37,6 +38,8 @@ MemoryReviewCandidateStatus = Literal["pending", "accepted", "rejected", "supers
 MemoryReviewRetentionType = Literal["long_term", "stable_preference", "durable_project_fact", "agent_instruction"]
 MemoryReviewJobStatus = Literal["running", "completed", "skipped", "failed"]
 MemoryReviewJobTrigger = Literal["manual", "auto", "compaction"]
+ScheduledJobStatus = Literal["scheduled", "running", "paused", "completed", "cancelled", "failed"]
+TodoStatus = Literal["pending", "in_progress", "completed", "cancelled"]
 MemoryReviewCandidatePayload = dict[str, str | int | float | bool | list[str]]
 CONVERSATION_SUMMARY_LIMIT = 12000
 MEMORY_ITEM_LIMIT = 2000
@@ -228,6 +231,55 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_task_events_task_created
                   ON task_events(task_id, created_at);
+                  CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    schedule_json TEXT NOT NULL,
+                    schedule_display TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('scheduled', 'running', 'paused', 'completed', 'cancelled', 'failed')),
+                    repeat_count INTEGER,
+                    completed_runs INTEGER NOT NULL DEFAULT 0,
+                    next_run_at TEXT,
+                    last_run_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_session_status_updated
+                  ON scheduled_jobs(session_id, status, updated_at);
+                  CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_status_next_run
+                  ON scheduled_jobs(status, next_run_at);
+                  CREATE TABLE IF NOT EXISTS scheduled_job_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    status TEXT,
+                    message TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(job_id) REFERENCES scheduled_jobs(id),
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_scheduled_job_events_job_created
+                  ON scheduled_job_events(job_id, created_at);
+                  CREATE TABLE IF NOT EXISTS todo_items (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'cancelled')),
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_todo_items_session_status_order
+                  ON todo_items(session_id, status, order_index, updated_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                 USING fts5(
                   content,
@@ -1326,6 +1378,512 @@ class MessageMemoryStore:
             },
         }
 
+    def list_todos(
+        self,
+        *,
+        session_id: str,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        normalized_limit = max(1, min(256, int(limit)))
+        where = "session_id = ?"
+        params: list[object] = [normalized_session_id]
+        if active_only:
+            where += " AND status IN ('pending', 'in_progress')"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, session_id, content, status, order_index, created_at, updated_at, completed_at
+                FROM todo_items
+                WHERE {where}
+                ORDER BY order_index ASC, created_at ASC
+                LIMIT ?
+                """,
+                (*params, normalized_limit),
+            ).fetchall()
+        todos = [todo_response(row) for row in rows]
+        return {
+            "sessionId": normalized_session_id,
+            "todos": todos,
+            "summary": todo_summary(todos),
+            "filters": {
+                "sessionId": normalized_session_id,
+                "activeOnly": active_only,
+                "limit": normalized_limit,
+            },
+        }
+
+    def save_todos(
+        self,
+        *,
+        session_id: str,
+        todos: list[dict[str, object]],
+        merge: bool = False,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        if not isinstance(todos, list):
+            raise ValueError("todos must be an array")
+        normalized_items = [normalize_todo_item(item, index) for index, item in enumerate(dedupe_todos_by_id(todos[:256]))]
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            if not merge:
+                connection.execute("DELETE FROM todo_items WHERE session_id = ?", (normalized_session_id,))
+            else:
+                existing_rows = connection.execute(
+                    """
+                    SELECT id, content, status, order_index, created_at, completed_at
+                    FROM todo_items
+                    WHERE session_id = ?
+                    """,
+                    (normalized_session_id,),
+                ).fetchall()
+                existing_by_id = {str(row[0]): row for row in existing_rows}
+                max_order = max((int(row[3] or 0) for row in existing_rows), default=-1)
+                merged_items: list[dict[str, object]] = []
+                for item in normalized_items:
+                    existing = existing_by_id.get(str(item["id"]))
+                    if existing:
+                        merged_items.append({
+                            **item,
+                            "orderIndex": int(existing[3] or 0),
+                            "createdAt": str(existing[4]),
+                            "completedAt": str(existing[5]) if existing[5] else None,
+                        })
+                    else:
+                        max_order += 1
+                        merged_items.append({**item, "orderIndex": max_order, "createdAt": now, "completedAt": None})
+                normalized_items = merged_items
+
+            for index, item in enumerate(normalized_items):
+                item_id = str(item["id"])
+                status = normalize_todo_status(item["status"])
+                completed_at = now if status == "completed" and not item.get("completedAt") else item.get("completedAt")
+                order_index = int(item.get("orderIndex") if item.get("orderIndex") is not None else index)
+                created_at = str(item.get("createdAt") or now)
+                connection.execute(
+                    """
+                    INSERT INTO todo_items (id, session_id, content, status, order_index, created_at, updated_at, completed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                      content = excluded.content,
+                      status = excluded.status,
+                      order_index = excluded.order_index,
+                      updated_at = excluded.updated_at,
+                      completed_at = excluded.completed_at
+                    """,
+                    (
+                        item_id,
+                        normalized_session_id,
+                        str(item["content"]),
+                        status,
+                        order_index,
+                        created_at,
+                        now,
+                        completed_at,
+                    ),
+                )
+        return self.list_todos(session_id=normalized_session_id, active_only=False, limit=256)
+
+    def create_scheduled_job(
+        self,
+        *,
+        session_id: str,
+        title: str | None,
+        message: str,
+        schedule: str,
+        repeat_count: int | None = None,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        normalized_message = normalize_scheduled_message(message)
+        normalized_title = normalize_scheduled_title(title or normalized_message)
+        parsed_schedule = parse_schedule(schedule)
+        normalized_repeat_count = normalize_scheduled_repeat_count(repeat_count)
+        if parsed_schedule.kind == "once":
+            normalized_repeat_count = 1
+        elif repeat_count is not None and normalized_repeat_count == 1:
+            normalized_repeat_count = 1
+        job_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        schedule_payload = parsed_schedule.to_payload()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scheduled_jobs (
+                  id, session_id, title, message, schedule_json, schedule_display,
+                  status, repeat_count, completed_runs, next_run_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, 0, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    normalized_session_id,
+                    normalized_title,
+                    normalized_message,
+                    json.dumps(schedule_payload, ensure_ascii=False),
+                    parsed_schedule.display,
+                    normalized_repeat_count,
+                    parsed_schedule.next_run_at,
+                    now,
+                    now,
+                ),
+            )
+            self._insert_scheduled_job_event(
+                connection,
+                job_id=job_id,
+                session_id=normalized_session_id,
+                event_type="created",
+                status="scheduled",
+                message="Scheduled job created",
+                metadata={"schedule": schedule_payload, "repeatCount": normalized_repeat_count},
+                created_at=now,
+            )
+        job = self.get_scheduled_job(job_id)
+        if job is None:
+            raise RuntimeError("created scheduled job could not be loaded")
+        return job
+
+    def list_scheduled_jobs(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+        active_only: bool = False,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id) if session_id else None
+        normalized_status = normalize_scheduled_status(status) if status else None
+        normalized_limit = max(1, min(200, int(limit)))
+        clauses: list[str] = []
+        params: list[object] = []
+        if normalized_session_id:
+            self.ensure_session(normalized_session_id)
+            clauses.append("session_id = ?")
+            params.append(normalized_session_id)
+        if normalized_status:
+            clauses.append("status = ?")
+            params.append(normalized_status)
+        elif active_only:
+            clauses.append("status IN ('scheduled', 'running', 'paused', 'failed')")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, session_id, title, message, schedule_json, schedule_display, status,
+                       repeat_count, completed_runs, next_run_at, last_run_at, last_error,
+                       created_at, updated_at, finished_at
+                FROM scheduled_jobs
+                {where}
+                ORDER BY
+                  CASE status
+                    WHEN 'running' THEN 0
+                    WHEN 'scheduled' THEN 1
+                    WHEN 'paused' THEN 2
+                    WHEN 'failed' THEN 3
+                    WHEN 'completed' THEN 4
+                    WHEN 'cancelled' THEN 5
+                    ELSE 6
+                  END,
+                  COALESCE(next_run_at, updated_at) ASC
+                LIMIT ?
+                """,
+                (*params, normalized_limit),
+            ).fetchall()
+        jobs = [scheduled_job_response(row) for row in rows]
+        return {
+            "sessionId": normalized_session_id,
+            "jobs": jobs,
+            "summary": scheduled_job_summary(jobs),
+            "filters": {
+                "sessionId": normalized_session_id,
+                "status": normalized_status,
+                "activeOnly": active_only,
+                "limit": normalized_limit,
+            },
+        }
+
+    def get_scheduled_job(self, job_id: str) -> dict[str, object] | None:
+        normalized_job_id = normalize_scheduled_job_id(job_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, title, message, schedule_json, schedule_display, status,
+                       repeat_count, completed_runs, next_run_at, last_run_at, last_error,
+                       created_at, updated_at, finished_at
+                FROM scheduled_jobs
+                WHERE id = ?
+                """,
+                (normalized_job_id,),
+            ).fetchone()
+        return scheduled_job_response(row) if row else None
+
+    def pause_scheduled_job(self, job_id: str) -> dict[str, object]:
+        return self._set_scheduled_job_status(job_id, "paused", "paused", "Scheduled job paused")
+
+    def resume_scheduled_job(self, job_id: str) -> dict[str, object]:
+        normalized_job_id = normalize_scheduled_job_id(job_id)
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status, schedule_json
+                FROM scheduled_jobs
+                WHERE id = ?
+                """,
+                (normalized_job_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("scheduled job not found")
+            current_status = str(row[2])
+            if current_status not in {"paused", "failed"}:
+                job = self.get_scheduled_job(normalized_job_id)
+                if job is None:
+                    raise ValueError("scheduled job not found")
+                return job
+            schedule_payload = json.loads(str(row[3]))
+            next_run_at = compute_next_run_at(schedule_payload, now=now_dt) or now
+            connection.execute(
+                """
+                UPDATE scheduled_jobs
+                SET status = 'scheduled', next_run_at = ?, last_error = NULL, updated_at = ?, finished_at = NULL
+                WHERE id = ? AND status IN ('paused', 'failed')
+                """,
+                (next_run_at, now, normalized_job_id),
+            )
+            self._insert_scheduled_job_event(
+                connection,
+                job_id=normalized_job_id,
+                session_id=str(row[1]),
+                event_type="resumed",
+                status="scheduled",
+                message="Scheduled job resumed",
+                metadata={"previousStatus": current_status, "nextRunAt": next_run_at},
+                created_at=now,
+            )
+        job = self.get_scheduled_job(normalized_job_id)
+        if job is None:
+            raise ValueError("scheduled job not found")
+        return job
+
+    def cancel_scheduled_job(self, job_id: str, *, reason: str | None = None) -> dict[str, object]:
+        return self._set_scheduled_job_status(
+            job_id,
+            "cancelled",
+            "cancelled",
+            normalize_optional_text(reason, max_chars=500, field_name="reason") or "Scheduled job cancelled",
+            terminal=True,
+        )
+
+    def list_due_scheduled_jobs(self, *, limit: int = 50) -> list[dict[str, object]]:
+        normalized_limit = max(1, min(200, int(limit)))
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, title, message, schedule_json, schedule_display, status,
+                       repeat_count, completed_runs, next_run_at, last_run_at, last_error,
+                       created_at, updated_at, finished_at
+                FROM scheduled_jobs
+                WHERE status = 'scheduled' AND next_run_at IS NOT NULL AND next_run_at <= ?
+                ORDER BY next_run_at ASC, created_at ASC
+                LIMIT ?
+                """,
+                (now, normalized_limit),
+            ).fetchall()
+        return [scheduled_job_response(row) for row in rows]
+
+    def claim_scheduled_job(self, job_id: str) -> dict[str, object] | None:
+        normalized_job_id = normalize_scheduled_job_id(job_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status, next_run_at
+                FROM scheduled_jobs
+                WHERE id = ?
+                """,
+                (normalized_job_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("scheduled job not found")
+            if str(row[2]) != "scheduled" or not row[3] or str(row[3]) > now:
+                return self.get_scheduled_job(normalized_job_id)
+            connection.execute(
+                """
+                UPDATE scheduled_jobs
+                SET status = 'running', last_run_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'scheduled'
+                """,
+                (now, now, normalized_job_id),
+            )
+            self._insert_scheduled_job_event(
+                connection,
+                job_id=normalized_job_id,
+                session_id=str(row[1]),
+                event_type="running",
+                status="running",
+                message="Scheduled job fired",
+                metadata={"dueAt": str(row[3])},
+                created_at=now,
+            )
+        return self.get_scheduled_job(normalized_job_id)
+
+    def complete_scheduled_job_run(self, job_id: str) -> dict[str, object]:
+        normalized_job_id = normalize_scheduled_job_id(job_id)
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status, schedule_json, repeat_count, completed_runs
+                FROM scheduled_jobs
+                WHERE id = ?
+                """,
+                (normalized_job_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("scheduled job not found")
+            if str(row[2]) != "running":
+                job = self.get_scheduled_job(normalized_job_id)
+                if job is None:
+                    raise ValueError("scheduled job not found")
+                return job
+            schedule_payload = json.loads(str(row[3]))
+            completed_runs = int(row[5] or 0) + 1
+            repeat_count = int(row[4]) if row[4] is not None else None
+            next_run_at = compute_next_run_at(schedule_payload, now=now_dt)
+            terminal = (
+                str(schedule_payload.get("kind") or "") == "once"
+                or (repeat_count is not None and completed_runs >= repeat_count)
+                or next_run_at is None
+            )
+            next_status = "completed" if terminal else "scheduled"
+            connection.execute(
+                """
+                UPDATE scheduled_jobs
+                SET status = ?, completed_runs = ?, next_run_at = ?, last_error = NULL,
+                    updated_at = ?, finished_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (
+                    next_status,
+                    completed_runs,
+                    None if terminal else next_run_at,
+                    now,
+                    now if terminal else None,
+                    normalized_job_id,
+                ),
+            )
+            self._insert_scheduled_job_event(
+                connection,
+                job_id=normalized_job_id,
+                session_id=str(row[1]),
+                event_type="completed" if terminal else "scheduled",
+                status=next_status,
+                message="Scheduled message delivered",
+                metadata={"completedRuns": completed_runs, "repeatCount": repeat_count, "nextRunAt": None if terminal else next_run_at},
+                created_at=now,
+            )
+        job = self.get_scheduled_job(normalized_job_id)
+        if job is None:
+            raise ValueError("scheduled job not found")
+        return job
+
+    def fail_scheduled_job_run(self, job_id: str, error: str) -> dict[str, object]:
+        normalized_job_id = normalize_scheduled_job_id(job_id)
+        normalized_error = normalize_optional_text(error, max_chars=1000, field_name="error") or "Scheduled job failed"
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute("SELECT session_id FROM scheduled_jobs WHERE id = ?", (normalized_job_id,)).fetchone()
+            if not row:
+                raise ValueError("scheduled job not found")
+            connection.execute(
+                """
+                UPDATE scheduled_jobs
+                SET status = 'failed', last_error = ?, next_run_at = NULL, updated_at = ?, finished_at = ?
+                WHERE id = ?
+                """,
+                (normalized_error, now, now, normalized_job_id),
+            )
+            self._insert_scheduled_job_event(
+                connection,
+                job_id=normalized_job_id,
+                session_id=str(row[0]),
+                event_type="failed",
+                status="failed",
+                message=normalized_error,
+                metadata=None,
+                created_at=now,
+            )
+        job = self.get_scheduled_job(normalized_job_id)
+        if job is None:
+            raise ValueError("scheduled job not found")
+        return job
+
+    def list_scheduled_job_events(self, job_id: str, *, limit: int = 100) -> list[dict[str, object]]:
+        normalized_job_id = normalize_scheduled_job_id(job_id)
+        normalized_limit = max(1, min(500, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, job_id, session_id, type, status, message, metadata_json, created_at
+                FROM scheduled_job_events
+                WHERE job_id = ?
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (normalized_job_id, normalized_limit),
+            ).fetchall()
+        return [scheduled_job_event_response(row) for row in rows]
+
+    def _set_scheduled_job_status(
+        self,
+        job_id: str,
+        status: ScheduledJobStatus,
+        event_type: str,
+        message: str,
+        *,
+        terminal: bool = False,
+    ) -> dict[str, object]:
+        normalized_job_id = normalize_scheduled_job_id(job_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute("SELECT session_id, status FROM scheduled_jobs WHERE id = ?", (normalized_job_id,)).fetchone()
+            if not row:
+                raise ValueError("scheduled job not found")
+            current_status = str(row[1])
+            if current_status in {"completed", "cancelled"}:
+                job = self.get_scheduled_job(normalized_job_id)
+                if job is None:
+                    raise ValueError("scheduled job not found")
+                return job
+            connection.execute(
+                """
+                UPDATE scheduled_jobs
+                SET status = ?, updated_at = ?, finished_at = ?, next_run_at = CASE WHEN ? THEN NULL ELSE next_run_at END
+                WHERE id = ?
+                """,
+                (status, now, now if terminal else None, 1 if terminal else 0, normalized_job_id),
+            )
+            self._insert_scheduled_job_event(
+                connection,
+                job_id=normalized_job_id,
+                session_id=str(row[0]),
+                event_type=event_type,
+                status=status,
+                message=message,
+                metadata={"previousStatus": current_status},
+                created_at=now,
+            )
+        job = self.get_scheduled_job(normalized_job_id)
+        if job is None:
+            raise ValueError("scheduled job not found")
+        return job
+
     def start_task(self, task_id: str, *, claim_lock: str) -> dict[str, object] | None:
         normalized_task_id = normalize_task_id(task_id)
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
@@ -1737,6 +2295,38 @@ class MessageMemoryStore:
             """,
             (
                 task_id,
+                session_id,
+                normalized_event_type,
+                normalized_status,
+                normalized_message,
+                metadata_json,
+                created_at,
+            ),
+        )
+
+    def _insert_scheduled_job_event(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        session_id: str,
+        event_type: str,
+        status: str | None,
+        message: str | None,
+        metadata: dict[str, object] | None,
+        created_at: str,
+    ) -> None:
+        normalized_event_type = normalize_scheduled_event_type(event_type)
+        normalized_status = normalize_scheduled_status(status) if status else None
+        normalized_message = normalize_optional_text(message, max_chars=1000, field_name="message")
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        connection.execute(
+            """
+            INSERT INTO scheduled_job_events (job_id, session_id, type, status, message, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
                 session_id,
                 normalized_event_type,
                 normalized_status,
@@ -2869,6 +3459,212 @@ def normalize_task_id(task_id: str) -> str:
     if len(normalized) > 80:
         raise ValueError("task id must be at most 80 characters")
     return normalized
+
+
+def normalize_scheduled_job_id(job_id: str) -> str:
+    normalized = job_id.strip() if isinstance(job_id, str) else ""
+    if not normalized:
+        raise ValueError("scheduled job id is required")
+    if "\x00" in normalized:
+        raise ValueError("scheduled job id must be UTF-8 text")
+    if len(normalized) > 80:
+        raise ValueError("scheduled job id must be at most 80 characters")
+    return normalized
+
+
+def normalize_scheduled_status(status: object) -> ScheduledJobStatus:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"scheduled", "running", "paused", "completed", "cancelled", "failed"}:
+        return normalized  # type: ignore[return-value]
+    raise ValueError("scheduled job status is invalid")
+
+
+def normalize_scheduled_title(title: object) -> str:
+    normalized = " ".join(str(title or "").strip().split())
+    if not normalized:
+        raise ValueError("scheduled job title is required")
+    if "\x00" in normalized:
+        raise ValueError("scheduled job title must be UTF-8 text")
+    if len(normalized) > 160:
+        return normalized[:157].rstrip() + "..."
+    return normalized
+
+
+def normalize_scheduled_message(message: object) -> str:
+    normalized = str(message or "").strip()
+    if not normalized:
+        raise ValueError("scheduled message is required")
+    if "\x00" in normalized:
+        raise ValueError("scheduled message must be UTF-8 text")
+    if len(normalized) > 4000:
+        raise ValueError("scheduled message must be at most 4000 characters")
+    return normalized
+
+
+def normalize_scheduled_repeat_count(repeat_count: object) -> int | None:
+    if repeat_count is None:
+        return None
+    try:
+        parsed = int(repeat_count)
+    except (TypeError, ValueError):
+        raise ValueError("repeatCount must be a number") from None
+    if parsed < 1:
+        return None
+    if parsed > 10000:
+        raise ValueError("repeatCount must be at most 10000")
+    return parsed
+
+
+def normalize_scheduled_event_type(event_type: object) -> str:
+    normalized = str(event_type or "").strip().lower()
+    if not normalized:
+        raise ValueError("scheduled job event type is required")
+    if "\x00" in normalized:
+        raise ValueError("scheduled job event type must be UTF-8 text")
+    if len(normalized) > 80:
+        raise ValueError("scheduled job event type must be at most 80 characters")
+    return normalized
+
+
+def normalize_todo_status(status: object) -> TodoStatus:
+    normalized = str(status or "pending").strip().lower()
+    if normalized in {"pending", "in_progress", "completed", "cancelled"}:
+        return normalized  # type: ignore[return-value]
+    return "pending"
+
+
+def normalize_todo_id(value: object) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return f"todo-{uuid4().hex[:12]}"
+    if "\x00" in normalized:
+        raise ValueError("todo id must be UTF-8 text")
+    if len(normalized) > 80:
+        raise ValueError("todo id must be at most 80 characters")
+    return normalized
+
+
+def normalize_todo_content(value: object) -> str:
+    normalized = " ".join(str(value or "").strip().split())
+    if not normalized:
+        normalized = "(no description)"
+    if "\x00" in normalized:
+        raise ValueError("todo content must be UTF-8 text")
+    if len(normalized) > 1000:
+        marker = "... [truncated]"
+        return normalized[: 1000 - len(marker)].rstrip() + marker
+    return normalized
+
+
+def normalize_todo_item(item: object, index: int) -> dict[str, object]:
+    payload = item if isinstance(item, dict) else {}
+    return {
+        "id": normalize_todo_id(payload.get("id")),
+        "content": normalize_todo_content(payload.get("content")),
+        "status": normalize_todo_status(payload.get("status")),
+        "orderIndex": index,
+    }
+
+
+def dedupe_todos_by_id(todos: list[dict[str, object]]) -> list[dict[str, object]]:
+    last_index: dict[str, int] = {}
+    for index, item in enumerate(todos):
+        item_id = str(item.get("id") or "").strip()
+        if item_id:
+            last_index[item_id] = index
+        else:
+            last_index[f"__empty_{index}"] = index
+    return [todos[index] for index in sorted(last_index.values())]
+
+
+def todo_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    return {
+        "id": str(row[0]),
+        "sessionId": str(row[1]),
+        "content": str(row[2] or ""),
+        "status": normalize_todo_status(row[3]),
+        "orderIndex": int(row[4] or 0),
+        "createdAt": str(row[5]),
+        "updatedAt": str(row[6]),
+        "completedAt": str(row[7]) if row[7] else None,
+    }
+
+
+def todo_summary(todos: list[dict[str, object]]) -> dict[str, int]:
+    counts = {
+        "total": len(todos),
+        "pending": 0,
+        "inProgress": 0,
+        "completed": 0,
+        "cancelled": 0,
+    }
+    for item in todos:
+        status = str(item.get("status") or "")
+        if status == "in_progress":
+            counts["inProgress"] += 1
+        elif status in counts:
+            counts[status] += 1
+    return counts
+
+
+def scheduled_job_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    try:
+        schedule = json.loads(str(row[4] or "{}"))
+    except json.JSONDecodeError:
+        schedule = {}
+    return {
+        "id": str(row[0]),
+        "sessionId": str(row[1]),
+        "title": str(row[2]),
+        "message": str(row[3] or ""),
+        "schedule": schedule if isinstance(schedule, dict) else {},
+        "scheduleDisplay": str(row[5] or ""),
+        "status": normalize_scheduled_status(row[6]),
+        "repeatCount": int(row[7]) if row[7] is not None else None,
+        "completedRuns": int(row[8] or 0),
+        "nextRunAt": str(row[9]) if row[9] else None,
+        "lastRunAt": str(row[10]) if row[10] else None,
+        "lastError": str(row[11]) if row[11] else None,
+        "createdAt": str(row[12]),
+        "updatedAt": str(row[13]),
+        "finishedAt": str(row[14]) if row[14] else None,
+    }
+
+
+def scheduled_job_event_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    metadata: object | None = None
+    if row[6]:
+        try:
+            metadata = json.loads(str(row[6]))
+        except json.JSONDecodeError:
+            metadata = None
+    return {
+        "eventId": int(row[0]),
+        "jobId": str(row[1]),
+        "sessionId": str(row[2]),
+        "type": str(row[3]),
+        "status": str(row[4]) if row[4] else None,
+        "message": str(row[5]) if row[5] else None,
+        "metadata": metadata,
+        "createdAt": str(row[7]),
+    }
+
+
+def scheduled_job_summary(jobs: list[dict[str, object]]) -> dict[str, int]:
+    counts = {
+        "total": len(jobs),
+        "scheduled": 0,
+        "running": 0,
+        "paused": 0,
+        "completed": 0,
+        "cancelled": 0,
+        "failed": 0,
+    }
+    for job in jobs:
+        status = str(job.get("status") or "")
+        if status in counts:
+            counts[status] += 1
+    return counts
 
 
 def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:

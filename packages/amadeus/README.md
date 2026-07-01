@@ -145,6 +145,12 @@ http://127.0.0.1:8790
 - `GET /memory/review/jobs?sessionId=default&limit=20`
 - `GET /sessions/{id}/plan`：load the SQLite-backed session task plan for desktop refresh/session restore.
 - `PUT /sessions/{id}/plan`：replace or merge the session task plan with `{ "items": [...], "merge": false }`.
+- `GET /scheduled-jobs?sessionId=companion:default&activeOnly=true&limit=20`：list session-scoped scheduled companion messages.
+- `GET /scheduled-jobs/{id}/events`：inspect scheduled message lifecycle events.
+- `POST /scheduled-jobs`：create a scheduled message with `{ "sessionId": "...", "title": "...", "message": "...", "schedule": "every 10s", "repeatCount": 4 }`. Supported schedules include `10s`, `30m`, `every 2h`, common five-field daily/weekly/monthly cron shapes, and ISO timestamps.
+- `POST /scheduled-jobs/{id}/pause|resume|cancel`：manage scheduled messages. Fired jobs persist an assistant message and broadcast `assistant.message`; lifecycle changes broadcast `scheduled.updated`.
+- `GET /todos?sessionId=companion:default&activeOnly=true&limit=100`：list persistent session todo items.
+- `PUT /todos`：replace or merge the session todo list with `{ "sessionId": "...", "merge": true, "todos": [{ "id": "a", "content": "Buy tea", "status": "pending" }] }`. The `todo` tool exposes the same read/write behavior to the agent.
 - `POST /memory/messages`
 - `POST /memory/items`
 - `POST /memory/items/delete`

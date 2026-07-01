@@ -2055,3 +2055,941 @@ body[data-settings-open="true"] .workspace {
     border-radius: 8px;
   }
 }
+
+/* Natural workbench visual refinement. Keep this layer last so older theme rules settle here. */
+:root {
+  --ui-bg: #171511;
+  --ui-bg-soft: #201e18;
+  --ui-panel: rgba(33, 31, 25, 0.88);
+  --ui-panel-raised: rgba(41, 38, 31, 0.94);
+  --ui-panel-subtle: rgba(255, 255, 255, 0.045);
+  --ui-border: rgba(236, 229, 212, 0.13);
+  --ui-border-strong: rgba(236, 229, 212, 0.22);
+  --ui-text: #f4efe5;
+  --ui-muted: rgba(244, 239, 229, 0.66);
+  --ui-faint: rgba(244, 239, 229, 0.46);
+  --ui-teal: #5fd0bd;
+  --ui-rose: #d98590;
+  --ui-amber: #d9aa63;
+  --ui-shadow: 0 18px 54px rgba(0, 0, 0, 0.28);
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 26%),
+    linear-gradient(135deg, #1b1812 0%, #262116 46%, #151510 100%);
+  color: var(--ui-text);
+}
+
+body::before,
+body::after,
+.chat-panel::before {
+  display: none;
+}
+
+button {
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  color: var(--ui-text);
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: none;
+  transition:
+    background 130ms ease,
+    border-color 130ms ease,
+    transform 130ms ease;
+}
+
+button:hover {
+  border-color: rgba(95, 208, 189, 0.42);
+  background: rgba(95, 208, 189, 0.1);
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+.titlebar {
+  border-bottom-color: rgba(236, 229, 212, 0.1);
+  background: rgba(24, 22, 17, 0.94);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.drag-region span:last-child {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: var(--ui-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+}
+
+.icon-button[aria-expanded="true"] {
+  border-color: rgba(95, 208, 189, 0.36);
+  background: rgba(95, 208, 189, 0.12);
+  box-shadow: none;
+}
+
+.status-dot,
+.status-dot[data-connected="true"] {
+  width: 9px;
+  height: 9px;
+  background: var(--ui-amber);
+  box-shadow: 0 0 0 4px rgba(217, 170, 99, 0.12);
+}
+
+.status-dot[data-connected="true"] {
+  background: var(--ui-teal);
+  box-shadow: 0 0 0 4px rgba(95, 208, 189, 0.12);
+}
+
+.workspace {
+  gap: 14px;
+  padding: 14px;
+}
+
+.chat-panel,
+.side-panel,
+.runtime-card,
+.memory-review,
+.skills-panel,
+.tasks-panel,
+.skill-detail,
+.config-panel,
+.resource-editor {
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-panel);
+  box-shadow: var(--ui-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.main-chat {
+  padding: 16px;
+}
+
+.side-panel {
+  background: rgba(29, 27, 22, 0.92);
+}
+
+.settings-heading strong,
+.config-header strong,
+.runtime-card-header strong,
+.tasks-header strong,
+.hero-copy strong,
+.provider strong,
+.skill-option-title,
+.resource-card strong,
+.mcp-server-editor-header strong {
+  color: var(--ui-text);
+}
+
+.eyebrow,
+.session-menu-kicker {
+  color: var(--ui-faint);
+  letter-spacing: 0.1em;
+}
+
+.hero-copy strong {
+  font-size: clamp(20px, 2.1vw, 26px);
+}
+
+.connection-pill,
+.session-menu-button,
+.config-status,
+.resource-card,
+.status-tile,
+.task-item,
+.mcp-server-editor,
+.mcp-server-diagnostics,
+.session-plan-panel,
+.skill-option,
+.memory-review-candidate {
+  border-color: var(--ui-border);
+  background: var(--ui-panel-subtle);
+  box-shadow: none;
+}
+
+.connection-pill::before {
+  background: var(--ui-amber);
+  box-shadow: 0 0 0 5px rgba(217, 170, 99, 0.11);
+}
+
+.connection-pill[data-connected="true"]::before {
+  background: var(--ui-teal);
+  box-shadow: 0 0 0 5px rgba(95, 208, 189, 0.12);
+}
+
+.connection-pill[data-connected="false"]::before {
+  background: var(--ui-rose);
+  box-shadow: 0 0 0 5px rgba(217, 133, 144, 0.12);
+}
+
+.connection-pill[data-state="connecting"]::before {
+  background: conic-gradient(from 90deg, var(--ui-amber), var(--ui-teal), var(--ui-rose), var(--ui-amber));
+}
+
+.session-menu,
+.amadeus-select-list {
+  border-color: var(--ui-border-strong);
+  background: rgba(37, 34, 27, 0.98);
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.34);
+}
+
+.session-menu-button:hover,
+.session-menu-button[aria-expanded="true"],
+.settings-nav-button.active,
+.resource-card[data-active="true"],
+.skill-option[data-active="true"] {
+  border-color: rgba(95, 208, 189, 0.42);
+  background: rgba(95, 208, 189, 0.1);
+  box-shadow: none;
+}
+
+.settings-nav {
+  border-color: var(--ui-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.settings-nav-button {
+  color: var(--ui-muted);
+  border-radius: 8px;
+}
+
+.settings-content {
+  padding-right: 4px;
+}
+
+#chat-form {
+  gap: 8px;
+  padding: 8px;
+  border-color: var(--ui-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: none;
+}
+
+#chat-input,
+.skills-search-input,
+.config-form input,
+.config-form select,
+.config-form textarea,
+.new-task-form input,
+.new-task-form textarea {
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  color: var(--ui-text);
+  background: rgba(0, 0, 0, 0.16);
+}
+
+#chat-input:focus,
+.skills-search-input:focus,
+.config-form input:focus,
+.config-form select:focus,
+.config-form textarea:focus,
+.new-task-form input:focus,
+.new-task-form textarea:focus {
+  border-color: rgba(95, 208, 189, 0.48);
+  box-shadow: 0 0 0 3px rgba(95, 208, 189, 0.1);
+}
+
+#chat-input::placeholder,
+.skills-search-input::placeholder,
+.config-form input::placeholder,
+.config-form textarea::placeholder,
+.new-task-form input::placeholder,
+.new-task-form textarea::placeholder {
+  color: var(--ui-faint);
+}
+
+.send-button,
+#chat-form button {
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  border: 0;
+  border-radius: 8px;
+  color: #10120f;
+  background: var(--ui-teal);
+  box-shadow: 0 10px 26px rgba(95, 208, 189, 0.16);
+}
+
+.send-button:hover,
+#chat-form button:hover {
+  background: #74dccb;
+}
+
+.message {
+  border-radius: 12px;
+  border-color: var(--ui-border);
+  color: var(--ui-text);
+  box-shadow: none;
+}
+
+.message.user {
+  border-bottom-right-radius: 4px;
+  color: #10120f;
+  background: linear-gradient(135deg, #7fe3d3, #d8c58b);
+}
+
+.message.assistant {
+  border-bottom-left-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.message code,
+.message pre {
+  border-color: var(--ui-border);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.message a {
+  color: #8be6d8;
+}
+
+.status-tile span,
+.task-meta,
+.diagnostics-line,
+.settings-note,
+.skill-option-description,
+.skill-detail-body,
+.session-menu-meta,
+.session-menu-hint,
+.config-form label span,
+.tasks-summary,
+.mcp-server-diagnostics {
+  color: var(--ui-muted);
+}
+
+.task-status-marker,
+.session-plan-marker {
+  border-color: var(--ui-border-strong);
+  color: var(--ui-text);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.task-item[data-status="running"] .task-status-marker,
+.session-plan-item[data-status="running"] .session-plan-marker,
+.session-plan-item[data-status="in_progress"] .session-plan-marker {
+  border-color: rgba(95, 208, 189, 0.5);
+  background: rgba(95, 208, 189, 0.12);
+}
+
+.task-item[data-status="blocked"] .task-status-marker {
+  border-color: rgba(217, 170, 99, 0.55);
+  background: rgba(217, 170, 99, 0.12);
+}
+
+.tool-permission {
+  border-color: rgba(217, 170, 99, 0.34);
+  border-radius: 10px;
+  background: rgba(217, 170, 99, 0.1);
+}
+
+.mcp-server-diagnostics[data-status="ok"] {
+  border-color: rgba(95, 208, 189, 0.36);
+  color: #c9fff4;
+  background: rgba(95, 208, 189, 0.1);
+}
+
+.mcp-server-diagnostics[data-status="failed"] {
+  border-color: rgba(217, 133, 144, 0.4);
+  color: #ffd6db;
+  background: rgba(217, 133, 144, 0.1);
+}
+
+.mcp-server-diagnostics[data-status="testing"] {
+  border-color: rgba(217, 170, 99, 0.4);
+  color: #ffe4b8;
+  background: rgba(217, 170, 99, 0.1);
+}
+
+.chat-log:empty::before {
+  max-width: 440px;
+  border-color: var(--ui-border);
+  border-radius: 12px;
+  color: var(--ui-muted);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: none;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background: rgba(244, 239, 229, 0.28) border-box;
+}
+
+/* Light anime SaaS theme. Final visual layer. */
+:root {
+  --kawaii-bg: #fff8fb;
+  --kawaii-bg-blue: #eef8ff;
+  --kawaii-panel: rgba(255, 255, 255, 0.78);
+  --kawaii-panel-solid: rgba(255, 255, 255, 0.94);
+  --kawaii-line: rgba(163, 145, 170, 0.18);
+  --kawaii-line-strong: rgba(143, 125, 164, 0.28);
+  --kawaii-text: #3f3546;
+  --kawaii-muted: rgba(63, 53, 70, 0.66);
+  --kawaii-faint: rgba(63, 53, 70, 0.46);
+  --kawaii-pink: #e9a7c0;
+  --kawaii-pink-soft: #f8dce8;
+  --kawaii-lavender: #b9a7df;
+  --kawaii-lavender-soft: #eee8fb;
+  --kawaii-blue: #9bcbe8;
+  --kawaii-blue-soft: #e3f3fb;
+  --kawaii-cream: #fff3d6;
+  --kawaii-success: #78c9b8;
+  --kawaii-warning: #d7a86a;
+  --kawaii-danger: #d88897;
+  --kawaii-shadow: 0 18px 48px rgba(129, 112, 146, 0.16);
+}
+
+body {
+  background:
+    linear-gradient(135deg, rgba(255, 248, 251, 0.94) 0%, rgba(238, 248, 255, 0.92) 54%, rgba(255, 243, 214, 0.76) 100%);
+  color: var(--kawaii-text);
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  background-image:
+    linear-gradient(90deg, rgba(185, 167, 223, 0.08) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(185, 167, 223, 0.08) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 72%);
+  content: "";
+}
+
+body::after {
+  display: none;
+}
+
+.titlebar {
+  border-bottom-color: rgba(163, 145, 170, 0.16);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(18px);
+}
+
+.drag-region span:last-child {
+  color: var(--kawaii-muted);
+}
+
+.status-dot,
+.status-dot[data-connected="true"] {
+  background: var(--kawaii-warning);
+  box-shadow: 0 0 0 4px rgba(215, 168, 106, 0.16);
+}
+
+.status-dot[data-connected="true"] {
+  background: var(--kawaii-success);
+  box-shadow: 0 0 0 4px rgba(120, 201, 184, 0.16);
+}
+
+button {
+  border-color: var(--kawaii-line);
+  color: var(--kawaii-text);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+button:hover {
+  border-color: rgba(185, 167, 223, 0.44);
+  background: rgba(238, 232, 251, 0.78);
+}
+
+.workspace {
+  gap: 16px;
+  padding: 16px;
+}
+
+.chat-panel,
+.side-panel,
+.runtime-card,
+.memory-review,
+.skills-panel,
+.tasks-panel,
+.skill-detail,
+.config-panel,
+.resource-editor {
+  border-color: var(--kawaii-line);
+  border-radius: 8px;
+  color: var(--kawaii-text);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.7)),
+    var(--kawaii-panel);
+  box-shadow: var(--kawaii-shadow);
+}
+
+.main-chat {
+  padding: 18px;
+}
+
+.side-panel {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.hero-copy {
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+}
+
+.hero-copy::before {
+  display: grid;
+  grid-row: 1 / span 2;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(233, 167, 192, 0.34);
+  border-radius: 50%;
+  color: #8f698e;
+  background:
+    linear-gradient(135deg, rgba(248, 220, 232, 0.96), rgba(227, 243, 251, 0.96));
+  box-shadow: 0 10px 24px rgba(185, 167, 223, 0.18);
+  content: "✦";
+  font-size: 18px;
+}
+
+.settings-heading {
+  position: relative;
+}
+
+.settings-heading::after {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(233, 167, 192, 0.28);
+  border-radius: 8px;
+  color: #9b7aa4;
+  background: rgba(248, 220, 232, 0.72);
+  content: "☆";
+  font-size: 13px;
+}
+
+.settings-heading strong,
+.config-header strong,
+.runtime-card-header strong,
+.tasks-header strong,
+.hero-copy strong,
+.provider strong,
+.skill-option-title,
+.resource-card strong,
+.mcp-server-editor-header strong {
+  color: var(--kawaii-text);
+}
+
+.hero-copy strong {
+  font-size: clamp(22px, 2.1vw, 28px);
+}
+
+.eyebrow,
+.session-menu-kicker {
+  color: #9b7aa4;
+  letter-spacing: 0.11em;
+}
+
+.connection-pill,
+.session-menu-button,
+.config-status,
+.resource-card,
+.status-tile,
+.task-item,
+.mcp-server-editor,
+.mcp-server-diagnostics,
+.session-plan-panel,
+.skill-option,
+.memory-review-candidate,
+.settings-nav,
+.amadeus-select-button {
+  border-color: var(--kawaii-line);
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: none;
+}
+
+.connection-pill::before {
+  background: var(--kawaii-warning);
+  box-shadow: 0 0 0 5px rgba(215, 168, 106, 0.14);
+}
+
+.connection-pill[data-connected="true"]::before {
+  background: var(--kawaii-success);
+  box-shadow: 0 0 0 5px rgba(120, 201, 184, 0.14);
+}
+
+.connection-pill[data-connected="false"]::before {
+  background: var(--kawaii-danger);
+  box-shadow: 0 0 0 5px rgba(216, 136, 151, 0.14);
+}
+
+.session-menu,
+.amadeus-select-list {
+  border-color: var(--kawaii-line-strong);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 48px rgba(129, 112, 146, 0.18);
+}
+
+.session-menu-button:hover,
+.session-menu-button[aria-expanded="true"],
+.settings-nav-button.active,
+.resource-card[data-active="true"],
+.skill-option[data-active="true"] {
+  border-color: rgba(233, 167, 192, 0.48);
+  background: linear-gradient(135deg, rgba(248, 220, 232, 0.7), rgba(227, 243, 251, 0.64));
+}
+
+.settings-nav {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.settings-nav-button {
+  color: var(--kawaii-muted);
+  border-radius: 8px;
+}
+
+#chat-form {
+  border-color: var(--kawaii-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+#chat-input,
+.skills-search-input,
+.config-form input,
+.config-form select,
+.config-form textarea,
+.new-task-form input,
+.new-task-form textarea {
+  border-color: var(--kawaii-line);
+  border-radius: 8px;
+  color: var(--kawaii-text);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+#chat-input:focus,
+.skills-search-input:focus,
+.config-form input:focus,
+.config-form select:focus,
+.config-form textarea:focus,
+.new-task-form input:focus,
+.new-task-form textarea:focus {
+  border-color: rgba(155, 203, 232, 0.7);
+  box-shadow: 0 0 0 3px rgba(155, 203, 232, 0.2);
+}
+
+#chat-input::placeholder,
+.skills-search-input::placeholder,
+.config-form input::placeholder,
+.config-form textarea::placeholder,
+.new-task-form input::placeholder,
+.new-task-form textarea::placeholder {
+  color: var(--kawaii-faint);
+}
+
+.send-button,
+#chat-form button {
+  color: #4f3b57;
+  background: linear-gradient(135deg, var(--kawaii-pink-soft), var(--kawaii-blue-soft));
+  box-shadow: 0 10px 24px rgba(155, 203, 232, 0.22);
+}
+
+.send-button:hover,
+#chat-form button:hover {
+  background: linear-gradient(135deg, #f4c9da, #d7eefb);
+}
+
+.message {
+  border-color: rgba(163, 145, 170, 0.16);
+  border-radius: 14px;
+  color: var(--kawaii-text);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 8px 22px rgba(129, 112, 146, 0.1);
+}
+
+.message.user {
+  border-bottom-right-radius: 5px;
+  color: #5f4564;
+  background: linear-gradient(135deg, #f8dce8, #e3f3fb);
+}
+
+.message.assistant {
+  border-bottom-left-radius: 5px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.message code,
+.message pre {
+  border-color: var(--kawaii-line);
+  color: #624d6a;
+  background: rgba(238, 232, 251, 0.58);
+}
+
+.message a {
+  color: #578eb3;
+}
+
+.status-tile span,
+.task-meta,
+.diagnostics-line,
+.settings-note,
+.skill-option-description,
+.skill-detail-body,
+.session-menu-meta,
+.session-menu-hint,
+.config-form label span,
+.tasks-summary,
+.mcp-server-diagnostics {
+  color: var(--kawaii-muted);
+}
+
+.task-status-marker,
+.session-plan-marker {
+  border-color: var(--kawaii-line-strong);
+  color: #8f698e;
+  background: rgba(248, 220, 232, 0.5);
+}
+
+.task-item[data-status="running"] .task-status-marker,
+.session-plan-item[data-status="running"] .session-plan-marker,
+.session-plan-item[data-status="in_progress"] .session-plan-marker {
+  border-color: rgba(120, 201, 184, 0.55);
+  background: rgba(120, 201, 184, 0.16);
+}
+
+.task-item[data-status="blocked"] .task-status-marker {
+  border-color: rgba(215, 168, 106, 0.56);
+  background: rgba(255, 243, 214, 0.72);
+}
+
+.tool-permission {
+  border-color: rgba(215, 168, 106, 0.34);
+  background: rgba(255, 243, 214, 0.68);
+}
+
+.mcp-server-diagnostics[data-status="ok"] {
+  border-color: rgba(120, 201, 184, 0.42);
+  color: #4b8c80;
+  background: rgba(120, 201, 184, 0.12);
+}
+
+.mcp-server-diagnostics[data-status="failed"] {
+  border-color: rgba(216, 136, 151, 0.42);
+  color: #9a5e6a;
+  background: rgba(216, 136, 151, 0.12);
+}
+
+.mcp-server-diagnostics[data-status="testing"] {
+  border-color: rgba(215, 168, 106, 0.42);
+  color: #926e3f;
+  background: rgba(255, 243, 214, 0.72);
+}
+
+.chat-log:empty::before {
+  border-color: var(--kawaii-line);
+  color: var(--kawaii-muted);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(248, 220, 232, 0.36));
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.42);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(185, 167, 223, 0.36) border-box;
+}
+
+/* Rounded typography pass for the anime SaaS direction. */
+:root {
+  --kawaii-font:
+    "M PLUS Rounded 1c",
+    Nunito,
+    "Hiragino Maru Gothic ProN",
+    "Yu Gothic UI",
+    "Segoe UI Rounded",
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    ui-rounded,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+
+body,
+button,
+input,
+textarea,
+select,
+.message,
+.session-menu,
+.config-form,
+.settings-nav-button,
+.skill-option,
+.memory-review,
+.tasks-panel,
+.mcp-server-editor {
+  font-family: var(--kawaii-font);
+  letter-spacing: 0;
+}
+
+button,
+.settings-nav-button,
+.session-menu-button,
+.resource-edit-button,
+.task-cancel-button {
+  font-weight: 650;
+}
+
+.app-title,
+.hero-copy strong,
+.settings-heading strong,
+.config-header strong,
+.runtime-card-header strong,
+.tasks-header strong,
+.skill-option-title,
+.resource-card strong,
+.mcp-server-editor-header strong {
+  font-weight: 760;
+}
+
+.hero-copy strong {
+  line-height: 1.18;
+}
+
+.eyebrow,
+.session-menu-kicker,
+.status-tile span {
+  font-weight: 780;
+}
+
+.message {
+  font-weight: 520;
+}
+
+/* Interaction contrast pass: keep text readable on pale active/hover states. */
+button:hover,
+button:active,
+button:focus-visible,
+.settings-nav-button:hover,
+.settings-nav-button.active,
+.session-menu-button:hover,
+.session-menu-button[aria-expanded="true"],
+.resource-card:hover,
+.resource-card[data-active="true"],
+.skill-option:hover,
+.skill-option[data-active="true"],
+.session-menu-header button:hover,
+.session-delete-button:hover,
+.config-form .amadeus-select-button:hover,
+.amadeus-select[data-open="true"] .amadeus-select-button,
+.config-form .amadeus-select-option:hover,
+.config-form .amadeus-select-option[data-active="true"] {
+  color: #3f3546;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+.amadeus-select-button:focus-visible,
+.session-menu-button:focus-visible {
+  outline: 2px solid rgba(155, 203, 232, 0.72);
+  outline-offset: 2px;
+}
+
+.icon-button:hover,
+.icon-button:active,
+.icon-button[aria-expanded="true"] {
+  color: #5f4564;
+}
+
+.send-button:hover,
+.send-button:active,
+#chat-form button:hover,
+#chat-form button:active,
+.companion-hover-panel #chat-form button:hover,
+.companion-hover-panel #chat-form button:active {
+  color: #4f3b57;
+}
+
+.settings-nav-button.active,
+.resource-card[data-active="true"],
+.skill-option[data-active="true"],
+.session-menu-item[data-active="true"] {
+  font-weight: 720;
+}
+
+.settings-nav-button.active *,
+.resource-card[data-active="true"] *,
+.skill-option[data-active="true"] *,
+.session-menu-item[data-active="true"] * {
+  color: inherit;
+}
+
+.session-menu-title:hover,
+.session-menu-title:active,
+.session-menu-title:focus-visible {
+  color: #5f4564;
+}
+
+.scheduled-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.scheduled-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.scheduled-action-button {
+  min-width: 64px;
+}
+
+.scheduled-item[data-status="scheduled"] .task-status-marker {
+  background: rgba(154, 205, 226, 0.35);
+  border-color: rgba(88, 149, 178, 0.34);
+}
+
+.scheduled-item[data-status="paused"] .task-status-marker {
+  color: #6f5a77;
+  background: rgba(235, 222, 244, 0.72);
+  border-color: rgba(174, 144, 197, 0.44);
+}
+
+.scheduled-item[data-status="failed"] .task-status-marker {
+  color: #8f4d61;
+  background: rgba(255, 218, 226, 0.78);
+  border-color: rgba(202, 117, 139, 0.42);
+}
+
+@media (max-width: 760px) {
+  .scheduled-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .scheduled-actions {
+    justify-content: flex-start;
+  }
+}
