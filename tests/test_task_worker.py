@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.workers import TaskWorker
+from amadeus.workers import TaskCallable, TaskWorker
 
 
 class SuccessfulRuntime:
@@ -58,7 +58,37 @@ class CancellableRuntime:
         return {"sessionId": session_id, "turnId": turn_id, "cancelled": True, "reason": "cancel_requested"}
 
 
+class ImmediateTaskRunner:
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+        self.shutdown_called = False
+
+    def submit(self, task_id: str, run_task: TaskCallable) -> None:
+        self.submitted.append(task_id)
+        run_task(task_id)
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        self.shutdown_called = True
+
+
 class TaskWorkerTests(unittest.TestCase):
+    def test_worker_uses_injected_task_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = SuccessfulRuntime()
+            runner = ImmediateTaskRunner()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
+            task = memory.create_task(session_id="session-1", title="Run inline")
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+            finished = memory.get_task(str(task["id"]))
+
+        self.assertEqual(runner.submitted, [str(task["id"])])
+        self.assertTrue(runner.shutdown_called)
+        self.assertIsNotNone(finished)
+        self.assertEqual(finished["status"], "succeeded")
+
     def test_worker_marks_task_succeeded_with_assistant_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

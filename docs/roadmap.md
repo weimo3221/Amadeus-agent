@@ -265,13 +265,14 @@ Target deliverables:
 - First prompt-surface slice complete: per-role `SOUL.md` identity, core prompt assembly, per-tool `prompt_hint` routing, role `workspacePath`, repository-root default workspace assignment, workspace-level `AGENT.md` project context, and role-scoped stable memory.
 - First task-worker reliability slice complete: persisted task attempts, retry scheduling, stale `running` recovery, startup reclaim, and worker status event broadcasting.
 - MCP bridge first slice complete: configured HTTP JSON-RPC MCP servers can expose `tools/list` tools as `mcp__<server>__<tool>` schemas and execute them through `tools/call` under ToolRuntime permissions/audit.
-- Durable multi-process task worker abstraction.
-- First task-state context slice complete: queued/running/blocked session tasks are injected as reference-only `<active-tasks>` context with diagnostics.
+- First task runner abstraction complete: `TaskRunner` / `InProcessTaskRunner` separate scheduling/execution submission from the task state machine, leaving process-backed execution as a later implementation.
+- First task-state context slice complete: queued/running/blocked session tasks are injected as reference-only `<active-tasks>` context and recent terminal outcomes are injected as `<recent-tasks>` with diagnostics.
+- Durable multi-process task runner implementation.
 - Richer context compression.
 - Long task plans.
 - Human approval checkpoints.
 - Provider and harness profiles.
-- First runtime contract eval complete for role identity, active task context, and MCP tool contracts. Broaden eval harness for tool choice, permission, memory, Live2D, audio, and guardrail behavior.
+- First runtime contract eval complete for role identity, active/recent task context, task lifecycle, and MCP tool contracts. Broaden eval harness for tool choice, permission, memory, Live2D, audio, and guardrail behavior.
 
 Reference:
 

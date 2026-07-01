@@ -99,9 +99,35 @@ class ContextAssemblerTests(unittest.TestCase):
 
             self.assertIn("<active-tasks>", assembled.system_context)
             self.assertIn("Check MCP bridge", assembled.system_context)
-            self.assertNotIn("Done task", assembled.system_context)
+            active_block = assembled.system_context.split("<recent-tasks>", 1)[0]
+            self.assertNotIn("Done task", active_block)
             diagnostics = assembled.diagnostics()
             self.assertEqual(diagnostics["sourceCounts"]["active_tasks"], 1)
+
+    def test_injects_recent_terminal_task_state_as_context_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            succeeded = memory.create_task(session_id="session-1", title="Finished report", body="Already complete")
+            failed = memory.create_task(session_id="session-1", title="Failed report", body="Already failed")
+            active = memory.create_task(session_id="session-1", title="Still active", body="Not done")
+            memory.start_task(str(succeeded["id"]), claim_lock="worker-a")
+            memory.complete_task(str(succeeded["id"]), claim_lock="worker-a", result="Report summary ready.")
+            memory.start_task(str(failed["id"]), claim_lock="worker-b")
+            memory.fail_task(str(failed["id"]), claim_lock="worker-b", error="Provider failed.")
+            assembler = ContextAssembler(memory, "Base")
+
+            assembled = assembler.assemble("session-1", "what finished?")
+
+            self.assertIn("<active-tasks>", assembled.system_context)
+            self.assertIn("Still active", assembled.system_context)
+            self.assertIn("<recent-tasks>", assembled.system_context)
+            self.assertIn("Finished report", assembled.system_context)
+            self.assertIn("Report summary ready.", assembled.system_context)
+            self.assertIn("Failed report", assembled.system_context)
+            self.assertIn("Provider failed.", assembled.system_context)
+            diagnostics = assembled.diagnostics()
+            self.assertEqual(diagnostics["sourceCounts"]["active_tasks"], 1)
+            self.assertEqual(diagnostics["sourceCounts"]["recent_tasks"], 1)
 
 
 if __name__ == "__main__":

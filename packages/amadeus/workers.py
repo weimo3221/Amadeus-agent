@@ -4,7 +4,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from amadeus.agent import AgentEvent, PermissionRequest
@@ -16,6 +16,26 @@ logger = logging.getLogger(__name__)
 MemoryStoreProvider = Callable[[], MessageMemoryStore]
 AgentRuntimeProvider = Callable[[], Any]
 TaskEventPublisher = Callable[[dict[str, object], str], None]
+TaskCallable = Callable[[str], None]
+
+
+class TaskRunner(Protocol):
+    def submit(self, task_id: str, run_task: TaskCallable) -> None:
+        ...
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        ...
+
+
+class InProcessTaskRunner:
+    def __init__(self, *, max_workers: int = 2) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="amadeus-task")
+
+    def submit(self, task_id: str, run_task: TaskCallable) -> None:
+        self._executor.submit(run_task, task_id)
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        self._executor.shutdown(wait=wait, cancel_futures=True)
 
 
 class TaskWorker:
@@ -29,6 +49,7 @@ class TaskWorker:
         retry_base_delay_seconds: float = 1.0,
         retry_max_delay_seconds: float = 30.0,
         stale_after_seconds: float = 300.0,
+        runner: TaskRunner | None = None,
     ) -> None:
         self._memory_store_provider = memory_store_provider
         self._agent_runtime_provider = agent_runtime_provider
@@ -36,14 +57,14 @@ class TaskWorker:
         self._retry_base_delay_seconds = max(0.0, float(retry_base_delay_seconds))
         self._retry_max_delay_seconds = max(self._retry_base_delay_seconds, float(retry_max_delay_seconds))
         self._stale_after_seconds = max(1.0, float(stale_after_seconds))
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="amadeus-task")
+        self._runner = runner or InProcessTaskRunner(max_workers=max_workers)
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}
         self._turns: dict[str, tuple[str, str]] = {}
         self._timers: dict[str, threading.Timer] = {}
 
     def submit(self, task_id: str) -> None:
-        self._executor.submit(self._run_task, task_id)
+        self._runner.submit(task_id, self._run_task)
 
     def recover(self) -> list[dict[str, object]]:
         memory_store = self._memory_store_provider()
@@ -61,7 +82,7 @@ class TaskWorker:
             self._timers.clear()
         for timer in timers:
             timer.cancel()
-        self._executor.shutdown(wait=wait, cancel_futures=True)
+        self._runner.shutdown(wait=wait)
 
     def cancel(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
         with self._lock:

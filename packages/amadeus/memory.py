@@ -1297,6 +1297,35 @@ class MessageMemoryStore:
             ).fetchone()
         return task_response(row) if row else None
 
+    def list_recent_terminal_tasks(self, *, session_id: str, limit: int = 5) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        normalized_limit = max(1, min(50, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
+                       last_heartbeat, result, error, created_at, updated_at, finished_at,
+                       attempt_count, max_attempts, next_run_at
+                FROM tasks
+                WHERE session_id = ? AND status IN ('succeeded', 'failed', 'cancelled')
+                ORDER BY COALESCE(finished_at, updated_at) DESC
+                LIMIT ?
+                """,
+                (normalized_session_id, normalized_limit),
+            ).fetchall()
+        tasks = [task_response(row) for row in rows]
+        return {
+            "sessionId": normalized_session_id,
+            "tasks": tasks,
+            "summary": task_summary(tasks),
+            "filters": {
+                "sessionId": normalized_session_id,
+                "terminalOnly": True,
+                "limit": normalized_limit,
+            },
+        }
+
     def start_task(self, task_id: str, *, claim_lock: str) -> dict[str, object] | None:
         normalized_task_id = normalize_task_id(task_id)
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")

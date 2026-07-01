@@ -51,6 +51,8 @@ CONTEXT_MEMORY_ITEM_CHARS = 500
 CONTEXT_RETRIEVAL_LIMIT = 3
 CONTEXT_RETRIEVAL_SNIPPET_CHARS = 280
 CONTEXT_TASK_LIMIT = 5
+CONTEXT_RECENT_TASK_LIMIT = 3
+CONTEXT_TASK_RESULT_CHARS = 280
 CONTEXT_DIAGNOSTICS_LIMIT = 20
 SUMMARY_TRIGGER_MESSAGE_COUNT = 40
 SUMMARY_KEEP_RECENT_MESSAGES = 20
@@ -364,6 +366,14 @@ class AgentRuntime:
             "AMADEUS_CONTEXT_TASK_LIMIT",
             parse_positive_int_value(context_config.get("taskLimit"), CONTEXT_TASK_LIMIT),
         )
+        self.context_recent_task_limit = parse_positive_int_env(
+            "AMADEUS_CONTEXT_RECENT_TASK_LIMIT",
+            parse_positive_int_value(context_config.get("recentTaskLimit"), CONTEXT_RECENT_TASK_LIMIT),
+        )
+        self.context_task_result_chars = parse_positive_int_env(
+            "AMADEUS_CONTEXT_TASK_RESULT_CHARS",
+            parse_positive_int_value(context_config.get("taskResultChars"), CONTEXT_TASK_RESULT_CHARS),
+        )
         self.context_diagnostics_limit = parse_positive_int_env(
             "AMADEUS_CONTEXT_DIAGNOSTICS_LIMIT",
             parse_positive_int_value(context_config.get("diagnosticsLimit"), CONTEXT_DIAGNOSTICS_LIMIT),
@@ -379,6 +389,8 @@ class AgentRuntime:
                 retrieval_limit=self.context_retrieval_limit,
                 retrieval_snippet_chars=self.context_retrieval_snippet_chars,
                 task_limit=self.context_task_limit,
+                recent_task_limit=self.context_recent_task_limit,
+                task_result_chars=self.context_task_result_chars,
             ),
         )
         self.summary_trigger_message_count = parse_positive_int_env(

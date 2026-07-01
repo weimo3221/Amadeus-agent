@@ -101,6 +101,8 @@ To add a simple tool, implement a JSON-serializable handler in a focused module 
 
 For external tools, prefer MCP config over new built-ins when the capability naturally belongs to another local service. The first supported transport is HTTP JSON-RPC with `tools/list` and `tools/call`; stdio/process lifecycle management is still future work.
 
+Task worker execution is split at the `TaskRunner` boundary. `TaskWorker` owns task claim/retry/recovery/cancel/event semantics, while `InProcessTaskRunner` owns the current thread-pool submission mechanism. Future process-backed runners should implement the same `submit(task_id, run_task)` and `shutdown(wait=...)` contract without changing task state transitions.
+
 ## AIRI Code to Study First
 
 When implementation starts, inspect these paths:
