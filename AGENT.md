@@ -146,7 +146,7 @@ Focus on desktop/runtime stabilization rather than rebuilding MVP pieces:
 
 - Continue Main UI workbench hardening. The current workbench now keeps runtime status, task creation/cancel, skills, memory review, and MCP HTTP server management visible from the Main Console.
 - Add richer task UI for attempts, next retry time, task history, and terminal task results.
-- Add a deterministic local MCP example server plus clearer MCP discovery/error diagnostics before starting stdio/SSE MCP lifecycle work.
+- Improve persisted MCP diagnostics/audit surfaces now that the deterministic local HTTP MCP example server and Main UI discovery test path are in place. Defer stdio/SSE MCP lifecycle work until HTTP MCP is stable in daily use.
 - Decide whether task completion should create a user-visible notification only, or also trigger a model-authored follow-up message.
 - Harden task execution toward a durable scheduler/worker lease if long-running work becomes important.
 - Defer the real CLI client until the Main UI basics are stable; when added, it should default to an independent session unless explicitly attached.

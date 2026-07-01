@@ -24,6 +24,7 @@ from amadeus.memory import MessageMemoryStore
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary, create_tts_provider_from_config
 from amadeus.live2d import LocalLive2DModelLibrary
+from amadeus.mcp import McpServerConfig, list_mcp_tools
 from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_providers_config, provider_profile
 from amadeus.runtime_events import RuntimeEventBus
 from amadeus.tool_runtime import ToolContext
@@ -450,6 +451,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_runtime_config_update()
             return
 
+        if self.path == "/tools/config/test":
+            self.handle_tools_config_test()
+            return
+
         if self.path == "/tools/config":
             self.handle_tools_config_update()
             return
@@ -610,6 +615,50 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:
             logger.info("Tools config update failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_tools_config_test(self) -> None:
+        try:
+            body = self.read_json_body()
+            server_payload = body.get("server")
+            if not isinstance(server_payload, dict):
+                self.write_json(400, {"ok": False, "error": "server must be an object"})
+                return
+
+            server = validate_mcp_server_payload(server_payload, 0)
+            server_config = McpServerConfig(
+                name=str(server["name"]),
+                url=str(server["url"]),
+                enabled=bool(server["enabled"]),
+                permission=server.get("permission") if isinstance(server.get("permission"), str) else None,
+                timeout_seconds=float(server["timeoutSeconds"]),
+            )
+            tools = list_mcp_tools(server_config)
+            logger.info(
+                "Tested MCP server name=%s url=%s toolCount=%s",
+                server_config.name,
+                server_config.url,
+                len(tools),
+            )
+            self.write_json(200, {
+                "ok": True,
+                "status": "ok",
+                "server": server,
+                "toolCount": len(tools),
+                "tools": [
+                    {
+                        "name": str(tool.get("name") or ""),
+                        "description": str(tool.get("description") or ""),
+                    }
+                    for tool in tools
+                    if isinstance(tool, dict)
+                ],
+            })
+        except ValueError as error:
+            logger.info("MCP config test rejected error=%s", error)
+            self.write_json(400, {"ok": False, "status": "failed", "error": str(error)})
+        except Exception as error:
+            logger.info("MCP config test failed error=%s", error)
+            self.write_json(200, {"ok": True, "status": "failed", "error": str(error), "toolCount": 0, "tools": []})
 
     def handle_runtime_events(self, parsed: Any) -> None:
         query = parse_qs(parsed.query)

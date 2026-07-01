@@ -5,7 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -26,6 +26,61 @@ class NoopTaskWorker:
 
     def cancel(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
         return runtime_server.memory_store.cancel_task(task_id, reason=reason)
+
+
+class FakeMcpHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        request = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        request_id = request.get("id")
+        method = request.get("method")
+        params = request.get("params") if isinstance(request.get("params"), dict) else {}
+
+        if method == "tools/list":
+            self.write_json({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "tools": [{
+                        "name": "echo",
+                        "description": "Echo a string",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": ["text"],
+                        },
+                    }],
+                },
+            })
+            return
+
+        if method == "tools/call":
+            arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            self.write_json({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [{"type": "text", "text": str(arguments.get("text") or "")}],
+                },
+            })
+            return
+
+        self.write_json({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32601, "message": "unknown method"},
+        })
+
+    def write_json(self, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args) -> None:
+        return
 
 
 class SummaryRuntime(AgentRuntime):
@@ -262,6 +317,66 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertIn("mcp__local__lookup", tool_names)
         self.assertEqual(tool_names["mcp__local__lookup"]["permission"], "allow")
         self.assertIn("mcp__local__lookup", schema_names)
+
+    def test_tools_config_test_reports_mcp_discovery(self) -> None:
+        mcpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeMcpHandler)
+        mcp_thread = threading.Thread(target=mcpd.serve_forever, daemon=True)
+        mcp_thread.start()
+        try:
+            host, port = mcpd.server_address
+            payload = self.post_json("/tools/config/test", {
+                "server": {
+                    "name": "dev",
+                    "url": f"http://{host}:{port}/mcp",
+                    "enabled": True,
+                    "permission": "ask",
+                    "timeoutSeconds": 5,
+                },
+            })
+        finally:
+            mcpd.shutdown()
+            mcpd.server_close()
+            mcp_thread.join(timeout=2)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["toolCount"], 1)
+        self.assertEqual(payload["tools"][0]["name"], "echo")
+
+    def test_tools_config_mcp_server_can_be_executed_after_reload(self) -> None:
+        mcpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeMcpHandler)
+        mcp_thread = threading.Thread(target=mcpd.serve_forever, daemon=True)
+        mcp_thread.start()
+        try:
+            host, port = mcpd.server_address
+            self.post_json("/tools/config", {
+                "mcp": {
+                    "enabled": True,
+                    "permission": "ask",
+                    "servers": [{
+                        "name": "dev",
+                        "url": f"http://{host}:{port}/mcp",
+                        "enabled": True,
+                        "permission": "allow",
+                        "timeoutSeconds": 5,
+                    }],
+                },
+            })
+            listed = self.get_json("/tools/list")
+            executed = self.post_json("/tools/execute", {
+                "toolName": "mcp__dev__echo",
+                "args": {"text": "hello mcp"},
+            })
+        finally:
+            mcpd.shutdown()
+            mcpd.server_close()
+            mcp_thread.join(timeout=2)
+
+        schema_names = {entry["function"]["name"] for entry in listed["schemas"]}
+        self.assertIn("mcp__dev__echo", schema_names)
+        self.assertTrue(executed["ok"])
+        self.assertTrue(executed["toolOk"])
+        self.assertEqual(executed["result"]["result"]["content"][0]["text"], "hello mcp")
 
     def test_skills_list_and_view_expose_runtime_skills(self) -> None:
         listed = self.get_json("/skills/list")

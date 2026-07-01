@@ -141,6 +141,14 @@ interface ToolsConfigPayload {
   error?: string
 }
 
+interface McpTestPayload {
+  ok?: boolean
+  status?: 'ok' | 'failed'
+  toolCount?: number
+  tools?: Array<{ name: string, description?: string }>
+  error?: string
+}
+
 class MockAudio implements RuntimeAudioLike {
   private readonly listeners = new Map<string, Array<() => void>>()
 
@@ -1294,7 +1302,17 @@ function createMcpServerEditor(server: McpServerPayload, index: number): HTMLEle
     renderMcpConfig()
     setConfigStatus(mcpConfigStatus, 'Editing')
   })
-  header.append(title, removeButton)
+  const testButton = document.createElement('button')
+  testButton.type = 'button'
+  testButton.textContent = 'Test'
+  testButton.addEventListener('click', () => {
+    void testMcpServer(row)
+  })
+
+  const headerActions = document.createElement('div')
+  headerActions.className = 'mcp-server-editor-actions'
+  headerActions.append(testButton, removeButton)
+  header.append(title, headerActions)
 
   const enabledLabel = document.createElement('label')
   enabledLabel.className = 'checkbox-label'
@@ -1324,7 +1342,11 @@ function createMcpServerEditor(server: McpServerPayload, index: number): HTMLEle
   permissionSelect.value = server.permission || ''
   permissionLabel.append(permissionText, permissionSelect)
 
-  row.append(header, enabledLabel, nameLabel, urlLabel, permissionLabel, timeoutLabel)
+  const diagnostics = document.createElement('div')
+  diagnostics.className = 'mcp-server-diagnostics'
+  diagnostics.textContent = 'Not tested'
+
+  row.append(header, enabledLabel, nameLabel, urlLabel, permissionLabel, timeoutLabel, diagnostics)
   return row
 }
 
@@ -1370,22 +1392,62 @@ async function saveMcpConfig(): Promise<void> {
   }
 }
 
-function collectMcpConfig(): NonNullable<ToolsConfigPayload['mcp']> {
-  const servers = Array.from(document.querySelectorAll<HTMLElement>('.mcp-server-editor')).map((row) => {
-    const field = (name: string): HTMLInputElement | HTMLSelectElement | null => row.querySelector(`[data-mcp-field="${name}"]`)
-    const timeoutValue = Number((field('timeoutSeconds') as HTMLInputElement | null)?.value || 10)
-    return {
-      name: ((field('name') as HTMLInputElement | null)?.value || '').trim(),
-      url: ((field('url') as HTMLInputElement | null)?.value || '').trim(),
-      enabled: Boolean((field('enabled') as HTMLInputElement | null)?.checked),
-      permission: ((field('permission') as HTMLSelectElement | null)?.value || null) as McpServerPayload['permission'],
-      timeoutSeconds: Number.isFinite(timeoutValue) ? timeoutValue : 10,
+async function testMcpServer(row: HTMLElement): Promise<void> {
+  const diagnostics = row.querySelector<HTMLElement>('.mcp-server-diagnostics')
+  if (diagnostics) {
+    diagnostics.textContent = 'Testing...'
+    diagnostics.dataset.status = 'testing'
+  }
+  try {
+    const server = collectMcpServerFromRow(row)
+    const response = await fetch(`${AGENT_HTTP_URL}/tools/config/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server }),
+    })
+    const payload = await response.json() as McpTestPayload
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`)
     }
-  })
+    if (payload.status !== 'ok') {
+      throw new Error(payload.error || 'Discovery failed')
+    }
+    const toolNames = (payload.tools || []).map((tool) => tool.name).filter(Boolean)
+    if (diagnostics) {
+      diagnostics.dataset.status = 'ok'
+      diagnostics.textContent = toolNames.length
+        ? `Available: ${toolNames.join(', ')}`
+        : 'Connected: no tools returned'
+    }
+    setConfigStatus(mcpConfigStatus, `${payload.toolCount ?? toolNames.length} tools discovered`)
+  }
+  catch (error) {
+    if (diagnostics) {
+      diagnostics.dataset.status = 'failed'
+      diagnostics.textContent = `Failed: ${error instanceof Error ? error.message : String(error)}`
+    }
+    setConfigStatus(mcpConfigStatus, 'Test failed')
+  }
+}
+
+function collectMcpConfig(): NonNullable<ToolsConfigPayload['mcp']> {
+  const servers = Array.from(document.querySelectorAll<HTMLElement>('.mcp-server-editor')).map((row) => collectMcpServerFromRow(row))
   return {
     enabled: Boolean(mcpEnabledInput?.checked),
     permission: (mcpPermissionSelect?.value || 'ask') as 'allow' | 'ask' | 'deny',
     servers,
+  }
+}
+
+function collectMcpServerFromRow(row: HTMLElement): McpServerPayload {
+  const field = (name: string): HTMLInputElement | HTMLSelectElement | null => row.querySelector(`[data-mcp-field="${name}"]`)
+  const timeoutValue = Number((field('timeoutSeconds') as HTMLInputElement | null)?.value || 10)
+  return {
+    name: ((field('name') as HTMLInputElement | null)?.value || '').trim(),
+    url: ((field('url') as HTMLInputElement | null)?.value || '').trim(),
+    enabled: Boolean((field('enabled') as HTMLInputElement | null)?.checked),
+    permission: ((field('permission') as HTMLSelectElement | null)?.value || null) as McpServerPayload['permission'],
+    timeoutSeconds: Number.isFinite(timeoutValue) ? timeoutValue : 10,
   }
 }
 
