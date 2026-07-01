@@ -439,7 +439,9 @@ Started: the first restricted `delegate_task` research/search tool, session task
 - Added role `workspacePath` support and workspace-level `AGENT.md` loading with truncation and explicit lower-priority project-context framing; roles without an explicit workspace default to the repository root, where the project `AGENT.md` lives. `AGENT.md` is for project architecture, conventions, constraints, status, and next-work context; user preferences belong in role-scoped `USER.md` memory, and agent identity belongs in role `SOUL.md`. `AGENT.md` cannot override system safety, permissions, or runtime enforcement.
 - Added Hermes-style role homes under `data/roles/<roleId>/`: `SOUL.md` is seeded on default/new roles and loaded before core runtime rules, while `MEMORY.md` and `USER.md` are scoped to the current session role. The `update_current_role_identity` ask-tool, `/roles/{roleId}/identity` API, and desktop Role editor `SOUL.md` field provide controlled identity updates.
 - Verified the identity update path locally through the Python HTTP runtime: creating a new role, renaming it through `PUT /roles/{roleId}/identity`, and reading `data/roles/<roleId>/SOUL.md` confirmed the file content matches the API response.
-- Add MCP bridge.
+- Added MCP bridge first slice: `tools.mcp` config can discover HTTP JSON-RPC MCP servers through `tools/list`, expose remote tools as `mcp__<server>__<tool>`, and execute through `tools/call` while preserving normal ToolRuntime permission, timeout, cancellation, result-compaction, prompt-hint, and audit behavior.
+- Added task-state context: each turn can inject current queued/running/blocked session tasks into a reference-only `<active-tasks>` system block, with a `taskLimit` runtime config and `memory.context.used` diagnostics source.
+- Added deterministic runtime contract eval script at `scripts/eval_runtime_contracts.py` covering role identity, active task context, and MCP tool schema/execution contracts.
 - Add full sub-agent orchestration abstraction.
 - Add context compression.
 - Add long-task planning.

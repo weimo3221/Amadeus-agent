@@ -20,6 +20,7 @@ context:
   memoryItemChars: 500
   retrievalLimit: 3
   retrievalSnippetChars: 280
+  taskLimit: 5
 
   # Number of recent memory.context.used diagnostics retained per session.
   # This is an in-memory developer diagnostic buffer, not durable memory.

@@ -87,6 +87,22 @@ class ContextAssemblerTests(unittest.TestCase):
             diagnostics = assembled.diagnostics()
             self.assertEqual(diagnostics["sourceCounts"]["active_plan"], 1)
 
+    def test_injects_active_task_state_as_context_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.create_task(session_id="session-1", title="Check MCP bridge", body="Validate tools/list")
+            finished_task = memory.create_task(session_id="session-1", title="Done task", body="Already complete")
+            memory.cancel_task(str(finished_task["id"]), reason="done")
+            assembler = ContextAssembler(memory, "Base")
+
+            assembled = assembler.assemble("session-1", "status?")
+
+            self.assertIn("<active-tasks>", assembled.system_context)
+            self.assertIn("Check MCP bridge", assembled.system_context)
+            self.assertNotIn("Done task", assembled.system_context)
+            diagnostics = assembled.diagnostics()
+            self.assertEqual(diagnostics["sourceCounts"]["active_tasks"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.tool_runtime import ToolAuditLog, ToolAuditStore, ToolContext, ToolLoopGuardrail, ToolRegistry
+from amadeus.tool_runtime.registry import parse_tools_config
 from amadeus.tools import ToolSpec, execute_tool, list_tools
 
 
@@ -122,6 +123,106 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(tool_state["get_current_time"]["enabled"])
         self.assertEqual(tool_state["get_current_time"]["permission"], "deny")
         self.assertNotIn("get_current_time", schema_names)
+
+    def test_parse_tools_config_reads_mcp_servers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "tools.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "tools:",
+                    "  mcp:",
+                    "    enabled: true",
+                    "    permission: ask",
+                    "    servers:",
+                    "      - name: local",
+                    "        url: http://127.0.0.1:9999/mcp",
+                    "        permission: allow",
+                    "        timeoutSeconds: 2",
+                ]),
+                encoding="utf-8",
+            )
+
+            config = parse_tools_config(config_path)
+
+        self.assertTrue(config["mcp"]["enabled"])
+        self.assertEqual(config["mcp"]["permission"], "ask")
+        self.assertEqual(config["mcp"]["servers"][0]["name"], "local")
+        self.assertEqual(config["mcp"]["servers"][0]["permission"], "allow")
+        self.assertEqual(config["mcp"]["servers"][0]["timeoutSeconds"], 2)
+
+    def test_mcp_specs_are_discovered_from_configured_server(self) -> None:
+        import amadeus.mcp as mcp_module
+        from amadeus.mcp import McpServerConfig
+        from amadeus.tool_runtime import registry as registry_module
+
+        discovered: list[McpServerConfig] = []
+        calls: list[tuple[str, str, dict[str, object]]] = []
+
+        def fake_list_tools(server: McpServerConfig) -> list[dict[str, object]]:
+            discovered.append(server)
+            return [{
+                "name": "lookup",
+                "description": "Lookup a value",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            }]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "tools.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "tools:",
+                    "  mcp:",
+                    "    enabled: true",
+                    "    permission: ask",
+                    "    servers:",
+                    "      - name: local",
+                    "        url: http://127.0.0.1:9999/mcp",
+                    "        permission: allow",
+                ]),
+                encoding="utf-8",
+            )
+            original_builder = registry_module.build_mcp_tool_specs
+
+            def fake_builder(servers: list[McpServerConfig], *, default_permission: str = "ask") -> list[ToolSpec]:
+                from amadeus.mcp import build_mcp_tool_specs
+
+                return build_mcp_tool_specs(servers, default_permission=default_permission, list_tools=fake_list_tools)
+
+            registry_module.build_mcp_tool_specs = fake_builder
+            original_call_mcp_tool = mcp_module.call_mcp_tool
+
+            def fake_call_mcp_tool(
+                server: McpServerConfig,
+                tool_name: str,
+                arguments: dict[str, object],
+                *,
+                timeout_seconds: float,
+            ) -> dict[str, object]:
+                calls.append((server.name, tool_name, arguments))
+                return {"server": server.name, "tool": tool_name, "result": {"content": [{"type": "text", "text": arguments["query"]}]}}
+
+            mcp_module.call_mcp_tool = fake_call_mcp_tool
+            try:
+                registry = ToolRegistry(config_path=config_path)
+                result = registry.execute("mcp__local__lookup", {"query": "hello"}, ToolContext(session_id="session-1"))
+            finally:
+                registry_module.build_mcp_tool_specs = original_builder
+                mcp_module.call_mcp_tool = original_call_mcp_tool
+
+        tool_state = {entry["name"]: entry for entry in registry.permission_state()}
+        schema_names = {entry["function"]["name"] for entry in registry.enabled_schemas()}
+
+        self.assertEqual(discovered[0].name, "local")
+        self.assertIn("mcp__local__lookup", tool_state)
+        self.assertEqual(tool_state["mcp__local__lookup"]["permission"], "allow")
+        self.assertIn("mcp__local__lookup", schema_names)
+        self.assertTrue(result.ok)
+        self.assertEqual(calls, [("local", "lookup", {"query": "hello"})])
+        self.assertEqual(result.output["result"]["content"][0]["text"], "hello")
 
     def test_execute_returns_structured_tool_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

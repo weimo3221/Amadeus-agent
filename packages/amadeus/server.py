@@ -52,6 +52,7 @@ RUNTIME_CONFIG_FIELDS: dict[str, dict[str, tuple[type, float | int | None, float
         "memoryItemChars": (int, 50, None),
         "retrievalLimit": (int, 1, None),
         "retrievalSnippetChars": (int, 50, None),
+        "taskLimit": (int, 1, None),
         "diagnosticsLimit": (int, 1, None),
     },
     "summary": {

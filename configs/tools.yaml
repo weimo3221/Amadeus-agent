@@ -90,4 +90,11 @@ tools:
   mcp:
     enabled: false
     permission: ask
+    # First MCP bridge slice supports HTTP JSON-RPC servers with tools/list and tools/call.
+    # Example:
+    # servers:
+    #   - name: local
+    #     url: http://127.0.0.1:9000/mcp
+    #     permission: ask
+    #     timeoutSeconds: 10
     servers: []

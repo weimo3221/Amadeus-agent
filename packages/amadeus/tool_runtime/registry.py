@@ -11,6 +11,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Iterable
 
+from amadeus.mcp import McpServerConfig, build_mcp_tool_specs
 from amadeus.tools import ToolSpec, list_tool_specs
 
 
@@ -75,9 +76,16 @@ class ToolRegistry:
         specs: Iterable[ToolSpec] | None = None,
         config_path: Path = DEFAULT_TOOLS_CONFIG_PATH,
     ) -> None:
+        config = parse_tools_config(config_path)
         source_specs = specs if specs is not None else list_tool_specs()
         self._specs = {spec.name: deepcopy(spec) for spec in source_specs}
-        self._apply_config(parse_tools_config(config_path))
+        if specs is None:
+            for mcp_spec in build_mcp_tool_specs(
+                parse_mcp_servers_config(config.get("mcp", {})),
+                default_permission=str(config.get("mcp", {}).get("permission") or "ask"),
+            ):
+                self._specs[mcp_spec.name] = mcp_spec
+        self._apply_config(config)
 
     def get(self, tool_name: str) -> ToolSpec | None:
         return self._specs.get(tool_name)
@@ -252,6 +260,9 @@ def parse_tools_config(path: Path) -> dict[str, dict[str, Any]]:
             entries[current_tool] = {}
             continue
 
+        if current_tool == "mcp" and indent in {4, 6, 8}:
+            parse_mcp_config_line(entries[current_tool], indent, trimmed)
+
         if indent != 4 or not current_tool or ":" not in trimmed:
             continue
 
@@ -264,6 +275,69 @@ def parse_tools_config(path: Path) -> dict[str, dict[str, Any]]:
             entries[current_tool][key] = value
 
     return entries
+
+
+def parse_mcp_config_line(entry: dict[str, Any], indent: int, trimmed: str) -> None:
+    servers = entry.setdefault("servers", [])
+    if not isinstance(servers, list):
+        return
+
+    if indent == 6 and trimmed.startswith("- "):
+        item = trimmed[2:].strip()
+        server: dict[str, Any] = {}
+        if item and ":" in item:
+            key, value = item.split(":", 1)
+            server[key.strip()] = parse_config_scalar(value.strip())
+        servers.append(server)
+        return
+
+    if indent == 6 and trimmed.endswith(":"):
+        entry[trimmed[:-1].strip()] = {}
+        return
+
+    if indent == 8 and servers and ":" in trimmed:
+        key, value = trimmed.split(":", 1)
+        servers[-1][key.strip()] = parse_config_scalar(value.strip())
+
+
+def parse_config_scalar(value: str) -> Any:
+    if value in {"true", "false"}:
+        return value == "true"
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
+
+
+def parse_mcp_servers_config(entry: dict[str, Any]) -> list[McpServerConfig]:
+    if not entry.get("enabled"):
+        return []
+    raw_servers = entry.get("servers")
+    if not isinstance(raw_servers, list):
+        return []
+
+    servers: list[McpServerConfig] = []
+    for raw_server in raw_servers:
+        if not isinstance(raw_server, dict):
+            continue
+        name = raw_server.get("name")
+        url = raw_server.get("url")
+        if not isinstance(name, str) or not name.strip() or not isinstance(url, str) or not url.strip():
+            continue
+        permission = raw_server.get("permission")
+        timeout_seconds = raw_server.get("timeoutSeconds")
+        servers.append(McpServerConfig(
+            name=name.strip(),
+            url=url.strip(),
+            enabled=raw_server.get("enabled") is not False,
+            permission=str(permission) if permission in VALID_PERMISSIONS else None,
+            timeout_seconds=float(timeout_seconds) if isinstance(timeout_seconds, int | float) else 10.0,
+        ))
+    return servers
 
 
 def parse_bool(value: str) -> bool | None:
@@ -375,6 +449,9 @@ def apply_tool_result_policy(
     if not ok:
         return output, None, False
 
+    if tool_name.startswith("mcp__"):
+        return normalize_mcp_output(tool_name, output, preview_chars)
+
     if tool_name == "search_files":
         return normalize_search_files_output(tool_name, output, preview_chars)
 
@@ -441,6 +518,32 @@ def normalize_search_files_output(
     }
     preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
     return model_output, preview[:preview_limit], True
+
+
+def normalize_mcp_output(
+    tool_name: str,
+    output: dict[str, Any],
+    preview_chars: int,
+) -> tuple[dict[str, Any], str | None, bool]:
+    result = output.get("result")
+    if not isinstance(result, dict):
+        return output, None, False
+
+    serialized_result = json.dumps(result, ensure_ascii=False, sort_keys=True)
+    preview_limit = max(1, min(preview_chars, DEFAULT_OUTPUT_PREVIEW_CHARS))
+    if len(serialized_result) <= preview_limit:
+        return output, None, False
+
+    model_output = {
+        "_amadeus_result_truncated": True,
+        "_amadeus_result_policy": "mcp_v1",
+        "tool_name": tool_name,
+        "server": output.get("server"),
+        "tool": output.get("tool"),
+        "resultCharCount": len(serialized_result),
+        "resultPreview": serialized_result[:preview_limit],
+    }
+    return model_output, model_output["resultPreview"], True
 
 
 def normalize_search_memory_output(

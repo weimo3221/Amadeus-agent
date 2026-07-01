@@ -82,6 +82,7 @@ Current active Python tools:
 - `read_memory`: `allow`; reads current-role stable Markdown memory from `data/roles/<roleId>/memory/MEMORY.md` or `data/roles/<roleId>/memory/USER.md`.
 - `update_memory`: `ask`; performs controlled `add` / `replace` / `remove` updates to current-role stable Markdown memory, with exact-match replacement and size limits.
 - `update_current_role_identity`: `ask`; updates the current session role name and/or `data/roles/<roleId>/SOUL.md` after explicit user approval.
+- MCP bridge first slice: when `tools.mcp.enabled` is true in `configs/tools.yaml`, `ToolRegistry` discovers configured HTTP JSON-RPC MCP servers via `tools/list`, exposes each remote tool as `mcp__<server>__<tool>`, and executes it through `tools/call` while reusing normal permission, timeout, cancellation, result compaction, and audit paths.
 - `search_memory`: `allow`; searches prior SQLite conversation memory through an FTS-backed index, scoped to the current session by default, with a per-tool model-output policy for bounded snippets. The context assembler also prefetches a small sanitized FTS result set each turn and injects it as API-only `<memory-context>` on the current user message.
 - `search_memory_items`: `allow`; searches durable structured `memory_items` facts by optional scope/query, with a per-tool model-output policy for bounded fact metadata.
 - `memory_add`: `ask`; writes one durable structured memory fact after user approval, limited to `user` / `agent` / `project` scope, with duplicate detection and source-session metadata.
@@ -94,9 +95,11 @@ Current active Python tools:
 - `patch`: `ask`; applies a single-file UTF-8 text replacement with workspace containment, generated-directory denylist, file size limits, unique `oldText` matching by default, optional `replaceAll`, and unified diff output.
 - `write_file`: `ask`; creates or fully overwrites workspace-relative UTF-8 text files with workspace containment, generated-directory denylist, text-extension checks, size limits, explicit `overwrite=true` for replacement, parent directory creation inside the workspace, and unified diff output.
 
-`search_files` is the only project file search tool exposed by the Python registry. The old `local_file_search` alias has been removed to keep tool selection unambiguous.
+`search_files` is the only built-in project file search tool exposed by the Python registry. The old `local_file_search` alias has been removed to keep built-in tool selection unambiguous. MCP tools are externally supplied and use the `mcp__<server>__<tool>` namespace.
 
 To add a simple tool, implement a JSON-serializable handler in a focused module under `packages/amadeus/tools/`, define its `ToolSpec` next to the handler, register that spec from `packages/amadeus/tools/__init__.py`, add the effective config entry in `configs/tools.yaml`, and cover it with focused ToolRuntime tests. Use `handler(args, context)` when the tool should observe cancellation or session/cwd metadata. Keep risky actions as `ask`, constrain filesystem/network behavior explicitly, and add a per-tool result policy in `tool_runtime/registry.py` when outputs can become large.
+
+For external tools, prefer MCP config over new built-ins when the capability naturally belongs to another local service. The first supported transport is HTTP JSON-RPC with `tools/list` and `tools/call`; stdio/process lifecycle management is still future work.
 
 ## AIRI Code to Study First
 

@@ -264,13 +264,14 @@ Target deliverables:
 - First delegation slice complete: restricted `delegate_task` research/search tool with depth 1, concurrency 2, no write tools, and summary-only parent results.
 - First prompt-surface slice complete: per-role `SOUL.md` identity, core prompt assembly, per-tool `prompt_hint` routing, role `workspacePath`, repository-root default workspace assignment, workspace-level `AGENT.md` project context, and role-scoped stable memory.
 - First task-worker reliability slice complete: persisted task attempts, retry scheduling, stale `running` recovery, startup reclaim, and worker status event broadcasting.
-- MCP bridge.
+- MCP bridge first slice complete: configured HTTP JSON-RPC MCP servers can expose `tools/list` tools as `mcp__<server>__<tool>` schemas and execute them through `tools/call` under ToolRuntime permissions/audit.
 - Durable multi-process task worker abstraction.
-- Richer context compression and task-state context.
+- First task-state context slice complete: queued/running/blocked session tasks are injected as reference-only `<active-tasks>` context with diagnostics.
+- Richer context compression.
 - Long task plans.
 - Human approval checkpoints.
 - Provider and harness profiles.
-- Eval harness for tool choice, permission, memory, Live2D, audio, and guardrail behavior.
+- First runtime contract eval complete for role identity, active task context, and MCP tool contracts. Broaden eval harness for tool choice, permission, memory, Live2D, audio, and guardrail behavior.
 
 Reference:
 
