@@ -23,6 +23,7 @@ class FakeAgentRuntime(AgentRuntime):
         self,
         memory_store: MessageMemoryStore,
         tool_decision: dict[str, Any] | None = None,
+        tool_decisions: list[dict[str, Any]] | None = None,
         deltas: list[str] | None = None,
         tools_config_path: Path | None = None,
         runtime_config_path: Path | None = None,
@@ -37,6 +38,15 @@ class FakeAgentRuntime(AgentRuntime):
         self.decision_messages: list[list[dict[str, Any]]] = []
         self.final_messages: list[list[dict[str, Any]]] = []
         self.tool_decision = tool_decision or {"role": "assistant", "content": "", "tool_calls": []}
+        if tool_decisions is not None:
+            self.tool_decisions = list(tool_decisions)
+        elif tool_decision is not None and tool_decision.get("tool_calls"):
+            self.tool_decisions = [
+                tool_decision,
+                {"role": "assistant", "content": "", "tool_calls": []},
+            ]
+        else:
+            self.tool_decisions = [self.tool_decision]
         self.deltas = deltas or ["ok"]
         self.summary_requests: list[dict[str, Any]] = []
         self.summary_error = summary_error
@@ -54,7 +64,9 @@ class FakeAgentRuntime(AgentRuntime):
 
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         self.decision_messages.append(json.loads(json.dumps(messages)))
-        return self.tool_decision
+        if len(self.decision_messages) <= len(self.tool_decisions):
+            return self.tool_decisions[len(self.decision_messages) - 1]
+        return self.tool_decisions[-1]
 
     def _stream_final_response(self, messages: list[dict[str, Any]]) -> Iterable[str]:
         self.final_messages.append(messages)
@@ -912,6 +924,82 @@ class AgentRuntimeTests(unittest.TestCase):
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_time")
         self.assertIn("formatted", tool_messages[0]["content"])
+
+    def test_tool_loop_can_continue_after_tool_result_until_no_tool_calls(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decisions=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_time",
+                        "type": "function",
+                        "function": {"name": "get_current_time", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_identity",
+                        "type": "function",
+                        "function": {"name": "who_am_i", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": "I used both tools.",
+                    "tool_calls": [],
+                },
+            ],
+        )
+
+        events = list(runtime.run_turn("default", "use two tools", lambda _request: False))
+
+        self.assertEqual(len(runtime.decision_messages), 3)
+        self.assertEqual(runtime.final_messages, [])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual([event["toolName"] for event in tool_finished], ["get_current_time", "who_am_i"])
+        assistant_messages = [event.payload["text"] for event in events if event.type == "assistant.message"]
+        self.assertEqual(assistant_messages[-1], "I used both tools.")
+        second_decision_history = runtime.decision_messages[1]
+        self.assertTrue(any(message.get("role") == "tool" and message.get("tool_call_id") == "call_time" for message in second_decision_history))
+
+    def test_tool_loop_stops_at_configured_max_tool_iterations(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decisions=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_time_1",
+                        "type": "function",
+                        "function": {"name": "get_current_time", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_time_2",
+                        "type": "function",
+                        "function": {"name": "get_current_time", "arguments": "{}"},
+                    }],
+                },
+            ],
+        )
+        runtime.agent_max_tool_iterations = 1
+
+        events = list(runtime.run_turn("default", "keep using tools", lambda _request: False))
+
+        errors = [event.payload for event in events if event.type == "error"]
+        self.assertEqual(errors[-1]["code"], "max_tool_iterations")
+        self.assertEqual(errors[-1]["maxToolIterations"], 1)
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(len(tool_finished), 1)
+        self.assertEqual(runtime.final_messages, [])
 
     def test_update_plan_tool_emits_plan_updated_event(self) -> None:
         runtime = FakeAgentRuntime(

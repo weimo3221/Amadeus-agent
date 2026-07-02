@@ -69,6 +69,7 @@ MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS = 300
 DESKTOP_COMPANION_LIVE2D_SCALE = 0.92
 DESKTOP_COMPANION_LIVE2D_OFFSET_X = 0
 DESKTOP_COMPANION_LIVE2D_OFFSET_Y = 0
+AGENT_MAX_TOOL_ITERATIONS = 90
 WORKSPACE_MUTATING_TOOLS = {"patch", "write_file"}
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,11 @@ class AgentRuntime:
         summary_config = runtime_config.get("summary", {})
         memory_review_config = runtime_config.get("memoryReview", {})
         desktop_config = runtime_config.get("desktop", {})
+        agent_config = runtime_config.get("agent", {})
+        self.agent_max_tool_iterations = parse_positive_int_env(
+            "AMADEUS_AGENT_MAX_TOOL_ITERATIONS",
+            parse_positive_int_value(agent_config.get("maxToolIterations"), AGENT_MAX_TOOL_ITERATIONS),
+        )
         self.context_max_tokens = parse_positive_int_env(
             "AMADEUS_CONTEXT_MAX_TOKENS",
             parse_positive_int_value(context_config.get("maxTokens"), CONTEXT_MAX_TOKENS),
@@ -458,7 +464,7 @@ class AgentRuntime:
         )
         snapshot = self._runtime_config_snapshot()
         logger.info(
-            "Loaded runtime memory configuration runtimeConfig=%s reason=%s effectiveConfig=%s",
+            "Loaded runtime configuration runtimeConfig=%s reason=%s effectiveConfig=%s",
             self.runtime_config_path,
             reason,
             json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
@@ -697,44 +703,72 @@ class AgentRuntime:
 
         yield from self._emit_assistant_state(session_id, turn_id, "thinking")
 
-        try:
-            tool_decision = self._request_tool_decision(history)
-        except RuntimeError as error:
-            if self._handle_context_overflow(session_id, "tool_decision", error):
-                history, context_diagnostics = self._load_turn_history(
-                    session_id,
-                    normalized_text,
-                    current_user_already_saved=True,
-                    skill_prompt_block=skill_prompt_block,
-                )
-                yield self._memory_context_used_event(session_id, turn_id, context_diagnostics, phase="tool_decision_retry")
-                try:
-                    tool_decision = self._request_tool_decision(history)
-                except RuntimeError as retry_error:
-                    logger.info("Tool-decision provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
+        guardrail = ToolLoopGuardrail()
+        tool_iterations = 0
+        final_response_message: dict[str, Any] | None = None
+        while True:
+            try:
+                tool_decision = self._request_tool_decision(history)
+            except RuntimeError as error:
+                phase = f"tool_decision_{tool_iterations + 1}"
+                if self._handle_context_overflow(session_id, phase, error):
+                    history, context_diagnostics = self._load_turn_history(
+                        session_id,
+                        normalized_text,
+                        current_user_already_saved=True,
+                        skill_prompt_block=skill_prompt_block,
+                    )
+                    yield self._memory_context_used_event(session_id, turn_id, context_diagnostics, phase=f"{phase}_retry")
+                    try:
+                        tool_decision = self._request_tool_decision(history)
+                    except RuntimeError as retry_error:
+                        logger.info("Tool-decision provider retry failed sessionId=%s turnId=%s iteration=%s error=%s", session_id, turn_id, tool_iterations + 1, retry_error)
+                        yield from self._emit_assistant_state(session_id, turn_id, "error")
+                        yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
+                        return
+                else:
+                    logger.info("Tool-decision provider error sessionId=%s turnId=%s iteration=%s error=%s", session_id, turn_id, tool_iterations + 1, error)
                     yield from self._emit_assistant_state(session_id, turn_id, "error")
-                    yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
+                    yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
                     return
-            else:
-                logger.info("Tool-decision provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
+
+            tool_calls = tool_decision.get("tool_calls") or []
+            logger.info(
+                "Received tool decision sessionId=%s turnId=%s iteration=%s toolCallCount=%s",
+                session_id,
+                turn_id,
+                tool_iterations + 1,
+                len(tool_calls),
+            )
+            if cancel_event.is_set():
+                yield self._turn_cancelled_event(session_id, turn_id, "tool_decision")
+                yield from self._emit_assistant_state(session_id, turn_id, "idle")
+                return
+            if not tool_calls:
+                final_response_message = tool_decision
+                break
+            if tool_iterations >= self.agent_max_tool_iterations:
+                logger.info(
+                    "Stopping agent turn at max tool iterations sessionId=%s turnId=%s maxToolIterations=%s",
+                    session_id,
+                    turn_id,
+                    self.agent_max_tool_iterations,
+                )
                 yield from self._emit_assistant_state(session_id, turn_id, "error")
-                yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
+                yield AgentEvent("error", {
+                    "code": "max_tool_iterations",
+                    "message": f"Tool loop reached maxToolIterations={self.agent_max_tool_iterations}.",
+                    "maxToolIterations": self.agent_max_tool_iterations,
+                })
                 return
 
-        tool_calls = tool_decision.get("tool_calls") or []
-        logger.info("Received tool decision sessionId=%s turnId=%s toolCallCount=%s", session_id, turn_id, len(tool_calls))
-        if cancel_event.is_set():
-            yield self._turn_cancelled_event(session_id, turn_id, "tool_decision")
-            yield from self._emit_assistant_state(session_id, turn_id, "idle")
-            return
-        if tool_calls:
             history.append({
                 "role": "assistant",
                 "content": tool_decision.get("content") or "",
                 "tool_calls": tool_calls,
             })
+            tool_iterations += 1
 
-            guardrail = ToolLoopGuardrail()
             for tool_call in tool_calls:
                 if cancel_event.is_set():
                     yield self._turn_cancelled_event(session_id, turn_id, "before_tool")
@@ -749,42 +783,47 @@ class AgentRuntime:
 
         yield from self._emit_assistant_state(session_id, turn_id, "speaking")
         assistant_text = ""
-        try:
-            for delta in self._stream_final_response(history):
-                if cancel_event.is_set():
-                    yield self._turn_cancelled_event(session_id, turn_id, "final_response")
-                    yield from self._emit_assistant_state(session_id, turn_id, "idle")
-                    return
-                assistant_text += delta
-                yield AgentEvent("assistant.delta", {"text": delta})
-        except RuntimeError as error:
-            if self._handle_context_overflow(session_id, "final_response", error):
-                history, context_diagnostics = self._load_turn_history(
-                    session_id,
-                    normalized_text,
-                    current_user_already_saved=True,
-                    skill_prompt_block=skill_prompt_block,
-                )
-                yield self._memory_context_used_event(session_id, turn_id, context_diagnostics, phase="final_response_retry")
-                assistant_text = ""
-                try:
-                    for delta in self._stream_final_response(history):
-                        if cancel_event.is_set():
-                            yield self._turn_cancelled_event(session_id, turn_id, "final_response_retry")
-                            yield from self._emit_assistant_state(session_id, turn_id, "idle")
-                            return
-                        assistant_text += delta
-                        yield AgentEvent("assistant.delta", {"text": delta})
-                except RuntimeError as retry_error:
-                    logger.info("Final response provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
+        final_response_content = str((final_response_message or {}).get("content") or "")
+        if final_response_content:
+            assistant_text = final_response_content
+            yield AgentEvent("assistant.delta", {"text": final_response_content})
+        else:
+            try:
+                for delta in self._stream_final_response(history):
+                    if cancel_event.is_set():
+                        yield self._turn_cancelled_event(session_id, turn_id, "final_response")
+                        yield from self._emit_assistant_state(session_id, turn_id, "idle")
+                        return
+                    assistant_text += delta
+                    yield AgentEvent("assistant.delta", {"text": delta})
+            except RuntimeError as error:
+                if self._handle_context_overflow(session_id, "final_response", error):
+                    history, context_diagnostics = self._load_turn_history(
+                        session_id,
+                        normalized_text,
+                        current_user_already_saved=True,
+                        skill_prompt_block=skill_prompt_block,
+                    )
+                    yield self._memory_context_used_event(session_id, turn_id, context_diagnostics, phase="final_response_retry")
+                    assistant_text = ""
+                    try:
+                        for delta in self._stream_final_response(history):
+                            if cancel_event.is_set():
+                                yield self._turn_cancelled_event(session_id, turn_id, "final_response_retry")
+                                yield from self._emit_assistant_state(session_id, turn_id, "idle")
+                                return
+                            assistant_text += delta
+                            yield AgentEvent("assistant.delta", {"text": delta})
+                    except RuntimeError as retry_error:
+                        logger.info("Final response provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
+                        yield from self._emit_assistant_state(session_id, turn_id, "error")
+                        yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
+                        return
+                else:
+                    logger.info("Final response provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
                     yield from self._emit_assistant_state(session_id, turn_id, "error")
-                    yield AgentEvent("error", {"code": "provider_error", "message": str(retry_error)})
+                    yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
                     return
-            else:
-                logger.info("Final response provider error sessionId=%s turnId=%s error=%s", session_id, turn_id, error)
-                yield from self._emit_assistant_state(session_id, turn_id, "error")
-                yield AgentEvent("error", {"code": "provider_error", "message": str(error)})
-                return
 
         history.append({"role": "assistant", "content": assistant_text})
         self.memory_store.save(session_id, "assistant", assistant_text)
@@ -940,6 +979,9 @@ class AgentRuntime:
 
     def _runtime_config_snapshot(self) -> dict[str, dict[str, int | float]]:
         return {
+            "agent": {
+                "maxToolIterations": self.agent_max_tool_iterations,
+            },
             "context": {
                 "maxTokens": self.context_max_tokens,
                 "compactionTriggerRatio": self.context_compaction_trigger_ratio,

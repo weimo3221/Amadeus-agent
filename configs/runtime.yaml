@@ -1,3 +1,10 @@
+agent:
+  # Maximum number of tool-producing model iterations in one user turn.
+  # Hermes uses a high max_iterations/max_turns budget for its agent loop;
+  # Amadeus keeps the same bounded-loop principle for local runtime safety.
+  # Env override: AMADEUS_AGENT_MAX_TOOL_ITERATIONS.
+  maxToolIterations: 90
+
 context:
   # Estimated maximum context budget before a provider call.
   # This is tokenizer-free and intentionally conservative; env override:

@@ -81,8 +81,8 @@ Fallback path today:
 - Python now owns the preferred model/tool/memory/behavior path for a turn:
   - loads OpenAI-compatible provider config from environment or `.env`
   - assembles API-call-time context from summaries, accepted memory items, recent messages, and relevant FTS retrieval
-  - makes the tool-decision call
-  - executes Python tools
+  - runs a bounded Hermes-style tool loop using OpenAI-compatible `tool_calls`
+  - executes Python tools until the model stops requesting tools or `agent.maxToolIterations` is reached
   - writes user/assistant messages to SQLite
   - emits desktop-compatible runtime events
   - emits `memory.context.used` diagnostics for per-turn memory source selection and keeps the most recent diagnostics per session in an in-memory ring buffer
@@ -147,7 +147,7 @@ Fallback path today:
 - First-pass Python model/provider boundary is active.
   - `packages/amadeus/model.py` now owns OpenAI-compatible provider config from `configs/providers.yaml` plus environment variables, JSON chat-completion requests, stream parsing, and classified provider error normalization.
   - Provider errors now preserve kind, HTTP status, body, retry-after, provider, and model metadata for later retry/fallback decisions.
-  - `packages/amadeus/agent.py` still owns turn orchestration, tool decisions, summaries, memory review, and final response timing.
+  - `packages/amadeus/agent.py` still owns turn orchestration, the bounded tool-call loop, summaries, memory review, and final response timing.
 - First-pass harness boundary is active.
   - `packages/amadeus/harness` now provides a base contract, registry, and Live2D harness.
   - `configs/harnesses.yaml` controls the initial Live2D harness.

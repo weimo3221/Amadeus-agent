@@ -41,8 +41,8 @@ packages/amadeus/server.py
 packages/amadeus/agent.py
   |
   +--> SQLite history load/save
-  +--> model tool-decision call
-  +--> Python tool execution
+  +--> bounded model tool-call loop
+  +--> Python tool execution until no more tool_calls
   +--> runtime event streaming
   +--> optional audio.tts-ready
   |
@@ -154,7 +154,7 @@ packages/amadeus
 
 `packages/amadeus` is the long-term agent brain. Current module status:
 
-- `agent.py`: active conversation loop, tool-use policy, response/event streaming.
+- `agent.py`: active conversation loop, bounded Hermes-style tool-use policy, response/event streaming.
 - `context.py`: active API-call-time context assembler for conversation summaries, accepted structured memories, active todos, task state, relevant FTS retrieval, source budgets, and diagnostics. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
 - `memory.py`: active SQLite-backed message history, roles/sessions, structured memory, task state, scheduled messages, persistent todos, and audit records.
 - `scheduling.py`: active schedule parser plus in-process scheduled-message worker. It supports one-shot durations/timestamps, recurring intervals, common daily/weekly/monthly cron shapes, repeat counts, and lifecycle event publication.
