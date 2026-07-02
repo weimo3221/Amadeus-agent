@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.context import ContextAssembler, ContextAssemblerConfig
 from amadeus.memory import MessageMemoryStore
+from amadeus.memory_provider import ExternalMemoryResult, LocalRuntimeMemoryProvider, RuntimeMemoryManager
 
 
 class ContextAssemblerTests(unittest.TestCase):
@@ -59,6 +60,52 @@ class ContextAssemblerTests(unittest.TestCase):
             self.assertIn("<memory-items>", assembled.system_context)
             self.assertIn("deployment target", assembled.system_context)
             self.assertNotIn("concise Chinese", assembled.system_context)
+
+    def test_runtime_memory_provider_exposes_derived_memory_not_raw_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            first_id = memory.save("session-1", "user", "raw transcript detail about deployment")
+            memory.save_conversation_summary(
+                "session-1",
+                "Deployment was summarized as local desktop.",
+                covered_message_count=1,
+                source_message_start_id=first_id,
+                source_message_end_id=first_id,
+                covered_through_message_id=first_id,
+                model="test-model",
+            )
+            memory.save_memory_item("project", "The deployment target is a local desktop app.", confidence=0.8)
+            provider = LocalRuntimeMemoryProvider(memory)
+
+            artifacts = provider.prefetch("deployment target", session_id="session-1")
+
+            self.assertEqual(artifacts.provider, "builtin_runtime")
+            self.assertIsNotNone(artifacts.summary)
+            self.assertEqual(artifacts.covered_through_message_id, first_id)
+            self.assertEqual(len(artifacts.memory_items), 1)
+            self.assertGreaterEqual(len(artifacts.retrievals), 1)
+            self.assertNotIn("messages", artifacts.__dict__)
+
+    def test_context_assembler_formats_external_memory_provider_results(self) -> None:
+        class Provider:
+            name = "fake"
+
+            def prefetch(self, query: str, *, session_id: str, limit: int = 5) -> list[ExternalMemoryResult]:
+                return [ExternalMemoryResult(provider="fake", source_id="doc-1", score=0.7, content=f"External note for {query}")]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            assembler = ContextAssembler(
+                memory,
+                "Base",
+                memory_manager=RuntimeMemoryManager(LocalRuntimeMemoryProvider(memory), external_providers=[Provider()]),
+            )
+
+            assembled = assembler.assemble("session-1", "outside context")
+
+            self.assertIn("<external-memory-context>", assembled.user_content)
+            self.assertIn("External note for outside context", assembled.user_content)
+            self.assertEqual(assembled.diagnostics()["sourceCounts"]["external_memory"], 1)
 
     def test_respects_context_budgets_and_sanitizes_tags(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

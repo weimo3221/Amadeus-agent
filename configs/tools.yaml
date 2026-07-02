@@ -51,6 +51,10 @@ tools:
     enabled: true
     permission: allow
 
+  read_session_messages:
+    enabled: true
+    permission: allow
+
   search_memory_items:
     enabled: true
     permission: allow

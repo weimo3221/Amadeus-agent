@@ -14,6 +14,8 @@ from amadeus.identity import (
     role_home_path,
     role_soul_path,
 )
+from amadeus.memory_query import build_fts_index_content
+from amadeus.memory_query import make_fts_query, memory_item_query_terms
 from amadeus.planning import empty_plan_response, merge_plan_items, plan_response
 from amadeus.scheduling import compute_next_run_at, parse_schedule
 from amadeus.tasks import (
@@ -301,13 +303,20 @@ class MessageMemoryStore:
                 """
             )
             connection.execute("DELETE FROM messages_fts")
-            connection.execute(
+            rows = connection.execute(
                 """
-                INSERT INTO messages_fts(rowid, content, session_id, role, created_at)
                 SELECT id, content, session_id, role, created_at
                 FROM messages
                 """
-            )
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    """
+                    INSERT INTO messages_fts(rowid, content, session_id, role, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (int(row[0]), build_fts_index_content(str(row[1])), row[2], row[3], row[4]),
+                )
 
     def _migrate_roles_and_sessions(self, connection: sqlite3.Connection) -> None:
         now_dt = datetime.now(timezone.utc)
@@ -984,7 +993,7 @@ class MessageMemoryStore:
                     INSERT INTO messages_fts(rowid, content, session_id, role, created_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (row_id, row[0], row[1], row[2], row[3]),
+                    (row_id, build_fts_index_content(str(row[0])), row[1], row[2], row[3]),
                 )
         return int(row_id)
 
@@ -999,7 +1008,7 @@ class MessageMemoryStore:
         where = "messages_fts MATCH ?"
         params: list[object] = [fts_query]
         if session_id:
-            where += " AND session_id = ?"
+            where += " AND m.session_id = ?"
             params.append(session_id)
         params.append(bounded_limit)
 
@@ -1008,13 +1017,14 @@ class MessageMemoryStore:
                 rows = connection.execute(
                     f"""
                     SELECT
-                      rowid,
-                      session_id,
-                      role,
-                      content,
-                      created_at,
-                      snippet(messages_fts, 0, '[', ']', ' … ', 12) AS snippet
+                      messages_fts.rowid,
+                      m.session_id,
+                      m.role,
+                      m.content,
+                      m.created_at,
+                      m.content AS snippet
                     FROM messages_fts
+                    JOIN messages m ON m.id = messages_fts.rowid
                     WHERE {where}
                     ORDER BY bm25(messages_fts)
                     LIMIT ?
@@ -3399,14 +3409,6 @@ def task_time_is_due(value: str, now: datetime) -> bool:
     return parsed <= now
 
 
-def make_fts_query(query: str) -> str:
-    terms = [term.replace('"', " ").strip() for term in query.split()]
-    terms = [term for term in terms if term]
-    if not terms:
-        return '""'
-    return " OR ".join(f'"{term}"' for term in terms)
-
-
 def normalize_stable_memory_target(target: str) -> StableMemoryTarget:
     normalized = target.strip().lower()
     if normalized in {"memory", "agent", "amadeus"}:
@@ -3736,24 +3738,6 @@ def normalize_memory_item_content(content: str) -> str:
     if len(normalized) > MEMORY_ITEM_LIMIT:
         raise ValueError(f"content must be at most {MEMORY_ITEM_LIMIT} characters")
     return normalized
-
-
-def memory_item_query_terms(query: str) -> list[str]:
-    normalized = " ".join(query.replace("\x00", " ").split()).strip()
-    if not normalized:
-        return []
-    terms: list[str] = []
-    for raw in normalized.replace("_", " ").replace("-", " ").split():
-        term = raw.strip(".,;:!?()[]{}<>\"'`").lower()
-        if len(term) < 3:
-            continue
-        if term in {"the", "and", "for", "with", "what", "when", "where", "which", "should", "about"}:
-            continue
-        if term not in terms:
-            terms.append(term)
-        if len(terms) >= 8:
-            break
-    return terms
 
 
 def normalize_confidence(confidence: float) -> float:

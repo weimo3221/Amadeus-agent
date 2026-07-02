@@ -33,6 +33,11 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["search_memory"]["permission"], "allow")
         self.assertIn("search_memory", schema_names)
 
+        self.assertIn("read_session_messages", list_tools())
+        self.assertIn("read_session_messages", tool_state)
+        self.assertEqual(tool_state["read_session_messages"]["permission"], "allow")
+        self.assertIn("read_session_messages", schema_names)
+
         self.assertIn("search_memory_items", list_tools())
         self.assertIn("search_memory_items", tool_state)
         self.assertEqual(tool_state["search_memory_items"]["permission"], "allow")
@@ -583,6 +588,29 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.output["resultCount"], 1)
         self.assertIn("concise", result.output["results"][0]["content"])
 
+    def test_read_session_messages_uses_context_memory_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            first_id = memory.save("session-1", "user", "First transcript line")
+            memory.save("session-1", "assistant", "Second transcript line")
+            memory.save("session-2", "user", "Other session line")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "read_session_messages",
+                {"afterMessageId": first_id, "limit": 10},
+                ToolContext(session_id="session-1", memory_store=memory),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["sessionId"], "session-1")
+        self.assertEqual(result.output["returnedCount"], 1)
+        self.assertEqual(result.output["messages"][0]["role"], "assistant")
+        self.assertIn("Second transcript line", result.output["messages"][0]["content"])
+        self.assertNotIn("Other session line", str(result.output))
+
     def test_delegate_task_runs_restricted_research_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             from amadeus.memory import MessageMemoryStore
@@ -1078,6 +1106,58 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.model_output["includedItems"], 8)
         self.assertEqual(result.model_output["omittedItems"], 4)
         self.assertLessEqual(len(result.model_output["items"][0]["content"]), 240)
+
+    def test_execute_applies_read_session_messages_result_policy(self) -> None:
+        output = {
+            "sessionId": "session-1",
+            "currentSessionId": "session-1",
+            "limit": 20,
+            "afterMessageId": None,
+            "totalCount": 14,
+            "returnedCount": 14,
+            "latestMessageId": 14,
+            "hasMore": False,
+            "messages": [
+                {
+                    "id": index,
+                    "role": "user" if index % 2 else "assistant",
+                    "createdAt": "2026-06-20T00:00:00+00:00",
+                    "content": "transcript " + ("x" * 800),
+                    "contentCharCount": 811,
+                    "contentTruncated": False,
+                }
+                for index in range(14)
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(
+                specs=[
+                    ToolSpec(
+                        name="read_session_messages",
+                        display_name="Read Session Messages",
+                        permission="allow",
+                        enabled=True,
+                        schema={"type": "function", "function": {"name": "read_session_messages"}},
+                        handler=lambda _args: output,
+                    ),
+                ],
+                config_path=Path(tmpdir) / "missing-tools.yaml",
+            )
+
+            result = registry.execute(
+                "read_session_messages",
+                {"limit": 20},
+                ToolContext(session_id="session-1", max_model_output_chars=4000, output_preview_chars=500),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, output)
+        self.assertTrue(result.output_truncated)
+        self.assertEqual(result.model_output["_amadeus_result_policy"], "read_session_messages_v1")
+        self.assertEqual(result.model_output["includedMessages"], 8)
+        self.assertEqual(result.model_output["omittedMessages"], 6)
+        self.assertLessEqual(len(result.model_output["messages"][0]["content"]), 360)
 
     def test_read_file_reads_workspace_text_file_with_line_numbers(self) -> None:
         output = execute_tool("read_file", {"path": "packages/amadeus/README.md", "lineLimit": 2, "maxChars": 200})

@@ -29,6 +29,8 @@ MEMORY_SEARCH_MODEL_RESULT_LIMIT = 5
 MEMORY_SEARCH_MODEL_PREVIEW_CHARS = 240
 MEMORY_ITEMS_MODEL_RESULT_LIMIT = 8
 MEMORY_ITEMS_MODEL_CONTENT_CHARS = 240
+SESSION_MESSAGES_MODEL_RESULT_LIMIT = 8
+SESSION_MESSAGES_MODEL_CONTENT_CHARS = 360
 logger = logging.getLogger(__name__)
 
 
@@ -417,7 +419,7 @@ def normalize_tool_output_for_model(
 ) -> tuple[dict[str, Any], str | None, bool]:
     model_output, policy_preview, policy_truncated = apply_tool_result_policy(tool_name, output, ok, preview_chars)
     serialized = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
-    if policy_truncated and len(serialized) <= max_chars:
+    if policy_truncated and (tool_name == "read_session_messages" or len(serialized) <= max_chars):
         return model_output, policy_preview, True
 
     if not ok or len(serialized) <= max_chars:
@@ -460,6 +462,9 @@ def apply_tool_result_policy(
 
     if tool_name == "search_memory_items":
         return normalize_search_memory_items_output(tool_name, output, preview_chars)
+
+    if tool_name == "read_session_messages":
+        return normalize_read_session_messages_output(tool_name, output, preview_chars)
 
     return output, None, False
 
@@ -651,6 +656,61 @@ def normalize_search_memory_items_output(
         "includedItems": len(model_items),
         "omittedItems": max(0, result_count - len(model_items)),
         "items": model_items,
+    }
+    preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
+    return model_output, preview[:preview_limit], True
+
+
+def normalize_read_session_messages_output(
+    tool_name: str,
+    output: dict[str, Any],
+    preview_chars: int,
+) -> tuple[dict[str, Any], str | None, bool]:
+    raw_messages = output.get("messages")
+    if not isinstance(raw_messages, list):
+        return output, None, False
+
+    preview_limit = max(1, min(preview_chars, SESSION_MESSAGES_MODEL_CONTENT_CHARS))
+    model_messages: list[dict[str, Any]] = []
+    truncated = len(raw_messages) > SESSION_MESSAGES_MODEL_RESULT_LIMIT
+
+    for raw_message in raw_messages[:SESSION_MESSAGES_MODEL_RESULT_LIMIT]:
+        if not isinstance(raw_message, dict):
+            model_messages.append({"content": str(raw_message)[:preview_limit]})
+            truncated = True
+            continue
+
+        model_message: dict[str, Any] = {}
+        for key in ("id", "role", "createdAt", "contentCharCount", "contentTruncated"):
+            if key in raw_message:
+                model_message[key] = raw_message[key]
+
+        content = str(raw_message.get("content") or "")
+        if len(content) > preview_limit:
+            content = content[:preview_limit]
+            truncated = True
+        model_message["content"] = content
+        model_messages.append(model_message)
+
+    if not truncated:
+        return output, None, False
+
+    message_count = len(raw_messages)
+    model_output = {
+        "_amadeus_result_truncated": True,
+        "_amadeus_result_policy": "read_session_messages_v1",
+        "tool_name": tool_name,
+        "sessionId": output.get("sessionId"),
+        "currentSessionId": output.get("currentSessionId"),
+        "limit": output.get("limit"),
+        "afterMessageId": output.get("afterMessageId"),
+        "totalCount": output.get("totalCount"),
+        "returnedCount": output.get("returnedCount"),
+        "includedMessages": len(model_messages),
+        "omittedMessages": max(0, message_count - len(model_messages)),
+        "latestMessageId": output.get("latestMessageId"),
+        "hasMore": output.get("hasMore"),
+        "messages": model_messages,
     }
     preview = json.dumps(model_output, ensure_ascii=False, sort_keys=True)
     return model_output, preview[:preview_limit], True

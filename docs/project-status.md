@@ -176,8 +176,9 @@ Fallback path today:
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
   - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the cached system prompt.
-  - `ContextAssembler` now injects summaries and query-filtered accepted structured memory into system context, while active plans, todos, task state, recent task results, sanitized SQLite FTS retrieval, and external memory provider snippets are attached to the current user message as non-persistent reference context. `memory.context.used` diagnostics are retained in a per-session in-memory ring buffer.
+  - `ContextAssembler` now consumes a runtime memory manager. Stable Markdown memory stays in the prompt layer; the built-in local runtime memory provider exposes derived SQLite/session artifacts such as summaries, query-filtered accepted structured memory, and sanitized FTS snippets. Active plans, todos, task state, recent task results, and external memory provider snippets are attached to the current user message as non-persistent reference context. `memory.context.used` diagnostics are retained in a per-session in-memory ring buffer.
   - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
+  - `read_session_messages` is now available as a bounded, paginated transcript/log inspection tool with its own model-output policy.
   - `search_memory_items` now has a per-tool model-output policy that keeps structured fact metadata while capping model-context item count and content length.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
   - `read_file` now uses explicit line-window reads with line numbers and `hasMore`, instead of hidden runtime compression, and reports non-text file kinds without decoding them.
@@ -390,11 +391,14 @@ Notes:
 Started.
 
 - SQLite FTS-backed session search is implemented for raw conversation messages.
+- Memory search now uses `jieba` tokenization plus bounded CJK n-gram fallback. The FTS index stores token-expanded message content for Chinese recall while results return the original transcript text.
+- Memory retrieval tests now cover tokenizer expansion, Chinese and mixed-language FTS recall, session scoping, legacy FTS rebuild, structured-memory Chinese recall, and confidence ordering after token match.
 - Python runtime exposes `GET /memory/search`.
 - `search_memory` lets the model search current-session memory, with optional all-session search.
+- `read_session_messages` lets the model read a bounded raw transcript window when exact session conversation wording is needed.
 - Automatic memory prefetch injects relevant prior snippets into the current user message as non-persistent `<memory-context>`.
 - Structured durable memory injection is now query-filtered, so unrelated accepted `memory_items` are not automatically packed into every turn.
-- External memory providers can contribute bounded non-persistent `<external-memory-context>` snippets through `memory_provider.py`; diagnostics count them as `external_memory` sources.
+- `memory_provider.py` now has a built-in local runtime provider for derived session memory artifacts and optional external providers for bounded non-persistent `<external-memory-context>` snippets; raw transcripts remain separate log data.
 - Stable long-term memory is implemented with bounded role-scoped Markdown files under `data/roles/<roleId>/memory/`, with default-role migration fallback from the earlier `data/memory/` location.
 - `read_memory` / `update_memory` expose controlled read and add/replace/remove operations for agent facts and user preferences.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.

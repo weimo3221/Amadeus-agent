@@ -35,6 +35,7 @@ Runtime failure behavior:
 Development stack:
 
 ```bash
+python -m pip install -r requirements.txt
 npm run dev
 ```
 

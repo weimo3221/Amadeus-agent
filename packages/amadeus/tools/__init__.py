@@ -10,6 +10,7 @@ from amadeus.tools.search_files import SEARCH_FILES_TOOL_SPEC, search_files
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
 from amadeus.tools.plan import UPDATE_PLAN_TOOL_SPEC, update_plan
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
+from amadeus.tools.read_session_messages import READ_SESSION_MESSAGES_TOOL_SPEC, read_session_messages
 from amadeus.tools.search_memory import SEARCH_MEMORY_TOOL_SPEC, search_memory
 from amadeus.tools.scheduled_jobs import SCHEDULE_MESSAGE_TOOL_SPEC, schedule_message
 from amadeus.tools.skills import SKILL_MANAGE_TOOL_SPEC, SKILLS_LIST_TOOL_SPEC, SKILL_VIEW_TOOL_SPEC, skill_manage, skill_view, skills_list
@@ -55,6 +56,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         SKILL_VIEW_TOOL_SPEC,
         SKILL_MANAGE_TOOL_SPEC,
         UPDATE_PLAN_TOOL_SPEC,
+        READ_SESSION_MESSAGES_TOOL_SPEC,
         SEARCH_MEMORY_TOOL_SPEC,
         READ_MEMORY_TOOL_SPEC,
         UPDATE_MEMORY_TOOL_SPEC,
@@ -112,6 +114,7 @@ __all__ = [
     "patch",
     "read_file",
     "read_memory",
+    "read_session_messages",
     "roll_dice",
     "search_files",
     "search_memory",

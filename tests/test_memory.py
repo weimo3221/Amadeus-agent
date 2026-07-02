@@ -173,6 +173,86 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(len(deleted_items), 1)
         self.assertTrue(deleted_items[0]["deleted"])
 
+    def test_chinese_memory_search_uses_jieba_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "user", "中文的分词逻辑目前怎么做")
+
+            results = memory.search("中文分词怎么处理", session_id="session-1", limit=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertIn("中文的分词逻辑", results[0]["content"])
+
+    def test_chinese_memory_search_respects_session_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "user", "中文分词召回只属于第一个会话")
+            memory.save("session-2", "user", "中文分词召回属于第二个会话")
+
+            scoped = memory.search("中文分词召回", session_id="session-1", limit=5)
+            all_sessions = memory.search("中文分词召回", session_id=None, limit=5)
+
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual(scoped[0]["sessionId"], "session-1")
+        self.assertGreaterEqual(len(all_sessions), 2)
+        self.assertEqual({result["sessionId"] for result in all_sessions}, {"session-1", "session-2"})
+
+    def test_mixed_language_memory_search_matches_chinese_and_english_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "assistant", "计划系统需要 retry 和 heartbeat。")
+            memory.save("session-1", "user", "Bridge 负责 WebSocket 转发，Agent 逻辑在 Python runtime。")
+
+            results = memory.search("WebSocket 转发逻辑", session_id="session-1", limit=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertIn("WebSocket 转发", results[0]["content"])
+
+    def test_message_fts_rebuild_tokenizes_existing_chinese_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database_path)
+            message_id = memory.save("session-1", "user", "中文的分词逻辑目前怎么做")
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("DELETE FROM messages_fts")
+                connection.execute(
+                    """
+                    INSERT INTO messages_fts(rowid, content, session_id, role, created_at)
+                    SELECT id, content, session_id, role, created_at
+                    FROM messages
+                    """
+                )
+
+            self.assertEqual(memory.search("中文分词怎么处理", session_id="session-1"), [])
+
+            rebuilt = MessageMemoryStore(database_path)
+            results = rebuilt.search("中文分词怎么处理", session_id="session-1")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], message_id)
+
+    def test_chinese_memory_items_use_jieba_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_memory_item("project", "项目记忆检索应该支持中文分词召回。", confidence=0.9)
+
+            items = memory.list_memory_items(query="中文分词怎么处理")
+
+        self.assertEqual(len(items), 1)
+        self.assertIn("中文分词召回", items[0]["content"])
+
+    def test_chinese_memory_items_rank_by_confidence_after_token_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_memory_item("project", "项目记忆检索可以用临时关键词兜底。", confidence=0.3)
+            memory.save_memory_item("project", "项目记忆检索应该支持中文分词召回。", confidence=0.9)
+
+            items = memory.list_memory_items(scope="project", query="记忆检索召回")
+
+        self.assertGreaterEqual(len(items), 2)
+        self.assertIn("中文分词召回", items[0]["content"])
+        self.assertGreater(items[0]["confidence"], items[1]["confidence"])
+
     def test_memory_items_validate_scope_and_confidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
