@@ -15,6 +15,18 @@ tools:
     enabled: true
     permission: allow
 
+  skills_list:
+    enabled: true
+    permission: allow
+
+  skill_view:
+    enabled: true
+    permission: allow
+
+  skill_manage:
+    enabled: true
+    permission: ask
+
   create_task:
     enabled: true
     permission: allow

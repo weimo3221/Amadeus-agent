@@ -70,9 +70,10 @@ class TodoTests(unittest.TestCase):
 
             assembled = assembler.assemble("session-1", "what should I do?")
 
-        self.assertIn("<active-todos>", assembled.system_context)
-        self.assertIn("Water the plant", assembled.system_context)
-        self.assertNotIn("Already finished", assembled.system_context)
+        self.assertNotIn("<active-todos>", assembled.system_context)
+        self.assertIn("<active-todos>", assembled.user_content)
+        self.assertIn("Water the plant", assembled.user_content)
+        self.assertNotIn("Already finished", assembled.user_content)
         self.assertEqual(assembled.diagnostics()["sourceCounts"]["active_todos"], 1)
 
     def test_todo_content_and_count_are_bounded(self) -> None:

@@ -12,7 +12,7 @@ from amadeus.tools.plan import UPDATE_PLAN_TOOL_SPEC, update_plan
 from amadeus.tools.read_file import READ_FILE_TOOL_SPEC, read_file
 from amadeus.tools.search_memory import SEARCH_MEMORY_TOOL_SPEC, search_memory
 from amadeus.tools.scheduled_jobs import SCHEDULE_MESSAGE_TOOL_SPEC, schedule_message
-from amadeus.tools.skills import SKILLS_LIST_TOOL_SPEC, SKILL_VIEW_TOOL_SPEC, skill_view, skills_list
+from amadeus.tools.skills import SKILL_MANAGE_TOOL_SPEC, SKILLS_LIST_TOOL_SPEC, SKILL_VIEW_TOOL_SPEC, skill_manage, skill_view, skills_list
 from amadeus.tools.stable_memory import READ_MEMORY_TOOL_SPEC, UPDATE_MEMORY_TOOL_SPEC, read_memory, update_memory
 from amadeus.tools.structured_memory import (
     MEMORY_ADD_TOOL_SPEC,
@@ -53,6 +53,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         READ_FILE_TOOL_SPEC,
         SKILLS_LIST_TOOL_SPEC,
         SKILL_VIEW_TOOL_SPEC,
+        SKILL_MANAGE_TOOL_SPEC,
         UPDATE_PLAN_TOOL_SPEC,
         SEARCH_MEMORY_TOOL_SPEC,
         READ_MEMORY_TOOL_SPEC,
@@ -117,6 +118,7 @@ __all__ = [
     "search_memory_items",
     "schedule_message",
     "skill_view",
+    "skill_manage",
     "skills_list",
     "todo",
     "update_current_role_identity",

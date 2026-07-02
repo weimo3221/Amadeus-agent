@@ -16,6 +16,7 @@ DEFAULT_SKILLS_ROOT = REPO_ROOT / "skills"
 SKILL_FILE_NAME = "SKILL.md"
 MAX_SKILL_DESCRIPTION_CHARS = 280
 MAX_SKILL_BODY_CHARS = 12000
+MAX_SKILL_WRITE_BODY_CHARS = 16000
 KNOWN_SKILL_RESOURCE_DIRS = ("scripts", "references", "assets", "agents", "evals")
 _SLUG_INVALID_CHARS_RE = re.compile(r"[^a-z0-9-]")
 _SLUG_MULTI_DASH_RE = re.compile(r"-{2,}")
@@ -93,6 +94,11 @@ def slugify(value: str) -> str:
     slug = _SLUG_INVALID_CHARS_RE.sub("", slug)
     slug = _SLUG_MULTI_DASH_RE.sub("-", slug).strip("-")
     return slug
+
+
+def _frontmatter_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    return f'"{escaped}"'
 
 
 def split_frontmatter(markdown: str) -> tuple[str, str] | None:
@@ -369,10 +375,15 @@ def validate_skills_root(root: Path = DEFAULT_SKILLS_ROOT) -> list[SkillValidati
 class SkillCatalog:
     def __init__(self, root: Path = DEFAULT_SKILLS_ROOT) -> None:
         self.root = root
+        self._cache_manifest: tuple[tuple[str, int, int], ...] | None = None
+        self._cache_skills: list[Skill] | None = None
 
     def list_skills(self) -> list[Skill]:
         if not self.root.exists():
             return []
+        manifest = self._manifest()
+        if self._cache_manifest == manifest and self._cache_skills is not None:
+            return list(self._cache_skills)
 
         skills: list[Skill] = []
         for skill_md in sorted(self.root.rglob(SKILL_FILE_NAME)):
@@ -385,13 +396,69 @@ class SkillCatalog:
             skill = self._load_skill(skill_md)
             if skill is not None:
                 skills.append(skill)
+        self._cache_manifest = manifest
+        self._cache_skills = list(skills)
         return skills
 
     def skill_summaries(self) -> list[dict[str, Any]]:
         return [skill.summary() for skill in self.list_skills()]
 
-    def build_catalog_prompt(self) -> str:
-        skills = self.list_skills()
+    def save_experience_skill(
+        self,
+        *,
+        name: str,
+        description: str,
+        instructions: str,
+        category: str = "experience",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        normalized_name = slugify(name)
+        if not normalized_name:
+            raise ValueError("skill name must contain letters or numbers")
+        normalized_category = "/".join(
+            part
+            for part in (slugify(segment) for segment in category.replace("\\", "/").split("/"))
+            if part
+        ) or "experience"
+        normalized_description = sanitize_skill_text(description, max_chars=MAX_SKILL_DESCRIPTION_CHARS)
+        if not normalized_description:
+            raise ValueError("skill description is required")
+        normalized_instructions = instructions.replace("\x00", "").strip()
+        if not normalized_instructions:
+            raise ValueError("skill instructions are required")
+        if len(normalized_instructions) > MAX_SKILL_WRITE_BODY_CHARS:
+            raise ValueError(f"skill instructions must be at most {MAX_SKILL_WRITE_BODY_CHARS} characters")
+
+        skill_dir = self.root / normalized_category / normalized_name
+        skill_path = skill_dir / SKILL_FILE_NAME
+        existed = skill_path.exists()
+        if existed and not overwrite:
+            raise ValueError("skill already exists; set overwrite=true to replace it")
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        content = "\n".join([
+            "---",
+            f"name: {normalized_name}",
+            f"description: {_frontmatter_string(normalized_description)}",
+            "---",
+            "",
+            normalized_instructions,
+            "",
+        ])
+        skill_path.write_text(content, encoding="utf-8")
+        self._cache_manifest = None
+        self._cache_skills = None
+        return {
+            "saved": True,
+            "created": not existed,
+            "updated": existed,
+            "name": normalized_name,
+            "identifier": f"{normalized_category}/{normalized_name}",
+            "path": str(skill_path),
+            "charCount": len(content),
+        }
+
+    def build_catalog_prompt(self, *, available_tools: set[str] | None = None, platform: str | None = None) -> str:
+        skills = self._filter_skills(self.list_skills(), available_tools=available_tools, platform=platform)
         if not skills:
             return ""
 
@@ -408,6 +475,43 @@ class SkillCatalog:
                 lines.append(f"- {skill.identifier}{description}")
         lines.append("</available_skills>")
         return "\n".join(lines)
+
+    def _filter_skills(
+        self,
+        skills: list[Skill],
+        *,
+        available_tools: set[str] | None = None,
+        platform: str | None = None,
+    ) -> list[Skill]:
+        normalized_tools = {tool.strip() for tool in (available_tools or set()) if tool.strip()}
+        normalized_platform = (platform or "").strip().lower()
+        filtered: list[Skill] = []
+        for skill in skills:
+            if skill.platforms and normalized_platform and normalized_platform not in {item.lower() for item in skill.platforms}:
+                continue
+            required_tools = set(skill.allowed_tools or skill.preferred_tools or ())
+            if required_tools and normalized_tools and not required_tools.issubset(normalized_tools):
+                continue
+            filtered.append(skill)
+        return filtered
+
+    def _manifest(self) -> tuple[tuple[str, int, int], ...]:
+        if not self.root.exists():
+            return ()
+        manifest: list[tuple[str, int, int]] = []
+        for skill_md in sorted(self.root.rglob(SKILL_FILE_NAME)):
+            try:
+                relative_dir = skill_md.parent.relative_to(self.root)
+            except ValueError:
+                continue
+            if any(part.startswith(".") for part in relative_dir.parts):
+                continue
+            try:
+                stat = skill_md.stat()
+            except OSError:
+                continue
+            manifest.append((str(skill_md.relative_to(self.root)), stat.st_mtime_ns, stat.st_size))
+        return tuple(manifest)
 
     def resolve(self, requested_names: list[str] | tuple[str, ...]) -> ResolvedSkills:
         if not requested_names:

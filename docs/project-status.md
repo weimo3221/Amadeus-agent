@@ -60,6 +60,8 @@ Fallback path today:
 - `read_memory` is registered as an `allow` tool for stable Markdown memory reads.
 - `update_memory` is registered as an `ask` tool for controlled role-scoped stable memory updates.
 - `update_current_role_identity` is registered as an `ask` tool for explicit current-role name/persona/style updates through role `SOUL.md`.
+- `skills_list` and `skill_view` are registered as `allow` tools for runtime skill catalog inspection and progressive skill activation.
+- `skill_manage` is registered as an `ask` tool for saving approved reusable workflow experience as a local runtime skill.
 - `search_memory` is registered as an `allow` tool for searching prior SQLite conversation memory.
 - `search_memory_items` is registered as an `allow` tool for searching structured memory facts.
 - `memory_add` is registered as an `ask` tool for adding durable structured memory facts after user approval.
@@ -80,7 +82,7 @@ Fallback path today:
 - Python `/agent/turn` is wired as the preferred turn path.
 - Python now owns the preferred model/tool/memory/behavior path for a turn:
   - loads OpenAI-compatible provider config from environment or `.env`
-  - assembles API-call-time context from summaries, accepted memory items, recent messages, and relevant FTS retrieval
+  - assembles API-call-time context from summaries, query-filtered accepted memory items, recent messages, active plan/todo/task reference blocks, relevant FTS retrieval, and optional external memory provider snippets
   - runs a bounded Hermes-style tool loop using OpenAI-compatible `tool_calls`
   - executes Python tools until the model stops requesting tools or `agent.maxToolIterations` is reached
   - writes user/assistant messages to SQLite
@@ -173,8 +175,8 @@ Fallback path today:
   - Tool execution now has a first-pass timeout boundary and returns `tool_timeout` for slow tool calls.
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
-  - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the frozen system prompt at runtime startup.
-  - `ContextAssembler` now injects summaries, accepted structured memory, and sanitized SQLite FTS retrieval as API-only context, with `memory.context.used` diagnostics retained in a per-session in-memory ring buffer.
+  - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the cached system prompt.
+  - `ContextAssembler` now injects summaries and query-filtered accepted structured memory into system context, while active plans, todos, task state, recent task results, sanitized SQLite FTS retrieval, and external memory provider snippets are attached to the current user message as non-persistent reference context. `memory.context.used` diagnostics are retained in a per-session in-memory ring buffer.
   - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
   - `search_memory_items` now has a per-tool model-output policy that keeps structured fact metadata while capping model-context item count and content length.
   - `search_files` now has a per-tool model-output policy that keeps query metadata while limiting returned result count and preview length.
@@ -203,7 +205,7 @@ Fallback path today:
 - Add more practical tools only where they fit the desktop companion product boundary, such as safe URL opening, web search, or user-approved desktop actions.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
-- After the UI pass, the next product step for skills should be a real import/install flow that runs `scripts/validate_skills.py` during add/import, then refreshes runtime discovery without forcing a full manual restart.
+- After the UI pass, the next product step for skills should be a real import/install/editing flow that runs `scripts/validate_skills.py` during add/import, then refreshes runtime discovery without forcing a full manual restart. The current `skill_manage` path only covers approved local experience-skill saves.
 - Turn placeholder runtime boundaries into real modules where needed:
   - future audio harness module
   - `packages/live2d-stage`
@@ -352,7 +354,7 @@ Current limitations:
 - `apps/server` no longer contains the legacy TypeScript fallback loop or local TypeScript tool registry mirror.
 - Test coverage now includes Python runtime units, local Python HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and an Electron startup smoke. Full Live2D/interaction end-to-end coverage is still missing.
 - `packages/amadeus/model.py` is active as the first-pass provider boundary, but richer provider profile/fallback behavior is still future work.
-- `skills.py` now implements a first-pass runtime skill catalog with an always-on system-prompt catalog plus `skill_view`-driven full activation; the bridge proxies read-only skills APIs, and the desktop renderer exposes a multi-select suggested-skills picker with local search/filtering, a short inline summary, and persisted selections. `live2d.py` owns the local model library but not the desktop renderer adapter.
+- `skills.py` now implements a runtime skill catalog with an always-on filtered system-prompt catalog, manifest-based cache invalidation, `skill_view`-driven full activation, and an approved `skill_manage` path for saving local experience skills. The bridge proxies read-only skills APIs, and the desktop renderer exposes a multi-select suggested-skills picker with local search/filtering, a short inline summary, and persisted selections. `live2d.py` owns the local model library but not the desktop renderer adapter.
 - `packages/live2d-stage` is still not the real desktop implementation package; current Live2D behavior lives in `apps/desktop/src/renderer/companion/main.ts`.
 
 ## Next Recommended Phase
@@ -391,6 +393,8 @@ Started.
 - Python runtime exposes `GET /memory/search`.
 - `search_memory` lets the model search current-session memory, with optional all-session search.
 - Automatic memory prefetch injects relevant prior snippets into the current user message as non-persistent `<memory-context>`.
+- Structured durable memory injection is now query-filtered, so unrelated accepted `memory_items` are not automatically packed into every turn.
+- External memory providers can contribute bounded non-persistent `<external-memory-context>` snippets through `memory_provider.py`; diagnostics count them as `external_memory` sources.
 - Stable long-term memory is implemented with bounded role-scoped Markdown files under `data/roles/<roleId>/memory/`, with default-role migration fallback from the earlier `data/memory/` location.
 - `read_memory` / `update_memory` expose controlled read and add/replace/remove operations for agent facts and user preferences.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.
@@ -444,14 +448,17 @@ Started: the first restricted `delegate_task` research/search tool, session task
 
 - Split the monolithic Python system prompt into a prompt assembler with per-role identity, core rules, dynamic tool routing hints, role workspace instructions, role-scoped stable memory, and skills catalog sections.
 - Added optional `ToolSpec.prompt_hint` metadata and registry-driven prompt hint assembly so enabled tools contribute their own short routing guidance instead of relying on hard-coded agent prompt lines.
-- Added role `workspacePath` support and workspace-level `AGENT.md` loading with truncation and explicit lower-priority project-context framing; roles without an explicit workspace default to the repository root, where the project `AGENT.md` lives. `AGENT.md` is for project architecture, conventions, constraints, status, and next-work context; user preferences belong in role-scoped `USER.md` memory, and agent identity belongs in role `SOUL.md`. `AGENT.md` cannot override system safety, permissions, or runtime enforcement.
+- Added role `workspacePath` support and prioritized workspace instruction loading with truncation and explicit lower-priority project-context framing. The runtime checks `.amadeus.md` / `AMADEUS.md`, then `AGENT.md` / `agents.md`, then `CLAUDE.md` / `claude.md`, then Cursor rules; roles without an explicit workspace default to the repository root. Project instructions are for architecture, conventions, constraints, status, and next-work context; user preferences belong in role-scoped `USER.md` memory, and agent identity belongs in role `SOUL.md`. Workspace instructions cannot override system safety, permissions, or runtime enforcement.
 - Added Hermes-style role homes under `data/roles/<roleId>/`: `SOUL.md` is seeded on default/new roles and loaded before core runtime rules, while `MEMORY.md` and `USER.md` are scoped to the current session role. The `update_current_role_identity` ask-tool, `/roles/{roleId}/identity` API, and desktop Role editor `SOUL.md` field provide controlled identity updates.
 - Verified the identity update path locally through the Python HTTP runtime: creating a new role, renaming it through `PUT /roles/{roleId}/identity`, and reading `data/roles/<roleId>/SOUL.md` confirmed the file content matches the API response.
 - Added MCP bridge first slice: `tools.mcp` config can discover HTTP JSON-RPC MCP servers through `tools/list`, expose remote tools as `mcp__<server>__<tool>`, and execute through `tools/call` while preserving normal ToolRuntime permission, timeout, cancellation, result-compaction, prompt-hint, and audit behavior.
 - Added Main UI MCP management: the Main Console now has an MCP tab for enabling/disabling HTTP JSON-RPC MCP discovery, editing default permission, adding/removing server configs, saving to `configs/tools.yaml`, and immediately reloading the Python ToolRegistry so `/tools/list` reflects newly discovered `mcp__<server>__<tool>` tools without a manual runtime restart.
 - Added MCP verification loop: `POST /tools/config/test` can test one HTTP JSON-RPC MCP server's `tools/list` discovery without saving it, the Main UI MCP tab exposes per-server Test diagnostics and discovered tool names, `scripts/dev_mcp_server.py` provides a deterministic local `echo` / `project_info` MCP server, and HTTP tests now cover config save, registry reload, `/tools/list`, and direct `/tools/execute` against a real in-test MCP server.
 - Added first task runner abstraction: `TaskWorker` now delegates execution to a `TaskRunner` boundary, with the existing thread-pool behavior represented by `InProcessTaskRunner`. This keeps the current in-process worker behavior intact while creating the seam needed for a future process-backed runner.
-- Added task-state context: each turn can inject current queued/running/blocked session tasks into a reference-only `<active-tasks>` system block and recent succeeded/failed/cancelled outcomes into `<recent-tasks>`, with `taskLimit`, `recentTaskLimit`, and `taskResultChars` runtime config plus `memory.context.used` diagnostics sources.
+- Added task-state context: each turn can inject current queued/running/blocked session tasks into a reference-only `<active-tasks>` user-message block and recent succeeded/failed/cancelled outcomes into `<recent-tasks>`, with `taskLimit`, `recentTaskLimit`, and `taskResultChars` runtime config plus `memory.context.used` diagnostics sources.
+- Added prompt-surface hardening: system prompt assembly now separates stable runtime rules from contextual workspace/tool/memory/skill sections, advertises enabled tool capabilities, includes runtime environment metadata, sanitizes context-like markup, and caches per-session prompt variants until tool/runtime config changes.
+- Added first external memory provider boundary through `memory_provider.py`; providers can prefetch relevant reference snippets for a turn without writing durable memory.
+- Added `skill_manage` as an approval-gated local experience-skill save path, plus skill catalog filtering by platform/tool availability and manifest-based cache invalidation.
 - Added deterministic runtime contract eval script at `scripts/eval_runtime_contracts.py` covering role identity, active/recent task context, task lifecycle, and MCP tool schema/execution contracts.
 - Added supervised dev-stack startup through `scripts/dev_stack.py`, restoring the local P0 health signal and replacing the default raw concurrent `npm run dev` path with ordered startup plus health checks.
 - Add full sub-agent orchestration abstraction.

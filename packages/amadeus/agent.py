@@ -13,9 +13,10 @@ from typing import Any, Callable, Iterable
 from uuid import uuid4
 
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
-from amadeus.context import ContextAssembler, ContextAssemblerConfig
+from amadeus.context import ContextAssembler, ContextAssemblerConfig, sanitize_context_markup
 from amadeus.harness import DEFAULT_HARNESSES_CONFIG_PATH, HarnessContext, HarnessFeedbackPolicy, HarnessRegistry
 from amadeus.memory import MessageMemoryStore
+from amadeus.memory_provider import ExternalMemoryManager, ExternalMemoryProvider
 from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.model import (
     OpenAICompatibleChatModel,
@@ -194,9 +195,11 @@ class AgentRuntime:
         harnesses_config_path: Path = HARNESSES_CONFIG_PATH,
         skills_root: Path = SKILLS_ROOT,
         workspace_root: Path = REPO_ROOT,
+        external_memory_providers: Iterable[ExternalMemoryProvider] | None = None,
     ) -> None:
         load_dotenv()
         self.memory_store = memory_store
+        self.external_memory_manager = ExternalMemoryManager(list(external_memory_providers or ()))
         self.audio_runtime = audio_runtime
         self.task_worker: Any | None = None
         self.model_client = OpenAICompatibleChatModel()
@@ -211,6 +214,8 @@ class AgentRuntime:
         self.tool_audit_log = ToolAuditLog()
         self.tool_audit_store = ToolAuditStore(memory_store.database_path)
         self.workspace_root = workspace_root.resolve()
+        self._system_prompt_cache: dict[tuple[Any, ...], str] = {}
+        self.context_max_tokens = CONTEXT_MAX_TOKENS
         self.system_prompt = self._build_system_prompt()
         self.context_assembler = ContextAssembler(self.memory_store, self.system_prompt)
         self.context_diagnostics_limit = CONTEXT_DIAGNOSTICS_LIMIT
@@ -386,6 +391,8 @@ class AgentRuntime:
             parse_positive_int_value(context_config.get("diagnosticsLimit"), CONTEXT_DIAGNOSTICS_LIMIT),
         )
         self._resize_context_diagnostics_buffers(self.context_diagnostics_limit)
+        self._system_prompt_cache.clear()
+        self.system_prompt = self._build_system_prompt()
         self.context_assembler = ContextAssembler(
             self.memory_store,
             self.system_prompt,
@@ -482,6 +489,7 @@ class AgentRuntime:
     def reload_tool_registry(self) -> dict[str, Any]:
         logger.info("Reloading tool registry toolsConfig=%s", self.tools_config_path)
         self.tool_registry = ToolRegistry(config_path=self.tools_config_path)
+        self._system_prompt_cache.clear()
         self.system_prompt = self._build_system_prompt()
         self.context_assembler = ContextAssembler(self.memory_store, self.system_prompt)
         return {
@@ -1300,11 +1308,16 @@ class AgentRuntime:
             last_message = history[-1]
             if last_message.get("role") == "user" and last_message.get("content") == user_text:
                 history = history[:-1]
+        diagnostics = assembled_context.diagnostics()
         history.append({
             "role": "user",
-            "content": assembled_context.user_content,
+            "content": self._append_external_memory_context(
+                assembled_context.user_content,
+                session_id=session_id,
+                user_text=user_text,
+                diagnostics=diagnostics,
+            ),
         })
-        diagnostics = assembled_context.diagnostics()
         logger.info(
             "Assembled turn context sessionId=%s sourceCounts=%s coveredThroughMessageId=%s userContentChars=%s",
             session_id,
@@ -1313,6 +1326,36 @@ class AgentRuntime:
             len(assembled_context.user_content),
         )
         return history, diagnostics
+
+    def _append_external_memory_context(
+        self,
+        user_content: str,
+        *,
+        session_id: str,
+        user_text: str,
+        diagnostics: dict[str, Any],
+    ) -> str:
+        external_block = self.external_memory_manager.prefetch_context(
+            user_text,
+            session_id=session_id,
+            limit=max(1, self.context_retrieval_limit),
+        )
+        if not external_block:
+            return user_content
+        source_counts = diagnostics.setdefault("sourceCounts", {})
+        if isinstance(source_counts, dict):
+            source_counts["external_memory"] = int(source_counts.get("external_memory", 0)) + 1
+        sources = diagnostics.setdefault("sources", [])
+        if isinstance(sources, list):
+            sources.append({
+                "kind": "external_memory",
+                "sourceId": "external",
+                "contentChars": len(external_block),
+                "reason": "external memory provider prefetch for current user message",
+                "metadata": {},
+            })
+        diagnostics["sourceCount"] = len(sources) if isinstance(sources, list) else int(diagnostics.get("sourceCount", 0)) + 1
+        return f"{user_content}\n\n{external_block}"
 
     def _load_history_for_budget(self, session_id: str) -> list[dict[str, Any]]:
         assembled_context = self.context_assembler.assemble(
@@ -2005,13 +2048,40 @@ class AgentRuntime:
         return resolved if resolved.is_dir() else self.workspace_root
 
     def _build_system_prompt(self, *, session_id: str | None = None) -> str:
-        return build_system_prompt(
-            identity_prompt=self._identity_prompt_for_session(session_id),
-            stable_memory=self._format_stable_memory_for_prompt(session_id=session_id),
+        workspace_root = self._workspace_root_for_session(session_id)
+        stable_memory = self._format_stable_memory_for_prompt(session_id=session_id)
+        identity_prompt = self._identity_prompt_for_session(session_id)
+        enabled_tools = {
+            schema.get("function", {}).get("name", "")
+            for schema in self.enabled_tool_schemas()
+            if isinstance(schema, dict)
+        }
+        cache_key = (
+            session_id or "",
+            str(workspace_root),
+            self.context_max_tokens,
+            tuple(sorted(tool for tool in enabled_tools if tool)),
+            identity_prompt,
+            stable_memory,
+        )
+        cached = self._system_prompt_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        prompt = build_system_prompt(
+            identity_prompt=identity_prompt,
+            stable_memory=stable_memory,
             skill_catalog=self.skill_catalog,
             tool_hints=self.tool_registry,
-            workspace_root=self._workspace_root_for_session(session_id),
+            workspace_root=workspace_root,
+            context_max_tokens=self.context_max_tokens,
+            runtime_surface="desktop",
+            available_tools=enabled_tools,
         )
+        self._system_prompt_cache[cache_key] = prompt
+        if len(self._system_prompt_cache) > 16:
+            oldest_key = next(iter(self._system_prompt_cache))
+            self._system_prompt_cache.pop(oldest_key, None)
+        return prompt
 
     def _maybe_inject_loaded_skill(
         self,
@@ -2228,14 +2298,7 @@ class AgentRuntime:
 
 
 def sanitize_memory_context_text(text: str, max_chars: int, collapse_whitespace: bool = True) -> str:
-    sanitized = (
-        text.replace("<memory-context", "[memory-context")
-        .replace("</memory-context>", "[/memory-context]")
-        .replace("<stable_memory", "[stable_memory")
-        .replace("</stable_memory>", "[/stable_memory]")
-        .replace("<system", "[system")
-        .replace("</system>", "[/system]")
-    )
+    sanitized = sanitize_context_markup(text)
     if collapse_whitespace:
         sanitized = " ".join(sanitized.split())
     if len(sanitized) > max_chars:

@@ -154,9 +154,10 @@ packages/amadeus
 
 `packages/amadeus` is the long-term agent brain. Current module status:
 
-- `agent.py`: active conversation loop, bounded Hermes-style tool-use policy, response/event streaming.
-- `context.py`: active API-call-time context assembler for conversation summaries, accepted structured memories, active todos, task state, relevant FTS retrieval, source budgets, and diagnostics. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
+- `agent.py`: active conversation loop, bounded Hermes-style tool-use policy, external memory prefetch coordination, response/event streaming, and cached per-session system prompt assembly.
+- `context.py`: active API-call-time context assembler for conversation summaries, query-filtered structured memories, active todos, task state, relevant FTS retrieval, source budgets, and diagnostics. Stable prompt context stays in the system message, while per-turn reference context such as active plans, todos, tasks, recent task outcomes, FTS snippets, and external memory is appended to the current user message as non-persistent reference data. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
 - `memory.py`: active SQLite-backed message history, roles/sessions, structured memory, task state, scheduled messages, persistent todos, and audit records.
+- `memory_provider.py`: first-pass external memory provider interface. Providers can prefetch relevant reference snippets for the current user message without becoming durable local memory or overriding user/system instructions.
 - `scheduling.py`: active schedule parser plus in-process scheduled-message worker. It supports one-shot durations/timestamps, recurring intervals, common daily/weekly/monthly cron shapes, repeat counts, and lifecycle event publication.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, session workspace epoch propagation, and repeated-call guardrails.
@@ -164,7 +165,7 @@ packages/amadeus
 - `server.py`: active Python HTTP runtime surface, including local audio file serving and local Live2D model config/static asset serving for direct runtime use.
 - `model.py`: active first-pass OpenAI-compatible provider boundary for `configs/providers.yaml` plus environment-backed provider config, JSON chat-completion requests, stream parsing, and classified provider error normalization.
 - `harness/`: active first-pass harness boundary with a registry and Live2D harness that maps `assistant.state` plus configurable audio playback feedback behaviors to `character.behavior`.
-- `skills.py`: active first-pass reusable behavior boundary; owns skill discovery, metadata/view APIs, and explicit turn-level skill prompt injection.
+- `skills.py`: active reusable behavior boundary; owns skill discovery, metadata/view APIs, filtered skill catalog prompt assembly, explicit turn-level skill prompt injection, and approved experience-skill creation.
 - `live2d.py`: active local Live2D model library boundary plus character command dataclasses.
 
 Live2D and audio are not the agent brain. They are device interfaces that the Python runtime can command, while the actual rendering/playback remains in desktop-side adapters.
@@ -216,7 +217,7 @@ Python runtime responsibilities today:
 - Own the preferred turn path.
 - Own SQLite-backed message persistence for the preferred path.
 - Own session memory count/reset semantics for the preferred path, exposed through `/memory/count` and `/memory/reset`.
-- Own roles, per-role `SOUL.md` identity files, role-scoped `MEMORY.md` / `USER.md`, role `workspacePath`, default workspace assignment to the repository root, and workspace-level `AGENT.md` project-context loading for per-session prompt assembly. User-specific preferences stay in role-scoped `USER.md` memory rather than project `AGENT.md`.
+- Own roles, per-role `SOUL.md` identity files, role-scoped `MEMORY.md` / `USER.md`, role `workspacePath`, default workspace assignment to the repository root, and workspace instruction loading for per-session prompt assembly. Instruction file priority is `.amadeus.md` / `AMADEUS.md`, then `AGENT.md` / `agents.md`, then `CLAUDE.md` / `claude.md`, then Cursor rules. User-specific preferences stay in role-scoped `USER.md` memory rather than project instructions.
 - Own concrete Python tool execution for the preferred path.
 - Own persisted session tasks and in-process worker execution with retry scheduling and stale-running recovery.
 - Own persisted scheduled companion messages and persistent session todos.
@@ -225,7 +226,7 @@ Python runtime responsibilities today:
 Python runtime responsibilities later:
 
 - Extend tool runtime policy for richer context propagation, semantic no-progress detection, and more per-tool result policies.
-- Mature skills/workflows beyond read-only `skills_list` / `skill_view`.
+- Mature skills/workflows beyond the current catalog, view, and approved `skill_manage` experience-save path.
 - Mature long-running execution beyond the current in-process task and scheduled-message workers into durable leases, checkpoint/resume, and richer user-facing notification policy.
 - Assemble richer context from task state, harness prompt fragments, and role/workspace instructions beyond the current summaries, structured memory, and retrieval path.
 

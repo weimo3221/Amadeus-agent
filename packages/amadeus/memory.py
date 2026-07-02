@@ -2519,15 +2519,20 @@ class MessageMemoryStore:
     ) -> list[dict[str, str | int | float | bool]]:
         normalized_scope = normalize_memory_item_scope(scope) if scope else None
         normalized_query = query.strip() if isinstance(query, str) else ""
+        query_terms = memory_item_query_terms(normalized_query)
         bounded_limit = max(1, min(100, int(limit)))
         where = "1 = 1"
         params: list[object] = []
         if normalized_scope:
             where += " AND scope = ?"
             params.append(normalized_scope)
-        if normalized_query:
-            where += " AND content LIKE ?"
+        if query_terms:
+            clauses = ["content LIKE ?"]
             params.append(f"%{normalized_query}%")
+            for term in query_terms:
+                clauses.append("content LIKE ?")
+                params.append(f"%{term}%")
+            where += " AND (" + " OR ".join(clauses) + ")"
         if not include_deleted:
             where += " AND deleted_at IS NULL"
         params.append(bounded_limit)
@@ -3731,6 +3736,24 @@ def normalize_memory_item_content(content: str) -> str:
     if len(normalized) > MEMORY_ITEM_LIMIT:
         raise ValueError(f"content must be at most {MEMORY_ITEM_LIMIT} characters")
     return normalized
+
+
+def memory_item_query_terms(query: str) -> list[str]:
+    normalized = " ".join(query.replace("\x00", " ").split()).strip()
+    if not normalized:
+        return []
+    terms: list[str] = []
+    for raw in normalized.replace("_", " ").replace("-", " ").split():
+        term = raw.strip(".,;:!?()[]{}<>\"'`").lower()
+        if len(term) < 3:
+            continue
+        if term in {"the", "and", "for", "with", "what", "when", "where", "which", "should", "about"}:
+            continue
+        if term not in terms:
+            terms.append(term)
+        if len(terms) >= 8:
+            break
+    return terms
 
 
 def normalize_confidence(confidence: float) -> float:

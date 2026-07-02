@@ -39,10 +39,11 @@ def eval_role_identity_and_task_context() -> None:
 
         require(identity["roleName"] == "Eval Agent", "role identity name was not updated")
         require("You are Eval Agent." in str(identity["content"]), "SOUL.md content was not updated")
-        require("<active-tasks>" in assembled.system_context, "active task context was not injected")
-        require("Eval active task" in assembled.system_context, "active task title missing from context")
-        require("<recent-tasks>" in assembled.system_context, "recent task context was not injected")
-        require("Eval task completed." in assembled.system_context, "recent task result missing from context")
+        require("<active-tasks>" not in assembled.system_context, "active task context should not be injected into system context")
+        require("<active-tasks>" in assembled.user_content, "active task context was not injected")
+        require("Eval active task" in assembled.user_content, "active task title missing from context")
+        require("<recent-tasks>" in assembled.user_content, "recent task context was not injected")
+        require("Eval task completed." in assembled.user_content, "recent task result missing from context")
 
 
 class EvalRuntime:

@@ -127,6 +127,20 @@ class SkillsCatalogTests(unittest.TestCase):
         self.assertIn("development:", block)
         self.assertIn("- development/runtime-debug: Debug runtime behavior.", block)
 
+    def test_save_experience_skill_creates_skill_file(self) -> None:
+        saved = self.catalog.save_experience_skill(
+            name="Runtime Fix Notes",
+            description="Fix runtime regressions.",
+            instructions="1. Reproduce with focused tests.\n2. Patch the smallest runtime boundary.",
+        )
+
+        self.assertTrue(saved["saved"])
+        self.assertEqual(saved["identifier"], "experience/runtime-fix-notes")
+        viewed = self.catalog.view_skill("experience/runtime-fix-notes")
+        self.assertIsNotNone(viewed)
+        assert viewed is not None
+        self.assertIn("focused tests", viewed["instructions"])
+
     def test_skill_catalog_understands_skill_creator_style_layout(self) -> None:
         skill_dir = self.skills_root / "automation" / "pdf-fill"
         (skill_dir / "scripts").mkdir(parents=True)
@@ -226,6 +240,12 @@ class SkillsToolTests(unittest.TestCase):
             skills_tool_module.SkillCatalog = lambda: SkillCatalog(self.skills_root)
             listed = skills_tool_module.skills_list({})
             viewed = skills_tool_module.skill_view({"name": "runtime-debug"})
+            managed = skills_tool_module.skill_manage({
+                "action": "save_experience",
+                "name": "debug loop",
+                "description": "Debug loop workflow.",
+                "instructions": "Run the focused failing test before broad changes.",
+            })
         finally:
             skills_tool_module.SkillCatalog = original_catalog
 
@@ -233,6 +253,8 @@ class SkillsToolTests(unittest.TestCase):
         self.assertEqual(listed["skills"][0]["identifier"], "development/runtime-debug")
         self.assertEqual(viewed["name"], "runtime-debug")
         self.assertIn("Use evidence.", viewed["instructions"])
+        self.assertTrue(managed["saved"])
+        self.assertEqual(managed["identifier"], "experience/debug-loop")
 
     def test_skill_view_reports_missing_name(self) -> None:
         from amadeus.tools.skills import skill_view

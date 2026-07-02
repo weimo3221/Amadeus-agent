@@ -55,6 +55,7 @@ class ContextSource:
 class AssembledContext:
     system_context: str
     user_content: str
+    reference_context: str = ""
     covered_through_message_id: int = 0
     sources: tuple[ContextSource, ...] = ()
 
@@ -88,7 +89,10 @@ class ContextAssembler:
         active_todos = self.memory_store.list_todos(session_id=session_id, active_only=True, limit=self.config.todo_limit)
         active_tasks = self.memory_store.list_tasks(session_id=session_id, active_only=True, limit=self.config.task_limit)
         recent_tasks = self.memory_store.list_recent_terminal_tasks(session_id=session_id, limit=self.config.recent_task_limit)
-        memory_items = self.memory_store.list_memory_items(limit=self.config.memory_item_limit)
+        memory_items = self.memory_store.list_memory_items(
+            query=user_text,
+            limit=self.config.memory_item_limit,
+        )
         normalized_user_text = user_text.strip()
         retrievals = [
             result
@@ -98,6 +102,7 @@ class ContextAssembler:
 
         sources: list[ContextSource] = []
         sections = [base_system_prompt or self.base_system_prompt]
+        reference_blocks: list[str] = []
 
         memory_items_block, memory_item_sources = self._format_memory_items(memory_items)
         if memory_items_block:
@@ -106,25 +111,25 @@ class ContextAssembler:
 
         active_plan_block, active_plan_source = self._format_active_plan(active_plan)
         if active_plan_block:
-            sections.append(active_plan_block)
+            reference_blocks.append(active_plan_block)
             if active_plan_source:
                 sources.append(active_plan_source)
 
         active_todos_block, active_todos_source = self._format_active_todos(active_todos)
         if active_todos_block:
-            sections.append(active_todos_block)
+            reference_blocks.append(active_todos_block)
             if active_todos_source:
                 sources.append(active_todos_source)
 
         active_tasks_block, active_tasks_source = self._format_active_tasks(active_tasks)
         if active_tasks_block:
-            sections.append(active_tasks_block)
+            reference_blocks.append(active_tasks_block)
             if active_tasks_source:
                 sources.append(active_tasks_source)
 
         recent_tasks_block, recent_tasks_source = self._format_recent_tasks(recent_tasks)
         if recent_tasks_block:
-            sections.append(recent_tasks_block)
+            reference_blocks.append(recent_tasks_block)
             if recent_tasks_source:
                 sources.append(recent_tasks_source)
 
@@ -136,12 +141,16 @@ class ContextAssembler:
                 sources.append(summary_source)
 
         retrieval_block, retrieval_sources = self._format_retrievals(retrievals)
-        user_content = user_text if not retrieval_block else f"{user_text}\n\n{retrieval_block}"
+        if retrieval_block:
+            reference_blocks.append(retrieval_block)
         sources.extend(retrieval_sources)
+        reference_context = "\n\n".join(reference_blocks)
+        user_content = user_text if not reference_context else f"{user_text}\n\n{reference_context}"
 
         return AssembledContext(
             system_context="\n\n".join(sections),
             user_content=user_content,
+            reference_context=reference_context,
             covered_through_message_id=covered_through_id,
             sources=tuple(sources),
         )
@@ -295,7 +304,7 @@ class ContextAssembler:
                 kind="memory_item",
                 source_id=memory_item_id,
                 content_chars=len(content),
-                reason="accepted durable structured memory",
+                reason="durable structured memory matching current user message",
                 metadata={"scope": scope, "confidence": confidence},
             ))
 
@@ -361,16 +370,56 @@ class ContextAssembler:
 
 
 def sanitize_context_text(value: str, *, max_chars: int) -> str:
-    text = (
-        value.replace("\x00", "")
-        .replace("<memory-context", "[memory-context")
-        .replace("</memory-context>", "[/memory-context]")
-        .replace("<stable_memory", "[stable_memory")
-        .replace("</stable_memory>", "[/stable_memory]")
-        .replace("<system", "[system")
-        .replace("</system>", "[/system]")
-    )
+    text = sanitize_context_markup(value)
     text = " ".join(text.split())
     if len(text) <= max_chars:
         return text
     return text[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def sanitize_context_markup(value: str) -> str:
+    text = value.replace("\x00", "")
+    replacements = {
+        "<memory-context>": "[memory-context]",
+        "<memory-context": "[memory-context",
+        "</memory-context>": "[/memory-context]",
+        "<conversation-summary>": "[conversation-summary]",
+        "<conversation-summary": "[conversation-summary",
+        "</conversation-summary>": "[/conversation-summary]",
+        "<memory-items>": "[memory-items]",
+        "<memory-items": "[memory-items",
+        "</memory-items>": "[/memory-items]",
+        "<active-plan>": "[active-plan]",
+        "<active-plan": "[active-plan",
+        "</active-plan>": "[/active-plan]",
+        "<active-todos>": "[active-todos]",
+        "<active-todos": "[active-todos",
+        "</active-todos>": "[/active-todos]",
+        "<active-tasks>": "[active-tasks]",
+        "<active-tasks": "[active-tasks",
+        "</active-tasks>": "[/active-tasks]",
+        "<recent-tasks>": "[recent-tasks]",
+        "<recent-tasks": "[recent-tasks",
+        "</recent-tasks>": "[/recent-tasks]",
+        "<workspace_instructions>": "[workspace_instructions]",
+        "<workspace_instructions": "[workspace_instructions",
+        "</workspace_instructions>": "[/workspace_instructions]",
+        "<stable_memory>": "[stable_memory]",
+        "<stable_memory": "[stable_memory",
+        "</stable_memory>": "[/stable_memory]",
+        "<tool_routing>": "[tool_routing]",
+        "<tool_routing": "[tool_routing",
+        "</tool_routing>": "[/tool_routing]",
+        "<tool_capabilities>": "[tool_capabilities]",
+        "<tool_capabilities": "[tool_capabilities",
+        "</tool_capabilities>": "[/tool_capabilities]",
+        "<runtime_environment>": "[runtime_environment]",
+        "<runtime_environment": "[runtime_environment",
+        "</runtime_environment>": "[/runtime_environment]",
+        "<system>": "[system]",
+        "<system": "[system",
+        "</system>": "[/system]",
+    }
+    for before, after in replacements.items():
+        text = text.replace(before, after)
+    return text

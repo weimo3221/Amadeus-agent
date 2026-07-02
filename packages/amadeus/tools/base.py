@@ -64,6 +64,10 @@ class ToolSpec:
             memory_item_id = args.get("memoryItemId") if isinstance(args.get("memoryItemId"), int) else "(missing id)"
             return f"Allow Amadeus to forget structured memory item {memory_item_id}?"
 
+        if self.name == "skill_manage":
+            name = args.get("name").strip() if isinstance(args.get("name"), str) and args.get("name").strip() else "(unnamed skill)"
+            return f"Allow Amadeus to save or update skill experience {name}?"
+
         if self.name == "update_current_role_identity":
             name = args.get("name").strip() if isinstance(args.get("name"), str) and args.get("name").strip() else ""
             label = f" to {name}" if name else ""
