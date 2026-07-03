@@ -680,6 +680,54 @@ class AgentRuntimeTests(unittest.TestCase):
         diagnostics = [event.payload for event in events if event.type == "memory.context.used"][-1]
         self.assertEqual(diagnostics["sourceCounts"]["external_memory"], 1)
 
+    def test_external_memory_provider_replaces_builtin_memory_tool_surface(self) -> None:
+        class Provider:
+            name = "fake"
+
+            def prefetch(self, query: str, *, session_id: str, limit: int = 5) -> list[ExternalMemoryResult]:
+                return []
+
+            def get_tool_schemas(self) -> list[dict[str, Any]]:
+                return [{
+                    "name": "fake_memory_search",
+                    "description": "Search fake external memory.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }]
+
+            def handle_tool_call(self, tool_name: str, args: dict[str, Any], context: Any) -> dict[str, Any]:
+                return {"toolName": tool_name, "query": args.get("query"), "sessionId": context.session_id}
+
+        runtime = FakeAgentRuntime(self.memory, external_memory_providers=[Provider()])
+        schema_names = {schema["function"]["name"] for schema in runtime.enabled_tool_schemas()}
+
+        self.assertIn("fake_memory_search", schema_names)
+        self.assertNotIn("search_memory", schema_names)
+        self.assertNotIn("search_memory_items", schema_names)
+        self.assertNotIn("memory_add", schema_names)
+
+        result = runtime.tool_registry.execute(
+            "fake_memory_search",
+            {"query": "outside"},
+            ToolContext(session_id="session-1", memory_store=self.memory),
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["toolName"], "fake_memory_search")
+        self.assertEqual(result.output["sessionId"], "session-1")
+
+    def test_rejects_multiple_external_memory_providers(self) -> None:
+        class Provider:
+            name = "fake"
+
+            def prefetch(self, query: str, *, session_id: str, limit: int = 5) -> list[ExternalMemoryResult]:
+                return []
+
+        with self.assertRaises(ValueError):
+            FakeAgentRuntime(self.memory, external_memory_providers=[Provider(), Provider()])
+
     def test_turn_compacts_old_messages_after_threshold(self) -> None:
         for index in range(4):
             self.memory.save("default", "user" if index % 2 == 0 else "assistant", f"old message {index}")

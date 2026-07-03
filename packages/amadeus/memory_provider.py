@@ -4,6 +4,15 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from amadeus.tools import ToolSpec
+from amadeus.tools.search_memory import SEARCH_MEMORY_TOOL_SPEC
+from amadeus.tools.structured_memory import (
+    MEMORY_ADD_TOOL_SPEC,
+    MEMORY_FORGET_TOOL_SPEC,
+    MEMORY_REPLACE_TOOL_SPEC,
+    SEARCH_MEMORY_ITEMS_TOOL_SPEC,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,6 +27,12 @@ class RuntimeMemoryProvider(Protocol):
         memory_item_limit: int = 8,
         retrieval_limit: int = 3,
     ) -> "RuntimeMemoryArtifacts":
+        ...
+
+    def get_tool_specs(self) -> list[ToolSpec]:
+        ...
+
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], context: Any) -> dict[str, Any]:
         ...
 
 
@@ -86,6 +101,21 @@ class LocalRuntimeMemoryProvider:
             covered_through_message_id=covered_through_id,
         )
 
+    def get_tool_specs(self) -> list[ToolSpec]:
+        return [
+            SEARCH_MEMORY_TOOL_SPEC,
+            SEARCH_MEMORY_ITEMS_TOOL_SPEC,
+            MEMORY_ADD_TOOL_SPEC,
+            MEMORY_REPLACE_TOOL_SPEC,
+            MEMORY_FORGET_TOOL_SPEC,
+        ]
+
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], context: Any) -> dict[str, Any]:
+        for spec in self.get_tool_specs():
+            if spec.name == tool_name:
+                return spec.handler(args, context)
+        return {"error": f"memory provider {self.name} does not handle tool {tool_name}"}
+
 
 class RuntimeMemoryManager:
     def __init__(
@@ -95,6 +125,71 @@ class RuntimeMemoryManager:
     ) -> None:
         self.runtime_provider = runtime_provider
         self.external_providers = list(external_providers or [])
+        if len(self.external_providers) > 1:
+            raise ValueError("Only one memory provider can be enabled at a time")
+        self.active_external_provider = self.external_providers[0] if self.external_providers else None
+
+    @property
+    def active_provider_name(self) -> str:
+        provider = self.active_external_provider
+        return str(getattr(provider, "name", "external_memory")) if provider else self.runtime_provider.name
+
+    def get_tool_specs(self) -> list[ToolSpec]:
+        provider = self.active_external_provider
+        if provider is not None:
+            get_specs = getattr(provider, "get_tool_specs", None)
+            if callable(get_specs):
+                specs = get_specs()
+                return [spec for spec in specs if isinstance(spec, ToolSpec)]
+            get_schemas = getattr(provider, "get_tool_schemas", None)
+            if callable(get_schemas):
+                specs: list[ToolSpec] = []
+                for schema in get_schemas():
+                    spec = self._tool_spec_from_provider_schema(schema)
+                    if spec is not None:
+                        specs.append(spec)
+                return specs
+            return []
+        return self.runtime_provider.get_tool_specs()
+
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], context: Any) -> dict[str, Any]:
+        provider = self.active_external_provider
+        if provider is not None:
+            handler = getattr(provider, "handle_tool_call", None)
+            if callable(handler):
+                return handler(tool_name, args, context)
+            return {"error": f"memory provider {self.active_provider_name} does not expose tool {tool_name}"}
+        return self.runtime_provider.handle_tool_call(tool_name, args, context)
+
+    def _tool_spec_from_provider_schema(self, schema: Any) -> ToolSpec | None:
+        if not isinstance(schema, dict):
+            return None
+
+        function_schema = schema.get("function") if isinstance(schema.get("function"), dict) else schema
+        tool_name = str(function_schema.get("name") or "").strip()
+        if not tool_name:
+            return None
+
+        normalized_schema = schema if schema.get("type") == "function" else {
+            "type": "function",
+            "function": function_schema,
+        }
+        description = str(function_schema.get("description") or f"Memory provider tool {tool_name}")
+        permission = str(schema.get("permission") or function_schema.get("permission") or "allow")
+        enabled = bool(schema.get("enabled")) if isinstance(schema.get("enabled"), bool) else True
+
+        def handler(args: dict[str, Any], context: Any, *, _tool_name: str = tool_name) -> dict[str, Any]:
+            return self.handle_tool_call(_tool_name, args, context)
+
+        return ToolSpec(
+            name=tool_name,
+            display_name=str(schema.get("displayName") or schema.get("display_name") or tool_name),
+            permission=permission,
+            enabled=enabled,
+            schema=normalized_schema,
+            handler=handler,
+            prompt_hint=str(schema.get("promptHint") or schema.get("prompt_hint") or description),
+        )
 
     def prefetch_for_turn(
         self,
@@ -105,19 +200,31 @@ class RuntimeMemoryManager:
         retrieval_limit: int = 3,
         external_limit: int = 5,
     ) -> TurnMemoryBundle:
-        runtime = self.runtime_provider.prefetch(
-            query,
-            session_id=session_id,
-            memory_item_limit=memory_item_limit,
-            retrieval_limit=retrieval_limit,
-        )
+        if self.active_external_provider is not None:
+            runtime = RuntimeMemoryArtifacts(provider=self.active_provider_name)
+        else:
+            runtime = self.runtime_provider.prefetch(
+                query,
+                session_id=session_id,
+                memory_item_limit=memory_item_limit,
+                retrieval_limit=retrieval_limit,
+            )
         external_results: list[ExternalMemoryResult] = []
-        if query.strip():
-            for provider in self.external_providers:
-                try:
-                    external_results.extend(provider.prefetch(query, session_id=session_id, limit=external_limit)[:external_limit])
-                except Exception as exc:
-                    logger.info("External memory provider failed provider=%s error=%s", getattr(provider, "name", "unknown"), exc)
+        if query.strip() and self.active_external_provider is not None:
+            try:
+                provider_results = self.active_external_provider.prefetch(query, session_id=session_id, limit=external_limit)
+                if isinstance(provider_results, str):
+                    if provider_results.strip():
+                        external_results.append(
+                            ExternalMemoryResult(
+                                provider=self.active_provider_name,
+                                content=provider_results,
+                            )
+                        )
+                else:
+                    external_results.extend(list(provider_results)[:external_limit])
+            except Exception as exc:
+                logger.info("External memory provider failed provider=%s error=%s", self.active_provider_name, exc)
         return TurnMemoryBundle(runtime=runtime, external_results=tuple(external_results))
 
 

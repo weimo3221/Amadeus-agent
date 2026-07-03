@@ -200,11 +200,18 @@ class AgentRuntime:
         load_dotenv()
         self.memory_store = memory_store
         self.external_memory_providers = list(external_memory_providers or ())
+        self.memory_manager = RuntimeMemoryManager(
+            LocalRuntimeMemoryProvider(self.memory_store),
+            external_providers=self.external_memory_providers,
+        )
         self.audio_runtime = audio_runtime
         self.task_worker: Any | None = None
         self.model_client = OpenAICompatibleChatModel()
         self.tools_config_path = tools_config_path
-        self.tool_registry = ToolRegistry(config_path=tools_config_path)
+        self.tool_registry = ToolRegistry(
+            config_path=tools_config_path,
+            memory_tool_specs=self.memory_manager.get_tool_specs(),
+        )
         self.harness_registry = HarnessRegistry.from_config(
             harnesses_config_path,
             audio_library=audio_runtime.library if audio_runtime is not None else None,
@@ -486,7 +493,10 @@ class AgentRuntime:
 
     def reload_tool_registry(self) -> dict[str, Any]:
         logger.info("Reloading tool registry toolsConfig=%s", self.tools_config_path)
-        self.tool_registry = ToolRegistry(config_path=self.tools_config_path)
+        self.tool_registry = ToolRegistry(
+            config_path=self.tools_config_path,
+            memory_tool_specs=self.memory_manager.get_tool_specs(),
+        )
         self._system_prompt_cache.clear()
         self.system_prompt = self._build_system_prompt()
         self.context_assembler = self._build_context_assembler()
@@ -501,10 +511,7 @@ class AgentRuntime:
             self.memory_store,
             self.system_prompt,
             config,
-            memory_manager=RuntimeMemoryManager(
-                LocalRuntimeMemoryProvider(self.memory_store),
-                external_providers=self.external_memory_providers,
-            ),
+            memory_manager=self.memory_manager,
         )
 
     def running_turn_snapshot(self, session_id: str) -> dict[str, Any]:

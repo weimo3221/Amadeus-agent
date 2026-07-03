@@ -31,6 +31,13 @@ MEMORY_ITEMS_MODEL_RESULT_LIMIT = 8
 MEMORY_ITEMS_MODEL_CONTENT_CHARS = 240
 SESSION_MESSAGES_MODEL_RESULT_LIMIT = 8
 SESSION_MESSAGES_MODEL_CONTENT_CHARS = 360
+MEMORY_PROVIDER_TOOL_NAMES = {
+    "search_memory",
+    "search_memory_items",
+    "memory_add",
+    "memory_replace",
+    "memory_forget",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -77,10 +84,16 @@ class ToolRegistry:
         self,
         specs: Iterable[ToolSpec] | None = None,
         config_path: Path = DEFAULT_TOOLS_CONFIG_PATH,
+        memory_tool_specs: Iterable[ToolSpec] | None = None,
     ) -> None:
         config = parse_tools_config(config_path)
         source_specs = specs if specs is not None else list_tool_specs()
         self._specs = {spec.name: deepcopy(spec) for spec in source_specs}
+        if memory_tool_specs is not None:
+            for tool_name in MEMORY_PROVIDER_TOOL_NAMES:
+                self._specs.pop(tool_name, None)
+            for spec in memory_tool_specs:
+                self._specs[spec.name] = deepcopy(spec)
         if specs is None:
             for mcp_spec in build_mcp_tool_specs(
                 parse_mcp_servers_config(config.get("mcp", {})),

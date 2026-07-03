@@ -82,7 +82,7 @@ Fallback path today:
 - Python `/agent/turn` is wired as the preferred turn path.
 - Python now owns the preferred model/tool/memory/behavior path for a turn:
   - loads OpenAI-compatible provider config from environment or `.env`
-  - assembles API-call-time context from summaries, query-filtered accepted memory items, recent messages, active plan/todo/task reference blocks, relevant FTS retrieval, and optional external memory provider snippets
+  - assembles API-call-time context from the active runtime memory provider, recent messages, active plan/todo/task reference blocks, and diagnostics; the built-in provider supplies summaries, query-filtered accepted memory items, and relevant FTS retrieval when no external provider is configured
   - runs a bounded Hermes-style tool loop using OpenAI-compatible `tool_calls`
   - executes Python tools until the model stops requesting tools or `agent.maxToolIterations` is reached
   - writes user/assistant messages to SQLite
@@ -176,7 +176,7 @@ Fallback path today:
   - `ToolContext` now carries a cooperative cancellation signal; pre-cancelled calls return `tool_cancelled`, and timeout sets the cancellation signal for context-aware tools.
   - Large successful tool outputs are compacted before being written back into model context, while full output remains available on `ToolResult`.
   - Stable memory now lives in auditable Markdown files (`MEMORY.md` and `USER.md`) and is injected into the cached system prompt.
-  - `ContextAssembler` now consumes a runtime memory manager. Stable Markdown memory stays in the prompt layer; the built-in local runtime memory provider exposes derived SQLite/session artifacts such as summaries, query-filtered accepted structured memory, and sanitized FTS snippets. Active plans, todos, task state, recent task results, and external memory provider snippets are attached to the current user message as non-persistent reference context. `memory.context.used` diagnostics are retained in a per-session in-memory ring buffer.
+  - `ContextAssembler` now consumes a runtime memory manager. Stable Markdown memory stays in the prompt layer; the built-in local runtime memory provider exposes derived SQLite/session artifacts such as summaries, query-filtered accepted structured memory, sanitized FTS snippets, and default memory tools when no external provider is configured. If an external provider is configured, it replaces the built-in runtime provider surface for prefetch and memory tools. Active plans, todos, task state, recent task results, and memory provider snippets are attached to the current user message as non-persistent reference context. `memory.context.used` diagnostics are retained in a per-session in-memory ring buffer.
   - `search_memory` now has a per-tool model-output policy that keeps memory match metadata while capping model-context result count and snippet length.
   - `read_session_messages` is now available as a bounded, paginated transcript/log inspection tool with its own model-output policy.
   - `search_memory_items` now has a per-tool model-output policy that keeps structured fact metadata while capping model-context item count and content length.
@@ -398,7 +398,7 @@ Started.
 - `read_session_messages` lets the model read a bounded raw transcript window when exact session conversation wording is needed.
 - Automatic memory prefetch injects relevant prior snippets into the current user message as non-persistent `<memory-context>`.
 - Structured durable memory injection is now query-filtered, so unrelated accepted `memory_items` are not automatically packed into every turn.
-- `memory_provider.py` now has a built-in local runtime provider for derived session memory artifacts and optional external providers for bounded non-persistent `<external-memory-context>` snippets; raw transcripts remain separate log data.
+- `memory_provider.py` now has a single-active-provider runtime memory layer. The built-in local provider is the default for derived session memory artifacts and SQLite memory tools; a configured external provider replaces that prefetch/tool surface. Raw transcripts remain separate log data.
 - Stable long-term memory is implemented with bounded role-scoped Markdown files under `data/roles/<roleId>/memory/`, with default-role migration fallback from the earlier `data/memory/` location.
 - `read_memory` / `update_memory` expose controlled read and add/replace/remove operations for agent facts and user preferences.
 - Conversation summary storage and load APIs are implemented with persisted SQLite records and `GET /memory/summary` / `POST /memory/summary`.
@@ -461,7 +461,7 @@ Started: the first restricted `delegate_task` research/search tool, session task
 - Added first task runner abstraction: `TaskWorker` now delegates execution to a `TaskRunner` boundary, with the existing thread-pool behavior represented by `InProcessTaskRunner`. This keeps the current in-process worker behavior intact while creating the seam needed for a future process-backed runner.
 - Added task-state context: each turn can inject current queued/running/blocked session tasks into a reference-only `<active-tasks>` user-message block and recent succeeded/failed/cancelled outcomes into `<recent-tasks>`, with `taskLimit`, `recentTaskLimit`, and `taskResultChars` runtime config plus `memory.context.used` diagnostics sources.
 - Added prompt-surface hardening: system prompt assembly now separates stable runtime rules from contextual workspace/tool/memory/skill sections, advertises enabled tool capabilities, includes runtime environment metadata, sanitizes context-like markup, and caches per-session prompt variants until tool/runtime config changes.
-- Added first external memory provider boundary through `memory_provider.py`; providers can prefetch relevant reference snippets for a turn without writing durable memory.
+- Added first external memory provider boundary through `memory_provider.py`; a configured external provider becomes the active runtime memory provider for turn prefetch and memory tool exposure instead of stacking beside the built-in SQLite memory tools.
 - Added `skill_manage` as an approval-gated local experience-skill save path, plus skill catalog filtering by platform/tool availability and manifest-based cache invalidation.
 - Added deterministic runtime contract eval script at `scripts/eval_runtime_contracts.py` covering role identity, active/recent task context, task lifecycle, and MCP tool schema/execution contracts.
 - Added supervised dev-stack startup through `scripts/dev_stack.py`, restoring the local P0 health signal and replacing the default raw concurrent `npm run dev` path with ordered startup plus health checks.
