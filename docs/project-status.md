@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -193,10 +193,11 @@ Fallback path today:
 - The dev supervisor fails fast on occupied runtime/bridge health endpoints by default, and supports `--reuse-existing` for intentionally attaching to already-running local services.
 - Provider config tests now isolate `AMADEUS_LLM_PROVIDER` and provider-specific environment variables, so local `.env` credentials no longer break `tests.test_model`.
 - Current validation passes: `python -m unittest tests.test_model`, `python -m py_compile scripts/dev_stack.py`, `npm run typecheck`, `npm test`, and `python scripts/eval_runtime_contracts.py`. The supervised no-desktop stack was also verified on temporary ports `8890` / `8888`, with both health checks passing and ports released after shutdown.
+- Added `apps/desktop-ui-next`, a standalone Main UI design prototype (Vue 3 + Vite + TypeScript + Tailwind CSS v4, `@iconify/vue` line icons). It is design-exploration only: it renders the chat workbench from local mock data with no bridge/runtime connection, and exists to define the next Main UI visual language (soft-gradient, glassmorphism, rounded, light anime aesthetic) plus a reusable `Am*` component set and shared design tokens before folding the direction back into the real `apps/desktop` Main UI. Verified with its own `npm run typecheck` and browser interaction checks (tab switching, session dropdown, settings modal, simulated send flow).
 
 ### Still Needed
 
-- Continue consolidating the desktop UI now that Main UI and Companion are split. The current priority is to keep Companion lightweight and make Main UI the place for richer context, skills, diagnostics, permissions, and future session switching.
+- Continue consolidating the desktop UI now that Main UI and Companion are split. The current priority is to keep Companion lightweight and make Main UI the place for richer context, skills, diagnostics, permissions, and future session switching. The `apps/desktop-ui-next` prototype now holds the target Main UI visual language and reusable component set; the next step is to port its design tokens and component patterns into the real `apps/desktop` Main UI renderer rather than maintaining two surfaces.
 - Implement the real CLI entry as an independent session client, defaulting to its own session ID unless explicitly attached elsewhere.
 - Keep improving Main UI session switching and the explicit attach/view flow for Companion sessions now that current-session history restore is in place.
 - Keep Electron end-to-end coverage aligned with that UI pass so layout and interaction regressions are caught while the surface is being simplified.

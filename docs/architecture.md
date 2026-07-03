@@ -197,6 +197,16 @@ Current note:
 - Live2D model fit is configured from `configs/runtime.yaml` through `/live2d/config` (`desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, `desktop.companionLive2dOffsetY`).
 - `packages/live2d-stage` is still an intended package boundary, not the active implementation.
 
+### apps/desktop-ui-next
+
+Standalone Main UI design prototype:
+
+- A separate Vue 3 + Vite + TypeScript + Tailwind CSS v4 workspace used to explore the next Main UI visual language (soft-gradient, glassmorphism, rounded, light anime aesthetic).
+- It is a design prototype only. It does not connect to the WebSocket bridge or Python runtime; it renders the chat workbench from local mock data with simulated interaction states.
+- It carries no runtime, memory, tool, or provider logic. When its visual direction is accepted, the intended path is to fold the shared design tokens and component patterns back into the real `apps/desktop` Main UI renderer, not to ship this prototype as a second production surface.
+- Layout: `AppSidebar`, `AppHeader`, and a chat workspace (session switcher, plan panel, chat stream, composer) plus a right rail with overview/tasks/skills tabs.
+- Reusable component set under `src/components/ui` (`AmButton`, `AmInput`, `AmSelect`, `AmCard`, `AmTag`, `AmTabs`, `AmTable`, `AmModal`, `AmEmptyState`, `AmLoading`) and shared design tokens in `src/styles/main.css`.
+
 ### apps/server
 
 TypeScript bridge responsibilities today:

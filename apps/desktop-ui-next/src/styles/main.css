@@ -1,0 +1,199 @@
+@import 'tailwindcss';
+
+/* =========================================================================
+   Amadeus UI Next — Design Tokens
+   soft · rounded · airy · light anime-clean aesthetic
+   ========================================================================= */
+@theme {
+  /* ---- Brand & accent palette ---- */
+  --color-brand-50: #f2f0ff;
+  --color-brand-100: #e7e2ff;
+  --color-brand-200: #d3c9ff;
+  --color-brand-300: #b7a6ff;
+  --color-brand-400: #9c82fb;
+  --color-brand-500: #8461f0;
+  --color-brand-600: #6f49dd;
+  --color-brand-700: #5c3ac0;
+  --color-brand-800: #4b309b;
+  --color-brand-900: #3f2c7c;
+
+  --color-sky-soft: #7cc6f8;
+  --color-mint-soft: #74e0c2;
+  --color-blush-soft: #ff9ec9;
+  --color-peach-soft: #ffc59e;
+
+  /* ---- Semantic surfaces ---- */
+  --color-ink: #2c2740;
+  --color-ink-soft: #5b5470;
+  --color-ink-faint: #928aa6;
+  --color-line: #ece7f6;
+  --color-line-strong: #ddd4ef;
+
+  --color-canvas: #f7f5ff;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f4f1fd;
+
+  /* ---- Status ---- */
+  --color-success: #37c58b;
+  --color-success-soft: #e3f9ef;
+  --color-warning: #f5a524;
+  --color-warning-soft: #fdf1dc;
+  --color-danger: #f4587a;
+  --color-danger-soft: #fde4ea;
+  --color-info: #5aa9f6;
+  --color-info-soft: #e4f1fe;
+
+  /* ---- Radius scale ---- */
+  --radius-xl2: 14px;
+  --radius-xl3: 18px;
+  --radius-xl4: 24px;
+  --radius-pill: 999px;
+
+  /* ---- Spacing rhythm (8 / 12 / 16 / 24) ---- */
+  --spacing-xs: 8px;
+  --spacing-sm: 12px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+
+  /* ---- Elevation ---- */
+  --shadow-soft: 0 6px 18px -10px rgba(96, 74, 180, 0.35);
+  --shadow-card: 0 18px 42px -26px rgba(85, 63, 170, 0.45);
+  --shadow-float: 0 28px 60px -30px rgba(83, 60, 175, 0.5);
+  --shadow-glow: 0 0 0 4px rgba(132, 97, 240, 0.14);
+
+  /* ---- Typography ---- */
+  --font-sans:
+    'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', ui-sans-serif, system-ui,
+    -apple-system, 'Segoe UI', sans-serif;
+
+  /* ---- Motion ---- */
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ---- Custom animations ---- */
+  --animate-fade-in: fade-in 0.22s var(--ease-soft) both;
+  --animate-pop-in: pop-in 0.2s var(--ease-soft) both;
+  --animate-rise-in: rise-in 0.24s var(--ease-soft) both;
+  --animate-float-slow: float-slow 7s ease-in-out infinite;
+  --animate-float-slower: float-slow 11s ease-in-out infinite;
+  --animate-twinkle: twinkle 3.5s ease-in-out infinite;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes float-slow {
+  0%,
+  100% {
+    transform: translateY(0) translateX(0);
+  }
+  50% {
+    transform: translateY(-14px) translateX(6px);
+  }
+}
+
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.1);
+  }
+}
+
+/* =========================================================================
+   Base
+   ========================================================================= */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  background: var(--color-canvas);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(132, 97, 240, 0.18);
+}
+
+/* Soft scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: var(--radius-pill);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-brand-200);
+  background-clip: content-box;
+}
+
+/* =========================================================================
+   Reusable helpers
+   ========================================================================= */
+@utility glass-card {
+  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: var(--shadow-card);
+}
+
+@utility focus-ring {
+  outline: none;
+  box-shadow: var(--shadow-glow);
+  border-color: var(--color-brand-300);
+}

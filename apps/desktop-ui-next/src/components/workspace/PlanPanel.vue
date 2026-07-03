@@ -1,0 +1,60 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { Icon } from '@iconify/vue'
+import type { PlanItem, PlanStatus } from '@/types'
+
+const props = defineProps<{
+  items: PlanItem[]
+}>()
+
+const meta: Record<PlanStatus, { icon: string; ring: string; text: string }> = {
+  done: { icon: 'ph:check-bold', ring: 'bg-success text-white', text: 'text-ink-faint line-through' },
+  active: { icon: 'ph:dot-outline-fill', ring: 'bg-brand-500 text-white', text: 'text-ink font-medium' },
+  pending: { icon: 'ph:circle', ring: 'bg-surface-muted text-ink-faint', text: 'text-ink-soft' },
+}
+
+const doneCount = computed(() => props.items.filter((i) => i.status === 'done').length)
+const progress = computed(() =>
+  props.items.length ? Math.round((doneCount.value / props.items.length) * 100) : 0,
+)
+</script>
+
+<template>
+  <div
+    class="rounded-[var(--radius-xl3)] border border-brand-100 bg-gradient-to-br from-brand-50/80 to-surface p-4"
+  >
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <Icon icon="ph:list-checks-duotone" :width="18" class="text-brand-500" />
+        <span class="text-sm font-semibold text-ink">当前计划</span>
+      </div>
+      <span class="rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-brand-600">
+        {{ doneCount }}/{{ items.length }}
+      </span>
+    </div>
+
+    <!-- progress bar -->
+    <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-brand-100/70">
+      <div
+        class="h-full rounded-full bg-gradient-to-r from-brand-400 to-brand-500 transition-all duration-500 ease-[var(--ease-soft)]"
+        :style="{ width: `${progress}%` }"
+      />
+    </div>
+
+    <ol class="mt-3 flex flex-col gap-1.5">
+      <li
+        v-for="item in items"
+        :key="item.id"
+        class="flex items-center gap-2.5 rounded-[var(--radius-xl2)] px-1.5 py-1"
+      >
+        <span
+          class="grid size-5 shrink-0 place-items-center rounded-full text-[11px]"
+          :class="meta[item.status].ring"
+        >
+          <Icon :icon="meta[item.status].icon" :width="12" />
+        </span>
+        <span class="text-[13px]" :class="meta[item.status].text">{{ item.label }}</span>
+      </li>
+    </ol>
+  </div>
+</template>
