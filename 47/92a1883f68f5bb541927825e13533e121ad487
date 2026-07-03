@@ -1,0 +1,29 @@
+packages/amadeus/README.md
+  s_51499fcc7a3cab::t_3429b54c51415f 76
+packages/amadeus/agent.py
+  s_51499fcc7a3cab::t_ae79b542242a6e 203-206,211-214,496-499,514
+packages/amadeus/memory_provider.py
+  s_51499fcc7a3cab::t_ed09ade664e8f2 7-15,32-37,104-118,128-192,203-211,213-227
+packages/amadeus/tool_runtime/registry.py
+  s_51499fcc7a3cab::t_75d992fe765458 34-40,87,92-96
+tests/test_python_agent_runtime.py
+  s_51499fcc7a3cab::t_2262b527b6a1bf 683-730
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "4792a1883f68f5bb541927825e13533e121ad487",
+  "prompts": {},
+  "sessions": {
+    "s_51499fcc7a3cab": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f26da-cc7d-7911-a627-2e3d77cc7d7d",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
