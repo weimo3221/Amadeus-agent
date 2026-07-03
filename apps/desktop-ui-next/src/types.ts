@@ -28,7 +28,7 @@ export interface PlanItem {
   status: PlanStatus
 }
 
-export type TaskStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed'
+export type TaskStatus = 'queued' | 'running' | 'blocked' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface TaskItem {
   id: string
@@ -54,7 +54,7 @@ export interface SkillItem {
   name: string
   category: string
   summary: string
-  score: number
+  score?: number
 }
 
 export interface ScheduledJob {
@@ -64,4 +64,22 @@ export interface ScheduledJob {
   nextRun: string
   repeat: number
   enabled: boolean
+}
+
+export interface RoleProfile {
+  id: string
+  name: string
+  description: string
+  persona: string
+  style: string
+  provider: string
+  model: string
+}
+
+export interface MemoryItem {
+  id: string
+  scope: string
+  content: string
+  confidence: number
+  updatedAt: string
 }

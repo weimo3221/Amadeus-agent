@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { ConnectionState } from '@/types'
 
@@ -9,22 +10,26 @@ interface NavItem {
   badge?: number
 }
 
-defineProps<{
+const props = defineProps<{
   active: string
   connection: ConnectionState
+  roleName?: string
+  taskCount?: number
+  skillCount?: number
+  scheduledCount?: number
 }>()
 
 const emit = defineEmits<{
   navigate: [key: string]
 }>()
 
-const primary: NavItem[] = [
+const primary = computed<NavItem[]>(() => [
   { key: 'chat', label: '对话工作台', icon: 'ph:chats-circle-duotone' },
-  { key: 'tasks', label: '任务', icon: 'ph:list-checks-duotone', badge: 4 },
-  { key: 'skills', label: '技能', icon: 'ph:sparkle-duotone', badge: 6 },
-  { key: 'schedule', label: '定时任务', icon: 'ph:alarm-duotone' },
+  { key: 'tasks', label: '任务', icon: 'ph:list-checks-duotone', badge: props.taskCount || undefined },
+  { key: 'skills', label: '技能', icon: 'ph:sparkle-duotone', badge: props.skillCount || undefined },
+  { key: 'schedule', label: '定时任务', icon: 'ph:alarm-duotone', badge: props.scheduledCount || undefined },
   { key: 'memory', label: '记忆库', icon: 'ph:brain-duotone' },
-]
+])
 
 const secondary: NavItem[] = [
   { key: 'settings', label: '设置', icon: 'ph:sliders-horizontal-duotone' },
@@ -125,7 +130,7 @@ const connectionMeta: Record<ConnectionState, { label: string; tone: string; dot
           />
         </div>
         <div class="min-w-0 leading-tight">
-          <p class="truncate text-[13px] font-medium text-ink">未来星</p>
+          <p class="truncate text-[13px] font-medium text-ink">{{ roleName || 'Amadeus' }}</p>
           <p class="text-[11px]" :class="connectionMeta[connection].tone">
             {{ connectionMeta[connection].label }}
           </p>

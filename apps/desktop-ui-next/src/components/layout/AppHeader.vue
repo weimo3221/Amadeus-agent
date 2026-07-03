@@ -13,6 +13,7 @@ defineProps<{
 const emit = defineEmits<{
   select: [id: string]
   create: []
+  delete: [id: string]
   openSettings: []
 }>()
 
@@ -43,6 +44,7 @@ const connectionMeta: Record<ConnectionState, { label: string; tone: string; dot
       :active-id="activeId"
       @select="emit('select', $event)"
       @create="emit('create')"
+      @delete="emit('delete', $event)"
     />
 
     <div class="ml-auto flex shrink-0 items-center gap-2">

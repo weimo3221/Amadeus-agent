@@ -11,6 +11,7 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "@amadeus-agent/amadeus": "file:../../packages/amadeus",
     "@iconify/vue": "^4.3.0",
     "vue": "^3.5.13"
   },

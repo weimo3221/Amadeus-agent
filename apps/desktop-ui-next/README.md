@@ -1,13 +1,13 @@
 # desktop-ui-next
 
-Standalone design prototype for the next Amadeus **Main UI** visual language.
+Next-generation Amadeus **Main UI** — a Vue 3 workbench that connects to the live
+Amadeus runtime.
 
-This is a **design exploration only**. It does not connect to the WebSocket bridge
-or the Python runtime — it renders the chat workbench from local mock data with
-simulated interaction states. The goal is to define the target look and feel
-(soft-gradient, light glassmorphism, rounded cards, light anime aesthetic) plus a
-reusable component set and shared design tokens, then fold that direction back into
-the real `apps/desktop` Main UI renderer.
+This app started as a design exploration and now wires into the real backend: it
+streams chat over the WebSocket bridge and reads/writes session, role, skill, and
+memory state over the Python runtime's HTTP API. It defines the target look and
+feel (soft-gradient, light glassmorphism, rounded cards, light anime aesthetic)
+plus a reusable component set and shared design tokens.
 
 ## Stack
 
@@ -27,22 +27,55 @@ npm run typecheck  # vue-tsc --noEmit
 npm run build      # type check + production build
 ```
 
+## Runtime connection
+
+The UI talks to two backends (defaults shown), configurable via env vars or URL
+query params:
+
+| Purpose            | Default                     | Env var                   | Query param    |
+| ------------------ | --------------------------- | ------------------------- | -------------- |
+| Chat WebSocket     | `ws://127.0.0.1:8788/ws`    | `VITE_AGENT_WS_URL`       | `agentWsUrl`   |
+| Runtime HTTP API   | `http://127.0.0.1:8790`     | `VITE_AGENT_HTTP_URL`     | `agentHttpUrl` |
+| Session id         | `companion:default`         | `VITE_AMADEUS_SESSION_ID` | `sessionId`    |
+
+The WebSocket is opened per surface as
+`ws://127.0.0.1:8788/ws?surface=main-ui&sessionId=<id>`. Runtime state is fetched
+directly from the Python runtime over HTTP; endpoints in use include:
+
+- `GET /sessions`, `POST /sessions`, `DELETE /sessions/:id` (archive)
+- `GET /roles`, `PUT /roles/:id` (name / persona / style / provider / model)
+- `GET /skills/list`
+- `GET /memory/items`
+
+Some endpoints (`/tasks`, `/scheduled-jobs`, `/sessions/:id/plan`) may not be
+available depending on runtime state; the UI degrades gracefully to empty lists.
+
 ## Structure
 
 ```text
 src/
   styles/main.css          # design tokens (color / radius / spacing / shadow / motion)
   types.ts                 # shared UI types
-  mock/data.ts             # mock sessions / messages / plan / tasks / skills
+  runtime/                 # backend connection layer
+    config.ts              #   resolves WS / HTTP URLs + session id
+    client.ts              #   WebSocket chat client
+    http.ts                #   runtime HTTP API (sessions / roles / skills / memory)
+  composables/
+    useRuntime.ts          # singleton store: bootstrap + reactive runtime state
   components/
     ui/                    # reusable Am* component library
       AmButton  AmInput  AmSelect  AmCard  AmTag
       AmTabs    AmTable   AmModal   AmEmptyState  AmLoading
     layout/                # AppBackground / AppSidebar / AppHeader
-    workspace/             # SessionSwitcher / ChatMessage / ChatComposer
-                           # PlanPanel / StatusTiles / WorkspaceView
-  App.vue                  # assembles the workbench
+    workspace/             # SessionSwitcher / ChatMessage / ChatComposer / PlanPanel
+                           # WorkspaceView (overview)
+                           # TasksView / SkillsView / ScheduleView / MemoryView / SettingsView
+  App.vue                  # sidebar navigation drives the active workspace view
 ```
+
+Sidebar navigation (`AppSidebar` → `App.vue` `activeNav`) switches the main area
+between the chat workbench (`WorkspaceView`) and the dedicated views
+(`TasksView`, `SkillsView`, `ScheduleView`, `MemoryView`, `SettingsView`).
 
 ## Design tokens
 

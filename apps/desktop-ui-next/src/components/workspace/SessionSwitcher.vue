@@ -11,10 +11,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [id: string]
   create: []
+  delete: [id: string]
 }>()
 
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
+const confirmId = ref<string | null>(null)
 
 function current() {
   return props.sessions.find((s) => s.id === props.activeId)
@@ -25,8 +27,25 @@ function pick(id: string) {
   open.value = false
 }
 
+function askDelete(id: string) {
+  confirmId.value = id
+}
+
+function confirmDelete(id: string) {
+  emit('delete', id)
+  confirmId.value = null
+  open.value = false
+}
+
+function cancelDelete() {
+  confirmId.value = null
+}
+
 function onDocClick(event: MouseEvent) {
-  if (root.value && !root.value.contains(event.target as Node)) open.value = false
+  if (root.value && !root.value.contains(event.target as Node)) {
+    open.value = false
+    confirmId.value = null
+  }
 }
 
 onMounted(() => document.addEventListener('click', onDocClick))
@@ -85,35 +104,71 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
         <ul class="mt-1 flex max-h-72 flex-col gap-1 overflow-auto">
           <li v-for="s in sessions" :key="s.id">
-            <button
-              type="button"
+            <div
               class="group flex w-full items-center gap-3 rounded-[var(--radius-xl2)] px-2.5 py-2 text-left
                      transition-colors duration-150 hover:bg-brand-50/70"
               :class="s.id === activeId ? 'bg-brand-50' : ''"
-              @click="pick(s.id)"
             >
-              <span
-                class="grid size-8 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
-                :class="s.id === activeId ? 'bg-brand-500 text-white' : 'bg-surface-muted text-ink-faint'"
+              <button
+                type="button"
+                class="flex min-w-0 flex-1 items-center gap-3 text-left"
+                @click="pick(s.id)"
               >
-                <Icon icon="ph:chat-teardrop-dots-duotone" :width="16" />
-              </span>
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-[13px] font-medium text-ink">{{ s.title }}</span>
-                <span class="block truncate text-[11px] text-ink-faint">
-                  {{ s.roleName }} · {{ s.messageCount }} 条 · {{ s.updatedAt }}
+                <span
+                  class="grid size-8 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
+                  :class="s.id === activeId ? 'bg-brand-500 text-white' : 'bg-surface-muted text-ink-faint'"
+                >
+                  <Icon icon="ph:chat-teardrop-dots-duotone" :width="16" />
                 </span>
-              </span>
-              <Icon
-                v-if="s.id === activeId"
-                icon="ph:check-circle-fill"
-                :width="16"
-                class="shrink-0 text-brand-500"
-              />
-            </button>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-[13px] font-medium text-ink">{{ s.title }}</span>
+                  <span class="block truncate text-[11px] text-ink-faint">
+                    {{ s.roleName }} · {{ s.messageCount }} 条 · {{ s.updatedAt }}
+                  </span>
+                </span>
+              </button>
+
+              <template v-if="confirmId === s.id">
+                <button
+                  type="button"
+                  title="确认删除"
+                  class="grid size-7 shrink-0 place-items-center rounded-full bg-danger-soft text-danger
+                         transition-colors duration-150 hover:bg-danger hover:text-white"
+                  @click.stop="confirmDelete(s.id)"
+                >
+                  <Icon icon="ph:check-bold" :width="14" />
+                </button>
+                <button
+                  type="button"
+                  title="取消"
+                  class="grid size-7 shrink-0 place-items-center rounded-full bg-surface-muted text-ink-faint
+                         transition-colors duration-150 hover:bg-line hover:text-ink"
+                  @click.stop="cancelDelete"
+                >
+                  <Icon icon="ph:x-bold" :width="14" />
+                </button>
+              </template>
+              <template v-else>
+                <Icon
+                  v-if="s.id === activeId"
+                  icon="ph:check-circle-fill"
+                  :width="16"
+                  class="shrink-0 text-brand-500 group-hover:hidden"
+                />
+                <button
+                  type="button"
+                  title="删除会话"
+                  class="hidden size-7 shrink-0 place-items-center rounded-full text-ink-faint
+                         transition-colors duration-150 hover:bg-danger-soft hover:text-danger group-hover:grid"
+                  @click.stop="askDelete(s.id)"
+                >
+                  <Icon icon="ph:trash-duotone" :width="15" />
+                </button>
+              </template>
+            </div>
           </li>
         </ul>
-        <p class="px-2 pt-1.5 text-[11px] text-ink-faint">点击切换会话，双击名称可重命名。</p>
+        <p class="px-2 pt-1.5 text-[11px] text-ink-faint">点击切换会话，悬停可删除会话。</p>
       </div>
     </transition>
   </div>
