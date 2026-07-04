@@ -59,6 +59,7 @@ export type ServerRuntimeEvent =
   | RuntimeEvent<'memory.context.used', MemoryContextUsedPayload>
   | RuntimeEvent<'agent.turn.started', AgentTurnStartedPayload>
   | RuntimeEvent<'agent.turn.cancelled', AgentTurnCancelledPayload>
+  | RuntimeEvent<'assistant.reasoning.delta', AssistantReasoningDeltaPayload>
   | RuntimeEvent<'assistant.delta', AssistantDeltaPayload>
   | RuntimeEvent<'assistant.message', AssistantMessagePayload>
   | RuntimeEvent<'assistant.state', AssistantStatePayload>
@@ -98,6 +99,10 @@ export interface AgentTurnCancelledPayload {
 }
 
 export interface AssistantDeltaPayload {
+  text: string
+}
+
+export interface AssistantReasoningDeltaPayload {
   text: string
 }
 

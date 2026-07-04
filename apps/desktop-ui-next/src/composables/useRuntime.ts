@@ -363,6 +363,11 @@ function createClient(): AgentRuntimeClient {
       onSessionId: (sessionId) => {
         state.activeSessionId = sessionId
       },
+      onAssistantReasoningDelta: (text) => {
+        const message = ensurePendingAssistant()
+        message.reasoning = `${message.reasoning ?? ''}${text}`
+        message.pending = true
+      },
       onAssistantDelta: (text) => {
         const message = ensurePendingAssistant()
         message.content += text

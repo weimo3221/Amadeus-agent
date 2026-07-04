@@ -37,9 +37,17 @@ const apiBaseUrl = ref('')
 const apiModel = ref('')
 const apiMaxTokens = ref('')
 const apiStreaming = ref(true)
+const apiThinkingEnabled = ref(false)
+const apiReasoningEffort = ref<'low' | 'medium' | 'high'>('medium')
 const apiKey = ref('')
 const apiSaving = ref(false)
 const apiFlash = ref(false)
+
+const reasoningEffortOptions = [
+  { label: '低（low）', value: 'low' },
+  { label: '中（medium）', value: 'medium' },
+  { label: '高（high）', value: 'high' },
+]
 
 const providerOptions = computed(() =>
   (state.runtimeConfig?.presets ?? state.providerPresets).map((p) => ({
@@ -60,6 +68,8 @@ function loadApiForm() {
   apiModel.value = api.model
   apiMaxTokens.value = api.maxTokens ? String(api.maxTokens) : ''
   apiStreaming.value = api.streaming
+  apiThinkingEnabled.value = api.thinkingEnabled
+  apiReasoningEffort.value = api.reasoningEffort
   apiKey.value = ''
 }
 
@@ -73,6 +83,8 @@ function onApiProviderChange(value: string) {
     apiModel.value = api.model
     apiMaxTokens.value = api.maxTokens ? String(api.maxTokens) : ''
     apiStreaming.value = api.streaming
+    apiThinkingEnabled.value = api.thinkingEnabled
+    apiReasoningEffort.value = api.reasoningEffort
     return
   }
   const profile = state.runtimeConfig?.providers.find((p) => p.id === value)
@@ -81,6 +93,8 @@ function onApiProviderChange(value: string) {
   apiModel.value = profile?.defaultModel || preset?.defaultModel || ''
   apiMaxTokens.value = profile?.maxTokens ? String(profile.maxTokens) : ''
   apiStreaming.value = profile?.supportsStreaming ?? preset?.supportsStreaming ?? true
+  apiThinkingEnabled.value = profile?.thinkingEnabled ?? false
+  apiReasoningEffort.value = profile?.reasoningEffort ?? 'medium'
 }
 
 async function saveModel() {
@@ -92,6 +106,8 @@ async function saveModel() {
     model: apiModel.value.trim() || undefined,
     maxTokens: Number.isFinite(maxTokens) ? maxTokens : 0,
     streaming: apiStreaming.value,
+    thinkingEnabled: apiThinkingEnabled.value,
+    reasoningEffort: apiReasoningEffort.value,
     ...(apiKey.value.trim() ? { apiKey: apiKey.value.trim() } : {}),
   })
   apiSaving.value = false
@@ -318,6 +334,40 @@ async function saveBehaviors() {
                 </button>
               </div>
             </div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div class="space-y-1.5">
+                <label class="text-xs font-medium text-ink-soft">思考模式</label>
+                <button
+                  type="button"
+                  class="flex h-10 w-full items-center justify-between rounded-[var(--radius-xl2)] border border-line bg-surface px-3
+                         text-sm text-ink transition-colors hover:border-brand-200"
+                  @click="apiThinkingEnabled = !apiThinkingEnabled"
+                >
+                  <span>{{ apiThinkingEnabled ? '已开启思考模式' : '关闭' }}</span>
+                  <span
+                    class="relative h-5 w-9 rounded-full transition-colors"
+                    :class="apiThinkingEnabled ? 'bg-brand-500' : 'bg-line'"
+                  >
+                    <span
+                      class="absolute top-0.5 size-4 rounded-full bg-white transition-all"
+                      :class="apiThinkingEnabled ? 'left-4' : 'left-0.5'"
+                    />
+                  </span>
+                </button>
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-xs font-medium text-ink-soft">思考强度</label>
+                <AmSelect
+                  v-model="apiReasoningEffort"
+                  :options="reasoningEffortOptions"
+                  placeholder="选择强度"
+                />
+              </div>
+            </div>
+            <p class="-mt-2 text-[11px] leading-relaxed text-ink-faint">
+              开启后会向 DeepSeek 发送 <code class="font-mono">thinking.enabled</code> 与
+              <code class="font-mono">reasoning_effort</code>，Main UI 会折叠展示思考过程，Companion 不展示。
+            </p>
             <div class="space-y-1.5">
               <label class="text-xs font-medium text-ink-soft">
                 API Key

@@ -47,6 +47,16 @@ const renderedContent = computed(() => renderMarkdown(props.message.content ?? '
             : 'rounded-bl-md border border-white/70 bg-surface text-ink'
         "
       >
+        <details
+          v-if="message.role === 'assistant' && message.reasoning"
+          class="reasoning-panel mb-2 rounded-[var(--radius-xl2)] border border-brand-100 bg-brand-50/60 px-3 py-2 text-xs text-ink-soft"
+        >
+          <summary class="flex cursor-pointer items-center gap-1.5 font-medium text-brand-700">
+            <Icon icon="ph:brain-duotone" :width="14" />
+            思考过程
+          </summary>
+          <div class="mt-2 whitespace-pre-wrap leading-relaxed">{{ message.reasoning }}</div>
+        </details>
         <!-- eslint-disable-next-line vue/no-v-html -->
         <div class="am-md" v-html="renderedContent" />
         <span v-if="message.pending" class="mt-1 inline-flex items-center gap-1 text-xs opacity-80">
@@ -149,5 +159,9 @@ const renderedContent = computed(() => renderMarkdown(props.message.content ?? '
   color: inherit;
   font-size: 0.85em;
   line-height: 1.5;
+}
+
+.reasoning-panel summary::-webkit-details-marker {
+  display: none;
 }
 </style>

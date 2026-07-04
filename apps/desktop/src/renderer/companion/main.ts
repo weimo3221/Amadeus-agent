@@ -1420,7 +1420,7 @@ const runtimeUi = new RuntimeUiController({
   },
   wsUrl: wsUrlForSurface(BASE_AGENT_WS_URL, 'companion', SESSION_ID),
   skillsUrl: `${AGENT_HTTP_URL}/skills/list`,
-  modelLabel: import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-flash',
+  modelLabel: import.meta.env.VITE_OPENAI_MODEL || 'deepseek-v4-pro',
   createSocket: (url) => new WebSocket(url),
   createAudio: (url) => {
     if (MOCK_AUDIO) {

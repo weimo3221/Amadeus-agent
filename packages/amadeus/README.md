@@ -92,6 +92,15 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 
 `search_files` is the only project file search tool exposed by the Python registry.
 
+## Provider Reasoning
+
+Model thinking controls use a provider-neutral config surface (`thinkingEnabled`, `reasoningEffort`) and a provider-specific translation layer in `provider_reasoning.py`.
+
+- DeepSeek V4 / `deepseek-reasoner` receive `thinking: { type: "enabled" | "disabled" }` and, when enabled, `reasoning_effort: low|medium|high`.
+- DeepSeek tool-call loops preserve returned `reasoning_content` on assistant tool-call history and replay it on the next provider request. If a legacy DeepSeek tool-call message lacks the field, the runtime pads it with a single space because empty strings can be rejected by DeepSeek.
+- Non-DeepSeek providers have `reasoning_content` and internal display-only `reasoning` fields stripped before API calls, so DeepSeek-specific replay metadata cannot leak into OpenAI/OpenRouter/Gemini-style requests.
+- Desktop Main UI may render `assistant.reasoning.delta` as a collapsed reasoning panel. Companion ignores that event by design.
+
 ## Adding A Tool
 
 Adding a simple local tool is intentionally lightweight:
@@ -130,6 +139,8 @@ http://127.0.0.1:8790
 
 - `GET /health`
 - `GET /runtime/health`：structured local health checks for runtime, model config, memory DB, tools, Live2D, audio, and effective config.
+- `GET /runtime/config`：read the active provider/model config, provider presets, Live2D model config, and audio config for the Main UI configuration center. Model config includes `thinkingEnabled` and `reasoningEffort`.
+- `PUT /runtime/config`：persist provider/model settings to `.env` and `configs/providers.yaml`, rebuild the active model config, and apply provider-specific reasoning settings.
 - `GET /runtime/feedback?sessionId=default`：query the Python-side harness feedback snapshot for desktop capabilities and audio playback state.
 - `GET /tools/list`：Python-owned source for effective tool permission state and enabled schemas.
 - `GET /tools/audit?sessionId=default&toolName=search_files&decision=finished&ok=true&limit=100`：query persisted tool audit records for diagnostics.
@@ -165,6 +176,7 @@ http://127.0.0.1:8790
 - `POST /memory/compact`
 - `POST /memory/reset`
 - `POST /audio/speak`
+- `POST /audio/transcribe?format=webm`：transcribe binary microphone audio through the configured ASR provider.
 - `GET /audio/files/{relativePath}`
 - `GET /live2d/config`
 - `GET /live2d/models`

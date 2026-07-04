@@ -18,6 +18,7 @@ export interface ToolPermissionPrompt {
 export interface RuntimeClientHandlers {
   onConnectionChange?: (phase: ConnectionPhase) => void
   onSessionId?: (sessionId: string) => void
+  onAssistantReasoningDelta?: (text: string) => void
   onAssistantDelta?: (text: string) => void
   onAssistantMessage?: (text: string) => void
   onToolStarted?: (toolName: string, displayName: string) => void
@@ -130,6 +131,9 @@ export class AgentRuntimeClient {
         this.sendDesktopCapabilities()
         break
       }
+      case 'assistant.reasoning.delta':
+        this.handlers.onAssistantReasoningDelta?.(event.payload.text)
+        break
       case 'assistant.delta':
         this.handlers.onAssistantDelta?.(event.payload.text)
         break

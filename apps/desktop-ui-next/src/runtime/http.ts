@@ -227,6 +227,8 @@ export interface RuntimeApiConfig {
   model: string
   streaming: boolean
   maxTokens: number
+  thinkingEnabled: boolean
+  reasoningEffort: 'low' | 'medium' | 'high'
   apiKeyConfigured: boolean
   apiKeyPreview: string
 }
@@ -241,6 +243,8 @@ export interface ProviderProfile {
   requiresApiKey: boolean
   supportsStreaming: boolean
   maxTokens: number
+  thinkingEnabled: boolean
+  reasoningEffort: 'low' | 'medium' | 'high'
 }
 
 export interface RuntimeConfigResult {
@@ -257,6 +261,8 @@ export interface RuntimeApiUpdate {
   apiKey?: string
   streaming?: boolean
   maxTokens?: number
+  thinkingEnabled?: boolean
+  reasoningEffort?: 'low' | 'medium' | 'high'
   requiresApiKey?: boolean
   envVar?: string
   label?: string

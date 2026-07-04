@@ -11,12 +11,14 @@ from time import perf_counter
 from typing import Any, Iterable, Literal
 from typing import Protocol
 
+from amadeus.provider_reasoning import ReasoningConfig, build_reasoning_request_extras, normalize_reasoning_effort
+
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROVIDERS_CONFIG_PATH = REPO_ROOT / "configs" / "providers.yaml"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-v4-pro"
 ModelErrorKind = Literal[
     "auth",
     "rate_limit",
@@ -34,6 +36,12 @@ ModelErrorKind = Literal[
 class ModelMessage:
     role: str
     content: str
+
+
+@dataclass(frozen=True)
+class ChatStreamDelta:
+    content: str = ""
+    reasoning_content: str = ""
 
 
 class ChatModel(Protocol):
@@ -95,7 +103,7 @@ PROVIDER_PRESETS: dict[str, ProviderProfile] = {
         label="DeepSeek",
         env_var="DEEPSEEK_API_KEY",
         base_url="https://api.deepseek.com/v1",
-        default_model="deepseek-chat",
+        default_model="deepseek-v4-pro",
     ),
     "openrouter": ProviderProfile(
         name="openrouter",
@@ -188,6 +196,8 @@ class OpenAICompatibleConfig:
     model: str
     streaming: bool = True
     max_tokens: int = 0
+    thinking_enabled: bool = False
+    reasoning_effort: str = "medium"
     default_headers: dict[str, str] = field(default_factory=dict)
     request_timeout_seconds: int = 60
     stream_timeout_seconds: int = 120
@@ -203,6 +213,8 @@ class OpenAICompatibleConfig:
             model=os.environ.get("OPENAI_MODEL", os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_MODEL", profile.default_model)),
             streaming=profile.supports_streaming,
             max_tokens=parse_positive_int_value(os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_MAX_TOKENS")),
+            thinking_enabled=parse_bool_value(os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_THINKING_ENABLED"), False),
+            reasoning_effort=parse_reasoning_effort(os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_REASONING_EFFORT")),
             default_headers=profile.default_headers,
             request_timeout_seconds=profile.request_timeout_seconds,
             stream_timeout_seconds=profile.stream_timeout_seconds,
@@ -219,6 +231,8 @@ class OpenAICompatibleConfig:
         base_url_env = f"{env_var.removesuffix('_API_KEY')}_BASE_URL"
         model_env = f"{env_var.removesuffix('_API_KEY')}_MODEL"
         max_tokens_env = f"{env_var.removesuffix('_API_KEY')}_MAX_TOKENS"
+        thinking_enabled_env = f"{env_var.removesuffix('_API_KEY')}_THINKING_ENABLED"
+        reasoning_effort_env = f"{env_var.removesuffix('_API_KEY')}_REASONING_EFFORT"
         profile = ProviderProfile(
             name=default_provider,
             label=str(provider_entry.get("label") or preset.label or default_provider),
@@ -241,6 +255,8 @@ class OpenAICompatibleConfig:
             model=str(provider_entry.get("model") or os.environ.get(model_env) or profile.default_model),
             streaming=profile.supports_streaming,
             max_tokens=max_tokens,
+            thinking_enabled=parse_bool_value(provider_entry.get("thinkingEnabled"), parse_bool_value(os.environ.get(thinking_enabled_env), False)),
+            reasoning_effort=parse_reasoning_effort(provider_entry.get("reasoningEffort") or os.environ.get(reasoning_effort_env)),
             default_headers=profile.default_headers,
             request_timeout_seconds=profile.request_timeout_seconds,
             stream_timeout_seconds=profile.stream_timeout_seconds,
@@ -272,6 +288,8 @@ class OpenAICompatibleChatModel:
             model=self.config.model,
             streaming=self.config.streaming,
             max_tokens=self.config.max_tokens,
+            thinking_enabled=self.config.thinking_enabled,
+            reasoning_effort=self.config.reasoning_effort,
             default_headers=self.config.default_headers,
             request_timeout_seconds=self.config.request_timeout_seconds,
             stream_timeout_seconds=self.config.stream_timeout_seconds,
@@ -288,7 +306,20 @@ class OpenAICompatibleChatModel:
     def post_chat_completion(self, payload: dict[str, Any], *, timeout_seconds: int | None = None) -> dict[str, Any]:
         return self._post_json("/chat/completions", payload, timeout_seconds=timeout_seconds or self.config.request_timeout_seconds)
 
-    def stream_chat_completion(self, payload: dict[str, Any], *, timeout_seconds: int | None = None) -> Iterable[str]:
+    def apply_reasoning_options(self, payload: dict[str, Any]) -> None:
+        extras = build_reasoning_request_extras(
+            provider=self.provider,
+            model=self.model,
+            base_url=self.base_url,
+            reasoning=ReasoningConfig(
+                enabled=self.config.thinking_enabled,
+                effort=self.config.reasoning_effort,
+            ),
+        )
+        payload.update(extras.top_level)
+        payload.update(extras.body)
+
+    def stream_chat_completion(self, payload: dict[str, Any], *, timeout_seconds: int | None = None) -> Iterable[ChatStreamDelta]:
         if not self.config.streaming:
             raise ModelError(
                 f"Provider {self.provider} does not support streaming.",
@@ -300,6 +331,7 @@ class OpenAICompatibleChatModel:
         request_start = perf_counter()
         chunk_count = 0
         content_chars = 0
+        reasoning_chars = 0
         logger.info(
             "Provider stream request starting path=%s model=%s messageCount=%s timeoutSeconds=%s",
             "/chat/completions",
@@ -341,16 +373,22 @@ class OpenAICompatibleChatModel:
                     first = choices[0] if choices and isinstance(choices[0], dict) else {}
                     delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
                     content = delta.get("content")
+                    reasoning_content = delta.get("reasoning_content")
+                    if isinstance(reasoning_content, str) and reasoning_content:
+                        chunk_count += 1
+                        reasoning_chars += len(reasoning_content)
+                        yield ChatStreamDelta(reasoning_content=reasoning_content)
                     if isinstance(content, str) and content:
                         chunk_count += 1
                         content_chars += len(content)
-                        yield content
+                        yield ChatStreamDelta(content=content)
                 logger.info(
-                    "Provider stream request finished path=%s model=%s chunks=%s contentChars=%s elapsedMs=%s",
+                    "Provider stream request finished path=%s model=%s chunks=%s contentChars=%s reasoningChars=%s elapsedMs=%s",
                     "/chat/completions",
                     payload.get("model"),
                     chunk_count,
                     content_chars,
+                    reasoning_chars,
                     round((perf_counter() - request_start) * 1000),
                 )
         except urllib.error.HTTPError as error:
@@ -629,6 +667,10 @@ def parse_positive_int_value(value: Any) -> int:
                 return 0
             return parsed if parsed > 0 else 0
     return 0
+
+
+def parse_reasoning_effort(value: Any) -> str:
+    return normalize_reasoning_effort(value)
 
 
 def parse_json_object_from_text(text: str) -> dict[str, Any]:

@@ -25,7 +25,7 @@ from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, AudioTranscriptCommand, AudioTranscriptFailure, AsrRuntime, LocalAudioLibrary, MacOsSayConfig, MacOsSayTtsProvider, create_asr_provider_from_config, create_tts_provider_from_config
 from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.mcp import McpServerConfig, list_mcp_tools
-from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_positive_int_value, parse_providers_config, provider_profile
+from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_positive_int_value, parse_providers_config, parse_reasoning_effort, provider_profile
 from amadeus.runtime_events import RuntimeEventBus
 from amadeus.scheduling import ScheduledJobWorker
 from amadeus.tool_runtime import ToolContext
@@ -2068,6 +2068,8 @@ def model_health_check() -> dict[str, Any]:
         "model": agent_runtime.model,
         "baseUrl": agent_runtime.base_url,
         "streaming": agent_runtime.model_client.config.streaming,
+        "thinkingEnabled": agent_runtime.model_client.config.thinking_enabled,
+        "reasoningEffort": agent_runtime.model_client.config.reasoning_effort,
         "apiKeyConfigured": api_key_configured,
     }
 
@@ -2201,6 +2203,8 @@ def build_runtime_config_payload() -> dict[str, Any]:
             "model": agent_runtime.model,
             "streaming": agent_runtime.model_client.config.streaming,
             "maxTokens": agent_runtime.model_client.max_tokens,
+            "thinkingEnabled": agent_runtime.model_client.config.thinking_enabled,
+            "reasoningEffort": agent_runtime.model_client.config.reasoning_effort,
             "apiKeyConfigured": bool(agent_runtime.api_key) and (requires_api_key or agent_runtime.api_key != "local"),
             "apiKeyPreview": "" if not requires_api_key and agent_runtime.api_key == "local" else mask_secret(agent_runtime.api_key),
         },
@@ -2384,6 +2388,8 @@ def configured_provider_profiles() -> list[dict[str, Any]]:
             "requiresApiKey": requires_api_key,
             "supportsStreaming": parse_bool_value(entry.get("streaming"), preset.supports_streaming) if entry else preset.supports_streaming,
             "maxTokens": parse_positive_int_value(entry.get("maxTokens")) if entry else 0,
+            "thinkingEnabled": parse_bool_value(entry.get("thinkingEnabled"), False) if entry else False,
+            "reasoningEffort": parse_reasoning_effort(entry.get("reasoningEffort")) if entry else "medium",
         })
     return profiles
 
@@ -2407,6 +2413,8 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
     requires_api_key = parse_bool_value(payload.get("requiresApiKey"), profile.requires_api_key)
     streaming = parse_bool_value(payload.get("streaming"), profile.supports_streaming)
     max_tokens = parse_optional_non_negative_int(payload.get("maxTokens"), "maxTokens")
+    thinking_enabled = parse_bool_value(payload.get("thinkingEnabled"), agent_runtime.model_client.config.thinking_enabled if same_provider else False)
+    reasoning_effort = parse_reasoning_effort(payload.get("reasoningEffort") or (agent_runtime.model_client.config.reasoning_effort if same_provider else None))
     api_key = payload.get("apiKey")
     if api_key is not None and not isinstance(api_key, str):
         raise ValueError("apiKey must be a string")
@@ -2421,6 +2429,8 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
         env_updates[f"{env_var.removesuffix('_API_KEY')}_MODEL"] = model
     if max_tokens is not None:
         env_updates[f"{env_var.removesuffix('_API_KEY')}_MAX_TOKENS"] = str(effective_max_tokens)
+    env_updates[f"{env_var.removesuffix('_API_KEY')}_THINKING_ENABLED"] = "true" if thinking_enabled else "false"
+    env_updates[f"{env_var.removesuffix('_API_KEY')}_REASONING_EFFORT"] = reasoning_effort
     if isinstance(api_key, str) and api_key.strip():
         env_updates[env_var] = api_key.strip()
 
@@ -2437,6 +2447,8 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
         requires_api_key=requires_api_key,
         streaming=streaming,
         max_tokens=effective_max_tokens,
+        thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
     )
 
     return agent_runtime.configure_model_api(
@@ -2449,6 +2461,8 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
         or ("" if requires_api_key else "local"),
         streaming=streaming,
         max_tokens=effective_max_tokens,
+        thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -2559,6 +2573,8 @@ def update_providers_config_file(
     requires_api_key: bool,
     streaming: bool,
     max_tokens: int = 0,
+    thinking_enabled: bool = False,
+    reasoning_effort: str = "medium",
 ) -> None:
     llm_config = parse_providers_config(PROVIDERS_CONFIG_PATH).get("llm", {})
     configured = llm_config.get("providers") if isinstance(llm_config.get("providers"), dict) else {}
@@ -2581,6 +2597,8 @@ def update_providers_config_file(
         active_requires_api_key = requires_api_key if provider_id == provider else parse_bool_value(entry.get("requiresApiKey"), profile.requires_api_key)
         active_streaming = streaming if provider_id == provider else parse_bool_value(entry.get("streaming"), profile.supports_streaming)
         active_max_tokens = max_tokens if provider_id == provider else parse_positive_int_value(entry.get("maxTokens"))
+        active_thinking_enabled = thinking_enabled if provider_id == provider else parse_bool_value(entry.get("thinkingEnabled"), False)
+        active_reasoning_effort = reasoning_effort if provider_id == provider else parse_reasoning_effort(entry.get("reasoningEffort"))
         content.extend([
             f"    {provider_id}:",
             f"      label: {quote_yaml_value(active_label)}",
@@ -2590,6 +2608,8 @@ def update_providers_config_file(
             f"      model: {quote_yaml_value(active_model)}",
             f"      requiresApiKey: {str(active_requires_api_key).lower()}",
             f"      streaming: {str(active_streaming).lower()}",
+            f"      thinkingEnabled: {str(active_thinking_enabled).lower()}",
+            f"      reasoningEffort: {active_reasoning_effort}",
         ])
         if active_max_tokens > 0:
             content.append(f"      maxTokens: {active_max_tokens}")
@@ -2627,8 +2647,10 @@ DEFAULT_LLM_SECTION_LINES = [
     "      envVar: DEEPSEEK_API_KEY",
     "      baseUrl: https://api.deepseek.com/v1",
     "      apiKey: ${DEEPSEEK_API_KEY}",
-    "      model: deepseek-chat",
+    "      model: deepseek-v4-pro",
     "      streaming: true",
+    "      thinkingEnabled: true",
+    "      reasoningEffort: high",
 ]
 
 DEFAULT_TTS_SECTION_LINES = [

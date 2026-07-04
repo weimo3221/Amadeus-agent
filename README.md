@@ -16,7 +16,7 @@ Preferred path today:
 
 1. Desktop sends `user.message` over WebSocket.
 2. `apps/server` relays the turn to Python `POST /agent/turn`.
-3. Python runtime assembles API-call-time memory context, performs tool decisions, executes Python tools, streams assistant events, and may emit runtime audio.
+3. Python runtime assembles API-call-time memory context, performs tool decisions, executes Python tools, streams assistant events, and may emit runtime audio. DeepSeek V4 thinking mode is handled through a provider-aware reasoning layer so `reasoning_content` is replayed only for providers that require it.
 4. `apps/server` relays runtime events back to desktop.
 5. Desktop updates chat, permission UI, audio playback, Live2D behavior, scheduled-task state, and configuration views.
 
@@ -35,6 +35,7 @@ Developer diagnostics:
 - `GET /scheduled-jobs?sessionId=companion:default&activeOnly=false` reports scheduled companion messages, including completed/cancelled/failed terminal jobs.
 - `GET /todos?sessionId=companion:default&activeOnly=true` reports persistent session todo items.
 - `POST /audio/transcribe?format=webm` transcribes microphone input through the configured ASR provider.
+- `GET /runtime/config` reports model provider settings, including `thinkingEnabled` and `reasoningEffort` for providers that support explicit reasoning mode.
 
 Runtime failure behavior:
 

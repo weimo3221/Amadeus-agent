@@ -6,8 +6,10 @@ llm:
       envVar: DEEPSEEK_API_KEY
       baseUrl: https://api.deepseek.com/v1
       apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
+      model: deepseek-v4-pro
       streaming: true
+      thinkingEnabled: true
+      reasoningEffort: high
 
 tts:
   default: auto

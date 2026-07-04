@@ -15,6 +15,7 @@ from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioOutputCommand, AudioOutputResult, AudioRuntime, LocalAudioLibrary
 from amadeus.memory import MessageMemoryStore
 from amadeus.memory_provider import ExternalMemoryResult
+from amadeus.model import OpenAICompatibleConfig
 from amadeus.tool_runtime import ToolContext, ToolRegistry
 from amadeus.tools import ToolSpec
 
@@ -1069,6 +1070,47 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(assistant_messages[-1], "I used both tools.")
         second_decision_history = runtime.decision_messages[1]
         self.assertTrue(any(message.get("role") == "tool" and message.get("tool_call_id") == "call_time" for message in second_decision_history))
+
+    def test_deepseek_tool_loop_replays_reasoning_content_on_next_tool_turn(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decisions=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "Need current date before the weather lookup.",
+                    "tool_calls": [{
+                        "id": "call_time",
+                        "type": "function",
+                        "function": {"name": "get_current_time", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": "The date is available.",
+                    "tool_calls": [],
+                },
+            ],
+        )
+        runtime.model_client.config = OpenAICompatibleConfig(
+            provider="deepseek",
+            base_url="https://api.deepseek.com/v1",
+            api_key="test-key",
+            model="deepseek-v4-pro",
+            thinking_enabled=True,
+            reasoning_effort="high",
+        )
+
+        events = list(runtime.run_turn("default", "what is today's date?", lambda _request: False))
+
+        reasoning_events = [event.payload["text"] for event in events if event.type == "assistant.reasoning.delta"]
+        self.assertEqual(reasoning_events, ["Need current date before the weather lookup."])
+        second_decision_history = runtime.decision_messages[1]
+        assistant_tool_messages = [
+            message for message in second_decision_history
+            if message.get("role") == "assistant" and message.get("tool_calls")
+        ]
+        self.assertEqual(assistant_tool_messages[0]["reasoning_content"], "Need current date before the weather lookup.")
 
     def test_tool_loop_stops_at_configured_max_tool_iterations(self) -> None:
         runtime = FakeAgentRuntime(

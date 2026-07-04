@@ -37,7 +37,7 @@ config({ path: resolve(rootDir, '.env') })
 const host = process.env.AMADEUS_SERVER_HOST || '127.0.0.1'
 const port = Number(process.env.AMADEUS_SERVER_PORT || 8788)
 const serverBaseUrl = process.env.AMADEUS_SERVER_URL || `http://${host}:${port}`
-const model = process.env.OPENAI_MODEL || 'deepseek-v4-flash'
+const model = process.env.DEEPSEEK_MODEL || process.env.OPENAI_MODEL || 'deepseek-v4-pro'
 const pythonRuntimeUrl = process.env.AMADEUS_PYTHON_RUNTIME_URL || process.env.AMADEUS_PYTHON_TOOLS_URL || 'http://127.0.0.1:8790'
 const defaultSessionId = 'default'
 

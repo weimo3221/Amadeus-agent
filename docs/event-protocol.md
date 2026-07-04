@@ -173,7 +173,7 @@ Desktop can request memory review data and actions through the bridge:
   "type": "server.hello",
   "payload": {
     "name": "amadeus-agent-server",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-v4-pro",
     "memoryMessages": 12,
     "toolPermissions": []
   }
@@ -249,6 +249,24 @@ Desktop behavior:
 
 - Main UI keeps the normal chat history view.
 - Companion streams `assistant.delta` into a transient desktop bubble and marks it complete on `assistant.message`; the completed bubble fades out after a short delay instead of staying inside the input panel.
+
+### assistant.reasoning.delta
+
+```json
+{
+  "type": "assistant.reasoning.delta",
+  "payload": {
+    "text": "I need the current date before choosing the weather lookup arguments."
+  }
+}
+```
+
+Notes:
+
+- Python emits this when a provider returns reasoning text separately from final assistant content, currently through DeepSeek `reasoning_content`.
+- Main UI attaches it to the active assistant message and renders it in a collapsed "思考过程" panel.
+- Companion intentionally ignores this event so transient desktop bubbles remain concise.
+- Provider replay is handled server-side: DeepSeek thinking/tool-call rounds receive `reasoning_content` when required, while other providers have provider-specific reasoning fields stripped before API calls.
 
 ### assistant.state
 
@@ -626,6 +644,8 @@ GET /live2d/models/{relativePath}
 ```
 
 `GET /runtime/health` is the structured local diagnostics endpoint. It returns an aggregate `status` plus per-subsystem checks for runtime, model config, memory DB, tools, Live2D, audio, and effective runtime config. It intentionally avoids live external provider calls so startup diagnostics stay fast and deterministic.
+
+`GET /runtime/config` returns the active model provider settings, provider presets, Live2D config, and audio config payloads used by the Main UI configuration center. Model settings include `thinkingEnabled` and `reasoningEffort`; Python persists them to `.env` / `configs/providers.yaml` and translates them through provider-specific reasoning rules at request time.
 
 `POST /runtime/feedback` records desktop capability and runtime audio playback feedback into the Python-side harness policy. It can return harness-emitted runtime events, such as `character.behavior` for playback-driven Live2D state changes. `GET /runtime/feedback?sessionId=default` returns the latest per-session snapshot, including normalized `desktopCapabilities`, `audioPlayback`, and recent feedback events.
 

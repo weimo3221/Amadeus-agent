@@ -45,13 +45,13 @@ Fallback path today:
 - Companion Live2D model fit is configurable through `configs/runtime.yaml` under `desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, and `desktop.companionLive2dOffsetY`; Python exposes those values through `/live2d/config` and the renderer applies them when fitting the model.
 - Local runtime MVP is running in `apps/server` with HTTP health check and WebSocket events.
 - WebSocket connection management supports multiple clients per session through `sessionId -> clients[]`, with validated `surface` values (`main-ui`, `companion`, `cli`) and per-client `clientId` metadata.
-- DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies.
+- DeepSeek/OpenAI-compatible chat path is connected and supports streaming assistant replies. DeepSeek now defaults to `deepseek-v4-pro` with provider-aware thinking support: the runtime sends `thinking` / `reasoning_effort` only to supported DeepSeek models, preserves `reasoning_content` for DeepSeek tool-call replay, and strips DeepSeek-only reasoning fields before requests to other providers.
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
 - Desktop shows memory count, tool status, tool config status, voice status, visible chat messages, and has a Reset Session button.
 - Main UI restores the current session's persisted chat history from Python `/memory/messages` when opened or switched by `sessionId`, and renders assistant Markdown through the shared runtime Markdown renderer.
 - Main UI includes a Timed Messages panel for listing scheduled companion messages across active and terminal states. It listens for `scheduled.updated`, shows `已启用` / `执行中` / `已暂停` / `已完成` / `已取消` / `失败`, and displays last-run plus completed-run counts.
-- Main UI includes a configuration center for model provider/API settings, Live2D model import/selection/behavior mapping, macOS/GPT-SoVITS TTS settings, and runtime config persistence through Python endpoints.
+- Main UI includes a configuration center for model provider/API settings, model thinking mode and reasoning effort (`low` / `medium` / `high`), Live2D model import/selection/behavior mapping, macOS/GPT-SoVITS TTS settings, and runtime config persistence through Python endpoints.
 - Main UI and Companion have a first-pass light anime plus modern SaaS visual refresh with softer typography, pastel surfaces, and higher-contrast interactive states.
 - `apps/server` no longer owns a separate local message-count/reset SQLite path; it now reads `GET /memory/count` and forwards `POST /memory/reset` to the Python runtime while keeping the desktop protocol unchanged.
 - Tool calling is model-triggered through OpenAI-compatible `tools` / `tool_calls`, not keyword matching.
@@ -85,6 +85,7 @@ Fallback path today:
   - loads OpenAI-compatible provider config from environment or `.env`
   - assembles API-call-time context from the active runtime memory provider, recent messages, active plan/todo/task reference blocks, and diagnostics; the built-in provider supplies summaries, query-filtered accepted memory items, and relevant FTS retrieval when no external provider is configured
   - runs a bounded Hermes-style tool loop using OpenAI-compatible `tool_calls`
+  - prepares provider-specific request payloads through the model boundary, including DeepSeek V4 thinking mode and safe `reasoning_content` replay for multi-step tool calls
   - executes Python tools until the model stops requesting tools or `agent.maxToolIterations` is reached
   - writes user/assistant messages to SQLite
   - emits desktop-compatible runtime events
@@ -518,7 +519,10 @@ Environment:
 
 ```text
 OPENAI_BASE_URL=https://api.deepseek.com
-OPENAI_MODEL=deepseek-v4-flash
+OPENAI_MODEL=deepseek-v4-pro
+DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_THINKING_ENABLED=true
+DEEPSEEK_REASONING_EFFORT=high
 VITE_AGENT_WS_URL=ws://127.0.0.1:8788/ws
 ```
 

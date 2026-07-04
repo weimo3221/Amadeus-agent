@@ -19,6 +19,7 @@ from amadeus.memory import MessageMemoryStore
 from amadeus.memory_provider import ExternalMemoryProvider, LocalRuntimeMemoryProvider, RuntimeMemoryManager
 from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.model import (
+    ChatStreamDelta,
     OpenAICompatibleChatModel,
     OpenAICompatibleConfig,
     first_choice_message,
@@ -26,6 +27,7 @@ from amadeus.model import (
     parse_json_object_from_text,
 )
 from amadeus.prompting import build_system_prompt
+from amadeus.provider_reasoning import ReasoningConfig, assistant_history_message, prepare_messages_for_provider
 from amadeus.skills import SkillCatalog
 from amadeus.tool_runtime import (
     DEFAULT_TOOLS_CONFIG_PATH,
@@ -276,6 +278,8 @@ class AgentRuntime:
         api_key: str | None = None,
         streaming: bool | None = None,
         max_tokens: int | None = None,
+        thinking_enabled: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         current = self.model_client.config
         self.model_client.config = OpenAICompatibleConfig(
@@ -285,6 +289,8 @@ class AgentRuntime:
             model=model or current.model,
             streaming=streaming if streaming is not None else current.streaming,
             max_tokens=max_tokens if max_tokens is not None else current.max_tokens,
+            thinking_enabled=thinking_enabled if thinking_enabled is not None else current.thinking_enabled,
+            reasoning_effort=reasoning_effort or current.reasoning_effort,
             default_headers=current.default_headers,
             request_timeout_seconds=current.request_timeout_seconds,
             stream_timeout_seconds=current.stream_timeout_seconds,
@@ -294,6 +300,8 @@ class AgentRuntime:
             "baseUrl": self.base_url,
             "model": self.model,
             "maxTokens": self.model_client.max_tokens,
+            "thinkingEnabled": self.model_client.config.thinking_enabled,
+            "reasoningEffort": self.model_client.config.reasoning_effort,
             "apiKeyConfigured": bool(self.api_key),
         }
 
@@ -797,11 +805,10 @@ class AgentRuntime:
                 })
                 return
 
-            history.append({
-                "role": "assistant",
-                "content": tool_decision.get("content") or "",
-                "tool_calls": tool_calls,
-            })
+            tool_reasoning_content = tool_decision.get("reasoning_content")
+            if isinstance(tool_reasoning_content, str) and tool_reasoning_content:
+                yield AgentEvent("assistant.reasoning.delta", {"text": tool_reasoning_content})
+            history.append(self._assistant_history_message(tool_decision))
             tool_iterations += 1
 
             for tool_call in tool_calls:
@@ -819,7 +826,10 @@ class AgentRuntime:
         yield from self._emit_assistant_state(session_id, turn_id, "speaking")
         assistant_text = ""
         final_response_content = str((final_response_message or {}).get("content") or "")
+        final_reasoning_content = str((final_response_message or {}).get("reasoning_content") or "")
         if final_response_content:
+            if final_reasoning_content:
+                yield AgentEvent("assistant.reasoning.delta", {"text": final_reasoning_content})
             assistant_text = final_response_content
             yield AgentEvent("assistant.delta", {"text": final_response_content})
         else:
@@ -829,8 +839,13 @@ class AgentRuntime:
                         yield self._turn_cancelled_event(session_id, turn_id, "final_response")
                         yield from self._emit_assistant_state(session_id, turn_id, "idle")
                         return
-                    assistant_text += delta
-                    yield AgentEvent("assistant.delta", {"text": delta})
+                    reasoning_delta = delta.reasoning_content if isinstance(delta, ChatStreamDelta) else ""
+                    content_delta = delta.content if isinstance(delta, ChatStreamDelta) else str(delta)
+                    if reasoning_delta:
+                        yield AgentEvent("assistant.reasoning.delta", {"text": reasoning_delta})
+                    if content_delta:
+                        assistant_text += content_delta
+                        yield AgentEvent("assistant.delta", {"text": content_delta})
             except RuntimeError as error:
                 if self._handle_context_overflow(session_id, "final_response", error):
                     history, context_diagnostics = self._load_turn_history(
@@ -847,8 +862,13 @@ class AgentRuntime:
                                 yield self._turn_cancelled_event(session_id, turn_id, "final_response_retry")
                                 yield from self._emit_assistant_state(session_id, turn_id, "idle")
                                 return
-                            assistant_text += delta
-                            yield AgentEvent("assistant.delta", {"text": delta})
+                            reasoning_delta = delta.reasoning_content if isinstance(delta, ChatStreamDelta) else ""
+                            content_delta = delta.content if isinstance(delta, ChatStreamDelta) else str(delta)
+                            if reasoning_delta:
+                                yield AgentEvent("assistant.reasoning.delta", {"text": reasoning_delta})
+                            if content_delta:
+                                assistant_text += content_delta
+                                yield AgentEvent("assistant.delta", {"text": content_delta})
                     except RuntimeError as retry_error:
                         logger.info("Final response provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
                         yield from self._emit_assistant_state(session_id, turn_id, "error")
@@ -1985,7 +2005,7 @@ class AgentRuntime:
     def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
             "model": self.model,
-            "messages": messages,
+            "messages": self._prepare_messages_for_provider(messages),
             "tools": self.enabled_tool_schemas(),
             "tool_choice": "auto",
             "stream": False,
@@ -1993,19 +2013,45 @@ class AgentRuntime:
         }
         if self.model_client.max_tokens > 0:
             payload["max_tokens"] = self.model_client.max_tokens
+        self.model_client.apply_reasoning_options(payload)
         data = self.model_client.post_chat_completion(payload)
         return first_choice_message(data)
 
-    def _stream_final_response(self, messages: list[dict[str, Any]]) -> Iterable[str]:
+    def _stream_final_response(self, messages: list[dict[str, Any]]) -> Iterable[str | ChatStreamDelta]:
         payload = {
             "model": self.model,
-            "messages": messages,
+            "messages": self._prepare_messages_for_provider(messages),
             "stream": True,
             "temperature": 0.7,
         }
         if self.model_client.max_tokens > 0:
             payload["max_tokens"] = self.model_client.max_tokens
+        self.model_client.apply_reasoning_options(payload)
         yield from self.model_client.stream_chat_completion(payload)
+
+    def _reasoning_config(self) -> ReasoningConfig:
+        return ReasoningConfig(
+            enabled=self.model_client.config.thinking_enabled,
+            effort=self.model_client.config.reasoning_effort,
+        )
+
+    def _prepare_messages_for_provider(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return prepare_messages_for_provider(
+            messages,
+            provider=self.model_client.config.provider,
+            model=self.model,
+            base_url=self.model_client.config.base_url,
+            reasoning=self._reasoning_config(),
+        )
+
+    def _assistant_history_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        return assistant_history_message(
+            message,
+            provider=self.model_client.config.provider,
+            model=self.model,
+            base_url=self.model_client.config.base_url,
+            reasoning=self._reasoning_config(),
+        )
 
     def _emit_assistant_state(self, session_id: str, turn_id: str | None, state: str) -> Iterable[AgentEvent]:
         event = AgentEvent("assistant.state", {"state": state})
