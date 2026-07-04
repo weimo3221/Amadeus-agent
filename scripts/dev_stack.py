@@ -18,6 +18,7 @@ from typing import Callable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PYTHON_RUNTIME_URL = "http://127.0.0.1:8790"
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:8788"
+DEFAULT_MAIN_UI_URL = "http://127.0.0.1:5178"
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ def main() -> int:
 
     python_runtime_url = os.environ.get("AMADEUS_PYTHON_RUNTIME_URL", DEFAULT_PYTHON_RUNTIME_URL).rstrip("/")
     bridge_url = os.environ.get("AMADEUS_SERVER_URL", DEFAULT_BRIDGE_URL).rstrip("/")
+    main_ui_url = os.environ.get("AMADEUS_MAIN_UI_DEV_URL", DEFAULT_MAIN_UI_URL).rstrip("/")
     npm = "npm.cmd" if os.name == "nt" else "npm"
 
     processes = [
@@ -52,6 +54,11 @@ def main() -> int:
         ),
     ]
     if not args.no_desktop:
+        processes.append(ManagedProcess(
+            name="main-ui",
+            command=[npm, "--workspace", "apps/desktop-ui-next", "run", "dev"],
+            health_url=main_ui_url,
+        ))
         processes.append(ManagedProcess(
             name="desktop",
             command=[npm, "--workspace", "apps/desktop", "run", "dev"],

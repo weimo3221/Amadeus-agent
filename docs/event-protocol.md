@@ -40,6 +40,36 @@ The bridge validates `surface`, assigns a `clientId`, stores clients in `session
 }
 ```
 
+`inputMode` is `text` for typed messages and `voice` for transcribed microphone input. Companion records microphone audio locally, transcribes it through HTTP `POST /audio/transcribe`, then sends the returned text through the same `user.message` event path.
+
+### HTTP audio transcription
+
+Voice input is intentionally not sent over WebSocket. The renderer posts the raw audio blob to the bridge, and the bridge forwards the binary body to Python:
+
+```text
+POST /audio/transcribe?format=webm
+Content-Type: audio/webm
+```
+
+Successful response:
+
+```json
+{
+  "ok": true,
+  "text": "提醒我十分钟后喝水",
+  "provider": "faster_whisper",
+  "language": "zh",
+  "durationMs": 420
+}
+```
+
+Current behavior:
+
+- Companion uses `MediaRecorder` and a microphone orb in the glass composer.
+- `apps/server` proxies `/audio/transcribe` to Python without JSON re-encoding the binary body.
+- Python selects the configured ASR provider. `asr.default: auto` chooses local `faster-whisper` when available, otherwise returns a disabled/noop transcription result.
+- A non-empty transcription is submitted as a normal user message.
+
 ### session.reset
 
 ```json
@@ -191,7 +221,7 @@ Current behavior:
 
 - Python emits `scheduled.updated` for scheduled companion-message lifecycle changes such as created, running, fired, paused, resumed, cancelled, completed, and failed.
 - When a scheduled message fires, Python also persists the assistant message and broadcasts a normal `assistant.message` to every client in the session.
-- Main UI listens for `scheduled.updated` to refresh the Timed Messages panel.
+- Main UI listens for `scheduled.updated` to refresh the Timed Messages panel and fetches all statuses (`activeOnly=false`) so completed, cancelled, and failed jobs remain visible with terminal status labels.
 
 ### assistant.delta
 

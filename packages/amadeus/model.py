@@ -187,6 +187,7 @@ class OpenAICompatibleConfig:
     api_key: str
     model: str
     streaming: bool = True
+    max_tokens: int = 0
     default_headers: dict[str, str] = field(default_factory=dict)
     request_timeout_seconds: int = 60
     stream_timeout_seconds: int = 120
@@ -201,6 +202,7 @@ class OpenAICompatibleConfig:
             api_key=os.environ.get(profile.env_var, os.environ.get("OPENAI_API_KEY", "")) or ("" if profile.requires_api_key else "local"),
             model=os.environ.get("OPENAI_MODEL", os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_MODEL", profile.default_model)),
             streaming=profile.supports_streaming,
+            max_tokens=parse_positive_int_value(os.environ.get(f"{profile.env_var.removesuffix('_API_KEY')}_MAX_TOKENS")),
             default_headers=profile.default_headers,
             request_timeout_seconds=profile.request_timeout_seconds,
             stream_timeout_seconds=profile.stream_timeout_seconds,
@@ -216,6 +218,7 @@ class OpenAICompatibleConfig:
         env_var = str(provider_entry.get("envVar") or preset.env_var)
         base_url_env = f"{env_var.removesuffix('_API_KEY')}_BASE_URL"
         model_env = f"{env_var.removesuffix('_API_KEY')}_MODEL"
+        max_tokens_env = f"{env_var.removesuffix('_API_KEY')}_MAX_TOKENS"
         profile = ProviderProfile(
             name=default_provider,
             label=str(provider_entry.get("label") or preset.label or default_provider),
@@ -228,12 +231,16 @@ class OpenAICompatibleConfig:
         api_key = str(provider_entry.get("apiKey") or os.environ.get(env_var) or "")
         if not api_key and not profile.requires_api_key:
             api_key = "local"
+        max_tokens = parse_positive_int_value(provider_entry.get("maxTokens"))
+        if max_tokens <= 0:
+            max_tokens = parse_positive_int_value(os.environ.get(max_tokens_env))
         return cls(
             provider=profile.name,
             base_url=str(provider_entry.get("baseUrl") or os.environ.get(base_url_env) or profile.base_url).rstrip("/"),
             api_key=api_key,
             model=str(provider_entry.get("model") or os.environ.get(model_env) or profile.default_model),
             streaming=profile.supports_streaming,
+            max_tokens=max_tokens,
             default_headers=profile.default_headers,
             request_timeout_seconds=profile.request_timeout_seconds,
             stream_timeout_seconds=profile.stream_timeout_seconds,
@@ -264,6 +271,7 @@ class OpenAICompatibleChatModel:
             api_key=value,
             model=self.config.model,
             streaming=self.config.streaming,
+            max_tokens=self.config.max_tokens,
             default_headers=self.config.default_headers,
             request_timeout_seconds=self.config.request_timeout_seconds,
             stream_timeout_seconds=self.config.stream_timeout_seconds,
@@ -272,6 +280,10 @@ class OpenAICompatibleChatModel:
     @property
     def model(self) -> str:
         return self.config.model
+
+    @property
+    def max_tokens(self) -> int:
+        return self.config.max_tokens
 
     def post_chat_completion(self, payload: dict[str, Any], *, timeout_seconds: int | None = None) -> dict[str, Any]:
         return self._post_json("/chat/completions", payload, timeout_seconds=timeout_seconds or self.config.request_timeout_seconds)
@@ -599,6 +611,24 @@ def parse_bool_value(value: Any, default: bool) -> bool:
         if value.lower() == "false":
             return False
     return default
+
+
+def parse_positive_int_value(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value if value > 0 else 0
+    if isinstance(value, float) and value.is_integer():
+        return int(value) if value > 0 else 0
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            try:
+                parsed = int(stripped)
+            except ValueError:
+                return 0
+            return parsed if parsed > 0 else 0
+    return 0
 
 
 def parse_json_object_from_text(text: str) -> dict[str, Any]:

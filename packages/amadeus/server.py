@@ -22,10 +22,10 @@ sys.path.insert(0, str(PACKAGES_DIR))
 
 from amadeus.memory import MessageMemoryStore
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
-from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, LocalAudioLibrary, create_tts_provider_from_config
+from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, AudioTranscriptCommand, AudioTranscriptFailure, AsrRuntime, LocalAudioLibrary, MacOsSayConfig, MacOsSayTtsProvider, create_asr_provider_from_config, create_tts_provider_from_config
 from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.mcp import McpServerConfig, list_mcp_tools
-from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_providers_config, provider_profile
+from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_positive_int_value, parse_providers_config, provider_profile
 from amadeus.runtime_events import RuntimeEventBus
 from amadeus.scheduling import ScheduledJobWorker
 from amadeus.tool_runtime import ToolContext
@@ -88,6 +88,7 @@ memory_store = MessageMemoryStore(DATABASE_PATH, default_workspace_path=REPO_ROO
 audio_library = LocalAudioLibrary(AUDIO_ROOT, PUBLIC_BASE_URL)
 live2d_library = LocalLive2DModelLibrary(LIVE2D_ROOT, PUBLIC_BASE_URL, HARNESSES_CONFIG_PATH)
 audio_runtime = AudioRuntime(audio_library, create_tts_provider_from_config(audio_library))
+asr_runtime = AsrRuntime(audio_library, create_asr_provider_from_config(audio_library))
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
 runtime_event_bus = RuntimeEventBus()
@@ -452,12 +453,24 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_audio_file(parsed.path.removeprefix("/audio/files/"))
             return
 
+        if parsed.path == "/audio/voices":
+            self.handle_audio_voices()
+            return
+
+        if parsed.path == "/audio/config":
+            self.handle_audio_config_get()
+            return
+
         if parsed.path == "/live2d/config":
             self.handle_live2d_config()
             return
 
         if parsed.path == "/live2d/models":
             self.handle_live2d_models()
+            return
+
+        if parsed.path == "/live2d/behaviors":
+            self.handle_live2d_behaviors_get()
             return
 
         if parsed.path.startswith("/live2d/models/"):
@@ -575,6 +588,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_live2d_select()
             return
 
+        if self.path == "/live2d/import":
+            self.handle_live2d_import()
+            return
+
+        if self.path == "/live2d/behaviors":
+            self.handle_live2d_behaviors_update()
+            return
+
         if self.path == "/memory/review/run":
             self.handle_memory_review_run()
             return
@@ -593,6 +614,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/audio/speak":
             self.handle_audio_speak()
+            return
+
+        if self.path == "/audio/transcribe" or self.path.startswith("/audio/transcribe?"):
+            self.handle_audio_transcribe()
+            return
+
+        if self.path == "/audio/config":
+            self.handle_audio_config_update()
             return
 
         self.write_json(404, {"ok": False, "error": "not_found"})
@@ -1690,6 +1719,50 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:
             self.write_json(500, {"ok": False, "error": str(error)})
 
+    def handle_audio_transcribe(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            length = 0
+
+        if length <= 0:
+            self.write_json(400, {"ok": False, "error": "empty_audio"})
+            return
+
+        audio_bytes = self.rfile.read(length)
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        audio_format = query.get("format", ["webm"])[0] or "webm"
+        language = query.get("language", [""])[0] or None
+
+        try:
+            result = asr_runtime.transcribe(AudioTranscriptCommand(
+                audio_bytes=audio_bytes,
+                audio_format=audio_format,
+                language=language,
+            ))
+        except Exception as error:
+            logger.info("Audio transcription failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+            return
+
+        if isinstance(result, AudioTranscriptFailure):
+            self.write_json(200, {
+                "ok": False,
+                "text": "",
+                "provider": result.provider,
+                "reason": result.reason,
+            })
+            return
+
+        self.write_json(200, {
+            "ok": True,
+            "text": result.text,
+            "provider": result.provider,
+            "language": result.language,
+            "durationMs": result.duration_ms,
+        })
+
     def handle_audio_file(self, relative_path: str) -> None:
         file_path = audio_library.resolve_public_path(unquote(relative_path))
         if not file_path:
@@ -1697,6 +1770,37 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             return
 
         self.write_file_response(file_path)
+
+    def handle_audio_voices(self) -> None:
+        try:
+            payload = audio_runtime.list_voices()
+            self.write_json(200, {"ok": True, **payload})
+        except Exception as error:
+            logger.info("Audio voices list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_audio_config_get(self) -> None:
+        try:
+            self.write_json(200, build_audio_config_payload())
+        except Exception as error:
+            logger.info("Audio config read failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_audio_config_update(self) -> None:
+        try:
+            body = self.read_json_body()
+            if not isinstance(body, dict):
+                self.write_json(400, {"ok": False, "error": "body must be an object"})
+                return
+            update_audio_config(body)
+            payload = build_audio_config_payload()
+            payload["voices"] = audio_runtime.list_voices()
+            self.write_json(200, payload)
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Audio config update failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_live2d_config(self) -> None:
         selection = live2d_library.configured_model()
@@ -1753,6 +1857,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": "live2d_model_not_found"})
             return
 
+        agent_runtime.reload_harness_registry()
         self.write_json(200, {
             "ok": True,
             "model": {
@@ -1762,6 +1867,78 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "manifest": live2d_library.read_manifest(selection.relative_path),
             },
         })
+
+    def handle_live2d_import(self) -> None:
+        try:
+            payload = self.read_json_body()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            self.write_json(400, {"ok": False, "error": "invalid_json"})
+            return
+
+        source_dir = payload.get("sourceDir")
+        if not isinstance(source_dir, str) or not source_dir.strip():
+            self.write_json(400, {"ok": False, "error": "sourceDir is required"})
+            return
+
+        raw_model_id = payload.get("modelId")
+        model_id = raw_model_id.strip() if isinstance(raw_model_id, str) and raw_model_id.strip() else None
+        activate = parse_bool_value(payload.get("activate"), True)
+
+        try:
+            selection = live2d_library.import_model(source_dir.strip(), model_id=model_id)
+            if activate:
+                live2d_library.select_model(selection.model_id)
+                agent_runtime.reload_harness_registry()
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+            return
+        except Exception as error:
+            logger.info("Live2D import failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+            return
+
+        self.write_json(200, {
+            "ok": True,
+            "model": {
+                "id": selection.model_id,
+                "path": selection.relative_path,
+                "url": live2d_library.model_url(selection),
+                "manifest": live2d_library.read_manifest(selection.relative_path),
+            },
+            "models": live2d_library.list_models(),
+        })
+
+    def handle_live2d_behaviors_get(self) -> None:
+        try:
+            self.write_json(200, build_live2d_behaviors_payload())
+        except Exception as error:
+            logger.info("Live2D behaviors read failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_live2d_behaviors_update(self) -> None:
+        try:
+            payload = self.read_json_body()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            self.write_json(400, {"ok": False, "error": "invalid_json"})
+            return
+
+        behaviors = payload.get("audioPlaybackBehaviors")
+        if not isinstance(behaviors, dict):
+            self.write_json(400, {"ok": False, "error": "audioPlaybackBehaviors must be an object"})
+            return
+
+        try:
+            live2d_library.persist_audio_playback_behaviors(behaviors)
+            agent_runtime.reload_harness_registry()
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+            return
+        except Exception as error:
+            logger.info("Live2D behaviors update failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+            return
+
+        self.write_json(200, build_live2d_behaviors_payload())
 
     def handle_live2d_model_file(self, relative_path: str) -> None:
         file_path = live2d_library.resolve_public_path(unquote(relative_path))
@@ -2023,10 +2200,12 @@ def build_runtime_config_payload() -> dict[str, Any]:
             "baseUrl": agent_runtime.base_url,
             "model": agent_runtime.model,
             "streaming": agent_runtime.model_client.config.streaming,
+            "maxTokens": agent_runtime.model_client.max_tokens,
             "apiKeyConfigured": bool(agent_runtime.api_key) and (requires_api_key or agent_runtime.api_key != "local"),
             "apiKeyPreview": "" if not requires_api_key and agent_runtime.api_key == "local" else mask_secret(agent_runtime.api_key),
         },
         "providers": providers,
+        "presets": [preset.to_public_dict() for preset in PROVIDER_PRESETS.values()],
         "runtime": agent_runtime._runtime_config_snapshot(),
         "paths": {
             "env": str(ENV_CONFIG_PATH),
@@ -2204,6 +2383,7 @@ def configured_provider_profiles() -> list[dict[str, Any]]:
             "defaultModel": str(entry.get("model") or preset.default_model),
             "requiresApiKey": requires_api_key,
             "supportsStreaming": parse_bool_value(entry.get("streaming"), preset.supports_streaming) if entry else preset.supports_streaming,
+            "maxTokens": parse_positive_int_value(entry.get("maxTokens")) if entry else 0,
         })
     return profiles
 
@@ -2226,9 +2406,12 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
     model = optional_non_empty_string(payload.get("model"), "model")
     requires_api_key = parse_bool_value(payload.get("requiresApiKey"), profile.requires_api_key)
     streaming = parse_bool_value(payload.get("streaming"), profile.supports_streaming)
+    max_tokens = parse_optional_non_negative_int(payload.get("maxTokens"), "maxTokens")
     api_key = payload.get("apiKey")
     if api_key is not None and not isinstance(api_key, str):
         raise ValueError("apiKey must be a string")
+
+    effective_max_tokens = max_tokens if max_tokens is not None else (agent_runtime.model_client.max_tokens if same_provider else 0)
 
     env_updates: dict[str, str] = {}
     env_updates["AMADEUS_LLM_PROVIDER"] = profile.name
@@ -2236,6 +2419,8 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
         env_updates[f"{env_var.removesuffix('_API_KEY')}_BASE_URL"] = base_url.rstrip("/")
     if model is not None:
         env_updates[f"{env_var.removesuffix('_API_KEY')}_MODEL"] = model
+    if max_tokens is not None:
+        env_updates[f"{env_var.removesuffix('_API_KEY')}_MAX_TOKENS"] = str(effective_max_tokens)
     if isinstance(api_key, str) and api_key.strip():
         env_updates[env_var] = api_key.strip()
 
@@ -2251,6 +2436,7 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
         env_var=env_var,
         requires_api_key=requires_api_key,
         streaming=streaming,
+        max_tokens=effective_max_tokens,
     )
 
     return agent_runtime.configure_model_api(
@@ -2262,7 +2448,32 @@ def update_api_config(payload: dict[str, Any]) -> dict[str, Any]:
         or (agent_runtime.api_key if same_provider else "")
         or ("" if requires_api_key else "local"),
         streaming=streaming,
+        max_tokens=effective_max_tokens,
     )
+
+
+def parse_optional_non_negative_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"{field_name} must be an integer")
+        value = int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return 0
+        try:
+            value = int(stripped)
+        except ValueError as error:
+            raise ValueError(f"{field_name} must be an integer") from error
+    if not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be >= 0")
+    return value
 
 
 def optional_non_empty_string(value: Any, field_name: str) -> str | None:
@@ -2309,6 +2520,35 @@ def quote_env_value(value: str) -> str:
     return value
 
 
+def read_raw_top_level_sections(path: Path) -> dict[str, list[str]]:
+    """Split a providers-style YAML into top-level sections keyed by header name.
+
+    Returns each section's raw lines (including the ``name:`` header) so blocks
+    like tts/asr can be re-emitted verbatim, preserving ``${VAR}`` templates that
+    parse_providers_config would otherwise resolve at parse time.
+    """
+    if not path.exists():
+        return {}
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if indent == 0 and stripped.endswith(":") and "#" not in stripped:
+            current = stripped[:-1].strip()
+            sections[current] = [raw_line.rstrip()]
+            continue
+        if current is not None:
+            sections[current].append(raw_line.rstrip())
+    return sections
+
+
 def update_providers_config_file(
     *,
     provider: str,
@@ -2318,6 +2558,7 @@ def update_providers_config_file(
     env_var: str,
     requires_api_key: bool,
     streaming: bool,
+    max_tokens: int = 0,
 ) -> None:
     llm_config = parse_providers_config(PROVIDERS_CONFIG_PATH).get("llm", {})
     configured = llm_config.get("providers") if isinstance(llm_config.get("providers"), dict) else {}
@@ -2339,6 +2580,7 @@ def update_providers_config_file(
         active_env_var = env_var if provider_id == provider else str(entry.get("envVar") or profile.env_var)
         active_requires_api_key = requires_api_key if provider_id == provider else parse_bool_value(entry.get("requiresApiKey"), profile.requires_api_key)
         active_streaming = streaming if provider_id == provider else parse_bool_value(entry.get("streaming"), profile.supports_streaming)
+        active_max_tokens = max_tokens if provider_id == provider else parse_positive_int_value(entry.get("maxTokens"))
         content.extend([
             f"    {provider_id}:",
             f"      label: {quote_yaml_value(active_label)}",
@@ -2349,39 +2591,78 @@ def update_providers_config_file(
             f"      requiresApiKey: {str(active_requires_api_key).lower()}",
             f"      streaming: {str(active_streaming).lower()}",
         ])
+        if active_max_tokens > 0:
+            content.append(f"      maxTokens: {active_max_tokens}")
 
-    content.extend([
-        "",
-        "tts:",
-        "  default: auto",
-        "  providers:",
-        "    auto:",
-        "      type: auto",
-        "    disabled:",
-        "      type: none",
-        "    macos_say:",
-        "      type: macos_say",
-        "      voice: ${MACOS_SAY_VOICE}",
-        "      rate: ${MACOS_SAY_RATE}",
-        "      timeoutSeconds: 30",
-        "    gpt_sovits:",
-        "      type: gpt_sovits",
-        "      baseUrl: ${GPT_SOVITS_BASE_URL}",
-        "      endpoint: /tts",
-        "      textLang: ${GPT_SOVITS_TEXT_LANG}",
-        "      promptLang: ${GPT_SOVITS_PROMPT_LANG}",
-        "      promptText: ${GPT_SOVITS_PROMPT_TEXT}",
-        "      refAudioPath: ${GPT_SOVITS_REF_AUDIO_PATH}",
-        "      timeoutSeconds: 60",
-        "      streamingMode: false",
-        "",
-        "asr:",
-        "  default: disabled",
-        "  providers:",
-        "    disabled:",
-        "      type: none",
-    ])
+    assemble_providers_config(llm_lines=content)
+
+
+def assemble_providers_config(
+    *,
+    llm_lines: list[str] | None = None,
+    tts_lines: list[str] | None = None,
+    asr_lines: list[str] | None = None,
+) -> None:
+    """Rewrite providers.yaml, replacing only the supplied sections and keeping
+    the rest verbatim so ``${VAR}`` templates and unrelated settings survive."""
+    existing = read_raw_top_level_sections(PROVIDERS_CONFIG_PATH)
+    llm = llm_lines if llm_lines is not None else (existing.get("llm") or DEFAULT_LLM_SECTION_LINES)
+    tts = tts_lines if tts_lines is not None else (existing.get("tts") or DEFAULT_TTS_SECTION_LINES)
+    asr = asr_lines if asr_lines is not None else (existing.get("asr") or DEFAULT_ASR_SECTION_LINES)
+
+    content = list(llm)
+    content.append("")
+    content.extend(tts)
+    content.append("")
+    content.extend(asr)
     PROVIDERS_CONFIG_PATH.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")
+
+
+DEFAULT_LLM_SECTION_LINES = [
+    "llm:",
+    "  default: deepseek",
+    "  providers:",
+    "    deepseek:",
+    "      label: DeepSeek",
+    "      envVar: DEEPSEEK_API_KEY",
+    "      baseUrl: https://api.deepseek.com/v1",
+    "      apiKey: ${DEEPSEEK_API_KEY}",
+    "      model: deepseek-chat",
+    "      streaming: true",
+]
+
+DEFAULT_TTS_SECTION_LINES = [
+    "tts:",
+    "  default: auto",
+    "  providers:",
+    "    auto:",
+    "      type: auto",
+    "    disabled:",
+    "      type: none",
+    "    macos_say:",
+    "      type: macos_say",
+    "      voice: ${MACOS_SAY_VOICE}",
+    "      rate: ${MACOS_SAY_RATE}",
+    "      timeoutSeconds: 30",
+    "    gpt_sovits:",
+    "      type: gpt_sovits",
+    "      baseUrl: ${GPT_SOVITS_BASE_URL}",
+    "      endpoint: ${GPT_SOVITS_ENDPOINT}",
+    "      textLang: ${GPT_SOVITS_TEXT_LANG}",
+    "      promptLang: ${GPT_SOVITS_PROMPT_LANG}",
+    "      promptText: ${GPT_SOVITS_PROMPT_TEXT}",
+    "      refAudioPath: ${GPT_SOVITS_REF_AUDIO_PATH}",
+    "      timeoutSeconds: ${GPT_SOVITS_TIMEOUT_SECONDS}",
+    "      streamingMode: ${GPT_SOVITS_STREAMING_MODE}",
+]
+
+DEFAULT_ASR_SECTION_LINES = [
+    "asr:",
+    "  default: disabled",
+    "  providers:",
+    "    disabled:",
+    "      type: none",
+]
 
 
 def quote_yaml_value(value: str) -> str:
@@ -2389,6 +2670,155 @@ def quote_yaml_value(value: str) -> str:
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
     return value
+
+
+TTS_PROVIDER_TYPES = [
+    {"id": "auto", "label": "自动（优先 GPT-SoVITS，回退系统语音）", "type": "auto"},
+    {"id": "macos_say", "label": "macOS 系统语音", "type": "macos_say"},
+    {"id": "gpt_sovits", "label": "GPT-SoVITS", "type": "gpt_sovits"},
+    {"id": "disabled", "label": "关闭语音合成", "type": "none"},
+]
+
+
+def build_audio_config_payload() -> dict[str, Any]:
+    tts_config = parse_providers_config(PROVIDERS_CONFIG_PATH).get("tts", {})
+    providers = tts_config.get("providers") if isinstance(tts_config.get("providers"), dict) else {}
+    default_provider = str(tts_config.get("default") or "auto")
+    gpt_config = providers.get("gpt_sovits") if isinstance(providers.get("gpt_sovits"), dict) else {}
+    macos_config = providers.get("macos_say") if isinstance(providers.get("macos_say"), dict) else {}
+
+    return {
+        "ok": True,
+        "activeProvider": default_provider,
+        "runtimeProvider": audio_runtime.tts_provider.name,
+        "providerTypes": TTS_PROVIDER_TYPES,
+        "macosAvailable": MacOsSayTtsProvider.is_available(),
+        "macos": {
+            "voice": str(macos_config.get("voice") or os.environ.get("MACOS_SAY_VOICE") or ""),
+            "rate": str(macos_config.get("rate") or os.environ.get("MACOS_SAY_RATE") or ""),
+        },
+        "gptSovits": {
+            "baseUrl": str(gpt_config.get("baseUrl") or os.environ.get("GPT_SOVITS_BASE_URL") or ""),
+            "endpoint": str(gpt_config.get("endpoint") or os.environ.get("GPT_SOVITS_ENDPOINT") or "/tts"),
+            "textLang": str(gpt_config.get("textLang") or os.environ.get("GPT_SOVITS_TEXT_LANG") or "auto"),
+            "promptLang": str(gpt_config.get("promptLang") or os.environ.get("GPT_SOVITS_PROMPT_LANG") or "auto"),
+            "promptText": str(gpt_config.get("promptText") or os.environ.get("GPT_SOVITS_PROMPT_TEXT") or ""),
+            "refAudioPath": str(gpt_config.get("refAudioPath") or os.environ.get("GPT_SOVITS_REF_AUDIO_PATH") or ""),
+            "timeoutSeconds": str(gpt_config.get("timeoutSeconds") or os.environ.get("GPT_SOVITS_TIMEOUT_SECONDS") or "60"),
+            "streamingMode": parse_bool_value(gpt_config.get("streamingMode"), parse_bool_value(os.environ.get("GPT_SOVITS_STREAMING_MODE"), False)),
+        },
+        "voices": MacOsSayTtsProvider(MacOsSayConfig(), audio_library).list_voices(),
+        "paths": {
+            "env": str(ENV_CONFIG_PATH),
+            "providersConfig": str(PROVIDERS_CONFIG_PATH),
+        },
+    }
+
+
+def update_audio_config(payload: dict[str, Any]) -> None:
+    provider = optional_non_empty_string(payload.get("provider"), "provider")
+    valid_ids = {entry["id"] for entry in TTS_PROVIDER_TYPES}
+    if provider is None:
+        provider = str(parse_providers_config(PROVIDERS_CONFIG_PATH).get("tts", {}).get("default") or "auto")
+    if provider not in valid_ids:
+        raise ValueError(f"unsupported tts provider: {provider}")
+
+    env_updates: dict[str, str] = {}
+
+    macos_payload = payload.get("macos")
+    if macos_payload is not None:
+        if not isinstance(macos_payload, dict):
+            raise ValueError("macos must be an object")
+        macos_voice = macos_payload.get("voice")
+        if macos_voice is not None:
+            env_updates["MACOS_SAY_VOICE"] = str(macos_voice).strip()
+        macos_rate = macos_payload.get("rate")
+        if macos_rate is not None:
+            rate_text = str(macos_rate).strip()
+            if rate_text and not rate_text.lstrip("-").isdigit():
+                raise ValueError("macos.rate must be an integer")
+            env_updates["MACOS_SAY_RATE"] = rate_text
+
+    gpt_payload = payload.get("gptSovits")
+    if gpt_payload is not None:
+        if not isinstance(gpt_payload, dict):
+            raise ValueError("gptSovits must be an object")
+        gpt_field_env = {
+            "baseUrl": "GPT_SOVITS_BASE_URL",
+            "endpoint": "GPT_SOVITS_ENDPOINT",
+            "textLang": "GPT_SOVITS_TEXT_LANG",
+            "promptLang": "GPT_SOVITS_PROMPT_LANG",
+            "promptText": "GPT_SOVITS_PROMPT_TEXT",
+            "refAudioPath": "GPT_SOVITS_REF_AUDIO_PATH",
+        }
+        for field_name, env_key in gpt_field_env.items():
+            value = gpt_payload.get(field_name)
+            if value is not None:
+                cleaned = str(value).strip()
+                if field_name == "baseUrl":
+                    cleaned = cleaned.rstrip("/")
+                env_updates[env_key] = cleaned
+        timeout_value = gpt_payload.get("timeoutSeconds")
+        if timeout_value is not None:
+            timeout_text = str(timeout_value).strip()
+            if timeout_text and not timeout_text.isdigit():
+                raise ValueError("gptSovits.timeoutSeconds must be a positive integer")
+            env_updates["GPT_SOVITS_TIMEOUT_SECONDS"] = timeout_text or "60"
+        streaming_value = gpt_payload.get("streamingMode")
+        if streaming_value is not None:
+            env_updates["GPT_SOVITS_STREAMING_MODE"] = "true" if parse_bool_value(streaming_value, False) else "false"
+
+    if env_updates:
+        update_env_file(ENV_CONFIG_PATH, env_updates)
+        os.environ.update(env_updates)
+
+    write_tts_default_provider(provider)
+
+    audio_runtime.tts_provider = create_tts_provider_from_config(audio_library)
+
+
+def write_tts_default_provider(provider: str) -> None:
+    tts_lines = list(DEFAULT_TTS_SECTION_LINES)
+    tts_lines[1] = f"  default: {provider}"
+    assemble_providers_config(tts_lines=tts_lines)
+
+
+LIVE2D_BEHAVIOR_STATES = [
+    {"id": "started", "label": "开始播放语音"},
+    {"id": "ended", "label": "语音播放结束"},
+    {"id": "error", "label": "语音播放出错"},
+]
+
+
+def build_live2d_behaviors_payload() -> dict[str, Any]:
+    behaviors = live2d_library.audio_playback_behaviors()
+    manifest = None
+    selection = live2d_library.configured_model()
+    if selection:
+        manifest = live2d_library.read_manifest(selection.relative_path)
+
+    expressions: list[str] = []
+    motions: list[str] = []
+    if isinstance(manifest, dict):
+        aliases = manifest.get("aliases") if isinstance(manifest.get("aliases"), dict) else {}
+        expression_aliases = aliases.get("expressions") if isinstance(aliases.get("expressions"), dict) else {}
+        motion_aliases = aliases.get("motions") if isinstance(aliases.get("motions"), dict) else {}
+        expressions = sorted(str(key) for key in expression_aliases)
+        motions = sorted(str(key) for key in motion_aliases)
+
+    return {
+        "ok": True,
+        "states": LIVE2D_BEHAVIOR_STATES,
+        "audioPlaybackBehaviors": behaviors,
+        "defaults": live2d_library.default_state_behaviors(),
+        "suggestions": {
+            "expressions": expressions,
+            "motions": motions,
+        },
+        "paths": {
+            "harnessesConfig": str(HARNESSES_CONFIG_PATH),
+        },
+    }
 
 
 def update_runtime_config_file(payload: dict[str, Any]) -> None:

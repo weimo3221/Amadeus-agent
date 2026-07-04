@@ -12,7 +12,7 @@ This file is the forward-looking plan. For live implementation status, use `docs
 
 The next implementation pass should proceed in this order:
 
-1. Current: continue hardening Main UI as the primary workbench. Companion should stay lightweight, transparent, Live2D-focused, and transient; Main UI should own larger chat, session history, active tasks, timed messages, skills, memory review, diagnostics, permissions, model/runtime configuration, and MCP server management.
+1. Current: continue hardening Vue Main UI as the primary workbench. Companion should stay lightweight, transparent, Live2D-focused, voice-capable, and transient; Main UI should own larger chat, session history, active/completed tasks, timed messages, skills, memory review, diagnostics, permissions, model/runtime configuration, Live2D/TTS configuration, and MCP server management.
 2. Current: turn MCP from a configured runtime bridge into a practical user-facing capability. The Main UI MCP tab now manages HTTP JSON-RPC servers, tests discovery, and reloads the Python ToolRegistry; `scripts/dev_mcp_server.py` provides a local verification target. Next MCP work should improve persisted diagnostics/audit surfaces and then evaluate stdio/SSE support.
 3. Current: tighten the skills UI semantics around "available", "suggested", and "active" so the desktop keeps exposing only lightweight user-facing state while the runtime logs keep the deeper activation details.
 4. Next: keep shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
@@ -91,13 +91,14 @@ Target deliverables:
 - Runtime audio interface.
 - Audio playback in desktop app.
 - Better lipsync than the remaining timed-loop fallback.
-- Optional ASR input.
+- Local ASR input.
 - Optional push-to-talk hotkey.
 
 Notes:
 
 - Current MVP voice playback uses runtime audio on macOS through `tts.default: auto`, with desktop `speechSynthesis` retained as fallback.
 - Current lipsync is hybrid: provider-native or runtime-planned phoneme/viseme cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the timed mouth loop only as fallback.
+- Local ASR is now wired through Companion's microphone orb, browser `MediaRecorder`, bridge `POST /audio/transcribe`, and Python `faster-whisper` auto-provider selection. Remaining voice-input work is quality tuning, language/model configuration UX, and optional push-to-talk/global hotkey support.
 
 ## Phase 5: Memory and Tools
 

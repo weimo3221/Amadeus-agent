@@ -1,4 +1,5 @@
 import type {
+  ScheduledJobUpdatedPayload,
   ServerRuntimeEvent,
   TaskPlanPayload,
   TaskUpdatedPayload,
@@ -25,6 +26,7 @@ export interface RuntimeClientHandlers {
   onToolPermissionResolved?: () => void
   onPlanUpdated?: (plan: TaskPlanPayload) => void
   onTaskUpdated?: (payload: TaskUpdatedPayload) => void
+  onScheduledJobUpdated?: (payload: ScheduledJobUpdatedPayload) => void
   onError?: (message: string) => void
 }
 
@@ -154,6 +156,9 @@ export class AgentRuntimeClient {
         break
       case 'task.updated':
         this.handlers.onTaskUpdated?.(event.payload)
+        break
+      case 'scheduled.updated':
+        this.handlers.onScheduledJobUpdated?.(event.payload)
         break
       case 'error':
         this.handlers.onError?.(event.payload.message)

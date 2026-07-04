@@ -9,32 +9,50 @@ import AmEmptyState from '@/components/ui/AmEmptyState.vue'
 
 const { state, updateRole } = useRuntime()
 
-const providerOptions = [
-  { label: 'OpenRouter', value: 'openrouter' },
-  { label: 'OpenAI', value: 'openai' },
-  { label: 'Anthropic', value: 'anthropic' },
-  { label: 'DeepSeek', value: 'deepseek' },
-]
-
 const editRoleId = ref('')
 const roleName = ref('')
-const provider = ref('openrouter')
+const provider = ref('')
 const model = ref('')
 const persona = ref('')
 const style = ref('')
+const live2dModel = ref('')
+const ttsVoice = ref('')
 const saving = ref(false)
 const savedFlash = ref(false)
 
 const selectedRole = computed(() => state.roles.find((r) => r.id === editRoleId.value) ?? null)
 
+const providerOptions = computed(() =>
+  state.providerPresets.map((p) => ({ label: p.label, value: p.id })),
+)
+
+const activePreset = computed(() =>
+  state.providerPresets.find((p) => p.id === provider.value) ?? null,
+)
+
+const live2dOptions = computed(() => [
+  { label: '不使用 Live2D', value: '' },
+  ...state.live2dModels.map((m) => ({ label: m.id, value: m.id })),
+])
+
+const ttsOptions = computed(() => [
+  { label: '跟随服务商默认', value: '' },
+  ...state.ttsVoices.map((v) => ({
+    label: v.locale ? `${v.label} · ${v.locale}` : v.label,
+    value: v.id,
+  })),
+])
+
 function loadForm(id: string) {
   const role = state.roles.find((r) => r.id === id)
   if (!role) return
   roleName.value = role.name
-  provider.value = role.provider || 'openrouter'
+  provider.value = role.provider || ''
   model.value = role.model
   persona.value = role.persona
   style.value = role.style
+  live2dModel.value = role.live2dModel
+  ttsVoice.value = role.ttsVoice
 }
 
 watch(
@@ -55,15 +73,25 @@ function selectRole(id: string) {
   savedFlash.value = false
 }
 
+function onProviderChange(value: string) {
+  provider.value = value
+  const preset = state.providerPresets.find((p) => p.id === value)
+  if (preset && !model.value.trim()) {
+    model.value = preset.defaultModel
+  }
+}
+
 const dirty = computed(() => {
   const role = selectedRole.value
   if (!role) return false
   return (
     roleName.value.trim() !== role.name ||
-    provider.value !== (role.provider || 'openrouter') ||
+    provider.value !== role.provider ||
     model.value.trim() !== role.model ||
     persona.value !== role.persona ||
-    style.value !== role.style
+    style.value !== role.style ||
+    live2dModel.value !== role.live2dModel ||
+    ttsVoice.value.trim() !== role.ttsVoice
   )
 })
 
@@ -77,6 +105,8 @@ async function save() {
     model: model.value.trim(),
     persona: persona.value,
     style: style.value,
+    live2dModel: live2dModel.value,
+    ttsVoice: ttsVoice.value.trim(),
   })
   saving.value = false
   if (ok) {
@@ -103,7 +133,7 @@ function reset() {
       </span>
       <div>
         <p class="text-[15px] font-semibold text-ink">设置</p>
-        <p class="text-xs text-ink-faint">配置角色人设、模型服务商与语气风格</p>
+        <p class="text-xs text-ink-faint">配置角色人设、模型服务商、形象与语音</p>
       </div>
     </div>
 
@@ -192,15 +222,71 @@ function reset() {
           <div class="grid gap-4 sm:grid-cols-2">
             <div class="space-y-1.5">
               <label class="text-xs font-medium text-ink-soft">模型服务商</label>
-              <AmSelect v-model="provider" :options="providerOptions" />
+              <AmSelect
+                :model-value="provider"
+                :options="providerOptions"
+                placeholder="选择服务商"
+                @update:model-value="onProviderChange"
+              />
             </div>
             <div class="space-y-1.5">
               <label class="text-xs font-medium text-ink-soft">模型名称</label>
-              <AmInput v-model="model" icon="ph:cpu-duotone" placeholder="如 gpt-4o" />
+              <AmInput
+                v-model="model"
+                icon="ph:cpu-duotone"
+                :placeholder="activePreset?.defaultModel || '如 gpt-4o'"
+              />
+            </div>
+          </div>
+          <p
+            v-if="activePreset"
+            class="rounded-[var(--radius-xl2)] bg-brand-50/60 p-3 text-xs leading-relaxed text-brand-700"
+          >
+            {{ activePreset.label }} · 默认模型 {{ activePreset.defaultModel }} ·
+            密钥环境变量 <code class="font-mono">{{ activePreset.envVar }}</code>
+          </p>
+          <p v-else class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs leading-relaxed text-ink-faint">
+            选择服务商后会带出其默认模型与所需密钥说明。
+          </p>
+        </div>
+
+        <!-- appearance & voice -->
+        <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+          <div class="flex items-center gap-2">
+            <Icon icon="ph:sparkle-duotone" :width="18" class="text-brand-500" />
+            <span class="text-sm font-semibold text-ink">形象与语音</span>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-ink-soft">Live2D 形象</label>
+              <AmSelect v-model="live2dModel" :options="live2dOptions" placeholder="不使用 Live2D" />
+              <p v-if="!state.live2dModels.length" class="text-[11px] text-ink-faint">
+                未检测到本地 Live2D 模型，可将模型放入 models/live2d/ 目录。
+              </p>
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-ink-soft">
+                语音音色
+                <span v-if="state.ttsProvider && state.ttsProvider !== 'none'" class="text-ink-faint">
+                  （{{ state.ttsProvider }}）
+                </span>
+              </label>
+              <AmSelect
+                v-if="state.ttsSupportsEnumeration && state.ttsVoices.length"
+                v-model="ttsVoice"
+                :options="ttsOptions"
+                placeholder="跟随服务商默认"
+              />
+              <AmInput
+                v-else
+                v-model="ttsVoice"
+                icon="ph:waveform-duotone"
+                placeholder="留空为默认音色"
+              />
             </div>
           </div>
           <p class="rounded-[var(--radius-xl2)] bg-brand-50/60 p-3 text-xs leading-relaxed text-brand-700">
-            保存后立即写入该角色配置，切换服务商后会话将使用对应模型。
+            保存后立即写入该角色配置，桌面伴侣将使用对应形象与音色。
           </p>
         </div>
 

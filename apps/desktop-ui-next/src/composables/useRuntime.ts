@@ -1,6 +1,7 @@
 import { reactive, ref } from 'vue'
 import type {
   ScheduledJobRecord,
+  ScheduledJobUpdatedPayload,
   TaskPlanItem,
   TaskPlanPayload,
   TaskRecord,
@@ -17,27 +18,49 @@ import type {
   SkillItem,
   TaskItem,
   TaskStatus,
+  ToolTone,
 } from '@/types'
 import { AgentRuntimeClient, type ConnectionPhase, type ToolPermissionPrompt } from '@/runtime/client'
 import { SESSION_ID } from '@/runtime/config'
 import {
   createSessionRequest,
   deleteSessionRequest,
+  fetchAudioConfig,
+  fetchLive2dBehaviors,
+  fetchLive2dModels,
   fetchMemoryItems,
+  fetchProviderPresets,
   fetchRoles,
+  fetchRuntimeConfig,
   fetchScheduledJobs,
   fetchSessionMessages,
   fetchSessionPlan,
   fetchSessions,
   fetchSkills,
   fetchTasks,
+  fetchTtsVoices,
+  importLive2dModel,
+  selectLive2dModel,
+  updateAudioConfig,
+  updateLive2dBehaviors,
   updateRoleRequest,
+  updateRuntimeApiConfig,
+  type AudioConfigResult,
+  type AudioConfigUpdate,
+  type Live2dBehavior,
+  type Live2dBehaviorsResult,
+  type Live2dImportResult,
+  type Live2dModelPayload,
   type MemoryItemPayload,
+  type ProviderPreset,
   type RolePayload,
   type RoleUpdate,
+  type RuntimeApiUpdate,
+  type RuntimeConfigResult,
   type SessionPayload,
   type SkillPayload,
   type StoredMessage,
+  type TtsVoicePayload,
 } from '@/runtime/http'
 
 interface RuntimeState {
@@ -55,6 +78,14 @@ interface RuntimeState {
   roleName: string
   scheduledCount: number
   toolPermission: ToolPermissionPrompt | null
+  providerPresets: ProviderPreset[]
+  live2dModels: Live2dModelPayload[]
+  ttsVoices: TtsVoicePayload[]
+  ttsProvider: string
+  ttsSupportsEnumeration: boolean
+  runtimeConfig: RuntimeConfigResult | null
+  audioConfig: AudioConfigResult | null
+  live2dBehaviors: Live2dBehaviorsResult | null
 }
 
 const state = reactive<RuntimeState>({
@@ -72,6 +103,14 @@ const state = reactive<RuntimeState>({
   roleName: 'Amadeus',
   scheduledCount: 0,
   toolPermission: null,
+  providerPresets: [],
+  live2dModels: [],
+  ttsVoices: [],
+  ttsProvider: 'none',
+  ttsSupportsEnumeration: false,
+  runtimeConfig: null,
+  audioConfig: null,
+  live2dBehaviors: null,
 })
 
 let client: AgentRuntimeClient | null = null
@@ -179,6 +218,8 @@ function rolesToProfiles(roles: RolePayload[]): RoleProfile[] {
       style: r.style ?? '',
       provider: r.provider ?? '',
       model: r.model ?? '',
+      live2dModel: r.live2dModel ?? '',
+      ttsVoice: r.ttsVoice ?? '',
     }))
 }
 
@@ -192,13 +233,36 @@ function memoryItemsToItems(items: MemoryItemPayload[]): MemoryItem[] {
   }))
 }
 
+const scheduledStatusLabels: Record<ScheduledJobRecord['status'], string> = {
+  scheduled: '已启用',
+  running: '执行中',
+  paused: '已暂停',
+  completed: '已完成',
+  cancelled: '已取消',
+  failed: '失败',
+}
+
+const scheduledStatusTones: Record<ScheduledJobRecord['status'], ToolTone> = {
+  scheduled: 'success',
+  running: 'info',
+  paused: 'warning',
+  completed: 'neutral',
+  cancelled: 'neutral',
+  failed: 'danger',
+}
+
 function scheduledToItems(jobs: ScheduledJobRecord[]): ScheduledJob[] {
   return jobs.map((job) => ({
     id: job.id,
     title: job.title || '未命名定时任务',
     schedule: job.scheduleDisplay || '',
     nextRun: relativeLabel(job.nextRunAt),
+    lastRun: relativeLabel(job.lastRunAt),
     repeat: job.repeatCount ?? 0,
+    completedRuns: job.completedRuns ?? 0,
+    status: job.status,
+    statusLabel: scheduledStatusLabels[job.status] ?? job.status,
+    statusTone: scheduledStatusTones[job.status] ?? 'neutral',
     enabled: job.status === 'scheduled' || job.status === 'running',
   }))
 }
@@ -259,12 +323,33 @@ async function loadMemoryItems(): Promise<void> {
   state.memoryItems = memoryItemsToItems(await fetchMemoryItems())
 }
 
+async function loadConfigOptions(): Promise<void> {
+  const [presets, live2dModels, ttsVoices, runtimeConfig, audioConfig, live2dBehaviors] =
+    await Promise.all([
+      fetchProviderPresets(),
+      fetchLive2dModels(),
+      fetchTtsVoices(),
+      fetchRuntimeConfig(),
+      fetchAudioConfig(),
+      fetchLive2dBehaviors(),
+    ])
+  state.providerPresets = presets
+  state.live2dModels = live2dModels
+  state.ttsVoices = ttsVoices.voices
+  state.ttsProvider = ttsVoices.provider
+  state.ttsSupportsEnumeration = ttsVoices.supportsEnumeration
+  state.runtimeConfig = runtimeConfig
+  state.audioConfig = audioConfig
+  state.live2dBehaviors = live2dBehaviors
+}
+
 async function bootstrap(): Promise<void> {
   await Promise.all([
     loadSessionList(),
     loadSessionData(state.activeSessionId),
     loadRoles(),
     loadMemoryItems(),
+    loadConfigOptions(),
   ])
   state.skills = skillsToItems(await fetchSkills())
 }
@@ -318,6 +403,13 @@ function createClient(): AgentRuntimeClient {
         if (payload.task.sessionId && payload.task.sessionId !== state.activeSessionId) return
         void fetchTasks(state.activeSessionId).then((result) => {
           state.tasks = tasksToItems(result.tasks)
+        })
+      },
+      onScheduledJobUpdated: (payload: ScheduledJobUpdatedPayload) => {
+        if (payload.job.sessionId && payload.job.sessionId !== state.activeSessionId) return
+        void fetchScheduledJobs(state.activeSessionId).then((result) => {
+          state.scheduledJobs = scheduledToItems(result.jobs)
+          state.scheduledCount = result.jobs.length
         })
       },
       onError: (message) => {
@@ -408,6 +500,50 @@ export function useRuntime() {
     state.toolPermission = null
   }
 
+  async function saveApiConfig(update: RuntimeApiUpdate): Promise<boolean> {
+    const result = await updateRuntimeApiConfig(update)
+    if (!result) return false
+    state.runtimeConfig = result
+    state.providerPresets = result.presets
+    return true
+  }
+
+  async function saveAudioConfig(update: AudioConfigUpdate): Promise<boolean> {
+    const result = await updateAudioConfig(update)
+    if (!result) return false
+    state.audioConfig = result
+    state.ttsProvider = result.runtimeProvider
+    state.ttsVoices = result.voices
+    return true
+  }
+
+  async function saveLive2dBehaviors(
+    behaviors: Record<string, Live2dBehavior>,
+  ): Promise<boolean> {
+    const result = await updateLive2dBehaviors(behaviors)
+    if (!result) return false
+    state.live2dBehaviors = result
+    return true
+  }
+
+  async function importLive2d(
+    sourceDir: string,
+    options: { modelId?: string; activate?: boolean } = {},
+  ): Promise<Live2dImportResult | { error: string }> {
+    const result = await importLive2dModel(sourceDir, options)
+    if ('error' in result) return result
+    state.live2dModels = result.models
+    return result
+  }
+
+  async function selectLive2d(modelId: string): Promise<boolean> {
+    const ok = await selectLive2dModel(modelId)
+    if (!ok) return false
+    state.live2dModels = await fetchLive2dModels()
+    state.live2dBehaviors = await fetchLive2dBehaviors()
+    return true
+  }
+
   return {
     state,
     sendMessage,
@@ -416,5 +552,10 @@ export function useRuntime() {
     deleteSession,
     updateRole,
     respondPermission,
+    saveApiConfig,
+    saveAudioConfig,
+    saveLive2dBehaviors,
+    importLive2d,
+    selectLive2d,
   }
 }

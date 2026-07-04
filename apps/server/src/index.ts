@@ -11,6 +11,7 @@ import {
   listPythonMemoryReviewCandidates,
   listPythonMemoryReviewJobs,
   proxyPythonAgentRequest,
+  proxyPythonAudioRequest,
   proxyPythonSkillsRequest,
   proxyPythonSessionRequest,
   proxyPythonTaskRequest,
@@ -132,6 +133,11 @@ const { httpServer } = createAmadeusBridgeServer({
   },
   handleAgentHttpRequest(request, response, requestUrl) {
     return proxyPythonAgentRequest(request, response, requestUrl, {
+      runtimeUrl: pythonRuntimeUrl,
+    })
+  },
+  handleAudioHttpRequest(request, response, requestUrl) {
+    return proxyPythonAudioRequest(request, response, requestUrl, {
       runtimeUrl: pythonRuntimeUrl,
     })
   },

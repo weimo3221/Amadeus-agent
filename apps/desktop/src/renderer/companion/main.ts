@@ -57,6 +57,7 @@ const pinButton = document.querySelector<HTMLButtonElement>('#pin-button')
 const minimizeButton = document.querySelector<HTMLButtonElement>('#minimize-button')
 const voiceButton = document.querySelector<HTMLButtonElement>('#voice-button')
 const openMainUiButton = document.querySelector<HTMLButtonElement>('#open-main-ui-button')
+const micButton = document.querySelector<HTMLButtonElement>('#mic-button')
 const closeButton = document.querySelector<HTMLButtonElement>('#close-button')
 const providerLabel = document.querySelector<HTMLElement>('#provider-label')
 const connectionLabel = document.querySelector<HTMLElement>('#connection-label')
@@ -979,6 +980,25 @@ function bindCompanionInteractionMode(): void {
   window.amadeus?.onCompanionInteractionMode?.(setCompanionInteractionMode)
 }
 
+const MAX_VISIBLE_BUBBLES = 3
+
+function trimTransientBubbles(): void {
+  if (!chatLog) {
+    return
+  }
+  while (chatLog.childElementCount > MAX_VISIBLE_BUBBLES) {
+    chatLog.firstElementChild?.remove()
+  }
+}
+
+function bindTransientBubbleLimit(): void {
+  if (!chatLog) {
+    return
+  }
+  const observer = new MutationObserver(() => trimTransientBubbles())
+  observer.observe(chatLog, { childList: true })
+}
+
 function scheduleLive2DRetry(reason: string): void {
   if (live2dLoadRetryCount >= LIVE2D_MAX_LOAD_RETRIES) {
     setStatus(`Live2D failed: ${reason}`)
@@ -1173,6 +1193,116 @@ async function createMockLive2DModel(_url: string): Promise<Live2DModelInstance>
   return model
 }
 
+let micRecorder: MediaRecorder | null = null
+let micStream: MediaStream | null = null
+let micChunks: BlobPart[] = []
+let micState: 'idle' | 'recording' | 'transcribing' = 'idle'
+
+function setMicState(next: 'idle' | 'recording' | 'transcribing'): void {
+  micState = next
+  if (!micButton) {
+    return
+  }
+  micButton.classList.toggle('recording', next === 'recording')
+  micButton.classList.toggle('transcribing', next === 'transcribing')
+  micButton.disabled = next === 'transcribing'
+  micButton.title = next === 'recording'
+    ? '点击停止并转写'
+    : next === 'transcribing'
+      ? '正在转写...'
+      : '语音输入'
+}
+
+function stopMicStream(): void {
+  micStream?.getTracks().forEach((track) => track.stop())
+  micStream = null
+}
+
+async function transcribeMicClip(blob: Blob): Promise<void> {
+  if (!blob.size) {
+    setMicState('idle')
+    return
+  }
+  setMicState('transcribing')
+  try {
+    const response = await window.fetch(`${AGENT_HTTP_URL}/audio/transcribe?format=webm`, {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type || 'audio/webm' },
+      body: blob,
+    })
+    const payload = (await response.json().catch(() => undefined)) as
+      | { ok?: boolean; text?: string; reason?: string }
+      | undefined
+    const text = payload?.text?.trim()
+    if (payload?.ok && text) {
+      if (chatInput) {
+        chatInput.value = text
+      }
+      chatForm?.requestSubmit()
+    }
+    else {
+      console.warn('Audio transcription returned no text', payload)
+    }
+  }
+  catch (error) {
+    console.warn('Audio transcription failed', error)
+  }
+  finally {
+    setMicState('idle')
+  }
+}
+
+async function toggleMicRecording(): Promise<void> {
+  if (micState === 'transcribing') {
+    return
+  }
+  if (micState === 'recording') {
+    micRecorder?.stop()
+    return
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    console.warn('MediaRecorder is not available in this environment')
+    return
+  }
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  }
+  catch (error) {
+    console.warn('Microphone permission denied or unavailable', error)
+    setMicState('idle')
+    return
+  }
+
+  micChunks = []
+  try {
+    micRecorder = new MediaRecorder(micStream)
+  }
+  catch (error) {
+    console.warn('Failed to construct MediaRecorder', error)
+    stopMicStream()
+    setMicState('idle')
+    return
+  }
+
+  micRecorder.addEventListener('dataavailable', (event) => {
+    if (event.data.size > 0) {
+      micChunks.push(event.data)
+    }
+  })
+  micRecorder.addEventListener('stop', () => {
+    const blob = new Blob(micChunks, { type: micRecorder?.mimeType || 'audio/webm' })
+    micChunks = []
+    stopMicStream()
+    micRecorder = null
+    void transcribeMicClip(blob)
+  })
+
+  micRecorder.start()
+  setMicState('recording')
+}
+
 function bootControls(): void {
   if (pinButton) {
     pinButton.textContent = pinned ? 'Unpin' : 'Pin'
@@ -1201,6 +1331,10 @@ function bootControls(): void {
 
   openMainUiButton?.addEventListener('click', () => {
     void window.amadeus?.openMainUi(SESSION_ID)
+  })
+
+  micButton?.addEventListener('click', () => {
+    void toggleMicRecording()
   })
 
   debugApply?.addEventListener('click', () => {
@@ -1327,6 +1461,7 @@ function undefinedStorage() {
 bootControls()
 bindGlobalCursorTracking()
 bindCompanionInteractionMode()
+bindTransientBubbleLimit()
 runtimeUi.bindControls()
 runtimeUi.connectAgentRuntime()
 if (SKIP_LIVE2D) {

@@ -8,6 +8,7 @@ import TasksView from '@/components/workspace/TasksView.vue'
 import SkillsView from '@/components/workspace/SkillsView.vue'
 import ScheduleView from '@/components/workspace/ScheduleView.vue'
 import MemoryView from '@/components/workspace/MemoryView.vue'
+import ConfigCenterView from '@/components/workspace/ConfigCenterView.vue'
 import SettingsView from '@/components/workspace/SettingsView.vue'
 import { useRuntime } from '@/composables/useRuntime'
 
@@ -51,6 +52,7 @@ function onNavigate(key: string) {
         <SkillsView v-else-if="activeNav === 'skills'" class="min-h-0 flex-1" />
         <ScheduleView v-else-if="activeNav === 'schedule'" class="min-h-0 flex-1" />
         <MemoryView v-else-if="activeNav === 'memory'" class="min-h-0 flex-1" />
+        <ConfigCenterView v-else-if="activeNav === 'config'" class="min-h-0 flex-1" />
         <SettingsView v-else-if="activeNav === 'settings'" class="min-h-0 flex-1" />
         <WorkspaceView v-else class="min-h-0 flex-1" @navigate="onNavigate" />
       </main>

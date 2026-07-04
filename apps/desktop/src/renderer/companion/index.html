@@ -43,16 +43,34 @@
       <div id="chat-log" class="chat-log companion-transient-log" aria-live="polite"></div>
 
       <section class="chat-panel companion-hover-panel">
-        <div class="provider">
-          <span id="connection-label">Connecting</span>
-          <button id="open-main-ui-button" type="button" title="Open main UI">Main UI</button>
-        </div>
         <form id="chat-form">
+          <button id="open-main-ui-button" type="button" class="composer-orb" title="主页面" aria-label="打开主页面">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 10.8 12 3.5l9 7.3" />
+              <path d="M5.5 9.4V20h13V9.4" />
+              <path d="M9.8 20v-5.2h4.4V20" />
+            </svg>
+            <span class="composer-orb-tip">主页面</span>
+          </button>
           <input id="chat-input" name="message" autocomplete="off" placeholder="Message Amadeus..." />
-          <button type="submit">Send</button>
+          <button id="mic-button" type="button" class="composer-mic" title="语音输入" aria-label="语音输入">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
+              <path d="M12 17.5V21" />
+              <path d="M8.5 21h7" />
+            </svg>
+          </button>
+          <button type="submit" class="composer-send" title="发送" aria-label="发送">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4.5 12 20 4.5 15 20l-3.6-5.4L4.5 12Z" />
+              <path d="M11.4 14.6 20 4.5" />
+            </svg>
+          </button>
         </form>
 
         <div class="companion-internals" aria-hidden="true">
+          <span id="connection-label">Connecting</span>
           <strong id="provider-label">DeepSeek</strong>
           <button id="pin-button" type="button" title="Toggle always on top">Unpin</button>
           <button id="minimize-button" type="button" title="Minimize">Minimize</button>

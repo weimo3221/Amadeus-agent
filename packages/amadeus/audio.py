@@ -46,6 +46,27 @@ class AudioFallbackResult:
 
 
 @dataclass(frozen=True)
+class AudioTranscriptCommand:
+    audio_bytes: bytes
+    audio_format: str = "webm"
+    language: str | None = None
+
+
+@dataclass(frozen=True)
+class AudioTranscriptResult:
+    text: str
+    provider: str = "unknown"
+    language: str | None = None
+    duration_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class AudioTranscriptFailure:
+    reason: str
+    provider: str = "unknown"
+
+
+@dataclass(frozen=True)
 class PhonemeUnit:
     viseme: str
     weight: float
@@ -560,6 +581,37 @@ class MacOsSayTtsProvider:
             and shutil.which("afconvert") is not None
         )
 
+    def list_voices(self) -> list[dict[str, str]]:
+        if not self.is_available():
+            return []
+
+        try:
+            completed = subprocess.run(
+                ["say", "-v", "?"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.config.timeout_seconds,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+
+        voices: list[dict[str, str]] = []
+        for line in completed.stdout.splitlines():
+            match = re.match(r"^(.+?)\s+([A-Za-z0-9_\-]+)\s*#\s*(.*)$", line)
+            if not match:
+                continue
+            name = match.group(1).strip()
+            if not name:
+                continue
+            voices.append({
+                "id": name,
+                "label": name,
+                "locale": match.group(2).strip(),
+                "sample": match.group(3).strip(),
+            })
+        return voices
+
     def synthesize(self, command: AudioOutputCommand) -> AudioOutputResult | None:
         if not self.is_available():
             return None
@@ -769,6 +821,22 @@ class AudioRuntime:
 
         return AudioFallbackResult(reason=f"tts_provider_unavailable:{self.tts_provider.name}")
 
+    def list_voices(self) -> dict[str, Any]:
+        provider = self.tts_provider
+        lister = getattr(provider, "list_voices", None)
+        if callable(lister):
+            voices = lister()
+            return {
+                "provider": provider.name,
+                "supportsEnumeration": True,
+                "voices": voices,
+            }
+        return {
+            "provider": provider.name,
+            "supportsEnumeration": False,
+            "voices": [],
+        }
+
 
 def create_tts_provider_from_config(
     library: LocalAudioLibrary,
@@ -826,6 +894,172 @@ def _create_macos_say_provider(provider_config: dict[str, Any], library: LocalAu
             voice=str(provider_config.get("voice") or os.environ.get("MACOS_SAY_VOICE") or ""),
             rate=int(raw_rate) if str(raw_rate).strip() else None,
             timeout_seconds=int(provider_config.get("timeoutSeconds") or os.environ.get("MACOS_SAY_TIMEOUT_SECONDS") or 30),
+        ),
+        library,
+    )
+
+
+class AsrProvider(Protocol):
+    name: str
+
+    def transcribe(self, command: AudioTranscriptCommand) -> AudioTranscriptResult | None:
+        ...
+
+
+class NoopAsrProvider:
+    name = "none"
+
+    def transcribe(self, command: AudioTranscriptCommand) -> AudioTranscriptResult | None:
+        return None
+
+
+@dataclass(frozen=True)
+class FasterWhisperConfig:
+    model_size: str = "base"
+    device: str = "auto"
+    compute_type: str = "default"
+    language: str = ""
+    beam_size: int = 5
+    download_root: str = ""
+
+
+class FasterWhisperAsrProvider:
+    name = "faster_whisper"
+
+    def __init__(self, config: FasterWhisperConfig, library: "LocalAudioLibrary") -> None:
+        self.config = config
+        self.library = library
+        self._model: Any = None
+
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def _load_model(self) -> Any:
+        if self._model is not None:
+            return self._model
+
+        from faster_whisper import WhisperModel
+
+        kwargs: dict[str, Any] = {
+            "device": self.config.device or "auto",
+            "compute_type": self.config.compute_type or "default",
+        }
+        if self.config.download_root:
+            kwargs["download_root"] = self.config.download_root
+        self._model = WhisperModel(self.config.model_size or "base", **kwargs)
+        return self._model
+
+    def transcribe(self, command: AudioTranscriptCommand) -> AudioTranscriptResult | None:
+        if not command.audio_bytes:
+            return None
+
+        model = self._load_model()
+        suffix = command.audio_format.lower().lstrip(".") or "webm"
+        request_start = perf_counter()
+        with tempfile.NamedTemporaryFile(
+            prefix="amadeus-asr-",
+            suffix=f".{suffix}",
+            dir=self.library.cache_dir,
+            delete=False,
+        ) as handle:
+            handle.write(command.audio_bytes)
+            temp_path = Path(handle.name)
+
+        try:
+            language = command.language or self.config.language or None
+            segments, info = model.transcribe(
+                str(temp_path),
+                language=language,
+                beam_size=self.config.beam_size,
+            )
+            text = "".join(segment.text for segment in segments).strip()
+        finally:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+        if not text:
+            return None
+
+        detected_language = getattr(info, "language", None)
+        return AudioTranscriptResult(
+            text=text,
+            provider=self.name,
+            language=detected_language or language,
+            duration_ms=round((perf_counter() - request_start) * 1000),
+        )
+
+
+class AsrRuntime:
+    def __init__(self, library: LocalAudioLibrary, asr_provider: AsrProvider | None = None) -> None:
+        self.library = library
+        self.asr_provider = asr_provider or NoopAsrProvider()
+
+    def transcribe(
+        self, command: AudioTranscriptCommand
+    ) -> AudioTranscriptResult | AudioTranscriptFailure:
+        if not command.audio_bytes:
+            return AudioTranscriptFailure(reason="empty_audio", provider=self.asr_provider.name)
+
+        try:
+            result = self.asr_provider.transcribe(command)
+        except Exception as error:  # noqa: BLE001
+            return AudioTranscriptFailure(
+                reason=f"asr_provider_error:{error}",
+                provider=self.asr_provider.name,
+            )
+
+        if result and result.text.strip():
+            return result
+
+        return AudioTranscriptFailure(
+            reason=f"asr_provider_no_text:{self.asr_provider.name}",
+            provider=self.asr_provider.name,
+        )
+
+
+def create_asr_provider_from_config(
+    library: LocalAudioLibrary,
+    config_path: Path = DEFAULT_PROVIDERS_CONFIG_PATH,
+) -> AsrProvider:
+    config = parse_providers_config(config_path).get("asr", {})
+    providers = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    default_provider = str(config.get("default") or "disabled")
+    provider_config = providers.get(default_provider) if isinstance(providers.get(default_provider), dict) else {}
+    provider_type = str(provider_config.get("type") or default_provider)
+
+    if provider_type == "auto":
+        whisper_config = providers.get("faster_whisper") if isinstance(providers.get("faster_whisper"), dict) else {}
+        if FasterWhisperAsrProvider.is_available():
+            return _create_faster_whisper_provider(whisper_config, library)
+        return NoopAsrProvider()
+
+    if provider_type in {"none", "disabled"}:
+        return NoopAsrProvider()
+
+    if provider_type in {"faster_whisper", "faster-whisper", "fasterwhisper", "whisper"}:
+        return _create_faster_whisper_provider(provider_config, library)
+
+    return NoopAsrProvider()
+
+
+def _create_faster_whisper_provider(
+    provider_config: dict[str, Any], library: LocalAudioLibrary
+) -> FasterWhisperAsrProvider:
+    return FasterWhisperAsrProvider(
+        FasterWhisperConfig(
+            model_size=str(provider_config.get("modelSize") or os.environ.get("FASTER_WHISPER_MODEL_SIZE") or "base"),
+            device=str(provider_config.get("device") or os.environ.get("FASTER_WHISPER_DEVICE") or "auto"),
+            compute_type=str(provider_config.get("computeType") or os.environ.get("FASTER_WHISPER_COMPUTE_TYPE") or "default"),
+            language=str(provider_config.get("language") or os.environ.get("FASTER_WHISPER_LANGUAGE") or ""),
+            beam_size=int(provider_config.get("beamSize") or os.environ.get("FASTER_WHISPER_BEAM_SIZE") or 5),
+            download_root=str(provider_config.get("downloadRoot") or os.environ.get("FASTER_WHISPER_DOWNLOAD_ROOT") or ""),
         ),
         library,
     )

@@ -62,7 +62,12 @@ export interface ScheduledJob {
   title: string
   schedule: string
   nextRun: string
+  lastRun: string
   repeat: number
+  completedRuns: number
+  status: 'scheduled' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed'
+  statusLabel: string
+  statusTone: ToolTone
   enabled: boolean
 }
 
@@ -74,6 +79,8 @@ export interface RoleProfile {
   style: string
   provider: string
   model: string
+  live2dModel: string
+  ttsVoice: string
 }
 
 export interface MemoryItem {

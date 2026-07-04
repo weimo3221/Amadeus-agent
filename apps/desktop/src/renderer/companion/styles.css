@@ -1182,3 +1182,219 @@ button,
 .companion-transient-log .message {
   font-weight: 520;
 }
+
+/* Single-line composer: home orb + input + send icon in one glass pill. */
+.companion-hover-panel {
+  display: block;
+  width: min(340px, calc(100% - 32px));
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.companion-hover-panel::after {
+  display: none;
+}
+
+.companion-hover-panel #chat-form {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--companion-border);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(227, 243, 251, 0.5)),
+    var(--companion-panel-strong);
+  box-shadow:
+    0 16px 36px rgba(129, 112, 146, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(18px);
+}
+
+.companion-hover-panel #chat-input {
+  height: 34px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--companion-text);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.companion-hover-panel #chat-input::placeholder {
+  color: var(--companion-faint);
+}
+
+.companion-hover-panel #chat-form .composer-orb,
+.companion-hover-panel #chat-form .composer-mic,
+.companion-hover-panel #chat-form .composer-send {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.companion-hover-panel #chat-form .composer-orb svg,
+.companion-hover-panel #chat-form .composer-mic svg,
+.companion-hover-panel #chat-form .composer-send svg {
+  width: 17px;
+  height: 17px;
+}
+
+.companion-hover-panel #chat-form .composer-orb {
+  position: relative;
+  border: 1px solid rgba(233, 167, 192, 0.4);
+  color: #7a5b83;
+  background: linear-gradient(135deg, #f8dce8, #e3f3fb);
+}
+
+.companion-hover-panel #chat-form .composer-orb:hover {
+  background: linear-gradient(135deg, #f4c9da, #d7eefb);
+}
+
+.companion-hover-panel #chat-form .composer-mic {
+  border: 1px solid rgba(203, 188, 240, 0.5);
+  color: #6a5488;
+  background: linear-gradient(135deg, #eee3fb, #e3edfb);
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.companion-hover-panel #chat-form .composer-mic:hover {
+  background: linear-gradient(135deg, #e4d3f6, #d5e6fb);
+}
+
+.companion-hover-panel #chat-form .composer-mic.recording {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #ff7ac8, #ff4faf);
+  box-shadow: 0 0 0 0 rgba(255, 79, 175, 0.5);
+  animation: composer-mic-pulse 1.4s ease-out infinite;
+}
+
+.companion-hover-panel #chat-form .composer-mic.transcribing {
+  color: #8a7ba6;
+  background: linear-gradient(135deg, #e9e3f6, #dfe7f4);
+  cursor: progress;
+}
+
+@keyframes composer-mic-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 79, 175, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(255, 79, 175, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 79, 175, 0);
+  }
+}
+
+.companion-hover-panel #chat-form .composer-send {
+  border: 0;
+  color: #5a4363;
+  background: linear-gradient(135deg, #e9c6dc, #cdbcf0);
+  box-shadow: 0 8px 20px rgba(185, 167, 223, 0.34);
+}
+
+.companion-hover-panel #chat-form .composer-send:hover {
+  filter: brightness(1.05);
+}
+
+.composer-orb-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  padding: 3px 9px;
+  border-radius: 8px;
+  color: #fbf6ff;
+  background: rgba(63, 53, 70, 0.92);
+  box-shadow: 0 8px 20px rgba(63, 53, 70, 0.28);
+  font-size: 11px;
+  font-weight: 620;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  pointer-events: none;
+  transition:
+    opacity 130ms ease,
+    transform 130ms ease;
+}
+
+.composer-orb-tip::after {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  background: rgba(63, 53, 70, 0.92);
+  transform: translate(-50%, -3px) rotate(45deg);
+  content: "";
+}
+
+.companion-hover-panel .composer-orb:hover .composer-orb-tip,
+.companion-hover-panel .composer-orb:focus-visible .composer-orb-tip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Bubbles grow upward from just above the composer; count + lines are capped. */
+.companion-transient-log {
+  bottom: 74px;
+  left: 16px;
+  width: min(340px, calc(100% - 32px));
+  max-height: none;
+  gap: 6px;
+  justify-content: flex-end;
+  overflow: visible;
+}
+
+.companion-transient-log .message {
+  display: -webkit-box;
+  max-width: min(320px, 92%);
+  padding: 6px 12px;
+  border-radius: 15px;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 540;
+  overflow: hidden;
+  pointer-events: auto;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+
+/* Hover a bubble to read it all: pause fade-out, unclamp, scroll if long. */
+.companion-transient-log .message:hover {
+  display: block;
+  max-height: 46vh;
+  overflow-y: auto;
+  cursor: default;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+}
+
+.companion-transient-log .message.user:hover,
+.companion-transient-log .message.assistant:hover,
+.companion-transient-log .message.assistant.message-complete:hover {
+  animation-play-state: paused;
+}
+
+.companion-transient-log .message::-webkit-scrollbar {
+  width: 6px;
+}
+
+.companion-transient-log .message::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(129, 112, 146, 0.42);
+}

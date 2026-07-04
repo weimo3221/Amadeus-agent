@@ -58,6 +58,11 @@ export interface AmadeusBridgeServerOptions {
     response: import('node:http').ServerResponse,
     requestUrl: string,
   ): void | Promise<void>
+  handleAudioHttpRequest?(
+    request: IncomingMessage,
+    response: import('node:http').ServerResponse,
+    requestUrl: string,
+  ): void | Promise<void>
   subscribeRuntimeEvents?(emit: (event: RuntimeEvent<string, unknown>) => void): () => void
   streamChat(socket: BridgeSocket, sessionId: string, text: string, skills?: string[]): void | Promise<void>
 }
@@ -416,6 +421,17 @@ export function createAmadeusBridgeServer(options: AmadeusBridgeServerOptions): 
         })
         return
       }
+    }
+
+    if (requestUrl.startsWith('/audio/') && options.handleAudioHttpRequest) {
+      void Promise.resolve(options.handleAudioHttpRequest(request, response, requestUrl)).catch(() => {
+        if (response.headersSent) {
+          return
+        }
+        response.writeHead(502, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ ok: false, error: 'audio_proxy_unavailable' }))
+      })
+      return
     }
 
     if (requestUrl.startsWith('/agent/') && options.handleAgentHttpRequest) {

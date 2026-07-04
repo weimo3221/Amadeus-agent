@@ -681,6 +681,57 @@ export async function proxyPythonAgentRequest(
   }
 }
 
+async function readIncomingBuffer(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string))
+  }
+  return Buffer.concat(chunks)
+}
+
+export async function proxyPythonAudioRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requestUrl: string,
+  options: PythonBridgeOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+
+  if (request.method === 'POST' && requestUrl.startsWith('/audio/transcribe')) {
+    let audioBuffer: Buffer
+    try {
+      audioBuffer = await readIncomingBuffer(request)
+    }
+    catch {
+      writeJson(response, 400, { ok: false, error: 'invalid_audio_body' })
+      return
+    }
+
+    try {
+      const runtimeResponse = await fetchImpl(runtimeEndpoint(options.runtimeUrl, requestUrl), {
+        method: 'POST',
+        headers: {
+          'Content-Type': request.headers['content-type'] || 'application/octet-stream',
+        },
+        body: new Uint8Array(audioBuffer),
+      })
+      const payload = await runtimeResponse.json().catch(() => undefined) as Record<string, unknown> | undefined
+      if (!payload || !isRecord(payload)) {
+        writeJson(response, 502, { ok: false, error: 'audio_proxy_invalid_response' })
+        return
+      }
+      writeJson(response, runtimeResponse.status, payload)
+      return
+    }
+    catch {
+      writeJson(response, 502, { ok: false, error: 'audio_proxy_unavailable' })
+      return
+    }
+  }
+
+  writeJson(response, 404, { ok: false, error: 'not_found' })
+}
+
 function isRuntimeEvent(value: unknown): value is RuntimeEvent<string, unknown> {
   const event = isRecord(value) ? value as Partial<RuntimeEvent<string, unknown>> : undefined
   if (!event) {

@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from amadeus.harness.registry import DEFAULT_HARNESSES_CONFIG_PATH, parse_harnesses_config
+from amadeus.harness.live2d import DEFAULT_AUDIO_PLAYBACK_BEHAVIORS, DEFAULT_STATE_BEHAVIORS
+from amadeus.harness.registry import (
+    DEFAULT_HARNESSES_CONFIG_PATH,
+    merge_behavior_config,
+    parse_harnesses_config,
+)
+
+
+AUDIO_PLAYBACK_SHORT_DEFAULTS: dict[str, dict[str, Any]] = {
+    "started": dict(DEFAULT_AUDIO_PLAYBACK_BEHAVIORS["audio.playback-started"]),
+    "ended": dict(DEFAULT_AUDIO_PLAYBACK_BEHAVIORS["audio.playback-ended"]),
+    "error": dict(DEFAULT_AUDIO_PLAYBACK_BEHAVIORS["audio.playback-error"]),
+}
 
 
 SUPPORTED_LIVE2D_SUFFIXES = {
@@ -122,6 +135,190 @@ class LocalLive2DModelLibrary:
 
         self.persist_configured_model(selection)
         return selection
+
+    def import_model(self, source_dir: str, *, model_id: str | None = None) -> Live2DModelSelection:
+        source = Path(source_dir).expanduser()
+        if not source.exists() or not source.is_dir():
+            raise ValueError(f"source directory not found: {source_dir}")
+
+        model_files = sorted(source.rglob("*.model3.json"))
+        if not model_files:
+            raise ValueError("no *.model3.json found in source directory")
+
+        resolved_id = (model_id or source.name).strip()
+        if not resolved_id or not all(character.isalnum() or character in "._-" for character in resolved_id):
+            raise ValueError("invalid model id derived from source directory")
+
+        destination = (self.root_dir / resolved_id).resolve()
+        if not self._is_inside(destination, self.root_dir):
+            raise ValueError("resolved destination escapes the models directory")
+        if destination.exists():
+            raise ValueError(f"model '{resolved_id}' already exists")
+
+        copied = 0
+        for entry in sorted(source.rglob("*")):
+            if not entry.is_file():
+                continue
+            if entry.suffix.lower() not in SUPPORTED_LIVE2D_SUFFIXES:
+                continue
+            relative = entry.relative_to(source)
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, target)
+            copied += 1
+
+        if copied == 0:
+            if destination.exists():
+                shutil.rmtree(destination, ignore_errors=True)
+            raise ValueError("no supported Live2D asset files were imported")
+
+        selection = self.find_model(resolved_id)
+        if not selection:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise ValueError("imported model is missing a usable *.model3.json entry")
+
+        return selection
+
+    def audio_playback_behaviors(self, config_path: Path | None = None) -> dict[str, dict[str, Any]]:
+        config = parse_harnesses_config(config_path or self.config_path)
+        live2d_config = config.get("live2d", {}) if isinstance(config.get("live2d"), dict) else {}
+        merged = merge_behavior_config(
+            AUDIO_PLAYBACK_SHORT_DEFAULTS,
+            live2d_config.get("audioPlaybackBehaviors"),
+        )
+        return merged
+
+    def default_state_behaviors(self) -> dict[str, dict[str, Any]]:
+        return {key: dict(value) for key, value in DEFAULT_STATE_BEHAVIORS.items()}
+
+    def persist_audio_playback_behaviors(self, behaviors: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        allowed_states = set(AUDIO_PLAYBACK_SHORT_DEFAULTS)
+        normalized: dict[str, dict[str, Any]] = {}
+        for state, behavior in behaviors.items():
+            if state not in allowed_states or not isinstance(behavior, dict):
+                continue
+            entry: dict[str, Any] = {}
+            for key in ("emotion", "expression", "motion"):
+                value = behavior.get(key)
+                if isinstance(value, str) and value.strip():
+                    entry[key] = value.strip()
+            intensity = behavior.get("intensity")
+            if isinstance(intensity, (int, float)) and not isinstance(intensity, bool):
+                entry["intensity"] = round(float(max(0.0, min(1.0, intensity))), 3)
+            if entry:
+                normalized[state] = entry
+
+        merged = merge_behavior_config(AUDIO_PLAYBACK_SHORT_DEFAULTS, normalized)
+
+        try:
+            current = self.config_path.read_text(encoding="utf-8") if self.config_path.exists() else ""
+        except OSError:
+            current = ""
+        next_content = self._update_harness_audio_behaviors_config(current, merged)
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config_path.write_text(next_content, encoding="utf-8")
+        return merged
+
+    def _render_audio_behaviors_lines(self, behaviors: dict[str, dict[str, Any]]) -> list[str]:
+        lines = ["    audioPlaybackBehaviors:"]
+        for state in ("started", "ended", "error"):
+            behavior = behaviors.get(state)
+            if not behavior:
+                continue
+            lines.append(f"      {state}:")
+            for key in ("emotion", "expression", "motion", "intensity"):
+                if key not in behavior:
+                    continue
+                lines.append(f"        {key}: {behavior[key]}")
+        return lines
+
+    def _update_harness_audio_behaviors_config(self, content: str, behaviors: dict[str, dict[str, Any]]) -> str:
+        behavior_lines = self._render_audio_behaviors_lines(behaviors)
+        if not content.strip():
+            selection = self.configured_model()
+            model_id = selection.model_id if selection else "default"
+            model_path = selection.relative_path if selection else ""
+            return "\n".join([
+                "harnesses:",
+                "  live2d:",
+                "    enabled: true",
+                "    adapter: desktop-live2d",
+                "    model:",
+                f"      id: {model_id}",
+                f"      path: {model_path}",
+                *behavior_lines,
+                "",
+            ])
+
+        lines = content.splitlines()
+        in_harnesses = False
+        in_live2d = False
+        block_start: int | None = None
+        block_end: int | None = None
+
+        for index, raw_line in enumerate(lines):
+            stripped_full = raw_line.split("#", 1)[0].rstrip()
+            trimmed = stripped_full.strip()
+            if not trimmed:
+                continue
+            indent = len(stripped_full) - len(stripped_full.lstrip(" "))
+
+            if indent == 0:
+                in_harnesses = trimmed == "harnesses:"
+                in_live2d = False
+                continue
+            if not in_harnesses:
+                continue
+            if indent == 2:
+                in_live2d = trimmed == "live2d:"
+                continue
+            if not in_live2d:
+                continue
+
+            if indent == 4 and trimmed.startswith("audioPlaybackBehaviors:"):
+                block_start = index
+                block_end = len(lines)
+                for follow in range(index + 1, len(lines)):
+                    follow_line = lines[follow].split("#", 1)[0].rstrip()
+                    if not follow_line.strip():
+                        continue
+                    follow_indent = len(follow_line) - len(follow_line.lstrip(" "))
+                    if follow_indent <= 4:
+                        block_end = follow
+                        break
+                break
+
+        if block_start is not None and block_end is not None:
+            next_lines = lines[:block_start] + behavior_lines + lines[block_end:]
+            return "\n".join(next_lines).rstrip("\n") + "\n"
+
+        # No existing block: insert after the live2d model block (or end of live2d section).
+        insert_at = len(lines)
+        in_harnesses = False
+        in_live2d = False
+        for index, raw_line in enumerate(lines):
+            stripped_full = raw_line.split("#", 1)[0].rstrip()
+            trimmed = stripped_full.strip()
+            if not trimmed:
+                continue
+            indent = len(stripped_full) - len(stripped_full.lstrip(" "))
+            if indent == 0:
+                if in_live2d:
+                    insert_at = index
+                    break
+                in_harnesses = trimmed == "harnesses:"
+                in_live2d = False
+                continue
+            if not in_harnesses:
+                continue
+            if indent == 2:
+                if in_live2d:
+                    insert_at = index
+                    break
+                in_live2d = trimmed == "live2d:"
+
+        next_lines = lines[:insert_at] + behavior_lines + lines[insert_at:]
+        return "\n".join(next_lines).rstrip("\n") + "\n"
 
     def model_url(self, selection: Live2DModelSelection) -> str:
         return f"{self.public_base_url}/live2d/models/{quote(selection.relative_path)}"

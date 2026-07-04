@@ -48,13 +48,19 @@ const { state } = useRuntime()
               <span v-if="job.nextRun" class="inline-flex items-center gap-1">
                 <Icon icon="ph:arrow-clockwise-duotone" :width="13" />下次 {{ job.nextRun }}
               </span>
+              <span v-if="job.lastRun" class="inline-flex items-center gap-1">
+                <Icon icon="ph:check-circle-duotone" :width="13" />上次 {{ job.lastRun }}
+              </span>
               <span v-if="job.repeat" class="inline-flex items-center gap-1">
                 <Icon icon="ph:repeat-duotone" :width="13" />重复 {{ job.repeat }} 次
               </span>
+              <span v-if="job.completedRuns" class="inline-flex items-center gap-1">
+                <Icon icon="ph:list-checks-duotone" :width="13" />已执行 {{ job.completedRuns }} 次
+              </span>
             </p>
           </div>
-          <AmTag :tone="job.enabled ? 'success' : 'neutral'" size="sm" dot>
-            {{ job.enabled ? '启用' : '停用' }}
+          <AmTag :tone="job.statusTone" size="sm" dot>
+            {{ job.statusLabel }}
           </AmTag>
         </div>
       </div>

@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-03
+Last updated: 2026-07-05
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -10,15 +10,15 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 
 ## Current Snapshot
 
-Amadeus is now a working desktop MVP with a Python-first turn path, split Electron desktop surfaces, scheduled companion messages, persistent session todos, and a mostly landed runtime reliability foundation.
+Amadeus is now a working desktop MVP with a Python-first turn path, split Electron desktop surfaces, local ASR/TTS voice I/O, scheduled companion messages, persistent session todos, and a mostly landed runtime reliability foundation.
 
-The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The desktop product surface now has separate `companion` and `main-ui` renderer entries: Companion owns Live2D and lightweight desktop presence, while Main UI owns the larger workbench/chat surface. Main UI now restores current session history, displays active background work and timed messages, and uses a light anime plus modern SaaS visual treatment. The next large product step is desktop/runtime stabilization: finish CLI/session switching, polish the two desktop surfaces, improve lipsync, continue TypeScript bridge shrinkage, and harden ToolRuntime/Memory only where real usage exposes gaps.
+The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The desktop product surface now has separate `companion` and `main-ui` entries: Companion owns Live2D, voice input, and lightweight desktop presence, while the Vue `desktop-ui-next` Main UI owns the larger workbench/chat surface. Main UI restores current session history, displays active and completed timed messages, exposes richer runtime configuration, and uses a light anime plus modern SaaS visual treatment. The next large product step is desktop/runtime stabilization: finish CLI/session switching, polish the two desktop surfaces, improve lipsync/ASR quality, continue TypeScript bridge shrinkage, and harden ToolRuntime/Memory only where real usage exposes gaps.
 
 ### Current Runtime Flow
 
 Preferred path today:
 
-1. A desktop surface (`companion` or `main-ui`) sends `user.message` over WebSocket with `surface`, `clientId`, and `sessionId` metadata.
+1. A desktop surface (`companion` or `main-ui`) sends `user.message` over WebSocket with `surface`, `clientId`, and `sessionId` metadata. Companion voice input first records microphone audio, transcribes it through `/audio/transcribe`, then reuses this same message path.
 2. `apps/server` routes the event inside the matching session room and first tries Python `POST /agent/turn`.
 3. `packages/amadeus/agent.py` runs the turn in Python:
    - loads recent SQLite history
@@ -40,7 +40,7 @@ Fallback path today:
 ### Done Now
 
 - Project scaffold is in place under `amadeus-agent`.
-- Desktop app MVP is running with Electron and Vite multi-page renderer entries. `companion` is a transparent frameless desktop presence with Live2D, lightweight input, transient streaming reply bubbles, runtime audio playback, and a hybrid lipsync path: provider-native or runtime-planned phoneme/viseme lipsync cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback. `main-ui` is a larger chat/workbench surface without Live2D.
+- Desktop app MVP is running with Electron and Vite renderer entries. `companion` is a transparent frameless desktop presence with Live2D, lightweight text/voice input, transient streaming reply bubbles, runtime audio playback, and a hybrid lipsync path: provider-native or runtime-planned phoneme/viseme lipsync cues when available, desktop amplitude-driven mouth movement for runtime audio otherwise, and the older timed mouth loop kept as fallback. `desktop-ui-next` is now the default larger chat/workbench surface without Live2D, with a legacy Main UI fallback behind `AMADEUS_MAIN_UI_LEGACY`.
 - Companion panel visibility is controlled by one rule: the Electron main process samples the global cursor, sends `desktop:global-cursor` with the cursor point and companion window bounds, and the renderer shows the panel only while the cursor is inside the companion window, then hides it 1.5 seconds after the cursor leaves.
 - Companion Live2D model fit is configurable through `configs/runtime.yaml` under `desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, and `desktop.companionLive2dOffsetY`; Python exposes those values through `/live2d/config` and the renderer applies them when fitting the model.
 - Local runtime MVP is running in `apps/server` with HTTP health check and WebSocket events.
@@ -49,8 +49,9 @@ Fallback path today:
 - Character behavior events can drive Live2D state, expression, motion, and pointer-following reactions.
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
 - Desktop shows memory count, tool status, tool config status, voice status, visible chat messages, and has a Reset Session button.
-- Main UI restores the current session's persisted chat history from Python `/memory/messages` when opened or switched by `sessionId`.
-- Main UI includes a Timed Messages panel for creating, listing, pausing, resuming, and cancelling scheduled companion messages.
+- Main UI restores the current session's persisted chat history from Python `/memory/messages` when opened or switched by `sessionId`, and renders assistant Markdown through the shared runtime Markdown renderer.
+- Main UI includes a Timed Messages panel for listing scheduled companion messages across active and terminal states. It listens for `scheduled.updated`, shows `已启用` / `执行中` / `已暂停` / `已完成` / `已取消` / `失败`, and displays last-run plus completed-run counts.
+- Main UI includes a configuration center for model provider/API settings, Live2D model import/selection/behavior mapping, macOS/GPT-SoVITS TTS settings, and runtime config persistence through Python endpoints.
 - Main UI and Companion have a first-pass light anime plus modern SaaS visual refresh with softer typography, pastel surfaces, and higher-contrast interactive states.
 - `apps/server` no longer owns a separate local message-count/reset SQLite path; it now reads `GET /memory/count` and forwards `POST /memory/reset` to the Python runtime while keeping the desktop protocol unchanged.
 - Tool calling is model-triggered through OpenAI-compatible `tools` / `tool_calls`, not keyword matching.
@@ -96,6 +97,7 @@ Fallback path today:
   - desktop sends `tool.permission.response`
   - the bridge forwards it back to Python `/tools/permission`
 - Python audio interface now has a practical default on macOS: runtime TTS auto-selects GPT-SoVITS when configured, otherwise uses local `say`/`afconvert` and emits `audio.tts-ready`.
+- Python audio interface now includes local ASR. `asr.default: auto` selects `faster-whisper` when installed; Companion posts microphone audio to `/audio/transcribe`, then sends non-empty transcripts through the normal chat path.
 - Python audio now prefers provider-native lipsync payloads when a TTS provider returns them, normalizing `lipsyncCues` / `visemes` / `phonemes` JSON into runtime `audio.lipsync-cues`; the local phoneme planner remains the fallback when providers return audio without cue metadata.
 - Desktop still keeps Electron/browser `speechSynthesis` fallback for provider failures or unsupported platforms.
 - Python runtime parity tests are now wired through `npm test`.

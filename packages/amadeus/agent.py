@@ -208,6 +208,7 @@ class AgentRuntime:
         self.task_worker: Any | None = None
         self.model_client = OpenAICompatibleChatModel()
         self.tools_config_path = tools_config_path
+        self.harnesses_config_path = harnesses_config_path
         self.tool_registry = ToolRegistry(
             config_path=tools_config_path,
             memory_tool_specs=self.memory_manager.get_tool_specs(),
@@ -274,6 +275,7 @@ class AgentRuntime:
         model: str | None = None,
         api_key: str | None = None,
         streaming: bool | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         current = self.model_client.config
         self.model_client.config = OpenAICompatibleConfig(
@@ -282,6 +284,7 @@ class AgentRuntime:
             api_key=api_key if api_key is not None else current.api_key,
             model=model or current.model,
             streaming=streaming if streaming is not None else current.streaming,
+            max_tokens=max_tokens if max_tokens is not None else current.max_tokens,
             default_headers=current.default_headers,
             request_timeout_seconds=current.request_timeout_seconds,
             stream_timeout_seconds=current.stream_timeout_seconds,
@@ -290,6 +293,7 @@ class AgentRuntime:
             "provider": self.model_client.provider,
             "baseUrl": self.base_url,
             "model": self.model,
+            "maxTokens": self.model_client.max_tokens,
             "apiKeyConfigured": bool(self.api_key),
         }
 
@@ -490,6 +494,13 @@ class AgentRuntime:
             "runtimeConfig": str(self.runtime_config_path),
             "config": self._load_runtime_config(reason="reload"),
         }
+
+    def reload_harness_registry(self) -> None:
+        logger.info("Reloading harness registry harnessesConfig=%s", self.harnesses_config_path)
+        self.harness_registry = HarnessRegistry.from_config(
+            self.harnesses_config_path,
+            audio_library=self.audio_runtime.library if self.audio_runtime is not None else None,
+        )
 
     def reload_tool_registry(self) -> dict[str, Any]:
         logger.info("Reloading tool registry toolsConfig=%s", self.tools_config_path)
@@ -1980,6 +1991,8 @@ class AgentRuntime:
             "stream": False,
             "temperature": 0,
         }
+        if self.model_client.max_tokens > 0:
+            payload["max_tokens"] = self.model_client.max_tokens
         data = self.model_client.post_chat_completion(payload)
         return first_choice_message(data)
 
@@ -1990,6 +2003,8 @@ class AgentRuntime:
             "stream": True,
             "temperature": 0.7,
         }
+        if self.model_client.max_tokens > 0:
+            payload["max_tokens"] = self.model_client.max_tokens
         yield from self.model_client.stream_chat_completion(payload)
 
     def _emit_assistant_state(self, session_id: str, turn_id: str | None, state: str) -> Iterable[AgentEvent]:

@@ -1,1 +1,2 @@
 jieba>=0.42.1,<0.43
+faster-whisper>=1.0.0,<2

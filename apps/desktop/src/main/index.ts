@@ -18,6 +18,20 @@ const isE2eOpenMainUi = process.env.AMADEUS_E2E_OPEN_MAIN_UI === '1'
 const isE2eCompanionHover = process.env.AMADEUS_E2E_COMPANION_HOVER === '1'
 const defaultCompanionSessionId = process.env.AMADEUS_SESSION_ID || 'companion:default'
 
+// The new Vue main UI (apps/desktop-ui-next) replaces the legacy vanilla renderer.
+// E2E flows still assert against the legacy renderer DOM, so they keep loading it.
+const isAnyE2e = isE2eSmoke
+  || isE2eRuntimeUi
+  || isE2eLive2D
+  || isE2eAudioFeedback
+  || isE2eAudioError
+  || isE2ePermissionPrompt
+  || isE2eMultiSkillSelect
+  || isE2eOpenMainUi
+  || isE2eCompanionHover
+const useLegacyMainUi = process.env.AMADEUS_MAIN_UI_LEGACY === '1' || isAnyE2e
+const mainUiDevServerUrl = process.env.AMADEUS_MAIN_UI_DEV_URL || 'http://127.0.0.1:5178/'
+
 let mainUiWindow: BrowserWindow | undefined
 let companionWindow: BrowserWindow | undefined
 let companionCursorTimer: NodeJS.Timeout | undefined
@@ -123,6 +137,44 @@ function rendererQuery(sessionId = defaultCompanionSessionId): Record<string, st
   }
   query.disableSkillPersistence = '1'
   return query
+}
+
+function mainUiQueryString(sessionId: string): string {
+  const query = new URLSearchParams()
+  query.set('sessionId', sessionId)
+  if (process.env.AMADEUS_E2E_AGENT_HTTP_URL) {
+    query.set('agentHttpUrl', process.env.AMADEUS_E2E_AGENT_HTTP_URL)
+  }
+  if (process.env.AMADEUS_E2E_AGENT_WS_URL) {
+    query.set('agentWsUrl', process.env.AMADEUS_E2E_AGENT_WS_URL)
+  }
+  return query.toString()
+}
+
+function loadMainUi(window: BrowserWindow, sessionId: string): void {
+  // E2E and the explicit legacy flag keep the vanilla renderer so DOM assertions hold.
+  if (useLegacyMainUi) {
+    if (process.env.AMADEUS_DESKTOP_DEV === '1') {
+      const url = new URL(rendererDevUrl('main-ui'))
+      url.searchParams.set('sessionId', sessionId)
+      void window.loadURL(url.toString())
+    }
+    else {
+      void window.loadFile(join(__dirname, '../renderer/main-ui/index.html'), { query: rendererQuery(sessionId) })
+    }
+    return
+  }
+
+  // Default: the Vue main UI (apps/desktop-ui-next).
+  const search = mainUiQueryString(sessionId)
+  if (process.env.AMADEUS_DESKTOP_DEV === '1') {
+    const url = new URL(mainUiDevServerUrl)
+    url.search = search
+    void window.loadURL(url.toString())
+  }
+  else {
+    void window.loadFile(join(projectRoot, 'apps/desktop-ui-next/dist/index.html'), { search })
+  }
 }
 
 function startCompanionCursorTracking(window: BrowserWindow): void {
@@ -343,14 +395,7 @@ function createMainUiWindow(sessionId = defaultCompanionSessionId): BrowserWindo
   window.on('minimize', publishCompanionInteractionMode)
   window.on('restore', publishCompanionInteractionMode)
 
-  if (process.env.AMADEUS_DESKTOP_DEV === '1') {
-    const url = new URL(rendererDevUrl('main-ui'))
-    url.searchParams.set('sessionId', sessionId)
-    void window.loadURL(url.toString())
-  }
-  else {
-    void window.loadFile(join(__dirname, '../renderer/main-ui/index.html'), { query: rendererQuery(sessionId) })
-  }
+  loadMainUi(window, sessionId)
 
   return window
 }

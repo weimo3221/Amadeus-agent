@@ -66,7 +66,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     >
       <ul
         v-if="open"
-        class="glass-card absolute z-30 mt-2 w-full overflow-hidden rounded-[var(--radius-xl3)] p-1.5"
+        class="glass-card absolute z-30 mt-2 max-h-64 w-full overflow-y-auto rounded-[var(--radius-xl3)] p-1.5"
       >
         <li v-for="opt in options" :key="opt.value">
           <button

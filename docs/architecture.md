@@ -22,7 +22,7 @@ Today the preferred path is already Python-first:
 ```text
 User
   |
-  | text input in Companion / Main UI
+  | text / voice input in Companion / Main UI
   v
 apps/desktop
   |
@@ -75,7 +75,7 @@ User
 apps/desktop
   |
   +--> companion renderer (Live2D, transient bubbles, lightweight input)
-  +--> main-ui renderer    (larger chat/workbench, no Live2D)
+  +--> desktop-ui-next     (larger Vue chat/workbench, no Live2D)
   |
   | WebSocket / local IPC events
   v
@@ -92,7 +92,7 @@ packages/amadeus
   +--> memory.py       (active SQLite message, role, memory, task, and audit store)
   +--> scheduling.py   (active scheduled companion-message parser/worker)
   +--> tools/          (active Python tools)
-  +--> audio.py        (active audio/TTS interface with auto provider selection)
+  +--> audio.py        (active ASR/TTS interface with auto provider selection)
   +--> server.py       (active HTTP runtime)
   +--> model.py        (active OpenAI-compatible provider boundary)
   +--> skills.py       (active skill catalog boundary)
@@ -162,7 +162,7 @@ packages/amadeus
 - `scheduling.py`: active schedule parser plus in-process scheduled-message worker. It supports one-shot durations/timestamps, recurring intervals, common daily/weekly/monthly cron shapes, repeat counts, and lifecycle event publication.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, session workspace epoch propagation, and repeated-call guardrails.
-- `audio.py`: active TTS/audio interface with an `auto` provider selector, config-gated GPT-SoVITS HTTP provider, and macOS `say` provider that can cache generated wav audio under the local audio library.
+- `audio.py`: active ASR/TTS/audio interface. TTS uses an `auto` provider selector, config-gated GPT-SoVITS HTTP provider, and macOS `say` provider that can cache generated wav audio under the local audio library. ASR uses an `auto` provider selector that chooses local `faster-whisper` when installed.
 - `server.py`: active Python HTTP runtime surface, including local audio file serving and local Live2D model config/static asset serving for direct runtime use.
 - `model.py`: active first-pass OpenAI-compatible provider boundary for `configs/providers.yaml` plus environment-backed provider config, JSON chat-completion requests, stream parsing, and classified provider error normalization.
 - `harness/`: active first-pass harness boundary with a registry and Live2D harness that maps `assistant.state` plus configurable audio playback feedback behaviors to `character.behavior`.
@@ -183,6 +183,7 @@ Desktop app responsibilities:
 - Render Live2D only in Companion.
 - Keep Companion as a transparent frameless always-on-top desktop presence with lightweight input and transient streaming reply bubbles.
 - Keep Main UI as the larger chat/workbench surface without Live2D.
+- Accept voice input from Companion through a microphone orb, local `MediaRecorder`, bridge `/audio/transcribe`, and Python ASR.
 - Show inline tool permission prompts.
 - Play runtime audio when available and otherwise fall back to browser/Electron `speechSynthesis`.
 - Drive current lipsync behavior locally.
@@ -192,19 +193,19 @@ Desktop app responsibilities:
 Current note:
 
 - The actual Companion Live2D and lightweight renderer behavior logic currently lives in `apps/desktop/src/renderer/companion/main.ts`.
-- The larger chat/workbench renderer currently lives in `apps/desktop/src/renderer/main-ui/main.ts`.
+- The larger chat/workbench renderer is `apps/desktop-ui-next`; Electron loads it by default and keeps the legacy Main UI available behind `AMADEUS_MAIN_UI_LEGACY`.
 - Companion panel visibility is not DOM hover-driven. The renderer shows the panel only when the global cursor point is inside the Companion window bounds and hides it 1.5 seconds after the cursor leaves.
 - Live2D model fit is configured from `configs/runtime.yaml` through `/live2d/config` (`desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, `desktop.companionLive2dOffsetY`).
 - `packages/live2d-stage` is still an intended package boundary, not the active implementation.
 
 ### apps/desktop-ui-next
 
-Standalone Main UI design prototype:
+Production Main UI workspace:
 
-- A separate Vue 3 + Vite + TypeScript + Tailwind CSS v4 workspace used to explore the next Main UI visual language (soft-gradient, glassmorphism, rounded, light anime aesthetic).
-- It is a design prototype only. It does not connect to the WebSocket bridge or Python runtime; it renders the chat workbench from local mock data with simulated interaction states.
-- It carries no runtime, memory, tool, or provider logic. When its visual direction is accepted, the intended path is to fold the shared design tokens and component patterns back into the real `apps/desktop` Main UI renderer, not to ship this prototype as a second production surface.
-- Layout: `AppSidebar`, `AppHeader`, and a chat workspace (session switcher, plan panel, chat stream, composer) plus a right rail with overview/tasks/skills tabs.
+- A Vue 3 + Vite + TypeScript + Tailwind CSS v4 workspace that now provides the default Electron Main UI.
+- It connects to the TypeScript bridge WebSocket and Python HTTP runtime for real chat, session history, tasks, timed messages, skills, memory, runtime/model configuration, Live2D model management, and audio/TTS configuration.
+- It owns the larger workbench experience while Companion remains the lightweight Live2D surface.
+- Layout: `AppSidebar`, `AppHeader`, chat/workspace views, task and timed-message views, settings/config center, and reusable `Am*` UI components.
 - Reusable component set under `src/components/ui` (`AmButton`, `AmInput`, `AmSelect`, `AmCard`, `AmTag`, `AmTabs`, `AmTable`, `AmModal`, `AmEmptyState`, `AmLoading`) and shared design tokens in `src/styles/main.css`.
 
 ### apps/server
@@ -218,6 +219,7 @@ TypeScript bridge responsibilities today:
 - Forward Python runtime events back to the desktop.
 - Forward per-client desktop capability and audio feedback metadata to Python for harness policy.
 - Route desktop `tool.permission.response` events back to Python `/tools/permission`.
+- Proxy runtime HTTP surfaces used by desktop clients, including `/live2d/*`, `/audio/*`, `/scheduled-jobs`, `/tasks`, `/skills`, and session/memory endpoints. Binary audio upload for ASR is forwarded as a `Uint8Array` request body.
 
 This layer should shrink over time.
 
@@ -232,6 +234,8 @@ Python runtime responsibilities today:
 - Own concrete Python tool execution for the preferred path.
 - Own persisted session tasks and in-process worker execution with retry scheduling and stale-running recovery.
 - Own persisted scheduled companion messages and persistent session todos.
+- Own scheduled-job terminal state (`completed`, `cancelled`, `failed`) and emit `scheduled.updated`; Main UI fetches all statuses so completed timed messages remain visible.
+- Own ASR/TTS provider selection and expose `/audio/transcribe`, `/audio/speak`, `/audio/config`, `/audio/voices`, and local generated audio files.
 - Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `scheduled.updated`, `character.behavior`, and `audio.tts-ready`.
 
 Python runtime responsibilities later:
@@ -263,6 +267,7 @@ Audio responsibilities:
 
 - Voice activity state.
 - Text-to-speech interface.
+- Speech-to-text interface.
 - Local audio asset lookup under `packages/amadeus/assets/audio`.
 - Generated TTS cache management for provider-generated audio.
 
@@ -272,6 +277,7 @@ Current behavior:
 - The runtime emits `audio.tts-ready` only when Python audio returns a real `audioUrl`.
 - If Python audio cannot generate a file, the desktop falls back to `speechSynthesis`.
 - The default runtime configuration uses `tts.default: auto`: GPT-SoVITS is preferred when `GPT_SOVITS_BASE_URL` is configured, otherwise macOS uses `say`/`afconvert` as the local practical default.
+- The default ASR configuration uses `asr.default: auto`: local `faster-whisper` is selected when installed. Companion records `webm/opus` microphone clips and submits them to `/audio/transcribe`; the transcribed text is fed back into the normal chat path.
 
 ### packages/amadeus/tools.ts
 
@@ -326,6 +332,7 @@ tool.audit
 tool.permission.request
 task.plan.updated
 task.updated
+scheduled.updated
 memory.review.candidates
 memory.review.jobs
 memory.review.updated
@@ -338,6 +345,7 @@ Current bridge to Python runtime endpoints:
 GET /health
 GET /runtime/health
 GET /runtime/feedback
+POST /audio/transcribe
 GET /tools/list
 GET /tools/audit
 GET /skills/list
