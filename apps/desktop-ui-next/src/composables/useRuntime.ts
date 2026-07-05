@@ -1,5 +1,6 @@
 import { reactive, ref } from 'vue'
 import type {
+  MemoryContextUsedPayload,
   ScheduledJobRecord,
   ScheduledJobUpdatedPayload,
   TaskPlanItem,
@@ -13,7 +14,9 @@ import type {
   MemoryItem,
   PlanItem,
   RoleProfile,
+  SessionContext,
   ScheduledJob,
+  SkillActivation,
   SessionItem,
   SkillItem,
   TaskItem,
@@ -21,13 +24,14 @@ import type {
   ToolTone,
 } from '@/types'
 import { AgentRuntimeClient, type ConnectionPhase, type ToolPermissionPrompt } from '@/runtime/client'
-import { SESSION_ID } from '@/runtime/config'
+import { COMPANION_SESSION_ID, SESSION_ID } from '@/runtime/config'
 import {
   createSessionRequest,
   deleteSessionRequest,
   fetchAudioConfig,
   fetchLive2dBehaviors,
   fetchLive2dModels,
+  fetchMemoryContextDiagnostics,
   fetchMemoryItems,
   fetchProviderPresets,
   fetchRoles,
@@ -37,6 +41,8 @@ import {
   fetchSessionPlan,
   fetchSessions,
   fetchSkills,
+  fetchToolAudit,
+  fetchToolsConfig,
   fetchTasks,
   fetchTtsVoices,
   importLive2dModel,
@@ -60,6 +66,8 @@ import {
   type SessionPayload,
   type SkillPayload,
   type StoredMessage,
+  type ToolAuditRecordPayload,
+  type ToolsConfigResult,
   type TtsVoicePayload,
 } from '@/runtime/http'
 
@@ -69,11 +77,15 @@ interface RuntimeState {
   plan: PlanItem[]
   tasks: TaskItem[]
   skills: SkillItem[]
+  suggestedSkillIds: string[]
+  activeSkills: SkillActivation[]
   sessions: SessionItem[]
   roles: RoleProfile[]
   activeRole: RoleProfile | null
   memoryItems: MemoryItem[]
+  memoryContextDiagnostics: MemoryContextUsedPayload[]
   scheduledJobs: ScheduledJob[]
+  sessionContext: SessionContext
   activeSessionId: string
   roleName: string
   scheduledCount: number
@@ -86,6 +98,8 @@ interface RuntimeState {
   runtimeConfig: RuntimeConfigResult | null
   audioConfig: AudioConfigResult | null
   live2dBehaviors: Live2dBehaviorsResult | null
+  toolsConfig: ToolsConfigResult | null
+  mcpAuditRecords: ToolAuditRecordPayload[]
 }
 
 const state = reactive<RuntimeState>({
@@ -94,11 +108,24 @@ const state = reactive<RuntimeState>({
   plan: [],
   tasks: [],
   skills: [],
+  suggestedSkillIds: [],
+  activeSkills: [],
   sessions: [],
   roles: [],
   activeRole: null,
   memoryItems: [],
+  memoryContextDiagnostics: [],
   scheduledJobs: [],
+  sessionContext: {
+    activeId: SESSION_ID,
+    activeTitle: 'Companion 默认会话',
+    companionId: COMPANION_SESSION_ID,
+    companionTitle: 'Companion 默认会话',
+    companionMessageCount: 0,
+    companionUpdatedAt: '',
+    viewingCompanion: SESSION_ID === COMPANION_SESSION_ID,
+    hasCompanionSession: false,
+  },
   activeSessionId: SESSION_ID,
   roleName: 'Amadeus',
   scheduledCount: 0,
@@ -111,6 +138,8 @@ const state = reactive<RuntimeState>({
   runtimeConfig: null,
   audioConfig: null,
   live2dBehaviors: null,
+  toolsConfig: null,
+  mcpAuditRecords: [],
 })
 
 let client: AgentRuntimeClient | null = null
@@ -179,6 +208,8 @@ function tasksToItems(records: TaskRecord[]): TaskItem[] {
     id: task.id,
     title: task.title,
     detail: task.body ?? '',
+    result: task.result ?? '',
+    error: task.error ?? '',
     status: task.status as TaskStatus,
     updatedAt: relativeLabel(task.updatedAt),
     attempts: task.attemptCount ?? 0,
@@ -205,6 +236,21 @@ function sessionsToItems(sessions: SessionPayload[], activeId: string): SessionI
       updatedAt: relativeLabel(s.updatedAt),
       active: s.id === activeId,
     }))
+}
+
+function buildSessionContext(sessions: SessionItem[], activeId: string): SessionContext {
+  const active = sessions.find((s) => s.id === activeId)
+  const companion = sessions.find((s) => s.id === COMPANION_SESSION_ID)
+  return {
+    activeId,
+    activeTitle: active?.title ?? (activeId === COMPANION_SESSION_ID ? 'Companion 默认会话' : activeId),
+    companionId: COMPANION_SESSION_ID,
+    companionTitle: companion?.title ?? 'Companion 默认会话',
+    companionMessageCount: companion?.messageCount ?? 0,
+    companionUpdatedAt: companion?.updatedAt ?? '',
+    viewingCompanion: activeId === COMPANION_SESSION_ID,
+    hasCompanionSession: companion !== undefined,
+  }
 }
 
 function rolesToProfiles(roles: RolePayload[]): RoleProfile[] {
@@ -302,6 +348,7 @@ async function loadSessionData(sessionId: string): Promise<void> {
 async function loadSessionList(): Promise<void> {
   const sessions = await fetchSessions()
   state.sessions = sessionsToItems(sessions, state.activeSessionId)
+  state.sessionContext = buildSessionContext(state.sessions, state.activeSessionId)
   const current = sessions.find((s) => s.id === state.activeSessionId)
   if (current) {
     state.roleName = current.roleName || 'Amadeus'
@@ -321,6 +368,10 @@ async function loadRoles(): Promise<void> {
 
 async function loadMemoryItems(): Promise<void> {
   state.memoryItems = memoryItemsToItems(await fetchMemoryItems())
+}
+
+async function loadMemoryDiagnostics(): Promise<void> {
+  state.memoryContextDiagnostics = await fetchMemoryContextDiagnostics(state.activeSessionId)
 }
 
 async function loadConfigOptions(): Promise<void> {
@@ -343,13 +394,24 @@ async function loadConfigOptions(): Promise<void> {
   state.live2dBehaviors = live2dBehaviors
 }
 
+async function loadToolDiagnostics(): Promise<void> {
+  const [toolsConfig, auditRecords] = await Promise.all([
+    fetchToolsConfig(),
+    fetchToolAudit({ sessionId: state.activeSessionId, limit: 100 }),
+  ])
+  state.toolsConfig = toolsConfig
+  state.mcpAuditRecords = auditRecords.filter((record) => record.toolName.startsWith('mcp__')).slice(-20)
+}
+
 async function bootstrap(): Promise<void> {
   await Promise.all([
     loadSessionList(),
     loadSessionData(state.activeSessionId),
     loadRoles(),
     loadMemoryItems(),
+    loadMemoryDiagnostics(),
     loadConfigOptions(),
+    loadToolDiagnostics(),
   ])
   state.skills = skillsToItems(await fetchSkills())
 }
@@ -362,6 +424,7 @@ function createClient(): AgentRuntimeClient {
       },
       onSessionId: (sessionId) => {
         state.activeSessionId = sessionId
+        state.sessionContext = buildSessionContext(state.sessions, state.activeSessionId)
       },
       onAssistantReasoningDelta: (text) => {
         const message = ensurePendingAssistant()
@@ -394,11 +457,52 @@ function createClient(): AgentRuntimeClient {
         const message = ensurePendingAssistant()
         message.toolName = displayName
       },
+      onToolFinished: (toolName) => {
+        if (toolName.startsWith('mcp__')) {
+          void loadToolDiagnostics()
+        }
+      },
       onToolPermissionRequest: (prompt) => {
         state.toolPermission = prompt
       },
       onToolPermissionResolved: () => {
         state.toolPermission = null
+      },
+      onSkillStarted: (skillName, displayName) => {
+        const id = displayName || skillName
+        const existing = state.activeSkills.find((skill) => skill.id === id || skill.name === skillName)
+        if (existing) {
+          existing.status = 'loading'
+          existing.failureCode = null
+          return
+        }
+        state.activeSkills.push({
+          id,
+          name: skillName,
+          displayName,
+          status: 'loading',
+        })
+      },
+      onSkillFinished: (skillName, displayName, ok, identifier, failureCode) => {
+        const id = identifier || displayName || skillName
+        const existing = state.activeSkills.find(
+          (skill) => skill.id === id || skill.name === skillName || skill.displayName === displayName,
+        )
+        if (existing) {
+          existing.id = id
+          existing.name = skillName
+          existing.displayName = displayName || id
+          existing.status = ok ? 'active' : 'failed'
+          existing.failureCode = failureCode
+          return
+        }
+        state.activeSkills.push({
+          id,
+          name: skillName,
+          displayName: displayName || id,
+          status: ok ? 'active' : 'failed',
+          failureCode,
+        })
       },
       onPlanUpdated: (payload) => {
         if (payload.sessionId && payload.sessionId !== state.activeSessionId) return
@@ -416,6 +520,10 @@ function createClient(): AgentRuntimeClient {
           state.scheduledJobs = scheduledToItems(result.jobs)
           state.scheduledCount = result.jobs.length
         })
+      },
+      onMemoryContextUsed: (payload) => {
+        if (payload.sessionId && payload.sessionId !== state.activeSessionId) return
+        state.memoryContextDiagnostics = [...state.memoryContextDiagnostics, payload].slice(-8)
       },
       onError: (message) => {
         const pending = pendingAssistantId.value
@@ -450,6 +558,7 @@ export function useRuntime() {
   function sendMessage(text: string): void {
     const trimmed = text.trim()
     if (!trimmed) return
+    state.activeSkills = []
     state.chat.push({
       id: `u-${Date.now()}`,
       role: 'user',
@@ -457,7 +566,15 @@ export function useRuntime() {
       createdAt: timeLabel(),
     })
     pendingAssistantId.value = null
-    client?.sendUserMessage(trimmed)
+    client?.sendUserMessage(trimmed, [...state.suggestedSkillIds])
+  }
+
+  function toggleSuggestedSkill(id: string): void {
+    if (state.suggestedSkillIds.includes(id)) {
+      state.suggestedSkillIds = state.suggestedSkillIds.filter((skillId) => skillId !== id)
+      return
+    }
+    state.suggestedSkillIds = [...state.suggestedSkillIds, id]
   }
 
   function selectSession(id: string): void {
@@ -465,6 +582,10 @@ export function useRuntime() {
     const url = new URL(window.location.href)
     url.searchParams.set('sessionId', id)
     window.location.href = url.toString()
+  }
+
+  function selectCompanionSession(): void {
+    selectSession(COMPANION_SESSION_ID)
   }
 
   async function createSession(): Promise<void> {
@@ -549,10 +670,20 @@ export function useRuntime() {
     return true
   }
 
+  async function refreshMcpDiagnostics(): Promise<void> {
+    await loadToolDiagnostics()
+  }
+
+  async function refreshMemoryDiagnostics(): Promise<void> {
+    await loadMemoryDiagnostics()
+  }
+
   return {
     state,
     sendMessage,
+    toggleSuggestedSkill,
     selectSession,
+    selectCompanionSession,
     createSession,
     deleteSession,
     updateRole,
@@ -562,5 +693,7 @@ export function useRuntime() {
     saveLive2dBehaviors,
     importLive2d,
     selectLive2d,
+    refreshMcpDiagnostics,
+    refreshMemoryDiagnostics,
   }
 }

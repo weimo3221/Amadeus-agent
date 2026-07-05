@@ -12,7 +12,7 @@ import ConfigCenterView from '@/components/workspace/ConfigCenterView.vue'
 import SettingsView from '@/components/workspace/SettingsView.vue'
 import { useRuntime } from '@/composables/useRuntime'
 
-const { state, selectSession, createSession, deleteSession } = useRuntime()
+const { state, selectSession, selectCompanionSession, createSession, deleteSession } = useRuntime()
 
 const activeNav = ref('chat')
 
@@ -40,8 +40,10 @@ function onNavigate(key: string) {
         <AppHeader
           :sessions="state.sessions"
           :active-id="state.activeSessionId"
+          :session-context="state.sessionContext"
           :connection="state.connection"
           @select="selectSession"
+          @select-companion="selectCompanionSession"
           @create="createSession"
           @delete="deleteSession"
           @open-settings="onNavigate('settings')"

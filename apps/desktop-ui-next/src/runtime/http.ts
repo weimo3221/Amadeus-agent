@@ -1,4 +1,5 @@
 import type {
+  MemoryContextUsedPayload,
   ScheduledJobRecord,
   ScheduledJobSummary,
   TaskPlanPayload,
@@ -125,7 +126,7 @@ export async function fetchTasks(
   limit = 20,
 ): Promise<{ tasks: TaskRecord[]; summary: TaskSummary | null }> {
   const data = await getJson<{ tasks: TaskRecord[]; summary: TaskSummary }>(
-    `/tasks?sessionId=${encodeURIComponent(sessionId)}&activeOnly=true&limit=${limit}`,
+    `/tasks?sessionId=${encodeURIComponent(sessionId)}&activeOnly=false&limit=${limit}`,
   )
   return { tasks: data?.tasks ?? [], summary: data?.summary ?? null }
 }
@@ -186,6 +187,16 @@ export interface MemoryItemPayload {
 export async function fetchMemoryItems(limit = 50): Promise<MemoryItemPayload[]> {
   const data = await getJson<{ items: MemoryItemPayload[] }>(`/memory/items?limit=${limit}`)
   return data?.items ?? []
+}
+
+export async function fetchMemoryContextDiagnostics(
+  sessionId: string,
+  limit = 8,
+): Promise<MemoryContextUsedPayload[]> {
+  const data = await getJson<{ diagnostics: MemoryContextUsedPayload[] }>(
+    `/memory/context/diagnostics?sessionId=${encodeURIComponent(sessionId)}&limit=${limit}`,
+  )
+  return data?.diagnostics ?? []
 }
 
 export interface ProviderPreset {
@@ -254,6 +265,39 @@ export interface RuntimeConfigResult {
   paths: { env: string; providersConfig: string; runtimeConfig: string }
 }
 
+export interface McpServerPayload {
+  name: string
+  url: string
+  enabled: boolean
+  permission: string
+  timeoutSeconds: number
+}
+
+export interface McpConfigPayload {
+  enabled: boolean
+  permission: string
+  servers: McpServerPayload[]
+}
+
+export interface ToolsConfigResult {
+  mcp: McpConfigPayload
+  paths: { toolsConfig: string }
+  tools: Array<{ name: string; displayName?: string; permission?: string; enabled?: boolean }>
+  schemas: Array<{ function?: { name?: string }; name?: string }>
+}
+
+export interface ToolAuditRecordPayload {
+  recordId: string
+  timestamp: string
+  sessionId: string
+  toolName: string
+  decision: string
+  ok?: boolean
+  durationMs?: number
+  failureCode?: string
+  detail?: string
+}
+
 export interface RuntimeApiUpdate {
   provider?: string
   baseUrl?: string
@@ -277,6 +321,21 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfigResult | null> 
     presets: data.presets ?? [],
     paths: data.paths,
   }
+}
+
+export async function fetchToolsConfig(): Promise<ToolsConfigResult | null> {
+  return getJson<ToolsConfigResult>('/tools/config')
+}
+
+export async function fetchToolAudit(
+  options: { sessionId?: string; toolName?: string; limit?: number } = {},
+): Promise<ToolAuditRecordPayload[]> {
+  const params = new URLSearchParams()
+  if (options.sessionId) params.set('sessionId', options.sessionId)
+  if (options.toolName) params.set('toolName', options.toolName)
+  params.set('limit', String(options.limit ?? 20))
+  const data = await getJson<{ records: ToolAuditRecordPayload[] }>(`/tools/audit?${params.toString()}`)
+  return data?.records ?? []
 }
 
 export async function updateRuntimeApiConfig(

@@ -6,8 +6,10 @@ export const AGENT_HTTP_URL =
 export const BASE_AGENT_WS_URL =
   query.get('agentWsUrl') || import.meta.env.VITE_AGENT_WS_URL || 'ws://127.0.0.1:8788/ws'
 
+export const COMPANION_SESSION_ID = 'companion:default'
+
 export const SESSION_ID =
-  query.get('sessionId') || import.meta.env.VITE_AMADEUS_SESSION_ID || 'companion:default'
+  query.get('sessionId') || import.meta.env.VITE_AMADEUS_SESSION_ID || COMPANION_SESSION_ID
 
 export function wsUrlForSurface(url: string, surface: string, sessionId: string): string {
   const parsed = new URL(url)

@@ -21,6 +21,17 @@ export interface SessionItem {
   active?: boolean
 }
 
+export interface SessionContext {
+  activeId: string
+  activeTitle: string
+  companionId: string
+  companionTitle: string
+  companionMessageCount: number
+  companionUpdatedAt: string
+  viewingCompanion: boolean
+  hasCompanionSession: boolean
+}
+
 export type PlanStatus = 'done' | 'active' | 'pending'
 
 export interface PlanItem {
@@ -35,6 +46,8 @@ export interface TaskItem {
   id: string
   title: string
   detail: string
+  result: string
+  error: string
   status: TaskStatus
   updatedAt: string
   attempts: number
@@ -56,6 +69,16 @@ export interface SkillItem {
   category: string
   summary: string
   score?: number
+}
+
+export type SkillActivationStatus = 'loading' | 'active' | 'failed'
+
+export interface SkillActivation {
+  id: string
+  name: string
+  displayName: string
+  status: SkillActivationStatus
+  failureCode?: string | null
 }
 
 export interface ScheduledJob {

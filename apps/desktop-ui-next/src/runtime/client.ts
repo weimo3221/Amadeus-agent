@@ -1,4 +1,5 @@
 import type {
+  MemoryContextUsedPayload,
   ScheduledJobUpdatedPayload,
   ServerRuntimeEvent,
   TaskPlanPayload,
@@ -25,9 +26,12 @@ export interface RuntimeClientHandlers {
   onToolFinished?: (toolName: string, ok: boolean) => void
   onToolPermissionRequest?: (prompt: ToolPermissionPrompt) => void
   onToolPermissionResolved?: () => void
+  onSkillStarted?: (skillName: string, displayName: string) => void
+  onSkillFinished?: (skillName: string, displayName: string, ok: boolean, identifier?: string | null, failureCode?: string | null) => void
   onPlanUpdated?: (plan: TaskPlanPayload) => void
   onTaskUpdated?: (payload: TaskUpdatedPayload) => void
   onScheduledJobUpdated?: (payload: ScheduledJobUpdatedPayload) => void
+  onMemoryContextUsed?: (payload: MemoryContextUsedPayload) => void
   onError?: (message: string) => void
 }
 
@@ -155,6 +159,18 @@ export class AgentRuntimeClient {
           reason: event.payload.reason,
         })
         break
+      case 'skill.started':
+        this.handlers.onSkillStarted?.(event.payload.skillName, event.payload.displayName)
+        break
+      case 'skill.finished':
+        this.handlers.onSkillFinished?.(
+          event.payload.skillName,
+          event.payload.displayName,
+          event.payload.ok,
+          event.payload.identifier,
+          event.payload.failureCode,
+        )
+        break
       case 'task.plan.updated':
         this.handlers.onPlanUpdated?.(event.payload)
         break
@@ -163,6 +179,9 @@ export class AgentRuntimeClient {
         break
       case 'scheduled.updated':
         this.handlers.onScheduledJobUpdated?.(event.payload)
+        break
+      case 'memory.context.used':
+        this.handlers.onMemoryContextUsed?.(event.payload)
         break
       case 'error':
         this.handlers.onError?.(event.payload.message)

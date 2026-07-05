@@ -2,6 +2,10 @@
 import { ref } from 'vue'
 import { Icon } from '@iconify/vue'
 
+defineProps<{
+  suggestedSkillCount?: number
+}>()
+
 const emit = defineEmits<{
   send: [text: string]
 }>()
@@ -54,6 +58,12 @@ function onKeydown(event: KeyboardEvent) {
         >
           <Icon :icon="chip.icon" :width="16" class="transition-transform duration-200 group-hover:-translate-y-px" />
           <span class="hidden sm:inline">{{ chip.label }}</span>
+          <span
+            v-if="chip.label === '技能' && suggestedSkillCount"
+            class="ml-0.5 rounded-full bg-brand-100 px-1.5 py-0.5 text-[10px] text-brand-700"
+          >
+            {{ suggestedSkillCount }}
+          </span>
         </button>
       </div>
 

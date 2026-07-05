@@ -37,7 +37,7 @@ config({ path: resolve(rootDir, '.env') })
 const host = process.env.AMADEUS_SERVER_HOST || '127.0.0.1'
 const port = Number(process.env.AMADEUS_SERVER_PORT || 8788)
 const serverBaseUrl = process.env.AMADEUS_SERVER_URL || `http://${host}:${port}`
-const model = process.env.DEEPSEEK_MODEL || process.env.OPENAI_MODEL || 'deepseek-v4-pro'
+const runtimeOwnerLabel = 'python-runtime'
 const pythonRuntimeUrl = process.env.AMADEUS_PYTHON_RUNTIME_URL || process.env.AMADEUS_PYTHON_TOOLS_URL || 'http://127.0.0.1:8790'
 const defaultSessionId = 'default'
 
@@ -74,7 +74,7 @@ async function streamChat(socket: BridgeSocket, sessionId: string, userText: str
   }))
 }
 const { httpServer } = createAmadeusBridgeServer({
-  model,
+  model: runtimeOwnerLabel,
   defaultSessionId,
   getMemoryMessageCount(sessionId) {
     return fetchPythonMemoryCount(sessionId, { runtimeUrl: pythonRuntimeUrl })
@@ -147,6 +147,5 @@ const { httpServer } = createAmadeusBridgeServer({
 httpServer.listen(port, host, () => {
   console.log(`Amadeus server listening on http://${host}:${port}`)
   console.log(`WebSocket endpoint ws://${host}:${port}/ws`)
-  console.log(`Model ${model}`)
   console.log(`Python runtime ${pythonRuntimeUrl}`)
 })

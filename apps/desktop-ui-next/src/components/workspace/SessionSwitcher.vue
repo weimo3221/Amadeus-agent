@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Icon } from '@iconify/vue'
-import type { SessionItem } from '@/types'
+import type { SessionContext, SessionItem } from '@/types'
 
 const props = defineProps<{
   sessions: SessionItem[]
   activeId: string
+  sessionContext: SessionContext
 }>()
 
 const emit = defineEmits<{
   select: [id: string]
+  selectCompanion: []
   create: []
   delete: [id: string]
 }>()
@@ -17,6 +19,9 @@ const emit = defineEmits<{
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 const confirmId = ref<string | null>(null)
+const regularSessions = computed(() =>
+  props.sessions.filter((s) => s.id !== props.sessionContext.companionId),
+)
 
 function current() {
   return props.sessions.find((s) => s.id === props.activeId)
@@ -28,6 +33,7 @@ function pick(id: string) {
 }
 
 function askDelete(id: string) {
+  if (id === props.sessionContext.companionId) return
   confirmId.value = id
 }
 
@@ -102,8 +108,40 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           </button>
         </div>
 
+        <button
+          type="button"
+          class="mb-1 flex w-full items-center gap-3 rounded-[var(--radius-xl2)] border px-2.5 py-2 text-left
+                 transition-all duration-150"
+          :class="sessionContext.viewingCompanion
+            ? 'border-brand-200 bg-brand-50'
+            : 'border-line bg-white/50 hover:border-brand-200 hover:bg-brand-50/70'"
+          @click="emit('selectCompanion'); open = false"
+        >
+          <span
+            class="grid size-8 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
+            :class="sessionContext.viewingCompanion ? 'bg-brand-500 text-white' : 'bg-brand-50 text-brand-500'"
+          >
+            <Icon icon="ph:sparkle-duotone" :width="16" />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-[13px] font-semibold text-ink">
+              {{ sessionContext.companionTitle }}
+            </span>
+            <span class="block truncate text-[11px] text-ink-faint">
+              Companion 默认会话 · {{ sessionContext.companionMessageCount }} 条 ·
+              {{ sessionContext.companionUpdatedAt || '未同步' }}
+            </span>
+          </span>
+          <Icon
+            v-if="sessionContext.viewingCompanion"
+            icon="ph:check-circle-fill"
+            :width="16"
+            class="shrink-0 text-brand-500"
+          />
+        </button>
+
         <ul class="mt-1 flex max-h-72 flex-col gap-1 overflow-auto">
-          <li v-for="s in sessions" :key="s.id">
+          <li v-for="s in regularSessions" :key="s.id">
             <div
               class="group flex w-full items-center gap-3 rounded-[var(--radius-xl2)] px-2.5 py-2 text-left
                      transition-colors duration-150 hover:bg-brand-50/70"
@@ -156,6 +194,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                   class="shrink-0 text-brand-500 group-hover:hidden"
                 />
                 <button
+                  v-if="s.id !== sessionContext.companionId"
                   type="button"
                   title="删除会话"
                   class="hidden size-7 shrink-0 place-items-center rounded-full text-ink-faint
@@ -168,7 +207,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
             </div>
           </li>
         </ul>
-        <p class="px-2 pt-1.5 text-[11px] text-ink-faint">点击切换会话，悬停可删除会话。</p>
+        <p class="px-2 pt-1.5 text-[11px] text-ink-faint">
+          Main UI 查看的是当前会话；切到 Companion 后，聊天、任务和记忆会与桌面伴随窗口共享同一条会话线。
+        </p>
       </div>
     </transition>
   </div>

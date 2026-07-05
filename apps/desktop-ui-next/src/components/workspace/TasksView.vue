@@ -22,6 +22,12 @@ const statusMeta: Record<TaskStatus, { label: string; tone: ToolTone }> = {
   failed: { label: '失败', tone: 'danger' },
   cancelled: { label: '已取消', tone: 'neutral' },
 }
+
+function taskDetail(row: { detail?: string; result?: string; error?: string; status?: TaskStatus }) {
+  if (row.error) return `失败原因：${row.error}`
+  if (row.result) return `结果：${row.result}`
+  return row.detail || '暂无任务描述'
+}
 </script>
 
 <template>
@@ -35,7 +41,7 @@ const statusMeta: Record<TaskStatus, { label: string; tone: ToolTone }> = {
       </span>
       <div>
         <p class="text-[15px] font-semibold text-ink">任务</p>
-        <p class="text-xs text-ink-faint">当前会话共 {{ state.tasks.length }} 个活跃任务</p>
+        <p class="text-xs text-ink-faint">当前会话共 {{ state.tasks.length }} 个任务，包含已完成和失败记录</p>
       </div>
     </div>
 
@@ -50,7 +56,7 @@ const statusMeta: Record<TaskStatus, { label: string; tone: ToolTone }> = {
         <template #cell-title="{ row }">
           <div class="flex flex-col">
             <span class="font-medium text-ink">{{ row.title }}</span>
-            <span class="text-xs text-ink-faint">{{ row.detail }}</span>
+            <span class="line-clamp-2 text-xs text-ink-faint">{{ taskDetail(row) }}</span>
           </div>
         </template>
         <template #cell-status="{ row }">

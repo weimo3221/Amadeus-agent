@@ -6,6 +6,7 @@ import AmInput from '@/components/ui/AmInput.vue'
 import AmSelect from '@/components/ui/AmSelect.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 import AmTabs from '@/components/ui/AmTabs.vue'
+import AmTag from '@/components/ui/AmTag.vue'
 import type { Live2dBehavior } from '@/runtime/http'
 
 interface BehaviorFormEntry {
@@ -15,7 +16,7 @@ interface BehaviorFormEntry {
   intensity: string
 }
 
-const { state, saveApiConfig, saveAudioConfig, saveLive2dBehaviors, importLive2d, selectLive2d } =
+const { state, saveApiConfig, saveAudioConfig, saveLive2dBehaviors, importLive2d, selectLive2d, refreshMcpDiagnostics } =
   useRuntime()
 
 const activeTab = ref('model')
@@ -24,11 +25,24 @@ const tabs = [
   { value: 'model', label: '模型', icon: 'ph:cpu-duotone' },
   { value: 'live2d', label: '形象', icon: 'ph:sparkle-duotone' },
   { value: 'voice', label: '语音', icon: 'ph:waveform-duotone' },
+  { value: 'mcp', label: 'MCP', icon: 'ph:plugs-connected-duotone' },
 ]
 
 function flash(target: { value: boolean }) {
   target.value = true
   setTimeout(() => (target.value = false), 2200)
+}
+
+function shortDateTime(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 /* ---------------- 模型 ---------------- */
@@ -260,6 +274,24 @@ async function saveBehaviors() {
   const ok = await saveLive2dBehaviors(payload)
   behaviorSaving.value = false
   if (ok) flash(behaviorFlash)
+}
+
+/* ---------------- MCP 诊断 ---------------- */
+const mcpRefreshing = ref(false)
+
+const mcpConfig = computed(() => state.toolsConfig?.mcp ?? null)
+const mcpServers = computed(() => mcpConfig.value?.servers ?? [])
+const mcpToolCount = computed(() =>
+  (state.toolsConfig?.tools ?? []).filter((tool) => tool.name.startsWith('mcp__')).length,
+)
+const mcpFailedCount = computed(() =>
+  state.mcpAuditRecords.filter((record) => record.ok === false || record.failureCode).length,
+)
+
+async function refreshMcp() {
+  mcpRefreshing.value = true
+  await refreshMcpDiagnostics()
+  mcpRefreshing.value = false
 }
 </script>
 
@@ -578,7 +610,7 @@ async function saveBehaviors() {
         </template>
 
         <!-- ============ 语音 TTS ============ -->
-        <template v-else>
+        <template v-else-if="activeTab === 'voice'">
           <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
             <div class="flex items-center gap-2">
               <Icon icon="ph:waveform-duotone" :width="18" class="text-brand-500" />
@@ -691,6 +723,129 @@ async function saveBehaviors() {
             引擎与参数写入 <code class="font-mono">.env</code> 与
             <code class="font-mono">configs/providers.yaml</code>，保存后立即重建 TTS Provider。
           </p>
+        </template>
+
+        <!-- ============ MCP 诊断 ============ -->
+        <template v-else-if="activeTab === 'mcp'">
+          <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-center gap-2">
+                <Icon icon="ph:plugs-connected-duotone" :width="18" class="text-brand-500" />
+                <span class="text-sm font-semibold text-ink">MCP 运行状态</span>
+              </div>
+              <AmButton
+                variant="secondary"
+                size="sm"
+                icon="ph:arrow-clockwise-bold"
+                :loading="mcpRefreshing"
+                @click="refreshMcp"
+              >
+                刷新诊断
+              </AmButton>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">全局状态</p>
+                <div class="mt-2">
+                  <AmTag :tone="mcpConfig?.enabled ? 'success' : 'neutral'" dot>
+                    {{ mcpConfig?.enabled ? '已启用' : '未启用' }}
+                  </AmTag>
+                </div>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">默认权限</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ mcpConfig?.permission ?? 'ask' }}</p>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">已发现工具</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ mcpToolCount }}</p>
+              </div>
+            </div>
+
+            <p class="text-[11px] leading-relaxed text-ink-faint">
+              MCP 配置仍由 <code class="font-mono">/tools/config</code> 管理；这里先提供运行诊断与最近调用审计。
+              后续再补编辑、保存、测试 discovery 的完整 UI。
+            </p>
+          </div>
+
+          <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex items-center gap-2">
+              <Icon icon="ph:server-duotone" :width="18" class="text-brand-500" />
+              <span class="text-sm font-semibold text-ink">MCP Server</span>
+            </div>
+            <div v-if="mcpServers.length" class="space-y-2">
+              <div
+                v-for="server in mcpServers"
+                :key="server.name"
+                class="flex items-start gap-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3"
+              >
+                <span
+                  class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
+                  :class="server.enabled ? 'bg-success-soft text-success' : 'bg-surface-muted text-ink-faint'"
+                >
+                  <Icon icon="ph:server-duotone" :width="16" />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-[13px] font-semibold text-ink">{{ server.name }}</span>
+                    <AmTag :tone="server.enabled ? 'success' : 'neutral'" size="sm">
+                      {{ server.enabled ? '启用' : '停用' }}
+                    </AmTag>
+                    <AmTag tone="info" size="sm">{{ server.permission }}</AmTag>
+                  </div>
+                  <p class="mt-1 truncate font-mono text-[11px] text-ink-faint">{{ server.url }}</p>
+                  <p class="mt-1 text-[11px] text-ink-faint">超时 {{ server.timeoutSeconds }}s</p>
+                </div>
+              </div>
+            </div>
+            <p v-else class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs text-ink-faint">
+              当前没有配置 MCP server。
+            </p>
+          </div>
+
+          <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2">
+                <Icon icon="ph:list-checks-duotone" :width="18" class="text-brand-500" />
+                <span class="text-sm font-semibold text-ink">最近 MCP 调用</span>
+              </div>
+              <AmTag :tone="mcpFailedCount ? 'warning' : 'success'" size="sm" dot>
+                {{ mcpFailedCount ? `${mcpFailedCount} 条异常` : '无异常' }}
+              </AmTag>
+            </div>
+
+            <div v-if="state.mcpAuditRecords.length" class="space-y-2">
+              <div
+                v-for="record in state.mcpAuditRecords"
+                :key="record.recordId"
+                class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3"
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <p class="min-w-0 truncate font-mono text-[12px] font-semibold text-ink">
+                    {{ record.toolName }}
+                  </p>
+                  <AmTag
+                    :tone="record.ok === false || record.failureCode ? 'danger' : record.ok === true ? 'success' : 'neutral'"
+                    size="sm"
+                  >
+                    {{ record.failureCode || record.decision }}
+                  </AmTag>
+                </div>
+                <p class="mt-1 text-[11px] text-ink-faint">
+                  {{ shortDateTime(record.timestamp) }}
+                  <span v-if="record.durationMs !== undefined"> · {{ record.durationMs }}ms</span>
+                  <span> · {{ record.sessionId }}</span>
+                </p>
+                <p v-if="record.detail" class="mt-1 line-clamp-2 text-[11px] text-ink-faint">
+                  {{ record.detail }}
+                </p>
+              </div>
+            </div>
+            <p v-else class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs text-ink-faint">
+              当前会话还没有 MCP 工具审计记录。执行一次 MCP 工具后，这里会显示最近调用、耗时和失败原因。
+            </p>
+          </div>
         </template>
       </div>
     </div>

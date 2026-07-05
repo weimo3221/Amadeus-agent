@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
-import type { ConnectionState, SessionItem } from '@/types'
+import type { ConnectionState, SessionContext, SessionItem } from '@/types'
 import SessionSwitcher from '@/components/workspace/SessionSwitcher.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 
 defineProps<{
   sessions: SessionItem[]
   activeId: string
+  sessionContext: SessionContext
   connection: ConnectionState
 }>()
 
 const emit = defineEmits<{
   select: [id: string]
+  selectCompanion: []
   create: []
   delete: [id: string]
   openSettings: []
@@ -42,12 +44,34 @@ const connectionMeta: Record<ConnectionState, { label: string; tone: string; dot
     <SessionSwitcher
       :sessions="sessions"
       :active-id="activeId"
+      :session-context="sessionContext"
       @select="emit('select', $event)"
+      @select-companion="emit('selectCompanion')"
       @create="emit('create')"
       @delete="emit('delete', $event)"
     />
 
     <div class="ml-auto flex shrink-0 items-center gap-2">
+      <button
+        type="button"
+        class="hidden items-center gap-2 rounded-[var(--radius-pill)] border px-3 py-1.5 text-left text-xs transition-all duration-200 xl:inline-flex"
+        :class="sessionContext.viewingCompanion
+          ? 'border-brand-200 bg-brand-50 text-brand-700'
+          : 'border-line bg-surface-muted text-ink-faint hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700'"
+        :title="sessionContext.viewingCompanion ? '当前正在查看 Companion 会话' : '切换到 Companion 默认会话'"
+        @click="emit('selectCompanion')"
+      >
+        <Icon icon="ph:sparkle-duotone" :width="16" class="shrink-0" />
+        <span class="min-w-0">
+          <span class="block font-medium">
+            {{ sessionContext.viewingCompanion ? '正在查看 Companion' : '查看 Companion' }}
+          </span>
+          <span class="block max-w-[180px] truncate text-[11px] opacity-75">
+            {{ sessionContext.companionMessageCount }} 条 · {{ sessionContext.companionUpdatedAt || '未同步' }}
+          </span>
+        </span>
+      </button>
+
       <span
         class="hidden items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-pill)] px-3 py-1.5 text-xs font-medium ring-1 ring-inset lg:inline-flex"
         :class="connectionMeta[connection].tone"

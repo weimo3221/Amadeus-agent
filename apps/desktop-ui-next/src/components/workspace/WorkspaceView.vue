@@ -117,7 +117,7 @@ scrollToBottom()
 
       <!-- composer -->
       <div class="border-t border-line/70 px-5 py-4">
-        <ChatComposer @send="handleSend" />
+        <ChatComposer :suggested-skill-count="state.suggestedSkillIds.length" @send="handleSend" />
       </div>
     </section>
 
