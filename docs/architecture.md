@@ -154,7 +154,7 @@ packages/amadeus
 
 `packages/amadeus` is the long-term agent brain. Current module status:
 
-- `agent.py`: active conversation loop, bounded Hermes-style tool-use policy, runtime memory manager wiring, response/event streaming, and cached per-session system prompt assembly.
+- `agent.py`: active conversation loop, bounded Hermes-style tool-use policy, runtime memory manager wiring, response/event streaming, turn-id propagation for assistant/plan events, and cached per-session system prompt assembly.
 - `context.py`: active API-call-time context assembler for memory-provider output, active todos, task state, source budgets, and diagnostics. Stable Markdown memory stays in the prompt layer. With the built-in runtime memory provider active, SQLite/session-derived artifacts include conversation summaries, query-filtered structured memories, and relevant FTS retrieval. Per-turn reference context such as active plans, todos, tasks, recent task outcomes, FTS snippets, and external memory is appended to the current user message as non-persistent reference data. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
 - `memory.py`: active SQLite-backed message history, roles/sessions, structured memory, task state, scheduled messages, persistent todos, and audit records.
 - `memory_query.py`: active memory query tokenizer. It uses `jieba` plus bounded CJK n-grams to expand Chinese/mixed-language queries and FTS index content while keeping returned transcript text unchanged.
@@ -233,10 +233,11 @@ Python runtime responsibilities today:
 - Own roles, per-role `SOUL.md` identity files, role-scoped `MEMORY.md` / `USER.md`, role `workspacePath`, default workspace assignment to the repository root, and workspace instruction loading for per-session prompt assembly. Instruction file priority is `.amadeus.md` / `AMADEUS.md`, then `AGENT.md` / `agents.md`, then `CLAUDE.md` / `claude.md`, then Cursor rules. User-specific preferences stay in role-scoped `USER.md` memory rather than project instructions.
 - Own concrete Python tool execution for the preferred path.
 - Own persisted session tasks as the execution unit for longer-running work, with task metadata (`kind`, `source`, `parentTaskId`, `planItemId`, `workerType`, review/artifact fields), in-process worker execution, retry scheduling, and stale-running recovery. Tasks can be linked to visible plan items through `planItemId`; worker lifecycle updates move linked plan items to `in_progress`, `completed`, `pending`, or `cancelled`.
+- Own the SQLite-backed latest session plan state used by `update_plan`, while desktop treats model plans as turn-scoped UI: runtime `turnId` binds `task.plan.updated` to the initiating user message, and the visible plan panel is archived under that turn when the assistant final message arrives.
 - Own persisted scheduled triggers and persistent session todos. Scheduled jobs default to `message` mode, which writes a timed assistant message, and also support `agent_task` mode, which creates a tracked background task and submits it to the task worker.
 - Own scheduled-job terminal state (`completed`, `cancelled`, `failed`) and emit `scheduled.updated`; Main UI fetches all statuses so completed timed messages remain visible and shows whether a schedule delivered a message or triggered a task.
 - Own ASR/TTS provider selection and expose `/audio/transcribe`, `/audio/speak`, `/audio/config`, `/audio/voices`, and local generated audio files.
-- Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `scheduled.updated`, `character.behavior`, and `audio.tts-ready`.
+- Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `task.plan.updated`, `tool.started`, `tool.finished`, `tool.permission.request`, `scheduled.updated`, `character.behavior`, and `audio.tts-ready`.
 
 Python runtime responsibilities later:
 

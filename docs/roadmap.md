@@ -13,7 +13,7 @@ This file is the forward-looking plan. For live implementation status, use `docs
 The next implementation pass should proceed in this order:
 
 1. Current: continue hardening Vue Main UI as the primary workbench. Companion should stay lightweight, transparent, Live2D-focused, voice-capable, and transient; Main UI should own larger chat, session history, active/completed tasks, timed messages, skills, memory review, diagnostics, permissions, model/runtime configuration, Live2D/TTS configuration, and MCP server management.
-2. Current: make the task system heavier without adding competing task concepts. Plans describe intent, scheduled jobs trigger work, and tasks remain the durable execution unit for retry/cancel/recovery/results. Plan item -> Task is now wired; the next concrete step is a richer task detail view with event timeline, retry/cancel/re-run controls, and clearer artifact/result display.
+2. Current: make the task system heavier without adding competing task concepts. Plans describe turn-local intent/progress, scheduled jobs trigger work, and tasks remain the durable execution unit for retry/cancel/recovery/results. Plan item -> Task, scheduled agent-task triggers, task detail timeline, cancel, re-run, and Hermes-style turn-scoped plan display are now wired; the next concrete step is deeper blocked/review/artifact handling, persisted plan-run snapshots, and optional task notifications.
 3. Current: turn MCP from a configured runtime bridge into a practical user-facing capability. The Main UI MCP tab now manages HTTP JSON-RPC servers, tests discovery, and reloads the Python ToolRegistry; `scripts/dev_mcp_server.py` provides a local verification target. Next MCP work should improve persisted diagnostics/audit surfaces and then evaluate stdio/SSE support.
 4. Current: tighten the skills UI semantics around "available", "suggested", and "active" so the desktop keeps exposing only lightweight user-facing state while the runtime logs keep the deeper activation details.
 5. Next: keep shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
@@ -267,6 +267,7 @@ Goal: support complex long-running tasks.
 Target deliverables:
 
 - First turn-control slice complete: session-scoped running turn state, `POST /agent/cancel`, cooperative tool cancellation, and `agent.turn.started` / `agent.turn.cancelled` events.
+- First turn-scoped planning slice complete: model `update_plan` events carry `turnId`, Main UI attaches the live plan to the initiating user message, and the plan panel archives under that turn on final assistant completion.
 - First delegation slice complete: restricted `delegate_task` research/search tool with depth 1, concurrency 2, no write tools, and summary-only parent results.
 - First prompt-surface slice complete: per-role `SOUL.md` identity, core prompt assembly, per-tool `prompt_hint` routing, role `workspacePath`, repository-root default workspace assignment, workspace-level `AGENT.md` project context, and role-scoped stable memory.
 - First task-worker reliability slice complete: persisted task attempts, retry scheduling, stale `running` recovery, startup reclaim, and worker status event broadcasting.

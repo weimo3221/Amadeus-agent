@@ -137,10 +137,39 @@ export async function createTaskRequest(body: {
   body?: string
   kind?: string
   source?: string
+  parentTaskId?: string | null
   planItemId?: string
+  workerType?: string
+  artifacts?: Array<Record<string, unknown>>
   priority?: number
 }): Promise<TaskRecord | null> {
   const data = await postJson<{ task: TaskRecord }>('/tasks', body)
+  return data?.task ?? null
+}
+
+export interface TaskEventPayload {
+  eventId: number
+  taskId: string
+  sessionId: string
+  type: string
+  status?: string | null
+  message?: string | null
+  metadata?: unknown
+  createdAt: string
+}
+
+export async function fetchTaskEvents(taskId: string): Promise<TaskEventPayload[]> {
+  const data = await getJson<{ events: TaskEventPayload[] }>(
+    `/tasks/${encodeURIComponent(taskId)}/events?limit=100`,
+  )
+  return data?.events ?? []
+}
+
+export async function cancelTaskRequest(taskId: string, reason?: string): Promise<TaskRecord | null> {
+  const data = await postJson<{ task: TaskRecord }>(
+    `/tasks/${encodeURIComponent(taskId)}/cancel`,
+    { reason: reason ?? 'User cancelled from Main UI' },
+  )
   return data?.task ?? null
 }
 
@@ -152,6 +181,18 @@ export async function fetchScheduledJobs(
     `/scheduled-jobs?sessionId=${encodeURIComponent(sessionId)}&activeOnly=false&limit=${limit}`,
   )
   return { jobs: data?.jobs ?? [], summary: data?.summary ?? null }
+}
+
+export async function createScheduledJobRequest(body: {
+  sessionId: string
+  title?: string
+  message: string
+  schedule: string
+  mode: 'message' | 'agent_task'
+  repeatCount?: number | null
+}): Promise<ScheduledJobRecord | null> {
+  const data = await postJson<{ job: ScheduledJobRecord }>('/scheduled-jobs', body)
+  return data?.job ?? null
 }
 
 export async function fetchSkills(): Promise<SkillPayload[]> {

@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { renderMarkdown } from '@/runtime/markdown'
 import type { ChatMessage } from '@/types'
+import PlanPanel from '@/components/workspace/PlanPanel.vue'
 
 const props = defineProps<{
   message: ChatMessage
@@ -68,6 +69,16 @@ const renderedContent = computed(() => renderMarkdown(props.message.content ?? '
           正在思考
         </span>
       </div>
+
+      <PlanPanel
+        v-if="message.role === 'user' && message.plan?.length"
+        class="mt-2 w-full min-w-[280px]"
+        :items="message.plan"
+        :archived="message.planArchived"
+        :readonly="message.planArchived"
+        :incomplete="message.planIncomplete"
+        :default-collapsed="message.planCollapsed"
+      />
 
       <span class="px-1 text-[11px] text-ink-faint">{{ message.createdAt }}</span>
     </div>

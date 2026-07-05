@@ -4,7 +4,6 @@ import { Icon } from '@iconify/vue'
 import { useRuntime } from '@/composables/useRuntime'
 import ChatMessageBubble from '@/components/workspace/ChatMessage.vue'
 import ChatComposer from '@/components/workspace/ChatComposer.vue'
-import PlanPanel from '@/components/workspace/PlanPanel.vue'
 import AmTag from '@/components/ui/AmTag.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 import AmEmptyState from '@/components/ui/AmEmptyState.vue'
@@ -50,7 +49,7 @@ scrollToBottom()
         style="background: radial-gradient(circle, rgba(183,166,255,0.35), transparent 70%)"
       />
 
-      <!-- chat header + plan -->
+      <!-- chat header -->
       <div class="border-b border-line/70 px-5 py-4">
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-3">
@@ -81,9 +80,6 @@ scrollToBottom()
               <Icon icon="ph:dots-three-bold" :width="18" />
             </button>
           </div>
-        </div>
-        <div v-if="state.plan.length" class="mt-3">
-          <PlanPanel :items="state.plan" />
         </div>
       </div>
 

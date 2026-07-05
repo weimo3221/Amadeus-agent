@@ -19,9 +19,10 @@ export interface ToolPermissionPrompt {
 export interface RuntimeClientHandlers {
   onConnectionChange?: (phase: ConnectionPhase) => void
   onSessionId?: (sessionId: string) => void
-  onAssistantReasoningDelta?: (text: string) => void
-  onAssistantDelta?: (text: string) => void
-  onAssistantMessage?: (text: string) => void
+  onTurnStarted?: (turnId: string) => void
+  onAssistantReasoningDelta?: (text: string, turnId?: string) => void
+  onAssistantDelta?: (text: string, turnId?: string) => void
+  onAssistantMessage?: (text: string, turnId?: string) => void
   onToolStarted?: (toolName: string, displayName: string) => void
   onToolFinished?: (toolName: string, ok: boolean) => void
   onToolPermissionRequest?: (prompt: ToolPermissionPrompt) => void
@@ -135,14 +136,17 @@ export class AgentRuntimeClient {
         this.sendDesktopCapabilities()
         break
       }
+      case 'agent.turn.started':
+        this.handlers.onTurnStarted?.(event.payload.turnId)
+        break
       case 'assistant.reasoning.delta':
-        this.handlers.onAssistantReasoningDelta?.(event.payload.text)
+        this.handlers.onAssistantReasoningDelta?.(event.payload.text, event.payload.turnId)
         break
       case 'assistant.delta':
-        this.handlers.onAssistantDelta?.(event.payload.text)
+        this.handlers.onAssistantDelta?.(event.payload.text, event.payload.turnId)
         break
       case 'assistant.message':
-        this.handlers.onAssistantMessage?.(event.payload.text)
+        this.handlers.onAssistantMessage?.(event.payload.text, event.payload.turnId)
         break
       case 'tool.started':
         this.handlers.onToolStarted?.(event.payload.toolName, event.payload.displayName)

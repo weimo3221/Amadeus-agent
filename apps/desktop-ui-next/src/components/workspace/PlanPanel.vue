@@ -1,15 +1,21 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { PlanItem, PlanStatus } from '@/types'
 import { useRuntime } from '@/composables/useRuntime'
 
 const props = defineProps<{
   items: PlanItem[]
+  title?: string
+  readonly?: boolean
+  archived?: boolean
+  incomplete?: boolean
+  defaultCollapsed?: boolean
 }>()
 
 const { createTaskFromPlan } = useRuntime()
 const creatingItemId = ref<string | null>(null)
+const collapsed = ref(Boolean(props.defaultCollapsed))
 
 const meta: Record<PlanStatus, { icon: string; ring: string; text: string }> = {
   done: { icon: 'ph:check-bold', ring: 'bg-success text-white', text: 'text-ink-faint line-through' },
@@ -21,9 +27,17 @@ const doneCount = computed(() => props.items.filter((i) => i.status === 'done').
 const progress = computed(() =>
   props.items.length ? Math.round((doneCount.value / props.items.length) * 100) : 0,
 )
+const titleText = computed(() => props.title || (props.archived ? '本轮计划' : '当前计划'))
+
+watch(
+  () => props.defaultCollapsed,
+  (value) => {
+    collapsed.value = Boolean(value)
+  },
+)
 
 async function runInBackground(item: PlanItem): Promise<void> {
-  if (item.status === 'done' || creatingItemId.value) return
+  if (props.readonly || item.status === 'done' || creatingItemId.value) return
   creatingItemId.value = item.id
   try {
     await createTaskFromPlan(item)
@@ -40,7 +54,19 @@ async function runInBackground(item: PlanItem): Promise<void> {
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-2">
         <Icon icon="ph:list-checks-duotone" :width="18" class="text-brand-500" />
-        <span class="text-sm font-semibold text-ink">当前计划</span>
+        <button
+          v-if="archived"
+          type="button"
+          class="inline-flex items-center gap-1 text-sm font-semibold text-ink"
+          @click="collapsed = !collapsed"
+        >
+          <Icon :icon="collapsed ? 'ph:caret-right-bold' : 'ph:caret-down-bold'" :width="12" />
+          {{ titleText }}
+        </button>
+        <span v-else class="text-sm font-semibold text-ink">{{ titleText }}</span>
+        <span v-if="incomplete" class="rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-medium text-warning">
+          incomplete
+        </span>
       </div>
       <span class="rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-brand-600">
         {{ doneCount }}/{{ items.length }}
@@ -55,7 +81,7 @@ async function runInBackground(item: PlanItem): Promise<void> {
       />
     </div>
 
-    <ol class="mt-3 flex flex-col gap-1.5">
+    <ol v-if="!collapsed" class="mt-3 flex flex-col gap-1.5">
       <li
         v-for="item in items"
         :key="item.id"
@@ -69,7 +95,7 @@ async function runInBackground(item: PlanItem): Promise<void> {
         </span>
         <span class="min-w-0 flex-1 text-[13px]" :class="meta[item.status].text">{{ item.label }}</span>
         <button
-          v-if="item.status !== 'done'"
+          v-if="!readonly && item.status !== 'done'"
           type="button"
           class="inline-flex shrink-0 items-center gap-1 rounded-full border border-brand-100 bg-surface px-2 py-0.5 text-[11px]
                  font-medium text-brand-600 transition-all duration-200 hover:border-brand-200 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-60"

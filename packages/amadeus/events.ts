@@ -100,18 +100,22 @@ export interface AgentTurnCancelledPayload {
 
 export interface AssistantDeltaPayload {
   text: string
+  turnId?: string
 }
 
 export interface AssistantReasoningDeltaPayload {
   text: string
+  turnId?: string
 }
 
 export interface AssistantMessagePayload {
   text: string
+  turnId?: string
 }
 
 export interface AssistantStatePayload {
   state: AssistantState
+  turnId?: string
 }
 
 export interface CharacterBehaviorPayload {
@@ -271,6 +275,7 @@ export interface TaskPlanSummary {
 
 export interface TaskPlanPayload {
   sessionId: string
+  turnId?: string
   items: TaskPlanItem[]
   summary: TaskPlanSummary
   updatedAt?: string | null

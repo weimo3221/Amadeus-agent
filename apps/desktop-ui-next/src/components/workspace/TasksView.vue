@@ -1,17 +1,21 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
-import type { TaskStatus, ToolTone } from '@/types'
+import type { TaskEventItem, TaskItem, TaskStatus, ToolTone } from '@/types'
 import { useRuntime } from '@/composables/useRuntime'
 import AmTable from '@/components/ui/AmTable.vue'
 import AmTag from '@/components/ui/AmTag.vue'
+import AmModal from '@/components/ui/AmModal.vue'
+import AmButton from '@/components/ui/AmButton.vue'
 
-const { state } = useRuntime()
+const { state, loadTaskEvents, cancelTask, rerunTask } = useRuntime()
 
 const taskColumns = [
-  { key: 'title', title: '任务', width: '46%' },
-  { key: 'status', title: '状态', width: '20%' },
-  { key: 'attempts', title: '尝试', width: '12%', align: 'center' as const },
-  { key: 'updatedAt', title: '更新', width: '22%', align: 'right' as const },
+  { key: 'title', title: '任务', width: '42%' },
+  { key: 'source', title: '来源', width: '18%' },
+  { key: 'status', title: '状态', width: '16%' },
+  { key: 'attempts', title: '尝试', width: '10%', align: 'center' as const },
+  { key: 'updatedAt', title: '更新', width: '14%', align: 'right' as const },
 ]
 
 const statusMeta: Record<TaskStatus, { label: string; tone: ToolTone }> = {
@@ -23,10 +27,93 @@ const statusMeta: Record<TaskStatus, { label: string; tone: ToolTone }> = {
   cancelled: { label: '已取消', tone: 'neutral' },
 }
 
+const sourceMeta: Record<string, { label: string; tone: ToolTone; icon: string }> = {
+  plan: { label: '来自计划', tone: 'brand', icon: 'ph:steps-duotone' },
+  scheduled_job: { label: '定时触发', tone: 'warning', icon: 'ph:alarm-duotone' },
+  model: { label: '模型创建', tone: 'info', icon: 'ph:sparkle-duotone' },
+  api: { label: '界面/API', tone: 'neutral', icon: 'ph:cursor-click-duotone' },
+  manual: { label: '手动创建', tone: 'neutral', icon: 'ph:hand-duotone' },
+  system: { label: '系统', tone: 'neutral', icon: 'ph:gear-six-duotone' },
+}
+
+const eventTone: Record<string, ToolTone> = {
+  created: 'neutral',
+  running: 'info',
+  retry_scheduled: 'warning',
+  succeeded: 'success',
+  failed: 'danger',
+  cancelled: 'neutral',
+}
+
+const detailOpen = ref(false)
+const selectedTaskId = ref<string | null>(null)
+const taskEvents = ref<TaskEventItem[]>([])
+const eventsLoading = ref(false)
+const actionLoading = ref<string | null>(null)
+
+const selectedTask = computed(() =>
+  state.tasks.find((task) => task.id === selectedTaskId.value) ?? null,
+)
+
+const selectedPlanItem = computed(() => {
+  const task = selectedTask.value
+  if (!task?.planItemId) return null
+  return state.plan.find((item) => item.id === task.planItemId) ?? null
+})
+
 function taskDetail(row: { detail?: string; result?: string; error?: string; status?: TaskStatus }) {
   if (row.error) return `失败原因：${row.error}`
   if (row.result) return `结果：${row.result}`
   return row.detail || '暂无任务描述'
+}
+
+function metaForSource(source: string) {
+  return sourceMeta[source] ?? { label: source || '未知来源', tone: 'neutral' as ToolTone, icon: 'ph:question-duotone' }
+}
+
+function compactId(id?: string | null) {
+  return id ? id.slice(0, 8) : '无'
+}
+
+function formatMetadata(value: unknown) {
+  if (value === null || value === undefined) return ''
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+async function openTaskDetail(task: TaskItem) {
+  selectedTaskId.value = task.id
+  detailOpen.value = true
+  taskEvents.value = []
+  eventsLoading.value = true
+  try {
+    taskEvents.value = await loadTaskEvents(task.id)
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+async function runCancel(task: TaskItem) {
+  actionLoading.value = 'cancel'
+  try {
+    await cancelTask(task.id)
+    taskEvents.value = await loadTaskEvents(task.id)
+  } finally {
+    actionLoading.value = null
+  }
+}
+
+async function runRerun(task: TaskItem) {
+  actionLoading.value = 'rerun'
+  try {
+    await rerunTask(task)
+    detailOpen.value = false
+  } finally {
+    actionLoading.value = null
+  }
 }
 </script>
 
@@ -55,9 +142,27 @@ function taskDetail(row: { detail?: string; result?: string; error?: string; sta
       >
         <template #cell-title="{ row }">
           <div class="flex flex-col">
-            <span class="font-medium text-ink">{{ row.title }}</span>
+            <div class="flex items-center gap-2">
+              <span class="font-medium text-ink">{{ row.title }}</span>
+              <button
+                type="button"
+                class="rounded-full border border-line px-2 py-0.5 text-[11px] font-medium text-brand-600 transition-colors
+                       hover:border-brand-200 hover:bg-brand-50"
+                @click="openTaskDetail(row)"
+              >
+                详情
+              </button>
+            </div>
             <span class="line-clamp-2 text-xs text-ink-faint">{{ taskDetail(row) }}</span>
           </div>
+        </template>
+        <template #cell-source="{ row }">
+          <AmTag :tone="metaForSource(row.source).tone" size="sm">
+            <span class="inline-flex items-center gap-1">
+              <Icon :icon="metaForSource(row.source).icon" :width="12" />
+              {{ metaForSource(row.source).label }}
+            </span>
+          </AmTag>
         </template>
         <template #cell-status="{ row }">
           <AmTag :tone="statusMeta[row.status as TaskStatus].tone" size="sm" dot>
@@ -72,5 +177,114 @@ function taskDetail(row: { detail?: string; result?: string; error?: string; sta
         </template>
       </AmTable>
     </div>
+
+    <AmModal
+      v-model="detailOpen"
+      title="任务详情"
+      :subtitle="selectedTask?.title"
+      icon="ph:list-checks-duotone"
+    >
+      <div v-if="selectedTask" class="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <div class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/50 p-3">
+            <p class="text-ink-faint">状态</p>
+            <AmTag class="mt-1" :tone="statusMeta[selectedTask.status].tone" size="sm" dot>
+              {{ statusMeta[selectedTask.status].label }}
+            </AmTag>
+          </div>
+          <div class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/50 p-3">
+            <p class="text-ink-faint">来源</p>
+            <p class="mt-1 font-medium text-ink">{{ metaForSource(selectedTask.source).label }}</p>
+          </div>
+          <div class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/50 p-3">
+            <p class="text-ink-faint">类型 / Worker</p>
+            <p class="mt-1 font-mono text-[11px] text-ink">{{ selectedTask.kind }} / {{ selectedTask.workerType }}</p>
+          </div>
+          <div class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/50 p-3">
+            <p class="text-ink-faint">尝试次数</p>
+            <p class="mt-1 font-medium text-ink">{{ selectedTask.attempts }} / {{ selectedTask.maxAttempts }}</p>
+          </div>
+        </div>
+
+        <div class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3 text-xs">
+          <p class="mb-2 font-semibold text-ink">关联关系</p>
+          <div class="space-y-1 text-ink-faint">
+            <p>任务 ID：<span class="font-mono text-ink">{{ selectedTask.id }}</span></p>
+            <p>父任务：<span class="font-mono text-ink">{{ compactId(selectedTask.parentTaskId) }}</span></p>
+            <p>
+              计划步骤：
+              <span class="text-ink">{{ selectedPlanItem?.label ?? selectedTask.planItemId ?? '无' }}</span>
+            </p>
+            <p>下次重试：<span class="text-ink">{{ selectedTask.nextRunAt ?? '无' }}</span></p>
+            <p>最后心跳：<span class="text-ink">{{ selectedTask.lastHeartbeat ?? '无' }}</span></p>
+          </div>
+        </div>
+
+        <div v-if="selectedTask.detail || selectedTask.result || selectedTask.error" class="space-y-2">
+          <div v-if="selectedTask.detail" class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
+            <p class="mb-1 text-xs font-semibold text-ink">任务内容</p>
+            <p class="whitespace-pre-wrap text-xs text-ink-soft">{{ selectedTask.detail }}</p>
+          </div>
+          <div v-if="selectedTask.result" class="rounded-[var(--radius-xl2)] border border-success/20 bg-success/5 p-3">
+            <p class="mb-1 text-xs font-semibold text-success">结果</p>
+            <p class="whitespace-pre-wrap text-xs text-ink-soft">{{ selectedTask.result }}</p>
+          </div>
+          <div v-if="selectedTask.error || selectedTask.blockedReason" class="rounded-[var(--radius-xl2)] border border-danger/20 bg-danger/5 p-3">
+            <p class="mb-1 text-xs font-semibold text-danger">失败 / 阻塞原因</p>
+            <p class="whitespace-pre-wrap text-xs text-ink-soft">{{ selectedTask.error || selectedTask.blockedReason }}</p>
+          </div>
+        </div>
+
+        <div v-if="selectedTask.artifacts.length" class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
+          <p class="mb-2 text-xs font-semibold text-ink">Artifacts</p>
+          <pre class="max-h-32 overflow-auto rounded-[var(--radius-xl2)] bg-surface-muted p-2 text-[11px] text-ink-soft">{{ formatMetadata(selectedTask.artifacts) }}</pre>
+        </div>
+
+        <div class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
+          <div class="mb-3 flex items-center justify-between">
+            <p class="text-xs font-semibold text-ink">事件时间线</p>
+            <span v-if="eventsLoading" class="text-[11px] text-ink-faint">加载中...</span>
+          </div>
+          <div v-if="!eventsLoading && !taskEvents.length" class="text-xs text-ink-faint">暂无事件</div>
+          <div v-else class="space-y-3">
+            <div v-for="event in taskEvents" :key="event.eventId" class="flex gap-3">
+              <div class="mt-1 size-2 rounded-full bg-brand-400" />
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <AmTag :tone="eventTone[event.type] ?? 'neutral'" size="sm">{{ event.type }}</AmTag>
+                  <span class="text-[11px] text-ink-faint">{{ event.createdAt }}</span>
+                  <span v-if="event.status" class="text-[11px] text-ink-faint">{{ event.status }}</span>
+                </div>
+                <p v-if="event.message" class="mt-1 text-xs text-ink-soft">{{ event.message }}</p>
+                <pre v-if="formatMetadata(event.metadata)" class="mt-1 max-h-24 overflow-auto rounded bg-surface-muted p-2 text-[11px] text-ink-faint">{{ formatMetadata(event.metadata) }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <AmButton
+          v-if="selectedTask && ['queued', 'running'].includes(selectedTask.status)"
+          variant="danger"
+          size="sm"
+          icon="ph:x-circle-duotone"
+          :loading="actionLoading === 'cancel'"
+          @click="runCancel(selectedTask)"
+        >
+          取消
+        </AmButton>
+        <AmButton
+          v-if="selectedTask && ['failed', 'cancelled', 'succeeded'].includes(selectedTask.status)"
+          variant="secondary"
+          size="sm"
+          icon="ph:arrow-clockwise-duotone"
+          :loading="actionLoading === 'rerun'"
+          @click="runRerun(selectedTask)"
+        >
+          重新运行
+        </AmButton>
+      </template>
+    </AmModal>
   </section>
 </template>

@@ -50,8 +50,10 @@ Fallback path today:
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
 - Desktop shows memory count, tool status, tool config status, voice status, visible chat messages, and has a Reset Session button.
 - Main UI restores the current session's persisted chat history from Python `/memory/messages` when opened or switched by `sessionId`, and renders assistant Markdown through the shared runtime Markdown renderer.
-- Main UI includes a Timed Messages panel for listing scheduled triggers across active and terminal states. It listens for `scheduled.updated`, shows `已启用` / `执行中` / `已暂停` / `已完成` / `已取消` / `失败`, displays last-run plus completed-run counts, and distinguishes message-only schedules from schedules that trigger background tasks.
+- Main UI includes a Timed Messages panel for listing scheduled triggers across active and terminal states. It listens for `scheduled.updated`, shows `已启用` / `执行中` / `已暂停` / `已完成` / `已取消` / `失败`, displays last-run plus completed-run counts, distinguishes message-only schedules from schedules that trigger background tasks, and can create either mode from the UI.
 - Main UI plan items can now be promoted into background tasks from the plan panel. The created task records keep `source="plan"` and `planItemId`, and the Python task worker reflects execution back into the visible plan by marking linked items in progress, completed, pending after final failure, or cancelled.
+- Main UI now treats model-generated plans as turn-scoped live progress instead of a global session header. `agent.turn.started` binds a runtime `turnId` to the latest user message, `task.plan.updated` refreshes that message's plan panel, and `assistant.message` archives the panel as completed/collapsed or incomplete under the same user turn.
+- Main UI task management now includes a task detail modal with execution metadata, source/relationship labels, result/error/artifact display, `/tasks/{id}/events` timeline, cancellation for queued/running tasks, and re-run for terminal tasks through a new linked background task.
 - Main UI includes a configuration center for model provider/API settings, model thinking mode and reasoning effort (`low` / `medium` / `high`), Live2D model import/selection/behavior mapping, macOS/GPT-SoVITS TTS settings, and runtime config persistence through Python endpoints.
 - Main UI and Companion have a first-pass light anime plus modern SaaS visual refresh with softer typography, pastel surfaces, and higher-contrast interactive states.
 - `apps/server` no longer owns a separate local message-count/reset SQLite path; it now reads `GET /memory/count` and forwards `POST /memory/reset` to the Python runtime while keeping the desktop protocol unchanged.
@@ -94,6 +96,7 @@ Fallback path today:
   - emits `memory.context.used` diagnostics for per-turn memory source selection and keeps the most recent diagnostics per session in an in-memory ring buffer
   - requests Python audio output after the assistant message
 - Python tracks the active running turn per session, emits `agent.turn.started` / `agent.turn.cancelled`, and exposes `POST /agent/cancel` for cooperative cancellation. This does not yet provide checkpoint/resume or forced provider-request termination.
+- Python includes `turnId` in assistant stream/final events and `task.plan.updated` events produced during a turn, allowing desktop clients to associate live reasoning, assistant text, and plan progress with the correct user request.
 - Ask-tool permission requests cross the Python runtime boundary:
   - Python emits `tool.permission.request`
   - the TypeScript bridge relays it to desktop

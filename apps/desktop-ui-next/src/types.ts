@@ -8,8 +8,13 @@ export interface ChatMessage {
   content: string
   reasoning?: string
   createdAt: string
+  turnId?: string
   pending?: boolean
   toolName?: string
+  plan?: PlanItem[]
+  planArchived?: boolean
+  planIncomplete?: boolean
+  planCollapsed?: boolean
 }
 
 export interface SessionItem {
@@ -51,6 +56,28 @@ export interface TaskItem {
   status: TaskStatus
   updatedAt: string
   attempts: number
+  maxAttempts: number
+  kind: string
+  source: string
+  parentTaskId?: string | null
+  planItemId?: string | null
+  workerType: string
+  blockedReason?: string | null
+  reviewRequired: boolean
+  dueAt?: string | null
+  nextRunAt?: string | null
+  lastHeartbeat?: string | null
+  finishedAt?: string | null
+  artifacts: Array<Record<string, unknown>>
+}
+
+export interface TaskEventItem {
+  eventId: number
+  type: string
+  status?: string | null
+  message?: string | null
+  metadata?: unknown
+  createdAt: string
 }
 
 export type ToolTone = 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'neutral'

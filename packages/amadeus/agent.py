@@ -807,7 +807,7 @@ class AgentRuntime:
 
             tool_reasoning_content = tool_decision.get("reasoning_content")
             if isinstance(tool_reasoning_content, str) and tool_reasoning_content:
-                yield AgentEvent("assistant.reasoning.delta", {"text": tool_reasoning_content})
+                yield AgentEvent("assistant.reasoning.delta", {"text": tool_reasoning_content, "turnId": turn_id})
             history.append(self._assistant_history_message(tool_decision))
             tool_iterations += 1
 
@@ -829,9 +829,9 @@ class AgentRuntime:
         final_reasoning_content = str((final_response_message or {}).get("reasoning_content") or "")
         if final_response_content:
             if final_reasoning_content:
-                yield AgentEvent("assistant.reasoning.delta", {"text": final_reasoning_content})
+                yield AgentEvent("assistant.reasoning.delta", {"text": final_reasoning_content, "turnId": turn_id})
             assistant_text = final_response_content
-            yield AgentEvent("assistant.delta", {"text": final_response_content})
+            yield AgentEvent("assistant.delta", {"text": final_response_content, "turnId": turn_id})
         else:
             try:
                 for delta in self._stream_final_response(history):
@@ -842,10 +842,10 @@ class AgentRuntime:
                     reasoning_delta = delta.reasoning_content if isinstance(delta, ChatStreamDelta) else ""
                     content_delta = delta.content if isinstance(delta, ChatStreamDelta) else str(delta)
                     if reasoning_delta:
-                        yield AgentEvent("assistant.reasoning.delta", {"text": reasoning_delta})
+                        yield AgentEvent("assistant.reasoning.delta", {"text": reasoning_delta, "turnId": turn_id})
                     if content_delta:
                         assistant_text += content_delta
-                        yield AgentEvent("assistant.delta", {"text": content_delta})
+                        yield AgentEvent("assistant.delta", {"text": content_delta, "turnId": turn_id})
             except RuntimeError as error:
                 if self._handle_context_overflow(session_id, "final_response", error):
                     history, context_diagnostics = self._load_turn_history(
@@ -865,10 +865,10 @@ class AgentRuntime:
                             reasoning_delta = delta.reasoning_content if isinstance(delta, ChatStreamDelta) else ""
                             content_delta = delta.content if isinstance(delta, ChatStreamDelta) else str(delta)
                             if reasoning_delta:
-                                yield AgentEvent("assistant.reasoning.delta", {"text": reasoning_delta})
+                                yield AgentEvent("assistant.reasoning.delta", {"text": reasoning_delta, "turnId": turn_id})
                             if content_delta:
                                 assistant_text += content_delta
-                                yield AgentEvent("assistant.delta", {"text": content_delta})
+                                yield AgentEvent("assistant.delta", {"text": content_delta, "turnId": turn_id})
                     except RuntimeError as retry_error:
                         logger.info("Final response provider retry failed sessionId=%s turnId=%s error=%s", session_id, turn_id, retry_error)
                         yield from self._emit_assistant_state(session_id, turn_id, "error")
@@ -891,7 +891,7 @@ class AgentRuntime:
             self.memory_store.count(session_id),
         )
         yield AgentEvent("memory.updated", {"memoryMessages": self.memory_store.count(session_id)})
-        yield AgentEvent("assistant.message", {"text": assistant_text})
+        yield AgentEvent("assistant.message", {"text": assistant_text, "turnId": turn_id})
         if summary_event:
             yield summary_event
         review_event = self._maybe_review_memory(session_id)
@@ -1966,7 +1966,9 @@ class AgentRuntime:
         ):
             yield event
         if tool_name == "update_plan" and result.ok:
-            yield AgentEvent("task.plan.updated", result.output)
+            plan_payload = dict(result.output)
+            plan_payload["turnId"] = turn_id
+            yield AgentEvent("task.plan.updated", plan_payload)
         if tool_name in {"create_task", "cancel_task"} and result.ok:
             task = result.output.get("task")
             action = result.output.get("action")
@@ -2054,7 +2056,10 @@ class AgentRuntime:
         )
 
     def _emit_assistant_state(self, session_id: str, turn_id: str | None, state: str) -> Iterable[AgentEvent]:
-        event = AgentEvent("assistant.state", {"state": state})
+        payload: dict[str, Any] = {"state": state}
+        if turn_id:
+            payload["turnId"] = turn_id
+        event = AgentEvent("assistant.state", payload)
         yield event
         runtime_state = {"assistantState": state}
         runtime_state.update(self.harness_feedback_policy.runtime_state(session_id))

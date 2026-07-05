@@ -267,6 +267,7 @@ When a task has `planItemId`, the Python task worker keeps the visible plan alig
 {
   "type": "assistant.delta",
   "payload": {
+    "turnId": "turn-uuid",
     "text": "Let's start with"
   }
 }
@@ -278,6 +279,7 @@ When a task has `planItemId`, the Python task worker keeps the visible plan alig
 {
   "type": "assistant.message",
   "payload": {
+    "turnId": "turn-uuid",
     "text": "Let's start with the highest-impact task."
   }
 }
@@ -286,6 +288,7 @@ When a task has `planItemId`, the Python task worker keeps the visible plan alig
 Desktop behavior:
 
 - Main UI keeps the normal chat history view.
+- Main UI uses `turnId` to bind streamed assistant content and turn-local plan archival to the user message that started the turn.
 - Companion streams `assistant.delta` into a transient desktop bubble and marks it complete on `assistant.message`; the completed bubble fades out after a short delay instead of staying inside the input panel.
 
 ### assistant.reasoning.delta
@@ -294,6 +297,7 @@ Desktop behavior:
 {
   "type": "assistant.reasoning.delta",
   "payload": {
+    "turnId": "turn-uuid",
     "text": "I need the current date before choosing the weather lookup arguments."
   }
 }
@@ -312,6 +316,7 @@ Notes:
 {
   "type": "assistant.state",
   "payload": {
+    "turnId": "turn-uuid",
     "state": "thinking"
   }
 }
@@ -329,6 +334,7 @@ Allowed states in the shared type:
 Note:
 
 - `listening` exists in the shared type but is not currently a meaningful active state in the desktop/server flow.
+- `turnId` is present for state events emitted from a running Python agent turn.
 
 ### character.behavior
 
@@ -461,6 +467,7 @@ Current flow:
   "type": "task.plan.updated",
   "payload": {
     "sessionId": "default",
+    "turnId": "turn-uuid",
     "items": [
       {
         "id": "wire-context",
@@ -488,9 +495,10 @@ Current flow:
 
 Current behavior:
 
-- Python emits this after the `update_plan` tool successfully reads or writes the SQLite-backed session plan.
+- Python emits this after the `update_plan` tool successfully reads or writes the SQLite-backed session plan. During `/agent/turn`, the event includes `turnId`.
 - Only `pending` and `in_progress` items are injected into model context as `<active-plan>`.
-- Main UI renders the active items from runtime events and restores the latest plan with `GET /sessions/{id}/plan`.
+- Main UI renders runtime plan updates under the user message for the matching `turnId`, so repeated `update_plan` calls in one turn refresh one live panel instead of creating multiple global panels. On `assistant.message`, the panel is archived under that user turn; completed plans collapse by default, incomplete plans remain marked incomplete.
+- Main UI still restores the latest session plan with `GET /sessions/{id}/plan` as a compatibility fallback for reloaded sessions.
 - Companion does not render the full plan in the Live2D bubble.
 
 ### agent.turn.started

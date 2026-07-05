@@ -19,6 +19,7 @@ import type {
   SkillActivation,
   SessionItem,
   SkillItem,
+  TaskEventItem,
   TaskItem,
   TaskStatus,
   ToolTone,
@@ -26,6 +27,8 @@ import type {
 import { AgentRuntimeClient, type ConnectionPhase, type ToolPermissionPrompt } from '@/runtime/client'
 import { COMPANION_SESSION_ID, SESSION_ID } from '@/runtime/config'
 import {
+  cancelTaskRequest,
+  createScheduledJobRequest,
   createTaskRequest,
   createSessionRequest,
   deleteSessionRequest,
@@ -45,6 +48,7 @@ import {
   fetchToolAudit,
   fetchToolsConfig,
   fetchTasks,
+  fetchTaskEvents,
   fetchTtsVoices,
   importLive2dModel,
   selectLive2dModel,
@@ -147,6 +151,8 @@ let client: AgentRuntimeClient | null = null
 let started = false
 let activeRoleId = 'amadeus'
 const pendingAssistantId = ref<string | null>(null)
+const activeTurnId = ref<string | null>(null)
+const activeTurnUserMessageId = ref<string | null>(null)
 
 function connectionFromPhase(phase: ConnectionPhase): ConnectionState {
   if (phase === 'connected') return 'online'
@@ -204,6 +210,88 @@ function planToItems(payload: TaskPlanPayload | null): PlanItem[] {
     .filter((item): item is PlanItem => item !== null)
 }
 
+function planIsComplete(items: PlanItem[]): boolean {
+  return items.length > 0 && items.every((item) => item.status === 'done')
+}
+
+function latestUserMessage(): ChatMessage | null {
+  for (let index = state.chat.length - 1; index >= 0; index -= 1) {
+    const message = state.chat[index]
+    if (message.role === 'user') return message
+  }
+  return null
+}
+
+function userMessageForTurn(turnId?: string | null): ChatMessage | null {
+  if (turnId) {
+    const byTurn = state.chat.find((message) => message.role === 'user' && message.turnId === turnId)
+    if (byTurn) return byTurn
+  }
+  if (activeTurnUserMessageId.value) {
+    const byActive = state.chat.find((message) => message.id === activeTurnUserMessageId.value)
+    if (byActive?.role === 'user') return byActive
+  }
+  return latestUserMessage()
+}
+
+function bindTurnToLatestUser(turnId: string): void {
+  activeTurnId.value = turnId
+  const message = userMessageForTurn(turnId) ?? latestUserMessage()
+  if (!message) return
+  message.turnId = turnId
+  activeTurnUserMessageId.value = message.id
+}
+
+function attachPlanToTurn(items: PlanItem[], turnId?: string | null): void {
+  const message = userMessageForTurn(turnId)
+  if (!message) return
+  if (turnId) message.turnId = turnId
+  message.plan = items
+  message.planArchived = false
+  message.planIncomplete = false
+  message.planCollapsed = false
+  activeTurnUserMessageId.value = message.id
+  if (turnId) activeTurnId.value = turnId
+}
+
+function archivePlanForTurn(turnId?: string | null): void {
+  const message = userMessageForTurn(turnId)
+  if (message?.plan?.length) {
+    const complete = planIsComplete(message.plan)
+    message.planArchived = true
+    message.planIncomplete = !complete
+    message.planCollapsed = complete
+  }
+  if (!turnId || activeTurnId.value === turnId) {
+    activeTurnId.value = null
+    activeTurnUserMessageId.value = null
+  }
+}
+
+function attachLoadedPlanToLatestTurn(items: PlanItem[]): void {
+  if (!items.length) return
+  const message = latestUserMessage()
+  if (!message) return
+  message.plan = items
+  message.planArchived = true
+  message.planIncomplete = !planIsComplete(items)
+  message.planCollapsed = planIsComplete(items)
+}
+
+function syncExistingPlanSnapshots(items: PlanItem[]): void {
+  if (!items.length) return
+  const nextIds = new Set(items.map((item) => item.id))
+  for (const message of state.chat) {
+    if (!message.plan?.some((item) => nextIds.has(item.id))) continue
+    message.plan = items
+    if (message.planArchived) {
+      const complete = planIsComplete(items)
+      message.planIncomplete = !complete
+      message.planCollapsed = complete
+    }
+  }
+}
+
 function tasksToItems(records: TaskRecord[]): TaskItem[] {
   return records.map((task) => ({
     id: task.id,
@@ -214,6 +302,19 @@ function tasksToItems(records: TaskRecord[]): TaskItem[] {
     status: task.status as TaskStatus,
     updatedAt: relativeLabel(task.updatedAt),
     attempts: task.attemptCount ?? 0,
+    maxAttempts: task.maxAttempts ?? 3,
+    kind: task.kind ?? 'agent_turn',
+    source: task.source ?? 'manual',
+    parentTaskId: task.parentTaskId ?? null,
+    planItemId: task.planItemId ?? null,
+    workerType: task.workerType ?? 'agent',
+    blockedReason: task.blockedReason ?? null,
+    reviewRequired: Boolean(task.reviewRequired),
+    dueAt: task.dueAt ?? null,
+    nextRunAt: task.nextRunAt ?? null,
+    lastHeartbeat: task.lastHeartbeat ?? null,
+    finishedAt: task.finishedAt ?? null,
+    artifacts: task.artifacts ?? [],
   }))
 }
 
@@ -316,16 +417,20 @@ function scheduledToItems(jobs: ScheduledJobRecord[]): ScheduledJob[] {
   }))
 }
 
-function ensurePendingAssistant(): ChatMessage {
+function ensurePendingAssistant(turnId?: string): ChatMessage {
   if (pendingAssistantId.value) {
     const existing = state.chat.find((m) => m.id === pendingAssistantId.value)
-    if (existing) return existing
+    if (existing) {
+      if (turnId) existing.turnId = turnId
+      return existing
+    }
   }
   const message: ChatMessage = {
     id: `a-${Date.now()}`,
     role: 'assistant',
     content: '',
     createdAt: timeLabel(),
+    turnId,
     pending: true,
   }
   state.chat.push(message)
@@ -342,10 +447,13 @@ async function loadSessionData(sessionId: string): Promise<void> {
   ])
   state.chat = messagesToChat(messages)
   state.plan = planToItems(plan)
+  attachLoadedPlanToLatestTurn(state.plan)
   state.tasks = tasksToItems(tasksResult.tasks)
   state.scheduledJobs = scheduledToItems(scheduledResult.jobs)
   state.scheduledCount = scheduledResult.jobs.length
   pendingAssistantId.value = null
+  activeTurnId.value = null
+  activeTurnUserMessageId.value = null
 }
 
 async function refreshPlanAndTasks(): Promise<void> {
@@ -354,6 +462,7 @@ async function refreshPlanAndTasks(): Promise<void> {
     fetchTasks(state.activeSessionId),
   ])
   state.plan = planToItems(plan)
+  syncExistingPlanSnapshots(state.plan)
   state.tasks = tasksToItems(tasksResult.tasks)
 }
 
@@ -438,21 +547,26 @@ function createClient(): AgentRuntimeClient {
         state.activeSessionId = sessionId
         state.sessionContext = buildSessionContext(state.sessions, state.activeSessionId)
       },
-      onAssistantReasoningDelta: (text) => {
-        const message = ensurePendingAssistant()
+      onTurnStarted: (turnId) => {
+        bindTurnToLatestUser(turnId)
+      },
+      onAssistantReasoningDelta: (text, turnId) => {
+        const message = ensurePendingAssistant(turnId)
         message.reasoning = `${message.reasoning ?? ''}${text}`
         message.pending = true
       },
-      onAssistantDelta: (text) => {
-        const message = ensurePendingAssistant()
+      onAssistantDelta: (text, turnId) => {
+        const message = ensurePendingAssistant(turnId)
         message.content += text
         message.pending = true
       },
-      onAssistantMessage: (text) => {
+      onAssistantMessage: (text, turnId) => {
+        const pendingId = pendingAssistantId.value
         const message = pendingAssistantId.value
           ? state.chat.find((m) => m.id === pendingAssistantId.value)
           : null
         if (message) {
+          if (turnId) message.turnId = turnId
           if (text) message.content = text
           message.pending = false
         } else if (text) {
@@ -461,7 +575,11 @@ function createClient(): AgentRuntimeClient {
             role: 'assistant',
             content: text,
             createdAt: timeLabel(),
+            turnId,
           })
+        }
+        if (turnId || pendingId) {
+          archivePlanForTurn(turnId ?? activeTurnId.value)
         }
         pendingAssistantId.value = null
       },
@@ -518,7 +636,9 @@ function createClient(): AgentRuntimeClient {
       },
       onPlanUpdated: (payload) => {
         if (payload.sessionId && payload.sessionId !== state.activeSessionId) return
-        state.plan = planToItems(payload)
+        const items = planToItems(payload)
+        state.plan = items
+        attachPlanToTurn(items, payload.turnId ?? activeTurnId.value)
       },
       onTaskUpdated: (payload: TaskUpdatedPayload) => {
         if (payload.task.sessionId && payload.task.sessionId !== state.activeSessionId) return
@@ -569,12 +689,16 @@ export function useRuntime() {
     const trimmed = text.trim()
     if (!trimmed) return
     state.activeSkills = []
-    state.chat.push({
+    const userMessage: ChatMessage = {
       id: `u-${Date.now()}`,
       role: 'user',
       content: trimmed,
       createdAt: timeLabel(),
-    })
+    }
+    state.chat.push(userMessage)
+    activeTurnId.value = null
+    activeTurnUserMessageId.value = userMessage.id
+    state.plan = []
     pendingAssistantId.value = null
     client?.sendUserMessage(trimmed, [...state.suggestedSkillIds])
   }
@@ -688,6 +812,10 @@ export function useRuntime() {
     await loadMemoryDiagnostics()
   }
 
+  async function refreshTasks(): Promise<void> {
+    await refreshPlanAndTasks()
+  }
+
   async function createTaskFromPlan(item: PlanItem): Promise<boolean> {
     const task = await createTaskRequest({
       sessionId: state.activeSessionId,
@@ -700,6 +828,55 @@ export function useRuntime() {
     })
     if (!task) return false
     await refreshPlanAndTasks()
+    return true
+  }
+
+  async function loadTaskEvents(taskId: string): Promise<TaskEventItem[]> {
+    return fetchTaskEvents(taskId)
+  }
+
+  async function cancelTask(taskId: string): Promise<boolean> {
+    const task = await cancelTaskRequest(taskId)
+    if (!task) return false
+    await refreshPlanAndTasks()
+    return true
+  }
+
+  async function rerunTask(task: TaskItem): Promise<boolean> {
+    const created = await createTaskRequest({
+      sessionId: state.activeSessionId,
+      title: task.title,
+      body: task.detail || task.title,
+      kind: task.kind,
+      source: task.source === 'scheduled_job' ? 'api' : task.source || 'api',
+      parentTaskId: task.id,
+      planItemId: task.planItemId ?? undefined,
+      workerType: task.workerType,
+      artifacts: [
+        ...task.artifacts,
+        { type: 'rerun', sourceTaskId: task.id },
+      ],
+    })
+    if (!created) return false
+    await refreshPlanAndTasks()
+    return true
+  }
+
+  async function createScheduledJob(input: {
+    title?: string
+    message: string
+    schedule: string
+    mode: 'message' | 'agent_task'
+    repeatCount?: number | null
+  }): Promise<boolean> {
+    const job = await createScheduledJobRequest({
+      sessionId: state.activeSessionId,
+      ...input,
+    })
+    if (!job) return false
+    const result = await fetchScheduledJobs(state.activeSessionId)
+    state.scheduledJobs = scheduledToItems(result.jobs)
+    state.scheduledCount = result.jobs.length
     return true
   }
 
@@ -720,6 +897,11 @@ export function useRuntime() {
     selectLive2d,
     refreshMcpDiagnostics,
     refreshMemoryDiagnostics,
+    refreshTasks,
     createTaskFromPlan,
+    loadTaskEvents,
+    cancelTask,
+    rerunTask,
+    createScheduledJob,
   }
 }
