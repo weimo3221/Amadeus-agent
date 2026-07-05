@@ -301,6 +301,8 @@ function scheduledToItems(jobs: ScheduledJobRecord[]): ScheduledJob[] {
   return jobs.map((job) => ({
     id: job.id,
     title: job.title || '未命名定时任务',
+    mode: job.mode ?? 'message',
+    lastTaskId: job.lastTaskId ?? null,
     schedule: job.scheduleDisplay || '',
     nextRun: relativeLabel(job.nextRunAt),
     lastRun: relativeLabel(job.lastRunAt),

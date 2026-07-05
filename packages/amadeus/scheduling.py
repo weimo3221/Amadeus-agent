@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 ScheduledJobPublisher = Callable[[dict[str, object], str], None]
+TaskSubmitter = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -128,10 +129,12 @@ class ScheduledJobWorker:
         memory_store_provider: Callable[[], Any],
         *,
         publish_job_event: ScheduledJobPublisher | None = None,
+        submit_task: TaskSubmitter | None = None,
         interval_seconds: float = 1.0,
     ) -> None:
         self._memory_store_provider = memory_store_provider
         self._publish_job_event = publish_job_event
+        self._submit_task = submit_task
         self._interval_seconds = max(0.25, float(interval_seconds))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -168,10 +171,31 @@ class ScheduledJobWorker:
                 if not message:
                     raise ValueError("scheduled message is empty")
                 session_id = str(claimed.get("sessionId") or "companion:default")
-                memory_store.save(session_id, "assistant", message)
-                completed = memory_store.complete_scheduled_job_run(job_id)
-                self._publish_message(session_id, message, completed)
-                self._publish(completed, "fired")
+                if str(claimed.get("mode") or "message") == "agent_task":
+                    task = memory_store.create_task(
+                        session_id=session_id,
+                        title=str(claimed.get("title") or "Scheduled task"),
+                        body=message,
+                        kind="scheduled_prompt",
+                        source="scheduled_job",
+                        worker_type="agent",
+                        artifacts=[{"type": "scheduled_job", "jobId": job_id}],
+                    )
+                    task_id = str(task["id"])
+                    if self._submit_task is not None:
+                        self._submit_task(task_id)
+                    completed = memory_store.complete_scheduled_job_run(
+                        job_id,
+                        message="Scheduled job created a background task",
+                        last_task_id=task_id,
+                        metadata={"taskId": task_id, "mode": "agent_task"},
+                    )
+                    self._publish(completed, "fired")
+                else:
+                    memory_store.save(session_id, "assistant", message)
+                    completed = memory_store.complete_scheduled_job_run(job_id)
+                    self._publish_message(session_id, message, completed)
+                    self._publish(completed, "fired")
                 fired += 1
             except Exception as error:
                 logger.info("Scheduled job failed jobId=%s error=%s", job_id, error)

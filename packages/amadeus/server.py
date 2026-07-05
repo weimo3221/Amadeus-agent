@@ -123,7 +123,11 @@ def publish_scheduled_job_update(job: dict[str, object], action: str) -> None:
 task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime, publish_task_event=publish_task_update)
 agent_runtime.set_task_worker(task_worker)
 task_worker.recover()
-scheduled_job_worker = ScheduledJobWorker(lambda: memory_store, publish_job_event=publish_scheduled_job_update)
+scheduled_job_worker = ScheduledJobWorker(
+    lambda: memory_store,
+    publish_job_event=publish_scheduled_job_update,
+    submit_task=task_worker.submit,
+)
 scheduled_job_worker.start()
 
 
@@ -984,6 +988,13 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 session_id=session_id,
                 title=title,
                 body=body.get("body") if isinstance(body.get("body"), str) else None,
+                kind=body.get("kind") if isinstance(body.get("kind"), str) else None,
+                source=body.get("source") if isinstance(body.get("source"), str) else "api",
+                parent_task_id=body.get("parentTaskId") if isinstance(body.get("parentTaskId"), str) else None,
+                plan_item_id=body.get("planItemId") if isinstance(body.get("planItemId"), str) else None,
+                worker_type=body.get("workerType") if isinstance(body.get("workerType"), str) else None,
+                review_required=bool(body.get("reviewRequired")) if isinstance(body.get("reviewRequired"), bool) else False,
+                artifacts=body.get("artifacts") if isinstance(body.get("artifacts"), list) else None,
                 priority=body.get("priority") if body.get("priority") is not None else None,
                 due_at=body.get("dueAt") if isinstance(body.get("dueAt"), str) else None,
                 max_attempts=body.get("maxAttempts") if body.get("maxAttempts") is not None else None,
@@ -1085,6 +1096,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             message = body.get("message")
             schedule = body.get("schedule")
             title = body.get("title") if isinstance(body.get("title"), str) else None
+            mode = body.get("mode") if isinstance(body.get("mode"), str) else None
             repeat_count = body.get("repeatCount") if body.get("repeatCount") is not None else None
             if not isinstance(session_id, str) or not session_id.strip():
                 self.write_json(400, {"ok": False, "error": "sessionId is required"})
@@ -1100,6 +1112,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 title=title,
                 message=message,
                 schedule=schedule,
+                mode=mode,
                 repeat_count=repeat_count if isinstance(repeat_count, int) else None,
             )
             logger.info("Created scheduled job jobId=%s sessionId=%s", job["id"], job["sessionId"])

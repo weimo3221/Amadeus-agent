@@ -40,7 +40,12 @@ const { state } = useRuntime()
             <Icon icon="ph:clock-countdown-duotone" :width="20" />
           </span>
           <div class="min-w-0 flex-1">
-            <p class="truncate text-[13px] font-semibold text-ink">{{ job.title }}</p>
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="truncate text-[13px] font-semibold text-ink">{{ job.title }}</p>
+              <AmTag :tone="job.mode === 'agent_task' ? 'brand' : 'neutral'" size="sm">
+                {{ job.mode === 'agent_task' ? '触发后台任务' : '只发送消息' }}
+              </AmTag>
+            </div>
             <p class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-ink-faint">
               <span v-if="job.schedule" class="inline-flex items-center gap-1">
                 <Icon icon="ph:calendar-dots-duotone" :width="13" />{{ job.schedule }}
@@ -56,6 +61,9 @@ const { state } = useRuntime()
               </span>
               <span v-if="job.completedRuns" class="inline-flex items-center gap-1">
                 <Icon icon="ph:list-checks-duotone" :width="13" />已执行 {{ job.completedRuns }} 次
+              </span>
+              <span v-if="job.lastTaskId" class="inline-flex items-center gap-1 font-mono">
+                <Icon icon="ph:flow-arrow-duotone" :width="13" />task {{ job.lastTaskId.slice(0, 8) }}
               </span>
             </p>
           </div>

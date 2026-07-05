@@ -16,6 +16,10 @@ def create_task(args: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"error": "title is required"}
 
     body = args.get("body") if isinstance(args.get("body"), str) else None
+    kind = args.get("kind") if isinstance(args.get("kind"), str) else None
+    source = args.get("source") if isinstance(args.get("source"), str) else "model"
+    plan_item_id = args.get("planItemId") if isinstance(args.get("planItemId"), str) else None
+    parent_task_id = args.get("parentTaskId") if isinstance(args.get("parentTaskId"), str) else None
     priority = args.get("priority") if args.get("priority") is not None else None
     due_at = args.get("dueAt") if isinstance(args.get("dueAt"), str) else None
     max_attempts = args.get("maxAttempts") if args.get("maxAttempts") is not None else None
@@ -27,6 +31,10 @@ def create_task(args: dict[str, Any], context: Any) -> dict[str, Any]:
             session_id=session_id,
             title=title,
             body=body,
+            kind=kind,
+            source=source,
+            plan_item_id=plan_item_id,
+            parent_task_id=parent_task_id,
             priority=priority,
             due_at=due_at,
             max_attempts=max_attempts,
@@ -128,6 +136,24 @@ CREATE_TASK_TOOL_SPEC = ToolSpec(
                     "body": {
                         "type": "string",
                         "description": "Optional details or instructions for the task worker.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["agent_turn", "scheduled_prompt", "script", "review", "delegated"],
+                        "description": "Task execution kind. Defaults to agent_turn.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["manual", "model", "scheduled_job", "plan", "api", "system"],
+                        "description": "Task origin. Defaults to model for tool-created tasks.",
+                    },
+                    "planItemId": {
+                        "type": "string",
+                        "description": "Optional active plan item id this task executes.",
+                    },
+                    "parentTaskId": {
+                        "type": "string",
+                        "description": "Optional parent task id for task decomposition.",
                     },
                     "priority": {
                         "type": "number",

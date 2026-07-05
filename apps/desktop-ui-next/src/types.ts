@@ -84,6 +84,8 @@ export interface SkillActivation {
 export interface ScheduledJob {
   id: string
   title: string
+  mode: 'message' | 'agent_task' | string
+  lastTaskId?: string | null
   schedule: string
   nextRun: string
   lastRun: string

@@ -285,6 +285,14 @@ export interface TaskRecord {
   sessionId: string
   title: string
   body: string
+  kind?: 'agent_turn' | 'scheduled_prompt' | 'script' | 'review' | 'delegated' | string
+  source?: 'manual' | 'model' | 'scheduled_job' | 'plan' | 'api' | 'system' | string
+  parentTaskId?: string | null
+  planItemId?: string | null
+  workerType?: 'agent' | 'script' | 'review' | 'delegated' | string
+  blockedReason?: string | null
+  reviewRequired?: boolean
+  artifacts?: Array<Record<string, unknown>>
   status: TaskStatus
   priority: number
   dueAt?: string | null
@@ -322,6 +330,8 @@ export interface ScheduledJobRecord {
   sessionId: string
   title: string
   message: string
+  mode?: 'message' | 'agent_task' | string
+  lastTaskId?: string | null
   schedule: Record<string, unknown>
   scheduleDisplay: string
   status: ScheduledJobStatus

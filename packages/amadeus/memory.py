@@ -202,6 +202,14 @@ class MessageMemoryStore:
                     session_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     body TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'agent_turn',
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    parent_task_id TEXT,
+                    plan_item_id TEXT,
+                    worker_type TEXT NOT NULL DEFAULT 'agent',
+                    blocked_reason TEXT,
+                    review_required INTEGER NOT NULL DEFAULT 0,
+                    artifacts_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'succeeded', 'failed', 'cancelled')),
                     priority INTEGER NOT NULL DEFAULT 0,
                     due_at TEXT,
@@ -238,6 +246,8 @@ class MessageMemoryStore:
                     session_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     message TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'message',
+                    last_task_id TEXT,
                     schedule_json TEXT NOT NULL,
                     schedule_display TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('scheduled', 'running', 'paused', 'completed', 'cancelled', 'failed')),
@@ -296,6 +306,7 @@ class MessageMemoryStore:
             self._migrate_memory_review_candidates(connection)
             self._migrate_task_statuses(connection)
             self._migrate_task_reliability_columns(connection)
+            self._migrate_scheduled_job_task_columns(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversation_summaries_session_covered
@@ -415,6 +426,14 @@ class MessageMemoryStore:
               session_id TEXT NOT NULL,
               title TEXT NOT NULL,
               body TEXT NOT NULL DEFAULT '',
+              kind TEXT NOT NULL DEFAULT 'agent_turn',
+              source TEXT NOT NULL DEFAULT 'manual',
+              parent_task_id TEXT,
+              plan_item_id TEXT,
+              worker_type TEXT NOT NULL DEFAULT 'agent',
+              blocked_reason TEXT,
+              review_required INTEGER NOT NULL DEFAULT 0,
+              artifacts_json TEXT NOT NULL DEFAULT '[]',
               status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'succeeded', 'failed', 'cancelled')),
               priority INTEGER NOT NULL DEFAULT 0,
               due_at TEXT,
@@ -465,12 +484,41 @@ class MessageMemoryStore:
             connection.execute("ALTER TABLE tasks ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3")
         if "next_run_at" not in columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN next_run_at TEXT")
+        task_defaults = {
+            "kind": "TEXT NOT NULL DEFAULT 'agent_turn'",
+            "source": "TEXT NOT NULL DEFAULT 'manual'",
+            "parent_task_id": "TEXT",
+            "plan_item_id": "TEXT",
+            "worker_type": "TEXT NOT NULL DEFAULT 'agent'",
+            "blocked_reason": "TEXT",
+            "review_required": "INTEGER NOT NULL DEFAULT 0",
+            "artifacts_json": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for name, definition in task_defaults.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
         connection.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_tasks_status_next_run
             ON tasks(status, next_run_at, due_at, priority)
             """
         )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tasks_plan_item
+            ON tasks(session_id, plan_item_id, status)
+            """
+        )
+
+    def _migrate_scheduled_job_task_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(scheduled_jobs)").fetchall()
+        }
+        if "mode" not in columns:
+            connection.execute("ALTER TABLE scheduled_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'message'")
+        if "last_task_id" not in columns:
+            connection.execute("ALTER TABLE scheduled_jobs ADD COLUMN last_task_id TEXT")
 
     def list_roles(self, include_archived: bool = False) -> list[dict[str, str | int | bool]]:
         where = "1 = 1" if include_archived else "archived = 0"
@@ -1236,6 +1284,13 @@ class MessageMemoryStore:
         session_id: str,
         title: str,
         body: str | None = None,
+        kind: str | None = None,
+        source: str | None = None,
+        parent_task_id: str | None = None,
+        plan_item_id: str | None = None,
+        worker_type: str | None = None,
+        review_required: bool = False,
+        artifacts: list[dict[str, object]] | None = None,
         priority: int | None = None,
         due_at: str | None = None,
         max_attempts: int | None = None,
@@ -1244,6 +1299,12 @@ class MessageMemoryStore:
         self.ensure_session(normalized_session_id)
         normalized_title = normalize_task_title(title)
         normalized_body = normalize_task_body(body)
+        normalized_kind = normalize_task_kind(kind)
+        normalized_source = normalize_task_source(source)
+        normalized_parent_task_id = normalize_optional_text(parent_task_id, max_chars=80, field_name="parent_task_id")
+        normalized_plan_item_id = normalize_optional_text(plan_item_id, max_chars=120, field_name="plan_item_id")
+        normalized_worker_type = normalize_task_worker_type(worker_type)
+        artifacts_json = normalize_task_artifacts(artifacts)
         normalized_priority = normalize_task_priority(priority)
         normalized_due_at = normalize_optional_text(due_at, max_chars=80, field_name="due_at")
         normalized_max_attempts = normalize_task_max_attempts(max_attempts)
@@ -1253,15 +1314,24 @@ class MessageMemoryStore:
             connection.execute(
                 """
                 INSERT INTO tasks (
-                  id, session_id, title, body, status, priority, due_at, max_attempts, created_at, updated_at
+                  id, session_id, title, body, kind, source, parent_task_id, plan_item_id,
+                  worker_type, review_required, artifacts_json, status, priority, due_at,
+                  max_attempts, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     normalized_session_id,
                     normalized_title,
                     normalized_body,
+                    normalized_kind,
+                    normalized_source,
+                    normalized_parent_task_id,
+                    normalized_plan_item_id,
+                    normalized_worker_type,
+                    1 if review_required else 0,
+                    artifacts_json,
                     normalized_priority,
                     normalized_due_at,
                     normalized_max_attempts,
@@ -1276,7 +1346,13 @@ class MessageMemoryStore:
                 event_type="created",
                 status="queued",
                 message="Task created",
-                metadata=None,
+                metadata={
+                    "kind": normalized_kind,
+                    "source": normalized_source,
+                    "planItemId": normalized_plan_item_id,
+                    "parentTaskId": normalized_parent_task_id,
+                    "workerType": normalized_worker_type,
+                },
                 created_at=now,
             )
         task = self.get_task(task_id)
@@ -1312,7 +1388,8 @@ class MessageMemoryStore:
                 f"""
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
-                       attempt_count, max_attempts, next_run_at
+                       attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
                 FROM tasks
                 {where}
                 ORDER BY
@@ -1351,7 +1428,8 @@ class MessageMemoryStore:
                 """
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
-                       attempt_count, max_attempts, next_run_at
+                       attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -1368,7 +1446,8 @@ class MessageMemoryStore:
                 """
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
-                       attempt_count, max_attempts, next_run_at
+                       attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
                 FROM tasks
                 WHERE session_id = ? AND status IN ('succeeded', 'failed', 'cancelled')
                 ORDER BY COALESCE(finished_at, updated_at) DESC
@@ -1504,12 +1583,14 @@ class MessageMemoryStore:
         title: str | None,
         message: str,
         schedule: str,
+        mode: str | None = None,
         repeat_count: int | None = None,
     ) -> dict[str, object]:
         normalized_session_id = normalize_session_id(session_id)
         self.ensure_session(normalized_session_id)
         normalized_message = normalize_scheduled_message(message)
         normalized_title = normalize_scheduled_title(title or normalized_message)
+        normalized_mode = normalize_scheduled_mode(mode)
         parsed_schedule = parse_schedule(schedule)
         normalized_repeat_count = normalize_scheduled_repeat_count(repeat_count)
         if parsed_schedule.kind == "once":
@@ -1523,16 +1604,17 @@ class MessageMemoryStore:
             connection.execute(
                 """
                 INSERT INTO scheduled_jobs (
-                  id, session_id, title, message, schedule_json, schedule_display,
+                  id, session_id, title, message, mode, schedule_json, schedule_display,
                   status, repeat_count, completed_runs, next_run_at, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, 0, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, 0, ?, ?, ?)
                 """,
                 (
                     job_id,
                     normalized_session_id,
                     normalized_title,
                     normalized_message,
+                    normalized_mode,
                     json.dumps(schedule_payload, ensure_ascii=False),
                     parsed_schedule.display,
                     normalized_repeat_count,
@@ -1548,7 +1630,7 @@ class MessageMemoryStore:
                 event_type="created",
                 status="scheduled",
                 message="Scheduled job created",
-                metadata={"schedule": schedule_payload, "repeatCount": normalized_repeat_count},
+                metadata={"schedule": schedule_payload, "repeatCount": normalized_repeat_count, "mode": normalized_mode},
                 created_at=now,
             )
         job = self.get_scheduled_job(job_id)
@@ -1582,9 +1664,9 @@ class MessageMemoryStore:
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, session_id, title, message, schedule_json, schedule_display, status,
-                       repeat_count, completed_runs, next_run_at, last_run_at, last_error,
-                       created_at, updated_at, finished_at
+                  SELECT id, session_id, title, message, schedule_json, schedule_display, status,
+                         repeat_count, completed_runs, next_run_at, last_run_at, last_error,
+                         created_at, updated_at, finished_at, mode, last_task_id
                 FROM scheduled_jobs
                 {where}
                 ORDER BY
@@ -1620,9 +1702,9 @@ class MessageMemoryStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, session_id, title, message, schedule_json, schedule_display, status,
-                       repeat_count, completed_runs, next_run_at, last_run_at, last_error,
-                       created_at, updated_at, finished_at
+                  SELECT id, session_id, title, message, schedule_json, schedule_display, status,
+                         repeat_count, completed_runs, next_run_at, last_run_at, last_error,
+                         created_at, updated_at, finished_at, mode, last_task_id
                 FROM scheduled_jobs
                 WHERE id = ?
                 """,
@@ -1694,9 +1776,9 @@ class MessageMemoryStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, session_id, title, message, schedule_json, schedule_display, status,
-                       repeat_count, completed_runs, next_run_at, last_run_at, last_error,
-                       created_at, updated_at, finished_at
+                  SELECT id, session_id, title, message, schedule_json, schedule_display, status,
+                         repeat_count, completed_runs, next_run_at, last_run_at, last_error,
+                         created_at, updated_at, finished_at, mode, last_task_id
                 FROM scheduled_jobs
                 WHERE status = 'scheduled' AND next_run_at IS NOT NULL AND next_run_at <= ?
                 ORDER BY next_run_at ASC, created_at ASC
@@ -1742,8 +1824,16 @@ class MessageMemoryStore:
             )
         return self.get_scheduled_job(normalized_job_id)
 
-    def complete_scheduled_job_run(self, job_id: str) -> dict[str, object]:
+    def complete_scheduled_job_run(
+        self,
+        job_id: str,
+        *,
+        message: str = "Scheduled message delivered",
+        last_task_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         normalized_job_id = normalize_scheduled_job_id(job_id)
+        normalized_last_task_id = normalize_optional_text(last_task_id, max_chars=80, field_name="last_task_id")
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
         with self.connect() as connection:
@@ -1776,6 +1866,7 @@ class MessageMemoryStore:
                 """
                 UPDATE scheduled_jobs
                 SET status = ?, completed_runs = ?, next_run_at = ?, last_error = NULL,
+                    last_task_id = COALESCE(?, last_task_id),
                     updated_at = ?, finished_at = ?
                 WHERE id = ? AND status = 'running'
                 """,
@@ -1783,6 +1874,7 @@ class MessageMemoryStore:
                     next_status,
                     completed_runs,
                     None if terminal else next_run_at,
+                    normalized_last_task_id,
                     now,
                     now if terminal else None,
                     normalized_job_id,
@@ -1794,8 +1886,13 @@ class MessageMemoryStore:
                 session_id=str(row[1]),
                 event_type="completed" if terminal else "scheduled",
                 status=next_status,
-                message="Scheduled message delivered",
-                metadata={"completedRuns": completed_runs, "repeatCount": repeat_count, "nextRunAt": None if terminal else next_run_at},
+                message=message,
+                metadata={
+                    "completedRuns": completed_runs,
+                    "repeatCount": repeat_count,
+                    "nextRunAt": None if terminal else next_run_at,
+                    **(metadata or {}),
+                },
                 created_at=now,
             )
         job = self.get_scheduled_job(normalized_job_id)
@@ -2062,7 +2159,8 @@ class MessageMemoryStore:
                 """
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
-                       attempt_count, max_attempts, next_run_at
+                       attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
                 FROM tasks
                 WHERE status = 'queued'
                 ORDER BY priority DESC, updated_at ASC
@@ -3468,6 +3566,35 @@ def normalize_task_id(task_id: str) -> str:
     return normalized
 
 
+def normalize_task_kind(kind: object) -> str:
+    normalized = str(kind or "agent_turn").strip().lower()
+    if normalized in {"agent_turn", "scheduled_prompt", "script", "review", "delegated"}:
+        return normalized
+    raise ValueError("task kind must be agent_turn, scheduled_prompt, script, review, or delegated")
+
+
+def normalize_task_source(source: object) -> str:
+    normalized = str(source or "manual").strip().lower()
+    if normalized in {"manual", "model", "scheduled_job", "plan", "api", "system"}:
+        return normalized
+    raise ValueError("task source must be manual, model, scheduled_job, plan, api, or system")
+
+
+def normalize_task_worker_type(worker_type: object) -> str:
+    normalized = str(worker_type or "agent").strip().lower()
+    if normalized in {"agent", "script", "review", "delegated"}:
+        return normalized
+    raise ValueError("task worker_type must be agent, script, review, or delegated")
+
+
+def normalize_task_artifacts(artifacts: object) -> str:
+    if artifacts is None:
+        return "[]"
+    if not isinstance(artifacts, list):
+        raise ValueError("artifacts must be an array")
+    return json.dumps(artifacts[:50], ensure_ascii=False)
+
+
 def normalize_scheduled_job_id(job_id: str) -> str:
     normalized = job_id.strip() if isinstance(job_id, str) else ""
     if not normalized:
@@ -3484,6 +3611,13 @@ def normalize_scheduled_status(status: object) -> ScheduledJobStatus:
     if normalized in {"scheduled", "running", "paused", "completed", "cancelled", "failed"}:
         return normalized  # type: ignore[return-value]
     raise ValueError("scheduled job status is invalid")
+
+
+def normalize_scheduled_mode(mode: object) -> str:
+    normalized = str(mode or "message").strip().lower()
+    if normalized in {"message", "agent_task"}:
+        return normalized
+    raise ValueError("scheduled job mode must be message or agent_task")
 
 
 def normalize_scheduled_title(title: object) -> str:
@@ -3619,11 +3753,15 @@ def scheduled_job_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, o
         schedule = json.loads(str(row[4] or "{}"))
     except json.JSONDecodeError:
         schedule = {}
+    mode = normalize_scheduled_mode(row[15]) if len(row) > 15 and row[15] else "message"
+    last_task_id = str(row[16]) if len(row) > 16 and row[16] else None
     return {
         "id": str(row[0]),
         "sessionId": str(row[1]),
         "title": str(row[2]),
         "message": str(row[3] or ""),
+        "mode": mode,
+        "lastTaskId": last_task_id,
         "schedule": schedule if isinstance(schedule, dict) else {},
         "scheduleDisplay": str(row[5] or ""),
         "status": normalize_scheduled_status(row[6]),
@@ -3678,11 +3816,23 @@ def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
     attempt_count = int(row[14] or 0) if len(row) > 14 else 0
     max_attempts = int(row[15] or 3) if len(row) > 15 else 3
     next_run_at = str(row[16]) if len(row) > 16 and row[16] else None
+    try:
+        artifacts = json.loads(str(row[24] or "[]")) if len(row) > 24 else []
+    except json.JSONDecodeError:
+        artifacts = []
     return {
         "id": str(row[0]),
         "sessionId": str(row[1]),
         "title": str(row[2]),
         "body": str(row[3] or ""),
+        "kind": normalize_task_kind(row[17]) if len(row) > 17 and row[17] else "agent_turn",
+        "source": normalize_task_source(row[18]) if len(row) > 18 and row[18] else "manual",
+        "parentTaskId": str(row[19]) if len(row) > 19 and row[19] else None,
+        "planItemId": str(row[20]) if len(row) > 20 and row[20] else None,
+        "workerType": normalize_task_worker_type(row[21]) if len(row) > 21 and row[21] else "agent",
+        "blockedReason": str(row[22]) if len(row) > 22 and row[22] else None,
+        "reviewRequired": bool(row[23]) if len(row) > 23 else False,
+        "artifacts": artifacts if isinstance(artifacts, list) else [],
         "status": normalize_task_status(row[4]),
         "priority": int(row[5] or 0),
         "dueAt": str(row[6]) if row[6] else None,

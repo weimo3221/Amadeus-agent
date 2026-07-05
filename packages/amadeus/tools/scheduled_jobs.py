@@ -21,6 +21,7 @@ def schedule_message(args: dict[str, Any], context: Any) -> dict[str, Any]:
         if not isinstance(schedule, str) or not schedule.strip():
             return {"error": "schedule is required"}
         title = args.get("title") if isinstance(args.get("title"), str) else None
+        mode = args.get("mode") if isinstance(args.get("mode"), str) else None
         repeat_count = args.get("repeatCount") if args.get("repeatCount") is not None else None
         try:
             job = memory_store.create_scheduled_job(
@@ -28,6 +29,7 @@ def schedule_message(args: dict[str, Any], context: Any) -> dict[str, Any]:
                 title=title,
                 message=message,
                 schedule=schedule,
+                mode=mode,
                 repeat_count=repeat_count if isinstance(repeat_count, int) else None,
             )
         except ValueError as error:
@@ -100,7 +102,12 @@ SCHEDULE_MESSAGE_TOOL_SPEC = ToolSpec(
                     },
                     "message": {
                         "type": "string",
-                        "description": "Assistant message to deliver when the schedule fires.",
+                        "description": "Message to deliver for mode=message, or the task prompt for mode=agent_task.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["message", "agent_task"],
+                        "description": "message delivers the text directly; agent_task creates and submits a background task at fire time. Defaults to message.",
                     },
                     "schedule": {
                         "type": "string",

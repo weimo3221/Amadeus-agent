@@ -96,6 +96,45 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(updated["status"], "completed")
         self.assertEqual([item[0] for item in published], ["running", "message", "fired"])
 
+    def test_worker_can_turn_due_job_into_background_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            job = memory.create_scheduled_job(
+                session_id="session-1",
+                title="Run report",
+                message="生成一份状态报告",
+                schedule="every 10s",
+                mode="agent_task",
+                repeat_count=1,
+            )
+            past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+            with memory.connect() as connection:
+                connection.execute("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?", (past, job["id"]))
+
+            submitted: list[str] = []
+            published: list[tuple[str, dict[str, object]]] = []
+            worker = ScheduledJobWorker(
+                lambda: memory,
+                publish_job_event=lambda payload, action: published.append((action, payload)),
+                submit_task=submitted.append,
+            )
+
+            fired = worker.tick()
+            updated = memory.get_scheduled_job(str(job["id"]))
+            tasks = memory.list_tasks(session_id="session-1", active_only=False)["tasks"]
+            messages = memory.load("session-1")
+
+        self.assertEqual(fired, 1)
+        self.assertEqual(messages, [])
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["kind"], "scheduled_prompt")
+        self.assertEqual(tasks[0]["source"], "scheduled_job")
+        self.assertEqual(tasks[0]["body"], "生成一份状态报告")
+        self.assertEqual(submitted, [tasks[0]["id"]])
+        self.assertEqual(updated["mode"], "agent_task")
+        self.assertEqual(updated["lastTaskId"], tasks[0]["id"])
+        self.assertEqual([item[0] for item in published], ["running", "fired"])
+
     def test_schedule_message_tool_creates_and_lists_session_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
