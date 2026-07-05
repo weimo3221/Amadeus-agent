@@ -207,6 +207,8 @@ The bridge emits memory review state in response to desktop `memory.review.*` re
       "sessionId": "companion:default",
       "title": "Four pings",
       "message": "我在",
+      "mode": "message",
+      "lastTaskId": null,
       "scheduleDisplay": "Every 10 seconds",
       "status": "scheduled",
       "repeatCount": 4,
@@ -219,9 +221,45 @@ The bridge emits memory review state in response to desktop `memory.review.*` re
 
 Current behavior:
 
-- Python emits `scheduled.updated` for scheduled companion-message lifecycle changes such as created, running, fired, paused, resumed, cancelled, completed, and failed.
-- When a scheduled message fires, Python also persists the assistant message and broadcasts a normal `assistant.message` to every client in the session.
-- Main UI listens for `scheduled.updated` to refresh the Timed Messages panel and fetches all statuses (`activeOnly=false`) so completed, cancelled, and failed jobs remain visible with terminal status labels.
+- Python emits `scheduled.updated` for scheduled trigger lifecycle changes such as created, running, fired, paused, resumed, cancelled, completed, and failed.
+- `mode="message"` is the default behavior. When it fires, Python persists the assistant message and broadcasts a normal `assistant.message` to every client in the session.
+- `mode="agent_task"` turns the schedule into a trigger. When it fires, Python creates a tracked background task with `kind="scheduled_prompt"` and `source="scheduled_job"`, submits it to the task worker, stores the task id in `lastTaskId`, and emits `scheduled.updated`.
+- Main UI listens for `scheduled.updated` to refresh the Timed Messages panel and fetches all statuses (`activeOnly=false`) so completed, cancelled, and failed jobs remain visible with terminal status labels and trigger-mode indicators.
+
+### task.updated
+
+```json
+{
+  "type": "task.updated",
+  "payload": {
+    "action": "running",
+    "task": {
+      "id": "task-id",
+      "sessionId": "companion:default",
+      "title": "Run report",
+      "body": "生成一份状态报告",
+      "kind": "scheduled_prompt",
+      "source": "scheduled_job",
+      "parentTaskId": null,
+      "planItemId": null,
+      "workerType": "agent",
+      "status": "running",
+      "attemptCount": 1,
+      "maxAttempts": 3,
+      "artifacts": [{ "type": "scheduled_job", "jobId": "scheduled-job-id" }]
+    }
+  }
+}
+```
+
+Task records are the durable execution unit. Plans describe intent, scheduled jobs describe when to trigger, and tasks own execution, retry/cancel/recovery, results, errors, and artifacts.
+
+When a task has `planItemId`, the Python task worker keeps the visible plan aligned with execution:
+
+- task starts: linked plan item becomes `in_progress`
+- task succeeds: linked plan item becomes `completed`
+- task exhausts retries and fails: linked plan item returns to `pending`
+- task is cancelled: linked plan item becomes `cancelled`
 
 ### assistant.delta
 

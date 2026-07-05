@@ -131,6 +131,19 @@ export async function fetchTasks(
   return { tasks: data?.tasks ?? [], summary: data?.summary ?? null }
 }
 
+export async function createTaskRequest(body: {
+  sessionId: string
+  title: string
+  body?: string
+  kind?: string
+  source?: string
+  planItemId?: string
+  priority?: number
+}): Promise<TaskRecord | null> {
+  const data = await postJson<{ task: TaskRecord }>('/tasks', body)
+  return data?.task ?? null
+}
+
 export async function fetchScheduledJobs(
   sessionId: string,
   limit = 20,

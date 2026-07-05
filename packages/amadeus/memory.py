@@ -1278,6 +1278,41 @@ class MessageMemoryStore:
             )
         return plan_response(normalized_session_id, normalized_items, updated_at=now)
 
+    def update_plan_item_status(
+        self,
+        *,
+        session_id: str,
+        plan_item_id: str,
+        status: str,
+    ) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        normalized_plan_item_id = normalize_optional_text(plan_item_id, max_chars=120, field_name="plan_item_id")
+        if not normalized_plan_item_id:
+            return self.load_session_plan(normalized_session_id)
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"pending", "in_progress", "completed", "cancelled"}:
+            raise ValueError("invalid plan item status")
+        current = self.load_session_plan(normalized_session_id)
+        raw_items = current.get("items") if isinstance(current, dict) else []
+        if not isinstance(raw_items, list):
+            return current
+        found = False
+        updated_items: list[dict[str, object]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            next_item = dict(item)
+            if item_id == normalized_plan_item_id:
+                next_item["status"] = normalized_status
+                found = True
+            elif normalized_status == "in_progress" and str(item.get("status") or "") == "in_progress":
+                next_item["status"] = "pending"
+            updated_items.append(next_item)
+        if not found:
+            return current
+        return self.save_session_plan(normalized_session_id, updated_items, merge=False)
+
     def create_task(
         self,
         *,

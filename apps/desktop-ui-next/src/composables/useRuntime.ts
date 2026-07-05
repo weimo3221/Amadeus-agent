@@ -26,6 +26,7 @@ import type {
 import { AgentRuntimeClient, type ConnectionPhase, type ToolPermissionPrompt } from '@/runtime/client'
 import { COMPANION_SESSION_ID, SESSION_ID } from '@/runtime/config'
 import {
+  createTaskRequest,
   createSessionRequest,
   deleteSessionRequest,
   fetchAudioConfig,
@@ -347,6 +348,15 @@ async function loadSessionData(sessionId: string): Promise<void> {
   pendingAssistantId.value = null
 }
 
+async function refreshPlanAndTasks(): Promise<void> {
+  const [plan, tasksResult] = await Promise.all([
+    fetchSessionPlan(state.activeSessionId),
+    fetchTasks(state.activeSessionId),
+  ])
+  state.plan = planToItems(plan)
+  state.tasks = tasksToItems(tasksResult.tasks)
+}
+
 async function loadSessionList(): Promise<void> {
   const sessions = await fetchSessions()
   state.sessions = sessionsToItems(sessions, state.activeSessionId)
@@ -512,9 +522,7 @@ function createClient(): AgentRuntimeClient {
       },
       onTaskUpdated: (payload: TaskUpdatedPayload) => {
         if (payload.task.sessionId && payload.task.sessionId !== state.activeSessionId) return
-        void fetchTasks(state.activeSessionId).then((result) => {
-          state.tasks = tasksToItems(result.tasks)
-        })
+        void refreshPlanAndTasks()
       },
       onScheduledJobUpdated: (payload: ScheduledJobUpdatedPayload) => {
         if (payload.job.sessionId && payload.job.sessionId !== state.activeSessionId) return
@@ -680,6 +688,21 @@ export function useRuntime() {
     await loadMemoryDiagnostics()
   }
 
+  async function createTaskFromPlan(item: PlanItem): Promise<boolean> {
+    const task = await createTaskRequest({
+      sessionId: state.activeSessionId,
+      title: item.label,
+      body: item.label,
+      kind: 'agent_turn',
+      source: 'plan',
+      planItemId: item.id,
+      priority: item.status === 'active' ? 1 : 0,
+    })
+    if (!task) return false
+    await refreshPlanAndTasks()
+    return true
+  }
+
   return {
     state,
     sendMessage,
@@ -697,5 +720,6 @@ export function useRuntime() {
     selectLive2d,
     refreshMcpDiagnostics,
     refreshMemoryDiagnostics,
+    createTaskFromPlan,
   }
 }

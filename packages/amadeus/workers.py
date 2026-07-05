@@ -89,6 +89,7 @@ class TaskWorker:
             cancel_event = self._running.get(task_id)
             running_turn = self._turns.get(task_id)
         task = self._memory_store_provider().cancel_task(task_id, reason=reason)
+        self._sync_plan_item(self._memory_store_provider(), task, "cancelled")
         self._publish_task_update(task, "cancelled")
         if cancel_event:
             cancel_event.set()
@@ -109,6 +110,7 @@ class TaskWorker:
             if task and task.get("status") == "queued":
                 self._schedule_if_needed(task)
             return
+        self._sync_plan_item(memory_store, task, "in_progress")
         self._publish_task_update(task, "running")
 
         session_id = str(task["sessionId"])
@@ -156,6 +158,7 @@ class TaskWorker:
                 self._handle_failure(memory_store, task_id, claim_lock=claim_lock, task=task, error=error_text)
             else:
                 completed = memory_store.complete_task(task_id, claim_lock=claim_lock, result=result_text or "")
+                self._sync_plan_item(memory_store, completed, "completed")
                 self._publish_task_update(completed, "succeeded")
         except Exception as error:
             logger.info("Task worker execution failed taskId=%s error=%s", task_id, error)
@@ -200,8 +203,24 @@ class TaskWorker:
             self._schedule_if_needed(retried)
             return retried
         failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=error)
+        self._sync_plan_item(memory_store, failed, "pending")
         self._publish_task_update(failed, "failed")
         return failed
+
+    @staticmethod
+    def _sync_plan_item(memory_store: MessageMemoryStore, task: dict[str, object], status: str) -> None:
+        plan_item_id = str(task.get("planItemId") or "").strip()
+        session_id = str(task.get("sessionId") or "").strip()
+        if not plan_item_id or not session_id:
+            return
+        try:
+            memory_store.update_plan_item_status(
+                session_id=session_id,
+                plan_item_id=plan_item_id,
+                status=status,
+            )
+        except Exception:
+            logger.debug("Task worker failed to sync plan item taskId=%s status=%s", task.get("id"), status, exc_info=True)
 
     def _next_retry_at(self, attempt_count: int) -> str:
         delay = min(
@@ -252,6 +271,7 @@ class TaskWorker:
         if task and task.get("status") == "cancelled":
             return task
         cancelled = memory_store.cancel_task(task_id, reason=reason)
+        self._sync_plan_item(memory_store, cancelled, "cancelled")
         self._publish_task_update(cancelled, "cancelled")
         return cancelled
 

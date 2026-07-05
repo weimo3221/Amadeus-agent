@@ -10,7 +10,7 @@ Build a desktop Live2D interactive agent with a local runtime, starting from a s
 
 ## Current Snapshot
 
-Amadeus is now a working desktop MVP with a Python-first turn path, split Electron desktop surfaces, local ASR/TTS voice I/O, scheduled companion messages, persistent session todos, and a mostly landed runtime reliability foundation.
+Amadeus is now a working desktop MVP with a Python-first turn path, split Electron desktop surfaces, local ASR/TTS voice I/O, scheduled triggers, persistent session todos, tracked background tasks, and a mostly landed runtime reliability foundation.
 
 The current project phase is no longer initial MVP construction. The main MVP surfaces are present, Python owns the preferred runtime path, ToolRuntime is in late-stage hardening, Memory v2 has its core storage/review/context pieces in place, and the first Live2D/audio harness slices are active. The desktop product surface now has separate `companion` and `main-ui` entries: Companion owns Live2D, voice input, and lightweight desktop presence, while the Vue `desktop-ui-next` Main UI owns the larger workbench/chat surface. Main UI restores current session history, displays active and completed timed messages, exposes richer runtime configuration, and uses a light anime plus modern SaaS visual treatment. The next large product step is desktop/runtime stabilization: finish CLI/session switching, polish the two desktop surfaces, improve lipsync/ASR quality, continue TypeScript bridge shrinkage, and harden ToolRuntime/Memory only where real usage exposes gaps.
 
@@ -50,7 +50,8 @@ Fallback path today:
 - SQLite message memory is implemented in `data/amadeus.sqlite`.
 - Desktop shows memory count, tool status, tool config status, voice status, visible chat messages, and has a Reset Session button.
 - Main UI restores the current session's persisted chat history from Python `/memory/messages` when opened or switched by `sessionId`, and renders assistant Markdown through the shared runtime Markdown renderer.
-- Main UI includes a Timed Messages panel for listing scheduled companion messages across active and terminal states. It listens for `scheduled.updated`, shows `已启用` / `执行中` / `已暂停` / `已完成` / `已取消` / `失败`, and displays last-run plus completed-run counts.
+- Main UI includes a Timed Messages panel for listing scheduled triggers across active and terminal states. It listens for `scheduled.updated`, shows `已启用` / `执行中` / `已暂停` / `已完成` / `已取消` / `失败`, displays last-run plus completed-run counts, and distinguishes message-only schedules from schedules that trigger background tasks.
+- Main UI plan items can now be promoted into background tasks from the plan panel. The created task records keep `source="plan"` and `planItemId`, and the Python task worker reflects execution back into the visible plan by marking linked items in progress, completed, pending after final failure, or cancelled.
 - Main UI includes a configuration center for model provider/API settings, model thinking mode and reasoning effort (`low` / `medium` / `high`), Live2D model import/selection/behavior mapping, macOS/GPT-SoVITS TTS settings, and runtime config persistence through Python endpoints.
 - Main UI and Companion have a first-pass light anime plus modern SaaS visual refresh with softer typography, pastel surfaces, and higher-contrast interactive states.
 - `apps/server` no longer owns a separate local message-count/reset SQLite path; it now reads `GET /memory/count` and forwards `POST /memory/reset` to the Python runtime while keeping the desktop protocol unchanged.
@@ -72,7 +73,8 @@ Fallback path today:
 - `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
 - `delegate_task` is implemented as a first restricted research/search delegate: max depth 1, max concurrency 2, memory search, file search, explicit bounded file reads, no write tools, no shell, no recursive delegation, and summary-only results to the parent agent.
-- `schedule_message` is implemented as an `allow` tool for reminders, alarms, countdowns, recurring check-ins, and proactive companion messages. Scheduled messages are persisted in SQLite, broadcast as `assistant.message` when fired, and emit `scheduled.updated` lifecycle events.
+- `create_task` / `list_tasks` / `cancel_task` are implemented as tracked background-task tools. Task records now carry execution metadata such as `kind`, `source`, `parentTaskId`, `planItemId`, `workerType`, review state, and artifacts so tasks can become the durable execution unit for heavier workflows. `planItemId` links a task to a visible plan step and lets task worker state transitions update the plan.
+- `schedule_message` is implemented as an `allow` tool for reminders, alarms, countdowns, recurring check-ins, proactive companion messages, and scheduled background execution. Scheduled jobs are persisted in SQLite, emit `scheduled.updated` lifecycle events, default to `mode="message"` for timed assistant-message delivery, and support `mode="agent_task"` to create and submit a tracked background task at fire time.
 - `todo` is implemented as an `allow` tool for persistent user-facing session todo lists. Active todos are injected into API-call-time context through `<active-todos>`.
 - `AgentRuntime` maintains a per-session `workspace_epoch` for file-observing tool guardrails; successful `patch` / `write_file` mutations advance the epoch so repeated reads/searches after an edit are not treated as stale duplicates.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.

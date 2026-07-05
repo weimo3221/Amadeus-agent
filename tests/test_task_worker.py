@@ -111,6 +111,29 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in events], ["created", "running", "succeeded"])
         self.assertEqual(published, [("running", "running"), ("succeeded", "succeeded")])
 
+    def test_worker_syncs_linked_plan_item_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_session_plan(
+                "session-1",
+                [{"id": "draft", "content": "Draft the plan", "status": "pending"}],
+            )
+            runtime = SuccessfulRuntime()
+            worker = TaskWorker(lambda: memory, lambda: runtime, max_workers=1)
+            task = memory.create_task(
+                session_id="session-1",
+                title="Draft the plan",
+                plan_item_id="draft",
+                source="plan",
+            )
+
+            worker.submit(str(task["id"]))
+            self.wait_for_status(memory, str(task["id"]), "succeeded")
+            worker.shutdown()
+            plan = memory.load_session_plan("session-1")
+
+        self.assertEqual(plan["items"][0]["status"], "completed")
+
     def test_worker_marks_task_failed_on_runtime_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

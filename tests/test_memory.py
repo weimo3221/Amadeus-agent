@@ -515,6 +515,27 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in events], ["created", "cancelled"])
         self.assertEqual(events[1]["metadata"], {"previousStatus": "queued"})
 
+    def test_plan_item_status_can_be_updated_for_linked_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_session_plan(
+                "session-1",
+                [
+                    {"id": "inspect", "content": "Inspect task flow", "status": "in_progress"},
+                    {"id": "implement", "content": "Implement task flow", "status": "pending"},
+                ],
+            )
+
+            updated = memory.update_plan_item_status(
+                session_id="session-1",
+                plan_item_id="implement",
+                status="in_progress",
+            )
+
+        statuses = {item["id"]: item["status"] for item in updated["items"]}
+        self.assertEqual(statuses["inspect"], "pending")
+        self.assertEqual(statuses["implement"], "in_progress")
+
     def test_task_worker_state_transitions_can_succeed_fail_and_ignore_finished_cancels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

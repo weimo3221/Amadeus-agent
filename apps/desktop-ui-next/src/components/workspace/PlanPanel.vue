@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { PlanItem, PlanStatus } from '@/types'
+import { useRuntime } from '@/composables/useRuntime'
 
 const props = defineProps<{
   items: PlanItem[]
 }>()
+
+const { createTaskFromPlan } = useRuntime()
+const creatingItemId = ref<string | null>(null)
 
 const meta: Record<PlanStatus, { icon: string; ring: string; text: string }> = {
   done: { icon: 'ph:check-bold', ring: 'bg-success text-white', text: 'text-ink-faint line-through' },
@@ -17,6 +21,16 @@ const doneCount = computed(() => props.items.filter((i) => i.status === 'done').
 const progress = computed(() =>
   props.items.length ? Math.round((doneCount.value / props.items.length) * 100) : 0,
 )
+
+async function runInBackground(item: PlanItem): Promise<void> {
+  if (item.status === 'done' || creatingItemId.value) return
+  creatingItemId.value = item.id
+  try {
+    await createTaskFromPlan(item)
+  } finally {
+    creatingItemId.value = null
+  }
+}
 </script>
 
 <template>
@@ -53,7 +67,18 @@ const progress = computed(() =>
         >
           <Icon :icon="meta[item.status].icon" :width="12" />
         </span>
-        <span class="text-[13px]" :class="meta[item.status].text">{{ item.label }}</span>
+        <span class="min-w-0 flex-1 text-[13px]" :class="meta[item.status].text">{{ item.label }}</span>
+        <button
+          v-if="item.status !== 'done'"
+          type="button"
+          class="inline-flex shrink-0 items-center gap-1 rounded-full border border-brand-100 bg-surface px-2 py-0.5 text-[11px]
+                 font-medium text-brand-600 transition-all duration-200 hover:border-brand-200 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-60"
+          :disabled="creatingItemId !== null"
+          @click="runInBackground(item)"
+        >
+          <Icon :icon="creatingItemId === item.id ? 'ph:spinner-gap-duotone' : 'ph:play-circle-duotone'" :width="12" />
+          后台执行
+        </button>
       </li>
     </ol>
   </div>

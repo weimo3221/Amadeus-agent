@@ -90,7 +90,7 @@ packages/amadeus
   |
   +--> agent.py        (active preferred turn path)
   +--> memory.py       (active SQLite message, role, memory, task, and audit store)
-  +--> scheduling.py   (active scheduled companion-message parser/worker)
+  +--> scheduling.py   (active scheduled trigger parser/worker)
   +--> tools/          (active Python tools)
   +--> audio.py        (active ASR/TTS interface with auto provider selection)
   +--> server.py       (active HTTP runtime)
@@ -159,7 +159,7 @@ packages/amadeus
 - `memory.py`: active SQLite-backed message history, roles/sessions, structured memory, task state, scheduled messages, persistent todos, and audit records.
 - `memory_query.py`: active memory query tokenizer. It uses `jieba` plus bounded CJK n-grams to expand Chinese/mixed-language queries and FTS index content while keeping returned transcript text unchanged.
 - `memory_provider.py`: runtime memory provider layer. Exactly one provider is active at a time. The built-in local provider is the default and exposes derived session memory artifacts plus the SQLite memory tools; an external provider replaces that runtime prefetch/tool surface when configured. Raw session transcripts remain in `memory.py` and are read through explicit transcript tools/APIs.
-- `scheduling.py`: active schedule parser plus in-process scheduled-message worker. It supports one-shot durations/timestamps, recurring intervals, common daily/weekly/monthly cron shapes, repeat counts, and lifecycle event publication.
+- `scheduling.py`: active schedule parser plus in-process scheduled trigger worker. It supports one-shot durations/timestamps, recurring intervals, common daily/weekly/monthly cron shapes, repeat counts, lifecycle event publication, direct message delivery, and `agent_task` mode that creates tracked background tasks at fire time.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, session workspace epoch propagation, and repeated-call guardrails.
 - `audio.py`: active ASR/TTS/audio interface. TTS uses an `auto` provider selector, config-gated GPT-SoVITS HTTP provider, and macOS `say` provider that can cache generated wav audio under the local audio library. ASR uses an `auto` provider selector that chooses local `faster-whisper` when installed.
@@ -232,9 +232,9 @@ Python runtime responsibilities today:
 - Own session memory count/reset semantics for the preferred path, exposed through `/memory/count` and `/memory/reset`.
 - Own roles, per-role `SOUL.md` identity files, role-scoped `MEMORY.md` / `USER.md`, role `workspacePath`, default workspace assignment to the repository root, and workspace instruction loading for per-session prompt assembly. Instruction file priority is `.amadeus.md` / `AMADEUS.md`, then `AGENT.md` / `agents.md`, then `CLAUDE.md` / `claude.md`, then Cursor rules. User-specific preferences stay in role-scoped `USER.md` memory rather than project instructions.
 - Own concrete Python tool execution for the preferred path.
-- Own persisted session tasks and in-process worker execution with retry scheduling and stale-running recovery.
-- Own persisted scheduled companion messages and persistent session todos.
-- Own scheduled-job terminal state (`completed`, `cancelled`, `failed`) and emit `scheduled.updated`; Main UI fetches all statuses so completed timed messages remain visible.
+- Own persisted session tasks as the execution unit for longer-running work, with task metadata (`kind`, `source`, `parentTaskId`, `planItemId`, `workerType`, review/artifact fields), in-process worker execution, retry scheduling, and stale-running recovery. Tasks can be linked to visible plan items through `planItemId`; worker lifecycle updates move linked plan items to `in_progress`, `completed`, `pending`, or `cancelled`.
+- Own persisted scheduled triggers and persistent session todos. Scheduled jobs default to `message` mode, which writes a timed assistant message, and also support `agent_task` mode, which creates a tracked background task and submits it to the task worker.
+- Own scheduled-job terminal state (`completed`, `cancelled`, `failed`) and emit `scheduled.updated`; Main UI fetches all statuses so completed timed messages remain visible and shows whether a schedule delivered a message or triggered a task.
 - Own ASR/TTS provider selection and expose `/audio/transcribe`, `/audio/speak`, `/audio/config`, `/audio/voices`, and local generated audio files.
 - Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `tool.started`, `tool.finished`, `tool.permission.request`, `scheduled.updated`, `character.behavior`, and `audio.tts-ready`.
 
