@@ -197,6 +197,22 @@ class MessageMemoryStore:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(id)
                   );
+                  CREATE TABLE IF NOT EXISTS plan_runs (
+                    turn_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    user_message_id INTEGER,
+                    assistant_message_id INTEGER,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    items_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    archived_at TEXT,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id),
+                    FOREIGN KEY(user_message_id) REFERENCES messages(id),
+                    FOREIGN KEY(assistant_message_id) REFERENCES messages(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_plan_runs_session_user_message
+                  ON plan_runs(session_id, user_message_id, updated_at);
                   CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -1125,7 +1141,7 @@ class MessageMemoryStore:
             (pattern, limit),
         ).fetchall()
 
-    def load(self, session_id: str, limit: int = 40, after_message_id: int | None = None) -> list[dict[str, str]]:
+    def load(self, session_id: str, limit: int = 40, after_message_id: int | None = None) -> list[dict[str, str | int]]:
         normalized_after_id = normalize_optional_non_negative_int(after_message_id, "after_message_id")
         where = "session_id = ?"
         params: list[object] = [session_id]
@@ -1137,7 +1153,7 @@ class MessageMemoryStore:
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT role, content
+                SELECT id, role, content, created_at
                 FROM messages
                 WHERE {where}
                 ORDER BY id DESC
@@ -1146,7 +1162,15 @@ class MessageMemoryStore:
                 params,
             ).fetchall()
 
-        return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+        return [
+            {
+                "id": int(row[0]),
+                "role": str(row[1]),
+                "content": str(row[2]),
+                "createdAt": str(row[3]),
+            }
+            for row in reversed(rows)
+        ]
 
     def load_detailed(
         self,
@@ -1245,6 +1269,8 @@ class MessageMemoryStore:
         items: list[dict[str, object]],
         *,
         merge: bool = False,
+        turn_id: str | None = None,
+        user_message_id: int | None = None,
     ) -> dict[str, object]:
         normalized_session_id = normalize_session_id(session_id)
         self.ensure_session(normalized_session_id)
@@ -1276,7 +1302,185 @@ class MessageMemoryStore:
                     now,
                 ),
             )
+            normalized_turn_id = normalize_optional_text(turn_id, max_chars=120, field_name="turn_id")
+            if normalized_turn_id:
+                normalized_user_message_id = normalize_optional_non_negative_int(user_message_id, "user_message_id")
+                connection.execute(
+                    """
+                    INSERT INTO plan_runs (
+                      turn_id, session_id, user_message_id, status, items_json,
+                      created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, 'active', ?, ?, ?)
+                    ON CONFLICT(turn_id) DO UPDATE SET
+                      user_message_id = COALESCE(excluded.user_message_id, plan_runs.user_message_id),
+                      status = CASE
+                        WHEN plan_runs.status IN ('completed', 'incomplete', 'cancelled') THEN plan_runs.status
+                        ELSE 'active'
+                      END,
+                      items_json = excluded.items_json,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        normalized_turn_id,
+                        normalized_session_id,
+                        normalized_user_message_id,
+                        json.dumps(normalized_items, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
         return plan_response(normalized_session_id, normalized_items, updated_at=now)
+
+    def _update_plan_runs_containing_item(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+        plan_item_id: str,
+        status: str,
+        updated_at: str,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT turn_id, items_json, status
+            FROM plan_runs
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                items = json.loads(str(row[1]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(items, list):
+                continue
+            changed = False
+            updated_items: list[dict[str, object]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                next_item = dict(item)
+                if str(next_item.get("id") or "") == plan_item_id:
+                    next_item["status"] = status
+                    changed = True
+                elif status == "in_progress" and str(next_item.get("status") or "") == "in_progress":
+                    next_item["status"] = "pending"
+                updated_items.append(next_item)
+            if not changed:
+                continue
+            current_status = str(row[2] or "active")
+            next_status = current_status
+            archived_at: str | None = None
+            if current_status in {"completed", "incomplete"}:
+                next_status = "completed" if plan_items_are_complete(updated_items) else "incomplete"
+                archived_at = updated_at
+            connection.execute(
+                """
+                UPDATE plan_runs
+                SET items_json = ?,
+                    status = ?,
+                    updated_at = ?,
+                    archived_at = COALESCE(?, archived_at)
+                WHERE turn_id = ?
+                """,
+                (
+                    json.dumps(updated_items, ensure_ascii=False),
+                    next_status,
+                    updated_at,
+                    archived_at,
+                    str(row[0]),
+                ),
+            )
+
+    def finish_plan_run(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        assistant_message_id: int | None = None,
+        status: str | None = None,
+    ) -> dict[str, object] | None:
+        normalized_session_id = normalize_session_id(session_id)
+        normalized_turn_id = normalize_optional_text(turn_id, max_chars=120, field_name="turn_id")
+        if not normalized_turn_id:
+            return None
+        normalized_assistant_message_id = normalize_optional_non_negative_int(assistant_message_id, "assistant_message_id")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT items_json
+                FROM plan_runs
+                WHERE turn_id = ? AND session_id = ?
+                """,
+                (normalized_turn_id, normalized_session_id),
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                items = json.loads(str(row[0]))
+            except json.JSONDecodeError:
+                items = []
+            normalized_status = str(status or "").strip().lower()
+            if normalized_status not in {"completed", "incomplete", "cancelled"}:
+                normalized_status = "completed" if plan_items_are_complete(items) else "incomplete"
+            connection.execute(
+                """
+                UPDATE plan_runs
+                SET status = ?,
+                    assistant_message_id = COALESCE(?, assistant_message_id),
+                    updated_at = ?,
+                    archived_at = ?
+                WHERE turn_id = ? AND session_id = ?
+                """,
+                (
+                    normalized_status,
+                    normalized_assistant_message_id,
+                    now,
+                    now,
+                    normalized_turn_id,
+                    normalized_session_id,
+                ),
+            )
+        return self.get_plan_run(session_id=normalized_session_id, turn_id=normalized_turn_id)
+
+    def get_plan_run(self, *, session_id: str, turn_id: str) -> dict[str, object] | None:
+        normalized_session_id = normalize_session_id(session_id)
+        normalized_turn_id = normalize_optional_text(turn_id, max_chars=120, field_name="turn_id")
+        if not normalized_turn_id:
+            return None
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT turn_id, session_id, user_message_id, assistant_message_id, status,
+                       items_json, created_at, updated_at, archived_at
+                FROM plan_runs
+                WHERE turn_id = ? AND session_id = ?
+                """,
+                (normalized_turn_id, normalized_session_id),
+            ).fetchone()
+        return plan_run_response(row) if row else None
+
+    def list_plan_runs(self, *, session_id: str, limit: int = 100) -> dict[str, object]:
+        normalized_session_id = normalize_session_id(session_id)
+        self.ensure_session(normalized_session_id)
+        normalized_limit = max(1, min(200, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT turn_id, session_id, user_message_id, assistant_message_id, status,
+                       items_json, created_at, updated_at, archived_at
+                FROM plan_runs
+                WHERE session_id = ?
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (normalized_session_id, normalized_limit),
+            ).fetchall()
+        runs = [plan_run_response(row) for row in rows]
+        return {"sessionId": normalized_session_id, "planRuns": runs, "count": len(runs)}
 
     def update_plan_item_status(
         self,
@@ -1311,7 +1515,17 @@ class MessageMemoryStore:
             updated_items.append(next_item)
         if not found:
             return current
-        return self.save_session_plan(normalized_session_id, updated_items, merge=False)
+        updated = self.save_session_plan(normalized_session_id, updated_items, merge=False)
+        now = str(updated.get("updatedAt") or datetime.now(timezone.utc).isoformat())
+        with self.connect() as connection:
+            self._update_plan_runs_containing_item(
+                connection,
+                session_id=normalized_session_id,
+                plan_item_id=normalized_plan_item_id,
+                status=normalized_status,
+                updated_at=now,
+            )
+        return updated
 
     def create_task(
         self,
@@ -2112,6 +2326,152 @@ class MessageMemoryStore:
             event_type="failed",
             default_message="Task failed",
         )
+
+    def block_task(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+        claim_lock: str | None = None,
+        result: str | None = None,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
+        normalized_reason = normalize_optional_text(reason, max_chars=MAX_TASK_ERROR_CHARS, field_name="reason") or "Task blocked"
+        normalized_result = normalize_optional_text(result, max_chars=MAX_TASK_RESULT_CHARS, field_name="result")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, session_id, status, claim_lock
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            current_status = str(row[2])
+            if current_status in {"succeeded", "failed", "cancelled"}:
+                task = self.get_task(normalized_task_id)
+                if task is None:
+                    raise ValueError("task not found")
+                return task
+            if normalized_claim_lock and (current_status != "running" or str(row[3] or "") != normalized_claim_lock):
+                raise ValueError("task is not claimed by this worker")
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'blocked',
+                    blocked_reason = ?,
+                    result = COALESCE(?, result),
+                    claim_lock = NULL,
+                    last_heartbeat = NULL,
+                    next_run_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (normalized_reason, normalized_result, now, normalized_task_id),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[1]),
+                event_type="blocked",
+                status="blocked",
+                message=normalized_reason,
+                metadata={"previousStatus": current_status, "claimLock": normalized_claim_lock},
+                created_at=now,
+            )
+        task = self.get_task(normalized_task_id)
+        if task is None:
+            raise ValueError("task not found")
+        return task
+
+    def resume_blocked_task(self, task_id: str) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT session_id, status FROM tasks WHERE id = ?",
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            if str(row[1]) != "blocked":
+                task = self.get_task(normalized_task_id)
+                if task is None:
+                    raise ValueError("task not found")
+                return task
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'queued',
+                    blocked_reason = NULL,
+                    claim_lock = NULL,
+                    last_heartbeat = NULL,
+                    updated_at = ?,
+                    finished_at = NULL
+                WHERE id = ? AND status = 'blocked'
+                """,
+                (now, normalized_task_id),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[0]),
+                event_type="resumed",
+                status="queued",
+                message="Task resumed from blocked state",
+                metadata=None,
+                created_at=now,
+            )
+        task = self.get_task(normalized_task_id)
+        if task is None:
+            raise ValueError("task not found")
+        return task
+
+    def approve_task_review(self, task_id: str) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT session_id, status, review_required FROM tasks WHERE id = ?",
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            if str(row[1]) != "blocked" or not bool(row[2]):
+                task = self.get_task(normalized_task_id)
+                if task is None:
+                    raise ValueError("task not found")
+                return task
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'succeeded',
+                    blocked_reason = NULL,
+                    error = NULL,
+                    updated_at = ?,
+                    finished_at = ?
+                WHERE id = ? AND status = 'blocked' AND review_required = 1
+                """,
+                (now, now, normalized_task_id),
+            )
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[0]),
+                event_type="review_approved",
+                status="succeeded",
+                message="Review approved; task marked succeeded",
+                metadata=None,
+                created_at=now,
+            )
+        task = self.get_task(normalized_task_id)
+        if task is None:
+            raise ValueError("task not found")
+        return task
 
     def retry_task(
         self,
@@ -3627,7 +3987,38 @@ def normalize_task_artifacts(artifacts: object) -> str:
         return "[]"
     if not isinstance(artifacts, list):
         raise ValueError("artifacts must be an array")
-    return json.dumps(artifacts[:50], ensure_ascii=False)
+    return json.dumps([normalize_task_artifact(item) for item in artifacts[:50]], ensure_ascii=False)
+
+
+def normalize_task_artifact(artifact: object) -> dict[str, object]:
+    if not isinstance(artifact, dict):
+        return {"type": "summary", "title": "Artifact", "content": str(artifact)}
+    raw_type = str(artifact.get("type") or "summary").strip().lower()
+    artifact_type = raw_type if raw_type in {"file", "diff", "command_output", "summary", "link"} else "summary"
+    normalized: dict[str, object] = {
+        "type": artifact_type,
+        "title": normalize_optional_text(artifact.get("title"), max_chars=160, field_name="artifact.title")
+        or default_artifact_title(artifact_type),
+    }
+    for key in ("path", "url", "content", "summary", "language", "exitCode", "sourceTaskId", "jobId"):
+        if key not in artifact:
+            continue
+        value = artifact.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            normalized[key] = value
+        else:
+            normalized[key] = json.dumps(value, ensure_ascii=False)
+    return normalized
+
+
+def default_artifact_title(artifact_type: str) -> str:
+    return {
+        "file": "File",
+        "diff": "Diff",
+        "command_output": "Command output",
+        "summary": "Summary",
+        "link": "Link",
+    }.get(artifact_type, "Artifact")
 
 
 def normalize_scheduled_job_id(job_id: str) -> str:
@@ -3845,6 +4236,32 @@ def scheduled_job_summary(jobs: list[dict[str, object]]) -> dict[str, int]:
         if status in counts:
             counts[status] += 1
     return counts
+
+
+def plan_items_are_complete(items: object) -> bool:
+    if not isinstance(items, list) or not items:
+        return False
+    return all(isinstance(item, dict) and str(item.get("status") or "") == "completed" for item in items)
+
+
+def plan_run_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    try:
+        items = json.loads(str(row[5] or "[]"))
+    except json.JSONDecodeError:
+        items = []
+    normalized_items = merge_plan_items([], items if isinstance(items, list) else [])
+    return {
+        "turnId": str(row[0]),
+        "sessionId": str(row[1]),
+        "userMessageId": int(row[2]) if row[2] is not None else None,
+        "assistantMessageId": int(row[3]) if row[3] is not None else None,
+        "status": str(row[4] or "active"),
+        "items": normalized_items,
+        "summary": plan_response(str(row[1]), normalized_items).get("summary", {}),
+        "createdAt": str(row[6]),
+        "updatedAt": str(row[7]),
+        "archivedAt": str(row[8]) if row[8] else None,
+    }
 
 
 def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:

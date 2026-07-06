@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
-import type { TaskEventItem, TaskItem, TaskStatus, ToolTone } from '@/types'
+import type { TaskArtifact, TaskEventItem, TaskItem, TaskStatus, ToolTone } from '@/types'
 import { useRuntime } from '@/composables/useRuntime'
 import AmTable from '@/components/ui/AmTable.vue'
 import AmTag from '@/components/ui/AmTag.vue'
 import AmModal from '@/components/ui/AmModal.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 
-const { state, loadTaskEvents, cancelTask, rerunTask } = useRuntime()
+const { state, loadTaskEvents, cancelTask, resumeTask, approveTask, rerunTask } = useRuntime()
 
 const taskColumns = [
   { key: 'title', title: '任务', width: '42%' },
@@ -43,6 +43,17 @@ const eventTone: Record<string, ToolTone> = {
   succeeded: 'success',
   failed: 'danger',
   cancelled: 'neutral',
+  blocked: 'warning',
+  resumed: 'info',
+  review_approved: 'success',
+}
+
+const artifactMeta: Record<string, { label: string; icon: string; tone: ToolTone }> = {
+  file: { label: '文件', icon: 'ph:file-text-duotone', tone: 'info' },
+  diff: { label: 'Diff', icon: 'ph:git-diff-duotone', tone: 'brand' },
+  command_output: { label: '命令输出', icon: 'ph:terminal-window-duotone', tone: 'neutral' },
+  summary: { label: '摘要', icon: 'ph:article-duotone', tone: 'success' },
+  link: { label: '链接', icon: 'ph:link-duotone', tone: 'info' },
 }
 
 const detailOpen = ref(false)
@@ -84,6 +95,22 @@ function formatMetadata(value: unknown) {
   }
 }
 
+function artifactLabel(artifact: TaskArtifact) {
+  return artifactMeta[artifact.type]?.label ?? artifact.type
+}
+
+function artifactIcon(artifact: TaskArtifact) {
+  return artifactMeta[artifact.type]?.icon ?? 'ph:package-duotone'
+}
+
+function artifactTone(artifact: TaskArtifact): ToolTone {
+  return artifactMeta[artifact.type]?.tone ?? 'neutral'
+}
+
+function artifactBody(artifact: TaskArtifact) {
+  return String(artifact.content ?? artifact.summary ?? artifact.path ?? artifact.url ?? '')
+}
+
 async function openTaskDetail(task: TaskItem) {
   selectedTaskId.value = task.id
   detailOpen.value = true
@@ -100,6 +127,26 @@ async function runCancel(task: TaskItem) {
   actionLoading.value = 'cancel'
   try {
     await cancelTask(task.id)
+    taskEvents.value = await loadTaskEvents(task.id)
+  } finally {
+    actionLoading.value = null
+  }
+}
+
+async function runResume(task: TaskItem) {
+  actionLoading.value = 'resume'
+  try {
+    await resumeTask(task.id)
+    taskEvents.value = await loadTaskEvents(task.id)
+  } finally {
+    actionLoading.value = null
+  }
+}
+
+async function runApprove(task: TaskItem) {
+  actionLoading.value = 'approve'
+  try {
+    await approveTask(task.id)
     taskEvents.value = await loadTaskEvents(task.id)
   } finally {
     actionLoading.value = null
@@ -237,7 +284,35 @@ async function runRerun(task: TaskItem) {
 
         <div v-if="selectedTask.artifacts.length" class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
           <p class="mb-2 text-xs font-semibold text-ink">Artifacts</p>
-          <pre class="max-h-32 overflow-auto rounded-[var(--radius-xl2)] bg-surface-muted p-2 text-[11px] text-ink-soft">{{ formatMetadata(selectedTask.artifacts) }}</pre>
+          <div class="space-y-2">
+            <div
+              v-for="(artifact, index) in selectedTask.artifacts"
+              :key="`${artifact.type}-${index}`"
+              class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/60 p-2"
+            >
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <AmTag :tone="artifactTone(artifact)" size="sm">
+                  <Icon :icon="artifactIcon(artifact)" :width="12" />
+                  {{ artifactLabel(artifact) }}
+                </AmTag>
+                <span class="truncate text-[11px] font-medium text-ink">{{ artifact.title ?? 'Artifact' }}</span>
+              </div>
+              <a
+                v-if="artifact.url"
+                :href="artifact.url"
+                target="_blank"
+                rel="noreferrer"
+                class="text-xs text-brand-600 hover:underline"
+              >
+                {{ artifact.url }}
+              </a>
+              <p v-else-if="artifact.path" class="font-mono text-[11px] text-ink-soft">{{ artifact.path }}</p>
+              <pre
+                v-if="artifactBody(artifact)"
+                class="mt-1 max-h-28 overflow-auto whitespace-pre-wrap rounded-[var(--radius-xl2)] bg-white/60 p-2 text-[11px] text-ink-soft"
+              >{{ artifactBody(artifact) }}</pre>
+            </div>
+          </div>
         </div>
 
         <div class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
@@ -273,6 +348,26 @@ async function runRerun(task: TaskItem) {
           @click="runCancel(selectedTask)"
         >
           取消
+        </AmButton>
+        <AmButton
+          v-if="selectedTask && selectedTask.status === 'blocked' && selectedTask.reviewRequired"
+          variant="primary"
+          size="sm"
+          icon="ph:check-circle-duotone"
+          :loading="actionLoading === 'approve'"
+          @click="runApprove(selectedTask)"
+        >
+          审核通过
+        </AmButton>
+        <AmButton
+          v-if="selectedTask && selectedTask.status === 'blocked'"
+          variant="secondary"
+          size="sm"
+          icon="ph:play-circle-duotone"
+          :loading="actionLoading === 'resume'"
+          @click="runResume(selectedTask)"
+        >
+          恢复执行
         </AmButton>
         <AmButton
           v-if="selectedTask && ['failed', 'cancelled', 'succeeded'].includes(selectedTask.status)"

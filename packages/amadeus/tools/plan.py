@@ -22,7 +22,13 @@ def update_plan(args: dict[str, Any], context: Any) -> dict[str, Any]:
 
     merge = bool(args.get("merge")) if isinstance(args.get("merge"), bool) else False
     try:
-        result = memory_store.save_session_plan(session_id, raw_items, merge=merge)
+        result = memory_store.save_session_plan(
+            session_id,
+            raw_items,
+            merge=merge,
+            turn_id=getattr(context, "turn_id", None),
+            user_message_id=getattr(context, "user_message_id", None),
+        )
     except ValueError as error:
         return {"error": str(error)}
 

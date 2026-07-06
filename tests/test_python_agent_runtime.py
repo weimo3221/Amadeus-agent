@@ -1175,6 +1175,10 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(plan_events[0]["sessionId"], "default")
         self.assertEqual(plan_events[0]["items"][0]["id"], "implement")
         self.assertEqual(self.memory.load_session_plan("default")["summary"]["inProgress"], 1)
+        runs = self.memory.list_plan_runs(session_id="default")
+        self.assertEqual(runs["count"], 1)
+        self.assertEqual(runs["planRuns"][0]["turnId"], plan_events[0]["turnId"])
+        self.assertEqual(runs["planRuns"][0]["status"], "incomplete")
 
     def test_create_task_tool_emits_runtime_task_event(self) -> None:
         runtime = FakeAgentRuntime(

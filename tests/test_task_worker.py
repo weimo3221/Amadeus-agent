@@ -156,6 +156,29 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in events], ["created", "running", "failed"])
         self.assertEqual(published, [("running", "running"), ("failed", "failed")])
 
+    def test_worker_blocks_review_required_task_after_successful_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = SuccessfulRuntime()
+            published: list[tuple[str, str]] = []
+            worker = TaskWorker(
+                lambda: memory,
+                lambda: runtime,
+                max_workers=1,
+                publish_task_event=lambda task, action: published.append((str(task["status"]), action)),
+            )
+            task = memory.create_task(session_id="session-1", title="Review", review_required=True)
+
+            worker.submit(str(task["id"]))
+            finished = self.wait_for_status(memory, str(task["id"]), "blocked")
+            worker.shutdown()
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual(finished["result"], "completed: Review")
+        self.assertEqual(finished["blockedReason"], "Review required before marking this task complete.")
+        self.assertEqual([event["type"] for event in events], ["created", "running", "blocked"])
+        self.assertIn(("blocked", "blocked"), published)
+
     def test_worker_retries_transient_failure_then_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

@@ -212,6 +212,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_session_plan_get(session_id)
             return
 
+        if parsed.path.startswith("/sessions/") and parsed.path.endswith("/plan-runs"):
+            session_id = unquote(parsed.path.removeprefix("/sessions/").removesuffix("/plan-runs")).strip()
+            self.handle_session_plan_runs_get(session_id, parsed)
+            return
+
         if parsed.path == "/runtime/feedback":
             query = parse_qs(parsed.query)
             session_id = query.get("sessionId", ["default"])[0]
@@ -542,6 +547,16 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/tasks/") and parsed.path.endswith("/cancel"):
             task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/cancel")).strip()
             self.handle_task_cancel(task_id)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/resume"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/resume")).strip()
+            self.handle_task_resume(task_id)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/approve"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/approve")).strip()
+            self.handle_task_approve(task_id)
             return
 
         if self.path == "/runtime/feedback":
@@ -910,6 +925,22 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             logger.info("Session plan load failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
+    def handle_session_plan_runs_get(self, session_id: str, parsed: Any) -> None:
+        try:
+            if not session_id:
+                self.write_json(400, {"ok": False, "error": "session id is required"})
+                return
+            query = parse_qs(parsed.query)
+            limit = parse_int(query.get("limit", ["100"])[0], 100, 1, 200)
+            result = memory_store.list_plan_runs(session_id=session_id, limit=limit)
+            logger.info("Loaded session plan runs sessionId=%s count=%s", result["sessionId"], result["count"])
+            self.write_json(200, {"ok": True, **result})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Session plan runs load failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
     def handle_session_plan_put(self, session_id: str) -> None:
         try:
             if not session_id:
@@ -1045,6 +1076,45 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(status, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Task cancel failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_resume(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            task = memory_store.resume_blocked_task(task_id)
+            task_worker.submit(str(task["id"]))
+            publish_task_update(task, "resumed")
+            self.write_json(200, {"ok": True, "task": task})
+        except ValueError as error:
+            status = 404 if str(error) == "task not found" else 400
+            self.write_json(status, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task resume failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_approve(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            task = memory_store.approve_task_review(task_id)
+            try:
+                memory_store.update_plan_item_status(
+                    session_id=str(task["sessionId"]),
+                    plan_item_id=str(task.get("planItemId") or ""),
+                    status="completed",
+                )
+            except Exception:
+                logger.debug("Task approve failed to sync plan item taskId=%s", task.get("id"), exc_info=True)
+            publish_task_update(task, "review_approved")
+            self.write_json(200, {"ok": True, "task": task})
+        except ValueError as error:
+            status = 404 if str(error) == "task not found" else 400
+            self.write_json(status, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task approve failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_scheduled_jobs_list(self, parsed: Any) -> None:

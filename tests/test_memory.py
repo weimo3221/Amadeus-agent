@@ -123,7 +123,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
 
             messages = memory.load("session-1", after_message_id=first_id)
 
-        self.assertEqual(messages, [{"role": "assistant", "content": "new"}])
+        self.assertEqual([(message["role"], message["content"]) for message in messages], [("assistant", "new")])
+        self.assertIsInstance(messages[0]["id"], int)
+        self.assertIsInstance(messages[0]["createdAt"], str)
 
     def test_reset_deletes_conversation_summary_for_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -535,6 +537,49 @@ class MessageMemoryStoreTests(unittest.TestCase):
         statuses = {item["id"]: item["status"] for item in updated["items"]}
         self.assertEqual(statuses["inspect"], "pending")
         self.assertEqual(statuses["implement"], "in_progress")
+
+    def test_plan_runs_persist_and_archive_by_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            user_message_id = memory.save("session-1", "user", "plan this")
+            memory.save_session_plan(
+                "session-1",
+                [{"id": "inspect", "content": "Inspect", "status": "in_progress"}],
+                turn_id="turn-1",
+                user_message_id=user_message_id,
+            )
+            assistant_message_id = memory.save("session-1", "assistant", "done")
+            archived = memory.finish_plan_run(
+                session_id="session-1",
+                turn_id="turn-1",
+                assistant_message_id=assistant_message_id,
+            )
+            runs = memory.list_plan_runs(session_id="session-1")
+
+        self.assertIsNotNone(archived)
+        assert archived is not None
+        self.assertEqual(archived["status"], "incomplete")
+        self.assertEqual(runs["count"], 1)
+        self.assertEqual(runs["planRuns"][0]["userMessageId"], user_message_id)
+        self.assertEqual(runs["planRuns"][0]["assistantMessageId"], assistant_message_id)
+
+    def test_task_can_block_resume_and_approve_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(session_id="session-1", title="Review me", review_required=True)
+            memory.start_task(str(task["id"]), claim_lock="worker-1")
+            blocked = memory.block_task(str(task["id"]), claim_lock="worker-1", result="Draft", reason="Needs review")
+            resumed = memory.resume_blocked_task(str(task["id"]))
+            memory.start_task(str(task["id"]), claim_lock="worker-2")
+            blocked_again = memory.block_task(str(task["id"]), claim_lock="worker-2", result="Draft 2", reason="Needs review")
+            approved = memory.approve_task_review(str(task["id"]))
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(resumed["status"], "queued")
+        self.assertEqual(blocked_again["result"], "Draft 2")
+        self.assertEqual(approved["status"], "succeeded")
+        self.assertIn("review_approved", [event["type"] for event in events])
 
     def test_task_worker_state_transitions_can_succeed_fail_and_ignore_finished_cancels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

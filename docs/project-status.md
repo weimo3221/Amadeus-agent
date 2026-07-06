@@ -52,8 +52,8 @@ Fallback path today:
 - Main UI restores the current session's persisted chat history from Python `/memory/messages` when opened or switched by `sessionId`, and renders assistant Markdown through the shared runtime Markdown renderer.
 - Main UI includes a Timed Messages panel for listing scheduled triggers across active and terminal states. It listens for `scheduled.updated`, shows `已启用` / `执行中` / `已暂停` / `已完成` / `已取消` / `失败`, displays last-run plus completed-run counts, distinguishes message-only schedules from schedules that trigger background tasks, and can create either mode from the UI.
 - Main UI plan items can now be promoted into background tasks from the plan panel. The created task records keep `source="plan"` and `planItemId`, and the Python task worker reflects execution back into the visible plan by marking linked items in progress, completed, pending after final failure, or cancelled.
-- Main UI now treats model-generated plans as turn-scoped live progress instead of a global session header. `agent.turn.started` binds a runtime `turnId` to the latest user message, `task.plan.updated` refreshes that message's plan panel, and `assistant.message` archives the panel as completed/collapsed or incomplete under the same user turn.
-- Main UI task management now includes a task detail modal with execution metadata, source/relationship labels, result/error/artifact display, `/tasks/{id}/events` timeline, cancellation for queued/running tasks, and re-run for terminal tasks through a new linked background task.
+- Main UI now treats model-generated plans as turn-scoped live progress instead of a global session header. `agent.turn.started` binds a runtime `turnId` to the latest user message, `task.plan.updated` refreshes that message's plan panel, and `assistant.message` archives the panel as completed/collapsed or incomplete under the same user turn. Python also persists `plan_runs` with `turnId`, `userMessageId`, optional `assistantMessageId`, status, and plan snapshot so reloaded sessions can restore historical turn plans.
+- Main UI task management now includes a task detail modal with execution metadata, source/relationship labels, result/error/typed-artifact display, `/tasks/{id}/events` timeline, cancellation for queued/running tasks, review approval / resume controls for blocked tasks, and re-run for terminal tasks through a new linked background task. Workspace overview shows recent terminal/blocked task notifications that link back to the Tasks view.
 - Main UI includes a configuration center for model provider/API settings, model thinking mode and reasoning effort (`low` / `medium` / `high`), Live2D model import/selection/behavior mapping, macOS/GPT-SoVITS TTS settings, and runtime config persistence through Python endpoints.
 - Main UI and Companion have a first-pass light anime plus modern SaaS visual refresh with softer typography, pastel surfaces, and higher-contrast interactive states.
 - `apps/server` no longer owns a separate local message-count/reset SQLite path; it now reads `GET /memory/count` and forwards `POST /memory/reset` to the Python runtime while keeping the desktop protocol unchanged.
@@ -97,6 +97,7 @@ Fallback path today:
   - requests Python audio output after the assistant message
 - Python tracks the active running turn per session, emits `agent.turn.started` / `agent.turn.cancelled`, and exposes `POST /agent/cancel` for cooperative cancellation. This does not yet provide checkpoint/resume or forced provider-request termination.
 - Python includes `turnId` in assistant stream/final events and `task.plan.updated` events produced during a turn, allowing desktop clients to associate live reasoning, assistant text, and plan progress with the correct user request.
+- Python task worker now honors `reviewRequired`: successful worker output enters `blocked` with a review reason instead of `succeeded`, and `POST /tasks/{id}/approve` finalizes it. `POST /tasks/{id}/resume` returns blocked tasks to `queued`.
 - Ask-tool permission requests cross the Python runtime boundary:
   - Python emits `tool.permission.request`
   - the TypeScript bridge relays it to desktop
@@ -443,12 +444,14 @@ Started: the first storage/API/UI foundation and in-process worker for session-s
 - Added SQLite-backed `tasks` and `task_events`.
 - Task statuses now use `queued`, `running`, `blocked`, `succeeded`, `failed`, and `cancelled`; legacy `done` rows are normalized to `succeeded`.
 - Added Python runtime HTTP APIs: `GET /tasks`, `POST /tasks`, `GET /tasks/{id}/events`, and `POST /tasks/{id}/cancel`.
+- Added task review/control APIs: `POST /tasks/{id}/resume` and `POST /tasks/{id}/approve`.
 - Added model-facing `create_task`, `list_tasks`, and `cancel_task` tools for explicit session background work.
 - Added a lightweight in-process task worker that claims queued tasks, runs the existing agent turn loop, writes `succeeded` / `failed` results, and cooperatively cancels running backing turns.
 - Added Hermes-inspired reliability fields and transitions: `attemptCount`, `maxAttempts`, `nextRunAt`, retry scheduling back to `queued`, final failure after the attempt cap, and startup recovery of stale `running` tasks back to `queued`.
 - Added `/runtime/events` NDJSON streaming plus TypeScript bridge subscription so worker `running` / `succeeded` / `failed` / `cancelled` updates are pushed to same-session WebSocket clients.
 - Added TypeScript bridge proxying for task HTTP APIs.
 - Main UI can restore and render active queued/running/blocked tasks.
+- Main UI renders standard task artifact types (`file`, `diff`, `command_output`, `summary`, `link`) as typed cards instead of raw JSON where possible.
 
 - Add scheduled reminders.
 - Add daily brief.

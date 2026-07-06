@@ -738,7 +738,7 @@ class AgentRuntime:
                 normalized_text,
                 skill_prompt_block=skill_prompt_block,
             )
-        self.memory_store.save(session_id, "user", normalized_text)
+        user_message_id = self.memory_store.save(session_id, "user", normalized_text)
         yield AgentEvent("memory.updated", {"memoryMessages": self.memory_store.count(session_id)})
         yield self._memory_context_used_event(session_id, turn_id, context_diagnostics)
         if budget_summary_event:
@@ -816,7 +816,7 @@ class AgentRuntime:
                     yield self._turn_cancelled_event(session_id, turn_id, "before_tool")
                     yield from self._emit_assistant_state(session_id, turn_id, "idle")
                     return
-                for event in self._execute_tool_call(session_id, turn_id, tool_call, request_permission, history, guardrail, cancel_event):
+                for event in self._execute_tool_call(session_id, turn_id, user_message_id, tool_call, request_permission, history, guardrail, cancel_event):
                     yield event
                 if cancel_event.is_set():
                     yield self._turn_cancelled_event(session_id, turn_id, "after_tool")
@@ -881,7 +881,12 @@ class AgentRuntime:
                     return
 
         history.append({"role": "assistant", "content": assistant_text})
-        self.memory_store.save(session_id, "assistant", assistant_text)
+        assistant_message_id = self.memory_store.save(session_id, "assistant", assistant_text)
+        self.memory_store.finish_plan_run(
+            session_id=session_id,
+            turn_id=turn_id,
+            assistant_message_id=assistant_message_id,
+        )
         summary_event = self._maybe_compact_conversation(session_id)
         logger.info(
             "Completed agent turn sessionId=%s turnId=%s assistantTextChars=%s memoryMessages=%s",
@@ -1702,6 +1707,7 @@ class AgentRuntime:
         self,
         session_id: str,
         turn_id: str,
+        user_message_id: int,
         tool_call: dict[str, Any],
         request_permission: PermissionRequester,
         history: list[dict[str, Any]],
@@ -1916,6 +1922,7 @@ class AgentRuntime:
                 memory_store=self.memory_store,
                 task_worker=self.task_worker,
                 turn_id=turn_id,
+                user_message_id=user_message_id,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 workspace_epoch=workspace_epoch,

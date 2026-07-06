@@ -210,6 +210,39 @@ scrollToBottom()
                 </li>
               </ul>
             </div>
+            <div
+              v-if="state.taskNotifications.length"
+              class="rounded-[var(--radius-xl3)] border border-line bg-surface-muted/50 p-4"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <Icon icon="ph:bell-ringing-duotone" :width="18" class="text-warning" />
+                  <span class="text-sm font-semibold text-ink">任务通知</span>
+                </div>
+                <button
+                  type="button"
+                  class="text-[11px] font-medium text-brand-600 hover:underline"
+                  @click="emit('navigate', 'tasks')"
+                >
+                  查看全部
+                </button>
+              </div>
+              <div class="mt-3 space-y-2">
+                <button
+                  v-for="notice in state.taskNotifications"
+                  :key="notice.id"
+                  type="button"
+                  class="w-full rounded-[var(--radius-xl2)] border border-white/70 bg-white/55 p-2 text-left transition-colors hover:border-brand-200 hover:bg-brand-50"
+                  @click="emit('navigate', 'tasks')"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <AmTag :tone="notice.tone" size="sm" dot>{{ notice.status }}</AmTag>
+                    <span class="text-[10px] text-ink-faint">{{ notice.createdAt }}</span>
+                  </div>
+                  <p class="mt-1 line-clamp-1 text-xs font-medium text-ink">{{ notice.title }}</p>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

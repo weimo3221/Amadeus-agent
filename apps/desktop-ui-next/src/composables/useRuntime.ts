@@ -13,6 +13,7 @@ import type {
   ConnectionState,
   MemoryItem,
   PlanItem,
+  PlanRunItem,
   RoleProfile,
   SessionContext,
   ScheduledJob,
@@ -21,6 +22,7 @@ import type {
   SkillItem,
   TaskEventItem,
   TaskItem,
+  TaskNotification,
   TaskStatus,
   ToolTone,
 } from '@/types'
@@ -28,6 +30,7 @@ import { AgentRuntimeClient, type ConnectionPhase, type ToolPermissionPrompt } f
 import { COMPANION_SESSION_ID, SESSION_ID } from '@/runtime/config'
 import {
   cancelTaskRequest,
+  approveTaskRequest,
   createScheduledJobRequest,
   createTaskRequest,
   createSessionRequest,
@@ -43,12 +46,14 @@ import {
   fetchScheduledJobs,
   fetchSessionMessages,
   fetchSessionPlan,
+  fetchSessionPlanRuns,
   fetchSessions,
   fetchSkills,
   fetchToolAudit,
   fetchToolsConfig,
   fetchTasks,
   fetchTaskEvents,
+  resumeTaskRequest,
   fetchTtsVoices,
   importLive2dModel,
   selectLive2dModel,
@@ -63,6 +68,7 @@ import {
   type Live2dImportResult,
   type Live2dModelPayload,
   type MemoryItemPayload,
+  type PlanRunPayload,
   type ProviderPreset,
   type RolePayload,
   type RoleUpdate,
@@ -105,6 +111,7 @@ interface RuntimeState {
   live2dBehaviors: Live2dBehaviorsResult | null
   toolsConfig: ToolsConfigResult | null
   mcpAuditRecords: ToolAuditRecordPayload[]
+  taskNotifications: TaskNotification[]
 }
 
 const state = reactive<RuntimeState>({
@@ -145,6 +152,7 @@ const state = reactive<RuntimeState>({
   live2dBehaviors: null,
   toolsConfig: null,
   mcpAuditRecords: [],
+  taskNotifications: [],
 })
 
 let client: AgentRuntimeClient | null = null
@@ -185,10 +193,11 @@ function messagesToChat(messages: StoredMessage[]): ChatMessage[] {
   return messages
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map((m, index) => ({
-      id: `h-${index}`,
+      id: m.id ? `m-${m.id}` : `h-${index}`,
+      messageId: m.id,
       role: m.role === 'user' ? 'user' : 'assistant',
       content: m.content ?? '',
-      createdAt: '',
+      createdAt: m.createdAt ? relativeLabel(m.createdAt) : '',
     }))
 }
 
@@ -208,6 +217,18 @@ function planToItems(payload: TaskPlanPayload | null): PlanItem[] {
       return { id: item.id, label: item.content, status }
     })
     .filter((item): item is PlanItem => item !== null)
+}
+
+function planRunToItem(run: PlanRunPayload): PlanRunItem {
+  return {
+    turnId: run.turnId,
+    userMessageId: run.userMessageId ?? null,
+    assistantMessageId: run.assistantMessageId ?? null,
+    status: run.status,
+    items: planToItems({ sessionId: run.sessionId, items: run.items, summary: { total: 0, completed: 0, inProgress: 0, pending: 0, cancelled: 0 }, updatedAt: run.updatedAt }),
+    updatedAt: run.updatedAt,
+    archivedAt: run.archivedAt ?? null,
+  }
 }
 
 function planIsComplete(items: PlanItem[]): boolean {
@@ -278,6 +299,26 @@ function attachLoadedPlanToLatestTurn(items: PlanItem[]): void {
   message.planCollapsed = planIsComplete(items)
 }
 
+function attachPlanRunsToMessages(runs: PlanRunPayload[]): void {
+  const byMessageId = new Map<number, ChatMessage>()
+  for (const message of state.chat) {
+    if (message.role === 'user' && message.messageId) {
+      byMessageId.set(message.messageId, message)
+    }
+  }
+  for (const rawRun of runs) {
+    const run = planRunToItem(rawRun)
+    if (!run.items.length || !run.userMessageId) continue
+    const message = byMessageId.get(run.userMessageId)
+    if (!message) continue
+    message.turnId = run.turnId
+    message.plan = run.items
+    message.planArchived = run.status !== 'active'
+    message.planIncomplete = run.status === 'incomplete'
+    message.planCollapsed = run.status === 'completed'
+  }
+}
+
 function syncExistingPlanSnapshots(items: PlanItem[]): void {
   if (!items.length) return
   const nextIds = new Set(items.map((item) => item.id))
@@ -314,8 +355,37 @@ function tasksToItems(records: TaskRecord[]): TaskItem[] {
     nextRunAt: task.nextRunAt ?? null,
     lastHeartbeat: task.lastHeartbeat ?? null,
     finishedAt: task.finishedAt ?? null,
-    artifacts: task.artifacts ?? [],
+    artifacts: (task.artifacts ?? []).map((artifact) => ({
+      type: String(artifact.type ?? 'summary'),
+      ...artifact,
+    })),
   }))
+}
+
+function notificationTone(status: TaskStatus): ToolTone {
+  if (status === 'succeeded') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'blocked') return 'warning'
+  if (status === 'cancelled') return 'neutral'
+  return 'info'
+}
+
+function maybeNotifyTask(record: TaskRecord, action?: string): void {
+  const status = record.status as TaskStatus
+  if (!['succeeded', 'failed', 'blocked', 'cancelled'].includes(status) && action !== 'review_approved') return
+  const id = `${record.id}-${status}-${action ?? 'updated'}`
+  if (state.taskNotifications.some((item) => item.id === id)) return
+  state.taskNotifications = [
+    {
+      id,
+      taskId: record.id,
+      title: record.title,
+      status,
+      tone: notificationTone(status),
+      createdAt: timeLabel(),
+    },
+    ...state.taskNotifications,
+  ].slice(0, 5)
 }
 
 function skillsToItems(skills: SkillPayload[]): SkillItem[] {
@@ -439,15 +509,17 @@ function ensurePendingAssistant(turnId?: string): ChatMessage {
 }
 
 async function loadSessionData(sessionId: string): Promise<void> {
-  const [messages, plan, tasksResult, scheduledResult] = await Promise.all([
+  const [messages, plan, planRuns, tasksResult, scheduledResult] = await Promise.all([
     fetchSessionMessages(sessionId),
     fetchSessionPlan(sessionId),
+    fetchSessionPlanRuns(sessionId),
     fetchTasks(sessionId),
     fetchScheduledJobs(sessionId),
   ])
   state.chat = messagesToChat(messages)
   state.plan = planToItems(plan)
-  attachLoadedPlanToLatestTurn(state.plan)
+  attachPlanRunsToMessages(planRuns)
+  if (!planRuns.length) attachLoadedPlanToLatestTurn(state.plan)
   state.tasks = tasksToItems(tasksResult.tasks)
   state.scheduledJobs = scheduledToItems(scheduledResult.jobs)
   state.scheduledCount = scheduledResult.jobs.length
@@ -642,6 +714,7 @@ function createClient(): AgentRuntimeClient {
       },
       onTaskUpdated: (payload: TaskUpdatedPayload) => {
         if (payload.task.sessionId && payload.task.sessionId !== state.activeSessionId) return
+        maybeNotifyTask(payload.task, payload.action)
         void refreshPlanAndTasks()
       },
       onScheduledJobUpdated: (payload: ScheduledJobUpdatedPayload) => {
@@ -842,6 +915,21 @@ export function useRuntime() {
     return true
   }
 
+  async function resumeTask(taskId: string): Promise<boolean> {
+    const task = await resumeTaskRequest(taskId)
+    if (!task) return false
+    await refreshPlanAndTasks()
+    return true
+  }
+
+  async function approveTask(taskId: string): Promise<boolean> {
+    const task = await approveTaskRequest(taskId)
+    if (!task) return false
+    maybeNotifyTask(task, 'review_approved')
+    await refreshPlanAndTasks()
+    return true
+  }
+
   async function rerunTask(task: TaskItem): Promise<boolean> {
     const created = await createTaskRequest({
       sessionId: state.activeSessionId,
@@ -901,6 +989,8 @@ export function useRuntime() {
     createTaskFromPlan,
     loadTaskEvents,
     cancelTask,
+    resumeTask,
+    approveTask,
     rerunTask,
     createScheduledJob,
   }

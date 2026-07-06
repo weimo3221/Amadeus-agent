@@ -48,6 +48,7 @@ class ToolContext:
     memory_store: Any | None = None
     task_worker: Any | None = None
     turn_id: str | None = None
+    user_message_id: int | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     permission_request_id: str | None = None

@@ -2,6 +2,7 @@ import type {
   MemoryContextUsedPayload,
   ScheduledJobRecord,
   ScheduledJobSummary,
+  TaskPlanItem,
   TaskPlanPayload,
   TaskRecord,
   TaskSummary,
@@ -20,8 +21,21 @@ export interface SessionPayload {
 }
 
 export interface StoredMessage {
+  id?: number
   role?: string
   content?: string
+  createdAt?: string
+}
+
+export interface PlanRunPayload {
+  turnId: string
+  sessionId: string
+  userMessageId?: number | null
+  assistantMessageId?: number | null
+  status: string
+  items: TaskPlanItem[]
+  updatedAt: string
+  archivedAt?: string | null
 }
 
 export interface SkillPayload {
@@ -121,6 +135,13 @@ export async function fetchSessionPlan(sessionId: string): Promise<TaskPlanPaylo
   return data?.plan ?? null
 }
 
+export async function fetchSessionPlanRuns(sessionId: string, limit = 100): Promise<PlanRunPayload[]> {
+  const data = await getJson<{ planRuns: PlanRunPayload[] }>(
+    `/sessions/${encodeURIComponent(sessionId)}/plan-runs?limit=${limit}`,
+  )
+  return data?.planRuns ?? []
+}
+
 export async function fetchTasks(
   sessionId: string,
   limit = 20,
@@ -169,6 +190,22 @@ export async function cancelTaskRequest(taskId: string, reason?: string): Promis
   const data = await postJson<{ task: TaskRecord }>(
     `/tasks/${encodeURIComponent(taskId)}/cancel`,
     { reason: reason ?? 'User cancelled from Main UI' },
+  )
+  return data?.task ?? null
+}
+
+export async function resumeTaskRequest(taskId: string): Promise<TaskRecord | null> {
+  const data = await postJson<{ task: TaskRecord }>(
+    `/tasks/${encodeURIComponent(taskId)}/resume`,
+    {},
+  )
+  return data?.task ?? null
+}
+
+export async function approveTaskRequest(taskId: string): Promise<TaskRecord | null> {
+  const data = await postJson<{ task: TaskRecord }>(
+    `/tasks/${encodeURIComponent(taskId)}/approve`,
+    {},
   )
   return data?.task ?? null
 }

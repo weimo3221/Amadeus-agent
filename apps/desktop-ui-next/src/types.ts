@@ -4,6 +4,7 @@ export type ChatRole = 'user' | 'assistant' | 'system'
 
 export interface ChatMessage {
   id: string
+  messageId?: number
   role: ChatRole
   content: string
   reasoning?: string
@@ -45,6 +46,18 @@ export interface PlanItem {
   status: PlanStatus
 }
 
+export type PlanRunStatus = 'active' | 'completed' | 'incomplete' | 'cancelled'
+
+export interface PlanRunItem {
+  turnId: string
+  userMessageId?: number | null
+  assistantMessageId?: number | null
+  status: PlanRunStatus | string
+  items: PlanItem[]
+  updatedAt: string
+  archivedAt?: string | null
+}
+
 export type TaskStatus = 'queued' | 'running' | 'blocked' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface TaskItem {
@@ -68,7 +81,32 @@ export interface TaskItem {
   nextRunAt?: string | null
   lastHeartbeat?: string | null
   finishedAt?: string | null
-  artifacts: Array<Record<string, unknown>>
+  artifacts: TaskArtifact[]
+}
+
+export type TaskArtifactType = 'file' | 'diff' | 'command_output' | 'summary' | 'link' | string
+
+export interface TaskArtifact {
+  type: TaskArtifactType
+  title?: string
+  path?: string
+  url?: string
+  content?: string
+  summary?: string
+  language?: string
+  exitCode?: number | string
+  sourceTaskId?: string
+  jobId?: string
+  [key: string]: unknown
+}
+
+export interface TaskNotification {
+  id: string
+  taskId: string
+  title: string
+  status: TaskStatus
+  tone: ToolTone
+  createdAt: string
 }
 
 export interface TaskEventItem {

@@ -432,6 +432,23 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(loaded["plan"]["sessionId"], "http-test")
         self.assertEqual(loaded["plan"]["items"][1]["id"], "wire")
 
+    def test_session_plan_runs_http_list(self) -> None:
+        user_message_id = runtime_server.memory_store.save("http-test", "user", "plan this")
+        runtime_server.memory_store.save_session_plan(
+            "http-test",
+            [{"id": "wire", "content": "Wire plan runs", "status": "completed"}],
+            turn_id="turn-http",
+            user_message_id=user_message_id,
+        )
+        runtime_server.memory_store.finish_plan_run(session_id="http-test", turn_id="turn-http")
+
+        listed = self.get_json("/sessions/http-test/plan-runs")
+
+        self.assertTrue(listed["ok"])
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(listed["planRuns"][0]["turnId"], "turn-http")
+        self.assertEqual(listed["planRuns"][0]["userMessageId"], user_message_id)
+
     def test_tasks_http_create_list_cancel_and_events(self) -> None:
         created = self.post_json_status("/tasks", {
             "sessionId": "http-test",
@@ -450,6 +467,27 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(cancelled["task"]["status"], "cancelled")
         self.assertEqual(events["eventCount"], 2)
         self.assertEqual(events["events"][1]["type"], "cancelled")
+
+    def test_tasks_http_resume_and_approve_blocked_review(self) -> None:
+        task = runtime_server.memory_store.create_task(
+            session_id="http-test",
+            title="Review task",
+            review_required=True,
+        )
+        runtime_server.memory_store.start_task(str(task["id"]), claim_lock="worker")
+        runtime_server.memory_store.block_task(str(task["id"]), claim_lock="worker", reason="Needs review", result="Draft")
+
+        approved = self.post_json(f"/tasks/{task['id']}/approve", {})
+
+        self.assertEqual(approved["task"]["status"], "succeeded")
+
+        task_2 = runtime_server.memory_store.create_task(session_id="http-test", title="Blocked task")
+        runtime_server.memory_store.start_task(str(task_2["id"]), claim_lock="worker")
+        runtime_server.memory_store.block_task(str(task_2["id"]), claim_lock="worker", reason="Need input")
+
+        resumed = self.post_json(f"/tasks/{task_2['id']}/resume", {})
+
+        self.assertEqual(resumed["task"]["status"], "queued")
 
     def test_runtime_events_streams_published_task_updates(self) -> None:
         received: list[dict] = []

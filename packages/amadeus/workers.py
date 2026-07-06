@@ -156,6 +156,15 @@ class TaskWorker:
                 return
             if error_text:
                 self._handle_failure(memory_store, task_id, claim_lock=claim_lock, task=task, error=error_text)
+            elif bool(task.get("reviewRequired")):
+                blocked = memory_store.block_task(
+                    task_id,
+                    claim_lock=claim_lock,
+                    result=result_text or "",
+                    reason="Review required before marking this task complete.",
+                )
+                self._sync_plan_item(memory_store, blocked, "pending")
+                self._publish_task_update(blocked, "blocked")
             else:
                 completed = memory_store.complete_task(task_id, claim_lock=claim_lock, result=result_text or "")
                 self._sync_plan_item(memory_store, completed, "completed")

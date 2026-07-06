@@ -92,7 +92,7 @@ class SchedulingTests(unittest.TestCase):
             updated = memory.get_scheduled_job(str(job["id"]))
 
         self.assertEqual(fired, 1)
-        self.assertEqual(messages[-1], {"role": "assistant", "content": "我在"})
+        self.assertEqual((messages[-1]["role"], messages[-1]["content"]), ("assistant", "我在"))
         self.assertEqual(updated["status"], "completed")
         self.assertEqual([item[0] for item in published], ["running", "message", "fired"])
 

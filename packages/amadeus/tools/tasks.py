@@ -23,6 +23,8 @@ def create_task(args: dict[str, Any], context: Any) -> dict[str, Any]:
     priority = args.get("priority") if args.get("priority") is not None else None
     due_at = args.get("dueAt") if isinstance(args.get("dueAt"), str) else None
     max_attempts = args.get("maxAttempts") if args.get("maxAttempts") is not None else None
+    review_required = bool(args.get("reviewRequired")) if isinstance(args.get("reviewRequired"), bool) else False
+    artifacts = args.get("artifacts") if isinstance(args.get("artifacts"), list) else None
     auto_start = bool(args.get("autoStart")) if isinstance(args.get("autoStart"), bool) else True
     session_id = str(getattr(context, "session_id", "default") or "default")
 
@@ -38,6 +40,8 @@ def create_task(args: dict[str, Any], context: Any) -> dict[str, Any]:
             priority=priority,
             due_at=due_at,
             max_attempts=max_attempts,
+            review_required=review_required,
+            artifacts=artifacts,
         )
     except ValueError as error:
         return {"error": str(error)}
@@ -166,6 +170,15 @@ CREATE_TASK_TOOL_SPEC = ToolSpec(
                     "dueAt": {
                         "type": "string",
                         "description": "Optional due timestamp or human-readable deadline.",
+                    },
+                    "reviewRequired": {
+                        "type": "boolean",
+                        "description": "When true, worker output stops in blocked review state until the user approves it.",
+                    },
+                    "artifacts": {
+                        "type": "array",
+                        "description": "Optional structured artifacts such as file, diff, command_output, summary, or link entries.",
+                        "items": {"type": "object"},
                     },
                     "autoStart": {
                         "type": "boolean",

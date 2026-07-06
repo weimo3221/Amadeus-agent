@@ -325,7 +325,7 @@ export interface TaskSummary {
 
 export interface TaskUpdatedPayload {
   task: TaskRecord
-  action: 'created' | 'updated' | 'running' | 'cancelled' | 'succeeded' | 'failed' | 'blocked'
+  action: 'created' | 'updated' | 'running' | 'cancelled' | 'succeeded' | 'failed' | 'blocked' | 'resumed' | 'review_approved'
 }
 
 export type ScheduledJobStatus = 'scheduled' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed'

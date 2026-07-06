@@ -252,7 +252,7 @@ Current behavior:
 }
 ```
 
-Task records are the durable execution unit. Plans describe intent, scheduled jobs describe when to trigger, and tasks own execution, retry/cancel/recovery, results, errors, and artifacts.
+Task records are the durable execution unit. Plans describe intent, scheduled jobs describe when to trigger, and tasks own execution, retry/cancel/recovery, results, errors, review gates, and artifacts. Standard artifact types are `file`, `diff`, `command_output`, `summary`, and `link`; unknown entries are normalized as `summary`.
 
 When a task has `planItemId`, the Python task worker keeps the visible plan aligned with execution:
 
@@ -260,6 +260,7 @@ When a task has `planItemId`, the Python task worker keeps the visible plan alig
 - task succeeds: linked plan item becomes `completed`
 - task exhausts retries and fails: linked plan item returns to `pending`
 - task is cancelled: linked plan item becomes `cancelled`
+- review-required task succeeds: task becomes `blocked` with `blockedReason`; linked plan item remains pending until approval
 
 ### assistant.delta
 
@@ -572,7 +573,10 @@ Current behavior:
 - Task rows include `attemptCount`, `maxAttempts`, and `nextRunAt`. Retryable worker failures record `retry_scheduled`, move the task back to `queued`, and publish `task.updated` with action `retry_scheduled`; once `attemptCount` reaches `maxAttempts`, the worker records terminal `failed`.
 - On runtime startup, the worker reclaims stale `running` tasks with expired heartbeat metadata, records `recovered`, moves them back to `queued`, publishes `task.updated` with action `recovered`, and submits currently runnable queued tasks.
 - `POST /tasks/{id}/cancel` marks active tasks as `cancelled`, records one `cancelled` task event, and asks the backing agent turn to cancel when one is running.
-- Main UI restores active tasks with `GET /tasks?sessionId={id}&activeOnly=true` and updates from `task.updated` runtime events.
+- `POST /tasks/{id}/resume` moves a blocked task back to `queued` and submits it again.
+- `POST /tasks/{id}/approve` marks a blocked `reviewRequired` task as `succeeded` and syncs any linked plan item to completed.
+- Main UI restores active and terminal tasks with `GET /tasks?sessionId={id}&activeOnly=false` and updates from `task.updated` runtime events.
+- Plan runs are persisted separately from the latest session plan. `GET /sessions/{id}/plan-runs` returns turn-scoped plan snapshots keyed by `turnId` and `userMessageId` so Main UI can restore archived plan panels under the original user message.
 - Python exposes `/runtime/events` as an NDJSON runtime event stream. The TypeScript bridge subscribes to it and broadcasts worker `task.updated` events to every WebSocket client in the same session.
 - Clients should still use `GET /tasks/{id}/events` when they need the full persisted task event history.
 
@@ -663,6 +667,14 @@ POST /runtime/feedback
 POST /agent/turn
 POST /tools/execute
 POST /tools/permission
+GET /sessions/{id}/plan
+GET /sessions/{id}/plan-runs
+GET /tasks
+GET /tasks/{id}/events
+POST /tasks
+POST /tasks/{id}/cancel
+POST /tasks/{id}/resume
+POST /tasks/{id}/approve
 GET /memory/count
 GET /memory/messages
 GET /memory/context/diagnostics
