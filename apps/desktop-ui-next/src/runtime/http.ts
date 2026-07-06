@@ -55,9 +55,16 @@ export interface RolePayload {
   model: string
   live2dModel: string
   ttsVoice: string
+  runtimeScope?: RoleRuntimeScopePayload
   archived: boolean
   createdAt: string
   updatedAt: string
+}
+
+export interface RoleRuntimeScopePayload {
+  tools: string[]
+  skills: string[]
+  mcpServers: string[]
 }
 
 export interface RoleUpdate {
@@ -68,6 +75,7 @@ export interface RoleUpdate {
   model?: string
   live2dModel?: string
   ttsVoice?: string
+  runtimeScope?: RoleRuntimeScopePayload
 }
 
 async function getJson<T>(path: string): Promise<T | null> {

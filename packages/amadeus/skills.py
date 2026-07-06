@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from amadeus.role_scope import normalize_scope_identifier
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
@@ -400,8 +402,12 @@ class SkillCatalog:
         self._cache_skills = list(skills)
         return skills
 
-    def skill_summaries(self) -> list[dict[str, Any]]:
-        return [skill.summary() for skill in self.list_skills()]
+    def skill_summaries(self, *, allowed_skills: set[str] | None = None) -> list[dict[str, Any]]:
+        return [
+            skill.summary()
+            for skill in self.list_skills()
+            if self._skill_allowed_by_scope(skill, allowed_skills)
+        ]
 
     def save_experience_skill(
         self,
@@ -457,8 +463,19 @@ class SkillCatalog:
             "charCount": len(content),
         }
 
-    def build_catalog_prompt(self, *, available_tools: set[str] | None = None, platform: str | None = None) -> str:
-        skills = self._filter_skills(self.list_skills(), available_tools=available_tools, platform=platform)
+    def build_catalog_prompt(
+        self,
+        *,
+        available_tools: set[str] | None = None,
+        platform: str | None = None,
+        allowed_skills: set[str] | None = None,
+    ) -> str:
+        skills = self._filter_skills(
+            self.list_skills(),
+            available_tools=available_tools,
+            platform=platform,
+            allowed_skills=allowed_skills,
+        )
         if not skills:
             return ""
 
@@ -482,11 +499,14 @@ class SkillCatalog:
         *,
         available_tools: set[str] | None = None,
         platform: str | None = None,
+        allowed_skills: set[str] | None = None,
     ) -> list[Skill]:
         normalized_tools = {tool.strip() for tool in (available_tools or set()) if tool.strip()}
         normalized_platform = (platform or "").strip().lower()
         filtered: list[Skill] = []
         for skill in skills:
+            if not self._skill_allowed_by_scope(skill, allowed_skills):
+                continue
             if skill.platforms and normalized_platform and normalized_platform not in {item.lower() for item in skill.platforms}:
                 continue
             required_tools = set(skill.allowed_tools or skill.preferred_tools or ())
@@ -494,6 +514,16 @@ class SkillCatalog:
                 continue
             filtered.append(skill)
         return filtered
+
+    def _skill_allowed_by_scope(self, skill: Skill, allowed_skills: set[str] | None) -> bool:
+        if allowed_skills is None:
+            return True
+        aliases = {
+            normalize_scope_identifier(skill.identifier),
+            normalize_scope_identifier(skill.name),
+            normalize_scope_identifier(skill.identifier.rsplit("/", 1)[-1]),
+        }
+        return any(alias in allowed_skills for alias in aliases if alias)
 
     def _manifest(self) -> tuple[tuple[str, int, int], ...]:
         if not self.root.exists():
@@ -513,11 +543,15 @@ class SkillCatalog:
             manifest.append((str(skill_md.relative_to(self.root)), stat.st_mtime_ns, stat.st_size))
         return tuple(manifest)
 
-    def resolve(self, requested_names: list[str] | tuple[str, ...]) -> ResolvedSkills:
+    def resolve(self, requested_names: list[str] | tuple[str, ...], *, allowed_skills: set[str] | None = None) -> ResolvedSkills:
         if not requested_names:
             return ResolvedSkills(loaded=(), missing=())
 
-        skills = self.list_skills()
+        skills = [
+            skill
+            for skill in self.list_skills()
+            if self._skill_allowed_by_scope(skill, allowed_skills)
+        ]
         indexes = self._build_indexes(skills)
         loaded: list[Skill] = []
         missing: list[str] = []
@@ -547,8 +581,8 @@ class SkillCatalog:
 
         return ResolvedSkills(loaded=tuple(loaded), missing=tuple(missing), ambiguous=tuple(ambiguous))
 
-    def view_skill(self, name: str) -> dict[str, Any] | None:
-        resolved = self.resolve([name])
+    def view_skill(self, name: str, *, allowed_skills: set[str] | None = None) -> dict[str, Any] | None:
+        resolved = self.resolve([name], allowed_skills=allowed_skills)
         if len(resolved.loaded) != 1 or not resolved.ok:
             return None
         skill = resolved.loaded[0]
@@ -558,8 +592,13 @@ class SkillCatalog:
             "metadata": dict(skill.metadata),
         }
 
-    def build_prompt_block(self, requested_names: list[str] | tuple[str, ...]) -> tuple[str, ResolvedSkills]:
-        resolved = self.resolve(requested_names)
+    def build_prompt_block(
+        self,
+        requested_names: list[str] | tuple[str, ...],
+        *,
+        allowed_skills: set[str] | None = None,
+    ) -> tuple[str, ResolvedSkills]:
+        resolved = self.resolve(requested_names, allowed_skills=allowed_skills)
         if not resolved.loaded:
             return "", resolved
 
@@ -579,8 +618,8 @@ class SkillCatalog:
         lines.append("</suggested-skills>")
         return "\n".join(lines), resolved
 
-    def build_loaded_skill_prompt_block(self, requested_name: str) -> tuple[str, ResolvedSkills]:
-        resolved = self.resolve([requested_name])
+    def build_loaded_skill_prompt_block(self, requested_name: str, *, allowed_skills: set[str] | None = None) -> tuple[str, ResolvedSkills]:
+        resolved = self.resolve([requested_name], allowed_skills=allowed_skills)
         if len(resolved.loaded) != 1 or not resolved.ok:
             return "", resolved
 

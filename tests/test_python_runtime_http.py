@@ -7,6 +7,8 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import sys
@@ -116,7 +118,7 @@ class TurnRuntime(AgentRuntime):
         self.final_messages: list[list[dict]] = []
         super().__init__(*args, **kwargs)
 
-    def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _request_tool_decision(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
         self.decision_messages.append(json.loads(json.dumps(messages)))
         return {"role": "assistant", "content": "", "tool_calls": []}
 
@@ -231,9 +233,13 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(request, timeout=5) as response:
-            self.assertEqual(response.status, expected_status)
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, expected_status)
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            self.assertEqual(error.code, expected_status)
+            return json.loads(error.read().decode("utf-8"))
 
     def put_json(self, path: str, payload: dict) -> dict:
         request = Request(
@@ -446,6 +452,42 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(created["ok"])
         self.assertEqual(created["role"]["workspacePath"], workspace_path)
         self.assertEqual(updated["role"]["workspacePath"], "")
+
+    def test_role_runtime_scope_filters_tools_skills_and_direct_execute(self) -> None:
+        created = self.post_json("/roles", {
+            "name": "Scoped Role",
+            "runtimeScope": {
+                "tools": ["get_current_time"],
+                "skills": ["development/runtime-debug"],
+                "mcpServers": [],
+            },
+        })
+        role_id = created["role"]["id"]
+        session = self.post_json("/sessions", {"roleId": role_id, "title": "Scoped session"})
+        session_id = session["session"]["id"]
+
+        tools = self.get_json(f"/tools/list?sessionId={session_id}")
+        skills = self.get_json(f"/skills/list?sessionId={session_id}")
+        allowed = self.post_json("/tools/execute", {
+            "sessionId": session_id,
+            "toolName": "get_current_time",
+            "args": {},
+        })
+        denied = self.post_json_status("/tools/execute", {
+            "sessionId": session_id,
+            "toolName": "read_file",
+            "args": {"path": "README.md"},
+        }, expected_status=403)
+
+        self.assertEqual(created["role"]["runtimeScope"]["tools"], ["get_current_time"])
+        tool_names = {tool["name"] for tool in tools["tools"]}
+        schema_names = {schema["function"]["name"] for schema in tools["schemas"]}
+        self.assertEqual(tool_names, {"get_current_time"})
+        self.assertEqual(schema_names, {"get_current_time"})
+        self.assertEqual([skill["identifier"] for skill in skills["skills"]], ["development/runtime-debug"])
+        self.assertTrue(allowed["toolOk"])
+        self.assertFalse(denied["ok"])
+        self.assertIn("not enabled for this role", denied["error"])
 
     def test_role_identity_http_round_trip(self) -> None:
         created = self.post_json("/roles", {"name": "Identity Role"})

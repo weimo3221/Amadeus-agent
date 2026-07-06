@@ -198,7 +198,7 @@ class ToolRegistry:
             output_truncated=output_truncated,
         )
 
-    def permission_state(self) -> list[dict[str, Any]]:
+    def permission_state(self, allowed_names: set[str] | None = None) -> list[dict[str, Any]]:
         return [
             {
                 "name": spec.name,
@@ -207,23 +207,24 @@ class ToolRegistry:
                 "permission": spec.permission,
             }
             for spec in self._specs.values()
+            if allowed_names is None or spec.name in allowed_names
         ]
 
-    def enabled_schemas(self) -> list[dict[str, Any]]:
+    def enabled_schemas(self, allowed_names: set[str] | None = None) -> list[dict[str, Any]]:
         return [
             spec.schema
             for spec in self._specs.values()
-            if spec.enabled and spec.permission != "deny"
+            if spec.enabled and spec.permission != "deny" and (allowed_names is None or spec.name in allowed_names)
         ]
 
-    def enabled_prompt_hints(self) -> list[dict[str, str]]:
+    def enabled_prompt_hints(self, allowed_names: set[str] | None = None) -> list[dict[str, str]]:
         return [
             {
                 "name": spec.name,
                 "hint": spec.prompt_hint,
             }
             for spec in self._specs.values()
-            if spec.enabled and spec.permission != "deny" and spec.prompt_hint
+            if spec.enabled and spec.permission != "deny" and spec.prompt_hint and (allowed_names is None or spec.name in allowed_names)
         ]
 
     def _apply_config(self, config: dict[str, dict[str, Any]]) -> None:

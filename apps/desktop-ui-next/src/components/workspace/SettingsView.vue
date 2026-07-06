@@ -17,6 +17,9 @@ const persona = ref('')
 const style = ref('')
 const live2dModel = ref('')
 const ttsVoice = ref('')
+const runtimeTools = ref('')
+const runtimeSkills = ref('')
+const runtimeMcpServers = ref('')
 const saving = ref(false)
 const savedFlash = ref(false)
 
@@ -53,6 +56,30 @@ function loadForm(id: string) {
   style.value = role.style
   live2dModel.value = role.live2dModel
   ttsVoice.value = role.ttsVoice
+  runtimeTools.value = formatScopeList(role.runtimeScope?.tools)
+  runtimeSkills.value = formatScopeList(role.runtimeScope?.skills)
+  runtimeMcpServers.value = formatScopeList(role.runtimeScope?.mcpServers)
+}
+
+function formatScopeList(items?: string[]) {
+  return (items ?? []).join('\n')
+}
+
+function parseScopeList(value: string) {
+  const seen = new Set<string>()
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter((item) => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
+}
+
+function sameList(left: string[], right?: string[]) {
+  const normalizedRight = right ?? []
+  return left.length === normalizedRight.length && left.every((item, index) => item === normalizedRight[index])
 }
 
 watch(
@@ -91,7 +118,10 @@ const dirty = computed(() => {
     persona.value !== role.persona ||
     style.value !== role.style ||
     live2dModel.value !== role.live2dModel ||
-    ttsVoice.value.trim() !== role.ttsVoice
+    ttsVoice.value.trim() !== role.ttsVoice ||
+    !sameList(parseScopeList(runtimeTools.value), role.runtimeScope?.tools) ||
+    !sameList(parseScopeList(runtimeSkills.value), role.runtimeScope?.skills) ||
+    !sameList(parseScopeList(runtimeMcpServers.value), role.runtimeScope?.mcpServers)
   )
 })
 
@@ -107,6 +137,11 @@ async function save() {
     style: style.value,
     live2dModel: live2dModel.value,
     ttsVoice: ttsVoice.value.trim(),
+    runtimeScope: {
+      tools: parseScopeList(runtimeTools.value),
+      skills: parseScopeList(runtimeSkills.value),
+      mcpServers: parseScopeList(runtimeMcpServers.value),
+    },
   })
   saving.value = false
   if (ok) {
@@ -248,6 +283,55 @@ function reset() {
           <p v-else class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs leading-relaxed text-ink-faint">
             选择服务商后会带出其默认模型与所需密钥说明。
           </p>
+        </div>
+
+        <!-- runtime scope -->
+        <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+          <div class="flex items-center gap-2">
+            <Icon icon="ph:funnel-duotone" :width="18" class="text-brand-500" />
+            <span class="text-sm font-semibold text-ink">上下文范围</span>
+          </div>
+          <p class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs leading-relaxed text-ink-soft">
+            这些列表只对当前角色生效，用来收窄每轮注入的工具、Skills 和 MCP。留空表示跟随全局可用集合。
+          </p>
+          <div class="grid gap-4 lg:grid-cols-3">
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-ink-soft">Tools</label>
+              <textarea
+                v-model="runtimeTools"
+                rows="5"
+                placeholder="get_current_time&#10;read_file"
+                class="w-full resize-y rounded-[var(--radius-xl2)] border border-line bg-surface px-3 py-2.5 font-mono text-xs leading-relaxed text-ink outline-none
+                       transition-all duration-200 ease-[var(--ease-soft)] placeholder:text-ink-faint
+                       hover:border-brand-200 hover:shadow-[var(--shadow-soft)]
+                       focus:border-brand-300 focus:shadow-[var(--shadow-glow)]"
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-ink-soft">Skills</label>
+              <textarea
+                v-model="runtimeSkills"
+                rows="5"
+                placeholder="development/runtime-debug"
+                class="w-full resize-y rounded-[var(--radius-xl2)] border border-line bg-surface px-3 py-2.5 font-mono text-xs leading-relaxed text-ink outline-none
+                       transition-all duration-200 ease-[var(--ease-soft)] placeholder:text-ink-faint
+                       hover:border-brand-200 hover:shadow-[var(--shadow-soft)]
+                       focus:border-brand-300 focus:shadow-[var(--shadow-glow)]"
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-ink-soft">MCP Servers</label>
+              <textarea
+                v-model="runtimeMcpServers"
+                rows="5"
+                placeholder="hermes-fixture"
+                class="w-full resize-y rounded-[var(--radius-xl2)] border border-line bg-surface px-3 py-2.5 font-mono text-xs leading-relaxed text-ink outline-none
+                       transition-all duration-200 ease-[var(--ease-soft)] placeholder:text-ink-faint
+                       hover:border-brand-200 hover:shadow-[var(--shadow-soft)]
+                       focus:border-brand-300 focus:shadow-[var(--shadow-glow)]"
+              />
+            </div>
+          </div>
         </div>
 
         <!-- appearance & voice -->

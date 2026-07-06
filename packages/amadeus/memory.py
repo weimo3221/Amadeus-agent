@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from amadeus.identity import (
@@ -17,6 +17,7 @@ from amadeus.identity import (
 from amadeus.memory_query import build_fts_index_content
 from amadeus.memory_query import make_fts_query, memory_item_query_terms
 from amadeus.planning import empty_plan_response, merge_plan_items, plan_response
+from amadeus.role_scope import role_runtime_scope_json, role_runtime_scope_payload
 from amadeus.scheduling import compute_next_run_at, parse_schedule
 from amadeus.tasks import (
     MAX_TASK_ERROR_CHARS,
@@ -100,6 +101,7 @@ class MessageMemoryStore:
                   live2d_model TEXT,
                   tts_voice TEXT,
                   workspace_path TEXT,
+                  runtime_scope_json TEXT NOT NULL DEFAULT '{}',
                   archived INTEGER NOT NULL DEFAULT 0,
                   created_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL
@@ -356,13 +358,15 @@ class MessageMemoryStore:
             connection.execute("ALTER TABLE roles ADD COLUMN tts_voice TEXT")
         if "workspace_path" not in columns:
             connection.execute("ALTER TABLE roles ADD COLUMN workspace_path TEXT")
+        if "runtime_scope_json" not in columns:
+            connection.execute("ALTER TABLE roles ADD COLUMN runtime_scope_json TEXT NOT NULL DEFAULT '{}'")
         default_workspace_path = self.default_workspace_path
         connection.execute(
             """
             INSERT OR IGNORE INTO roles (
-              id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
+              id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, runtime_scope_json, archived, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, '{}', 0, ?, ?)
             """,
             (
                 DEFAULT_ROLE_ID,
@@ -536,12 +540,12 @@ class MessageMemoryStore:
         if "last_task_id" not in columns:
             connection.execute("ALTER TABLE scheduled_jobs ADD COLUMN last_task_id TEXT")
 
-    def list_roles(self, include_archived: bool = False) -> list[dict[str, str | int | bool]]:
+    def list_roles(self, include_archived: bool = False) -> list[dict[str, Any]]:
         where = "1 = 1" if include_archived else "archived = 0"
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, runtime_scope_json, archived, created_at, updated_at
                 FROM roles
                 WHERE {where}
                 ORDER BY archived ASC, updated_at DESC, name ASC
@@ -561,7 +565,8 @@ class MessageMemoryStore:
         live2d_model: str | None = None,
         tts_voice: str | None = None,
         workspace_path: str | None = None,
-    ) -> dict[str, str | int | bool]:
+        runtime_scope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         normalized_name = normalize_role_name(name)
         normalized_description = normalize_optional_text(description, "description", 500) or ""
         normalized_persona = normalize_optional_text(persona, "persona", 4000) or ""
@@ -571,6 +576,7 @@ class MessageMemoryStore:
         normalized_live2d_model = normalize_optional_text(live2d_model, "live2d_model", 160)
         normalized_tts_voice = normalize_optional_text(tts_voice, "tts_voice", 160)
         normalized_workspace_path = normalize_optional_text(workspace_path, "workspace_path", 1000) or self.default_workspace_path
+        normalized_runtime_scope_json = role_runtime_scope_json(runtime_scope)
         role_id = f"role-{uuid4().hex[:12]}"
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
@@ -578,9 +584,9 @@ class MessageMemoryStore:
             connection.execute(
                 """
                 INSERT INTO roles (
-                  id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
+                  id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, runtime_scope_json, archived, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     role_id,
@@ -593,13 +599,14 @@ class MessageMemoryStore:
                     normalized_live2d_model,
                     normalized_tts_voice,
                     normalized_workspace_path,
+                    normalized_runtime_scope_json,
                     now,
                     now,
                 ),
             )
             row = connection.execute(
                 """
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, runtime_scope_json, archived, created_at, updated_at
                 FROM roles
                 WHERE id = ?
                 """,
@@ -614,12 +621,12 @@ class MessageMemoryStore:
         )
         return role_response(row)
 
-    def get_role(self, role_id: str) -> dict[str, str | int | bool] | None:
+    def get_role(self, role_id: str) -> dict[str, Any] | None:
         normalized_role_id = normalize_role_id(role_id)
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, runtime_scope_json, archived, created_at, updated_at
                 FROM roles
                 WHERE id = ?
                 """,
@@ -640,7 +647,8 @@ class MessageMemoryStore:
         live2d_model: str | None = None,
         tts_voice: str | None = None,
         workspace_path: str | None = None,
-    ) -> dict[str, str | int | bool]:
+        runtime_scope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         normalized_role_id = normalize_role_id(role_id)
         updates: dict[str, str | None] = {}
         if name is not None:
@@ -661,6 +669,8 @@ class MessageMemoryStore:
             updates["tts_voice"] = normalize_optional_text(tts_voice, "tts_voice", 160)
         if workspace_path is not None:
             updates["workspace_path"] = normalize_optional_text(workspace_path, "workspace_path", 1000) or self.default_workspace_path
+        if runtime_scope is not None:
+            updates["runtime_scope_json"] = role_runtime_scope_json(runtime_scope)
 
         now = datetime.now(timezone.utc).isoformat()
         updates["updated_at"] = now
@@ -675,7 +685,7 @@ class MessageMemoryStore:
             )
             row = connection.execute(
                 """
-                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, archived, created_at, updated_at
+                SELECT id, name, description, persona, style, provider, model, live2d_model, tts_voice, workspace_path, runtime_scope_json, archived, created_at, updated_at
                 FROM roles
                 WHERE id = ?
                 """,
@@ -964,6 +974,13 @@ class MessageMemoryStore:
                 (normalized_session_id,),
             ).fetchone()
         return str(row[0]).strip() if row and row[0] else ""
+
+    def role_runtime_scope_for_session(self, session_id: str | None = None) -> dict[str, list[str]]:
+        role_id = self.role_id_for_session(session_id) if session_id else DEFAULT_ROLE_ID
+        role = self.get_role(role_id)
+        if not role:
+            return {"tools": [], "skills": [], "mcpServers": []}
+        return role_runtime_scope_payload(role.get("runtimeScope"))
 
     def _migrate_conversation_summaries(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -3790,7 +3807,7 @@ class MessageMemoryStore:
         return role_soul_path(self.roles_root, normalized_role_id)
 
 
-def role_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | bool]:
+def role_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, Any]:
     return {
         "id": str(row[0]),
         "name": str(row[1]),
@@ -3802,9 +3819,10 @@ def role_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int 
         "live2dModel": str(row[7]) if row[7] is not None else "",
         "ttsVoice": str(row[8]) if row[8] is not None else "",
         "workspacePath": str(row[9]) if row[9] is not None else "",
-        "archived": bool(row[10]),
-        "createdAt": str(row[11]),
-        "updatedAt": str(row[12]),
+        "runtimeScope": role_runtime_scope_payload(row[10] if len(row) > 10 else None),
+        "archived": bool(row[11]),
+        "createdAt": str(row[12]),
+        "updatedAt": str(row[13]),
     }
 
 

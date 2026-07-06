@@ -127,6 +127,19 @@ class SkillsCatalogTests(unittest.TestCase):
         self.assertIn("development:", block)
         self.assertIn("- development/runtime-debug: Debug runtime behavior.", block)
 
+    def test_build_catalog_prompt_can_be_limited_by_role_scope(self) -> None:
+        other_dir = self.skills_root / "writing" / "release-notes"
+        other_dir.mkdir(parents=True)
+        (other_dir / "SKILL.md").write_text(
+            "---\nname: release-notes\ndescription: Draft release notes.\n---\n\nWrite concise notes.\n",
+            encoding="utf-8",
+        )
+
+        block = self.catalog.build_catalog_prompt(allowed_skills={"development/runtime-debug"})
+
+        self.assertIn("- development/runtime-debug: Debug runtime behavior.", block)
+        self.assertNotIn("release-notes", block)
+
     def test_save_experience_skill_creates_skill_file(self) -> None:
         saved = self.catalog.save_experience_skill(
             name="Runtime Fix Notes",

@@ -230,11 +230,13 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/tools/list":
-            logger.info("Handling tools list request")
+            query = parse_qs(parsed.query)
+            session_id = optional_query_string(query, "sessionId")
+            logger.info("Handling tools list request sessionId=%s", session_id)
             self.write_json(200, {
                 "ok": True,
-                "tools": agent_runtime.tool_permission_state(),
-                "schemas": agent_runtime.enabled_tool_schemas(),
+                "tools": agent_runtime.tool_permission_state(session_id),
+                "schemas": agent_runtime.enabled_tool_schemas(session_id),
             })
             return
 
@@ -244,20 +246,23 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/skills/list":
-            logger.info("Handling skills list request")
+            query = parse_qs(parsed.query)
+            session_id = optional_query_string(query, "sessionId")
+            logger.info("Handling skills list request sessionId=%s", session_id)
             self.write_json(200, {
                 "ok": True,
-                "skills": agent_runtime.skill_catalog.skill_summaries(),
+                "skills": agent_runtime.skill_summaries(session_id),
             })
             return
 
         if parsed.path == "/skills/view":
             query = parse_qs(parsed.query)
             name = optional_query_string(query, "name")
+            session_id = optional_query_string(query, "sessionId")
             if not name:
                 self.write_json(400, {"ok": False, "error": "name is required"})
                 return
-            skill = agent_runtime.skill_catalog.view_skill(name)
+            skill = agent_runtime.view_skill(name, session_id)
             if skill is None:
                 self.write_json(404, {"ok": False, "error": "skill_not_found"})
                 return
@@ -805,6 +810,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 live2d_model=body.get("live2dModel") if isinstance(body.get("live2dModel"), str) else None,
                 tts_voice=body.get("ttsVoice") if isinstance(body.get("ttsVoice"), str) else None,
                 workspace_path=body.get("workspacePath") if isinstance(body.get("workspacePath"), str) else None,
+                runtime_scope=body.get("runtimeScope") if isinstance(body.get("runtimeScope"), dict) else None,
             )
             session = memory_store.create_session(str(role["id"]))
             logger.info("Created role roleId=%s defaultSessionId=%s", role["id"], session["id"])
@@ -829,6 +835,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 live2d_model=body.get("live2dModel") if isinstance(body.get("live2dModel"), str) else None,
                 tts_voice=body.get("ttsVoice") if isinstance(body.get("ttsVoice"), str) else None,
                 workspace_path=body.get("workspacePath") if isinstance(body.get("workspacePath"), str) else None,
+                runtime_scope=body.get("runtimeScope") if isinstance(body.get("runtimeScope"), dict) else None,
             )
             logger.info("Updated role roleId=%s", role["id"])
             self.write_json(200, {"ok": True, "role": role})
@@ -1446,18 +1453,24 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             body = self.read_json_body()
             tool_name = body.get("toolName")
             args = body.get("args") if isinstance(body.get("args"), dict) else {}
+            session_id = body.get("sessionId") if isinstance(body.get("sessionId"), str) and body.get("sessionId").strip() else "default"
 
             if not isinstance(tool_name, str):
                 logger.info("Rejecting malformed tool execute request toolNameType=%s", type(tool_name).__name__)
                 self.write_json(400, {"ok": False, "error": "toolName must be a string"})
                 return
 
-            logger.info("Handling direct tool execute request toolName=%s argKeys=%s", tool_name, sorted(args.keys()))
+            if not agent_runtime.role_allows_tool(session_id, tool_name):
+                logger.info("Rejecting direct tool execute by role scope sessionId=%s toolName=%s", session_id, tool_name)
+                self.write_json(403, {"ok": False, "error": f"Tool is not enabled for this role: {tool_name}"})
+                return
+
+            logger.info("Handling direct tool execute request sessionId=%s toolName=%s argKeys=%s", session_id, tool_name, sorted(args.keys()))
             result = agent_runtime.tool_registry.execute(
                 tool_name,
                 args,
                 ToolContext(
-                    session_id="default",
+                    session_id=session_id,
                     memory_store=memory_store,
                     task_worker=task_worker,
                     tool_name=tool_name,

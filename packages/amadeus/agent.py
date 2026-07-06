@@ -28,6 +28,7 @@ from amadeus.model import (
 )
 from amadeus.prompting import build_system_prompt
 from amadeus.provider_reasoning import ReasoningConfig, assistant_history_message, prepare_messages_for_provider
+from amadeus.role_scope import RoleRuntimeScope, normalize_role_runtime_scope, role_allows_tool
 from amadeus.skills import SkillCatalog
 from amadeus.tool_runtime import (
     DEFAULT_TOOLS_CONFIG_PATH,
@@ -106,6 +107,15 @@ class PermissionRequest:
     tool_name: str
     display_name: str
     reason: str
+
+
+@dataclass(frozen=True)
+class RoleScopedToolHints:
+    registry: ToolRegistry
+    allowed_names: set[str] | None = None
+
+    def enabled_prompt_hints(self) -> list[dict[str, str]]:
+        return self.registry.enabled_prompt_hints(self.allowed_names)
 
 
 @dataclass
@@ -623,8 +633,12 @@ class AgentRuntime:
             logger.info("Rejecting turn due to missing API key sessionId=%s", session_id)
             yield AgentEvent("error", {"code": "missing_api_key", "message": "OPENAI_API_KEY is not configured."})
             return
+        allowed_skills = self._role_allowed_skills(session_id)
         normalized_skills = normalize_requested_skills(active_skills)
-        _skill_prompt_block, resolved_skills = self.skill_catalog.build_prompt_block(normalized_skills)
+        _skill_prompt_block, resolved_skills = self.skill_catalog.build_prompt_block(
+            normalized_skills,
+            allowed_skills=allowed_skills,
+        )
         if not resolved_skills.ok:
             if resolved_skills.ambiguous:
                 logger.info(
@@ -686,8 +700,12 @@ class AgentRuntime:
             yield AgentEvent("error", {"code": "missing_api_key", "message": "OPENAI_API_KEY is not configured."})
             return
 
+        allowed_skills = self._role_allowed_skills(session_id)
         normalized_skills = normalize_requested_skills(active_skills)
-        skill_prompt_block, resolved_skills = self.skill_catalog.build_prompt_block(normalized_skills)
+        skill_prompt_block, resolved_skills = self.skill_catalog.build_prompt_block(
+            normalized_skills,
+            allowed_skills=allowed_skills,
+        )
         if not resolved_skills.ok:
             if resolved_skills.ambiguous:
                 logger.info(
@@ -751,7 +769,7 @@ class AgentRuntime:
         final_response_message: dict[str, Any] | None = None
         while True:
             try:
-                tool_decision = self._request_tool_decision(history)
+                tool_decision = self._request_tool_decision(session_id, history)
             except RuntimeError as error:
                 phase = f"tool_decision_{tool_iterations + 1}"
                 if self._handle_context_overflow(session_id, phase, error):
@@ -763,7 +781,7 @@ class AgentRuntime:
                     )
                     yield self._memory_context_used_event(session_id, turn_id, context_diagnostics, phase=f"{phase}_retry")
                     try:
-                        tool_decision = self._request_tool_decision(history)
+                        tool_decision = self._request_tool_decision(session_id, history)
                     except RuntimeError as retry_error:
                         logger.info("Tool-decision provider retry failed sessionId=%s turnId=%s iteration=%s error=%s", session_id, turn_id, tool_iterations + 1, retry_error)
                         yield from self._emit_assistant_state(session_id, turn_id, "error")
@@ -923,11 +941,39 @@ class AgentRuntime:
 
         yield from self._emit_assistant_state(session_id, turn_id, "idle")
 
-    def tool_permission_state(self) -> list[dict[str, Any]]:
-        return self.tool_registry.permission_state()
+    def tool_permission_state(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        return self.tool_registry.permission_state(self._role_allowed_tool_names(session_id))
 
-    def enabled_tool_schemas(self) -> list[dict[str, Any]]:
-        return self.tool_registry.enabled_schemas()
+    def enabled_tool_schemas(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        return self.tool_registry.enabled_schemas(self._role_allowed_tool_names(session_id))
+
+    def skill_summaries(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        return self.skill_catalog.skill_summaries(allowed_skills=self._role_allowed_skills(session_id))
+
+    def view_skill(self, name: str, session_id: str | None = None) -> dict[str, Any] | None:
+        return self.skill_catalog.view_skill(name, allowed_skills=self._role_allowed_skills(session_id))
+
+    def role_allows_tool(self, session_id: str | None, tool_name: str) -> bool:
+        allowed_names = self._role_allowed_tool_names(session_id)
+        return allowed_names is None or tool_name in allowed_names
+
+    def _role_runtime_scope(self, session_id: str | None = None) -> RoleRuntimeScope:
+        return normalize_role_runtime_scope(self.memory_store.role_runtime_scope_for_session(session_id))
+
+    def _role_allowed_tool_names(self, session_id: str | None = None) -> set[str] | None:
+        scope = self._role_runtime_scope(session_id)
+        if not scope.tools and not scope.mcp_servers:
+            return None
+        names = {
+            item["name"]
+            for item in self.tool_registry.permission_state()
+            if isinstance(item.get("name"), str) and role_allows_tool(scope, str(item["name"]))
+        }
+        return names
+
+    def _role_allowed_skills(self, session_id: str | None = None) -> set[str] | None:
+        scope = self._role_runtime_scope(session_id)
+        return set(scope.skills) if scope.skills else None
 
     def tool_audit_records(self) -> list[ToolAuditRecord]:
         return self.tool_audit_log.records()
@@ -1803,6 +1849,31 @@ class AgentRuntime:
             )
             return
 
+        if not self.role_allows_tool(session_id, tool_name):
+            logger.info("Tool call denied by role scope sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
+            result = {"error": f"Tool is not enabled for this role: {tool_name}"}
+            guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
+            self._record_tool_result(history, tool_call_id, result)
+            yield AgentEvent("tool.finished", self._tool_finished_payload(
+                tool_name,
+                ok=False,
+                failure_code="role_scope_denied",
+            ))
+            yield self._audit_tool(
+                session_id,
+                tool_name,
+                decision="denied",
+                ok=False,
+                failure_code="role_scope_denied",
+                detail=result["error"],
+                metadata={
+                    "turnId": turn_id,
+                    "toolCallId": tool_call_id,
+                    "workspaceEpoch": workspace_epoch,
+                },
+            )
+            return
+
         if not spec.enabled:
             logger.info("Tool call denied: disabled tool sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Tool is disabled: {tool_name}"}
@@ -2011,11 +2082,11 @@ class AgentRuntime:
             },
         )
 
-    def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _request_tool_decision(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
             "model": self.model,
             "messages": self._prepare_messages_for_provider(messages),
-            "tools": self.enabled_tool_schemas(),
+            "tools": self.enabled_tool_schemas(session_id),
             "tool_choice": "auto",
             "stream": False,
             "temperature": 0,
@@ -2102,9 +2173,11 @@ class AgentRuntime:
         workspace_root = self._workspace_root_for_session(session_id)
         stable_memory = self._format_stable_memory_for_prompt(session_id=session_id)
         identity_prompt = self._identity_prompt_for_session(session_id)
+        allowed_tool_names = self._role_allowed_tool_names(session_id)
+        allowed_skills = self._role_allowed_skills(session_id)
         enabled_tools = {
             schema.get("function", {}).get("name", "")
-            for schema in self.enabled_tool_schemas()
+            for schema in self.enabled_tool_schemas(session_id)
             if isinstance(schema, dict)
         }
         cache_key = (
@@ -2112,6 +2185,7 @@ class AgentRuntime:
             str(workspace_root),
             self.context_max_tokens,
             tuple(sorted(tool for tool in enabled_tools if tool)),
+            tuple(sorted(allowed_skills or ())),
             identity_prompt,
             stable_memory,
         )
@@ -2122,11 +2196,12 @@ class AgentRuntime:
             identity_prompt=identity_prompt,
             stable_memory=stable_memory,
             skill_catalog=self.skill_catalog,
-            tool_hints=self.tool_registry,
+            tool_hints=RoleScopedToolHints(self.tool_registry, allowed_tool_names),
             workspace_root=workspace_root,
             context_max_tokens=self.context_max_tokens,
             runtime_surface="desktop",
             available_tools=enabled_tools,
+            allowed_skills=allowed_skills,
         )
         self._system_prompt_cache[cache_key] = prompt
         if len(self._system_prompt_cache) > 16:
@@ -2204,7 +2279,10 @@ class AgentRuntime:
             })
             return
 
-        prompt_block, resolved = self.skill_catalog.build_loaded_skill_prompt_block(requested_name)
+        prompt_block, resolved = self.skill_catalog.build_loaded_skill_prompt_block(
+            requested_name,
+            allowed_skills=self._role_allowed_skills(session_id),
+        )
         if not prompt_block or not resolved.ok:
             failure_code = "skill_activation_unavailable"
             if resolved.ambiguous:

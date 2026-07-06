@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.mcp import mcp_tool_spec_name, normalize_mcp_identifier
+from amadeus.role_scope import normalize_role_runtime_scope, role_allows_tool
 from amadeus.tool_runtime import ToolAuditLog, ToolAuditStore, ToolContext, ToolLoopGuardrail, ToolRegistry
 from amadeus.tool_runtime.registry import parse_tools_config
 from amadeus.tools import ToolSpec, execute_tool, list_tools
@@ -21,6 +22,17 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(normalize_mcp_identifier("Hermes-Fixture"), "hermes_fixture")
         self.assertEqual(normalize_mcp_identifier("read-file.v1"), "read_file_v1")
         self.assertEqual(mcp_tool_spec_name("Hermes-Fixture", "messages-read"), "mcp__hermes_fixture__messages_read")
+
+    def test_role_runtime_scope_filters_builtin_tools_and_mcp_servers(self) -> None:
+        scope = normalize_role_runtime_scope({
+            "tools": ["get_current_time"],
+            "mcpServers": ["Hermes-Fixture"],
+        })
+
+        self.assertTrue(role_allows_tool(scope, "get_current_time"))
+        self.assertFalse(role_allows_tool(scope, "read_file"))
+        self.assertTrue(role_allows_tool(scope, "mcp__hermes_fixture__messages_read"))
+        self.assertFalse(role_allows_tool(scope, "mcp__other__lookup"))
 
     def test_default_registry_includes_file_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

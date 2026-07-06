@@ -66,7 +66,7 @@ class FakeAgentRuntime(AgentRuntime):
             external_memory_providers=external_memory_providers,
         )
 
-    def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _request_tool_decision(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
         self.decision_messages.append(json.loads(json.dumps(messages)))
         if len(self.decision_messages) <= len(self.tool_decisions):
             return self.tool_decisions[len(self.decision_messages) - 1]
@@ -112,7 +112,7 @@ class OverflowOnceRuntime(FakeAgentRuntime):
         self.tool_decision_attempts = 0
         super().__init__(memory_store, deltas=["recovered"])
 
-    def _request_tool_decision(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _request_tool_decision(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
         self.decision_messages.append(json.loads(json.dumps(messages)))
         self.tool_decision_attempts += 1
         if self.tool_decision_attempts == 1:

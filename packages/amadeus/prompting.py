@@ -32,7 +32,13 @@ class ToolHintProvider(Protocol):
 
 
 class SkillCatalogPromptProvider(Protocol):
-    def build_catalog_prompt(self, *, available_tools: set[str] | None = None, platform: str | None = None) -> str:
+    def build_catalog_prompt(
+        self,
+        *,
+        available_tools: set[str] | None = None,
+        platform: str | None = None,
+        allowed_skills: set[str] | None = None,
+    ) -> str:
         ...
 
 
@@ -79,6 +85,7 @@ def build_system_prompt(
     context_max_tokens: int | None = None,
     runtime_surface: str = "desktop",
     available_tools: set[str] | None = None,
+    allowed_skills: set[str] | None = None,
 ) -> str:
     return build_system_prompt_parts(
         identity_prompt=identity_prompt,
@@ -89,6 +96,7 @@ def build_system_prompt(
         context_max_tokens=context_max_tokens,
         runtime_surface=runtime_surface,
         available_tools=available_tools,
+        allowed_skills=allowed_skills,
     ).render()
 
 
@@ -102,6 +110,7 @@ def build_system_prompt_parts(
     context_max_tokens: int | None = None,
     runtime_surface: str = "desktop",
     available_tools: set[str] | None = None,
+    allowed_skills: set[str] | None = None,
 ) -> SystemPromptParts:
     prompt_parts = []
     normalized_identity = identity_prompt.strip()
@@ -136,6 +145,7 @@ def build_system_prompt_parts(
         skills_catalog = skill_catalog.build_catalog_prompt(
             available_tools=available_tools,
             platform=runtime_surface,
+            allowed_skills=allowed_skills,
         )
     except TypeError:
         skills_catalog = skill_catalog.build_catalog_prompt()

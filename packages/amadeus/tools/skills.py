@@ -1,25 +1,40 @@
 from __future__ import annotations
 
+from typing import Any
+
+from amadeus.role_scope import normalize_role_runtime_scope
 from amadeus.skills import SkillCatalog
 from amadeus.tools.base import ToolSpec
 
 
-def skills_list(_args: dict[str, object]) -> dict[str, object]:
+def _allowed_skills_from_context(context: Any | None) -> set[str] | None:
+    memory_store = getattr(context, "memory_store", None)
+    session_id = getattr(context, "session_id", None)
+    if memory_store is None or not isinstance(session_id, str):
+        return None
+    try:
+        scope = normalize_role_runtime_scope(memory_store.role_runtime_scope_for_session(session_id))
+    except Exception:
+        return None
+    return set(scope.skills) if scope.skills else None
+
+
+def skills_list(_args: dict[str, object], context: Any | None = None) -> dict[str, object]:
     catalog = SkillCatalog()
-    skills = catalog.skill_summaries()
+    skills = catalog.skill_summaries(allowed_skills=_allowed_skills_from_context(context))
     return {
         "skills": skills,
         "count": len(skills),
     }
 
 
-def skill_view(args: dict[str, object]) -> dict[str, object]:
+def skill_view(args: dict[str, object], context: Any | None = None) -> dict[str, object]:
     name = args.get("name")
     if not isinstance(name, str) or not name.strip():
         return {"error": "name must be a non-empty string"}
 
     catalog = SkillCatalog()
-    skill = catalog.view_skill(name.strip())
+    skill = catalog.view_skill(name.strip(), allowed_skills=_allowed_skills_from_context(context))
     if skill is None:
         return {"error": f"Skill not found: {name.strip()}"}
 

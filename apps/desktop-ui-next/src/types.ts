@@ -172,6 +172,11 @@ export interface RoleProfile {
   model: string
   live2dModel: string
   ttsVoice: string
+  runtimeScope?: {
+    tools: string[]
+    skills: string[]
+    mcpServers: string[]
+  }
 }
 
 export interface MemoryItem {

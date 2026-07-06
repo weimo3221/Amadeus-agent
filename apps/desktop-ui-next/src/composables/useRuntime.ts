@@ -438,6 +438,7 @@ function rolesToProfiles(roles: RolePayload[]): RoleProfile[] {
       model: r.model ?? '',
       live2dModel: r.live2dModel ?? '',
       ttsVoice: r.ttsVoice ?? '',
+      runtimeScope: r.runtimeScope,
     }))
 }
 
