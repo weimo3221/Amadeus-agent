@@ -10,12 +10,18 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
+from amadeus.mcp import mcp_tool_spec_name, normalize_mcp_identifier
 from amadeus.tool_runtime import ToolAuditLog, ToolAuditStore, ToolContext, ToolLoopGuardrail, ToolRegistry
 from amadeus.tool_runtime.registry import parse_tools_config
 from amadeus.tools import ToolSpec, execute_tool, list_tools
 
 
 class ToolRegistryTests(unittest.TestCase):
+    def test_mcp_tool_names_use_model_safe_identifiers(self) -> None:
+        self.assertEqual(normalize_mcp_identifier("Hermes-Fixture"), "hermes_fixture")
+        self.assertEqual(normalize_mcp_identifier("read-file.v1"), "read_file_v1")
+        self.assertEqual(mcp_tool_spec_name("Hermes-Fixture", "messages-read"), "mcp__hermes_fixture__messages_read")
+
     def test_default_registry_includes_file_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")

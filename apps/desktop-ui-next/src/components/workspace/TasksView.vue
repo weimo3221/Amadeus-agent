@@ -39,6 +39,7 @@ const sourceMeta: Record<string, { label: string; tone: ToolTone; icon: string }
 const eventTone: Record<string, ToolTone> = {
   created: 'neutral',
   running: 'info',
+  recovered: 'warning',
   retry_scheduled: 'warning',
   succeeded: 'success',
   failed: 'danger',
@@ -46,6 +47,19 @@ const eventTone: Record<string, ToolTone> = {
   blocked: 'warning',
   resumed: 'info',
   review_approved: 'success',
+}
+
+const eventLabel: Record<string, string> = {
+  created: '已创建',
+  running: '开始执行',
+  recovered: '恢复排队',
+  retry_scheduled: '已安排重试',
+  succeeded: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+  blocked: '等待审核',
+  resumed: '恢复执行',
+  review_approved: '审核通过',
 }
 
 const artifactMeta: Record<string, { label: string; icon: string; tone: ToolTone }> = {
@@ -84,6 +98,32 @@ function metaForSource(source: string) {
 
 function compactId(id?: string | null) {
   return id ? id.slice(0, 8) : '无'
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return '无'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function relativeFutureLabel(value?: string | null) {
+  if (!value) return '无'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const diffMs = date.getTime() - Date.now()
+  const absMin = Math.max(0, Math.ceil(Math.abs(diffMs) / 60000))
+  if (diffMs <= 0) return '已到期'
+  if (absMin < 1) return '1 分钟内'
+  if (absMin < 60) return `${absMin} 分钟后`
+  const hours = Math.ceil(absMin / 60)
+  if (hours < 24) return `${hours} 小时后`
+  return `${Math.ceil(hours / 24)} 天后`
 }
 
 function formatMetadata(value: unknown) {
@@ -262,8 +302,19 @@ async function runRerun(task: TaskItem) {
               计划步骤：
               <span class="text-ink">{{ selectedPlanItem?.label ?? selectedTask.planItemId ?? '无' }}</span>
             </p>
-            <p>下次重试：<span class="text-ink">{{ selectedTask.nextRunAt ?? '无' }}</span></p>
-            <p>最后心跳：<span class="text-ink">{{ selectedTask.lastHeartbeat ?? '无' }}</span></p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <div class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
+            <p class="text-ink-faint">下次运行 / 重试</p>
+            <p class="mt-1 font-medium text-ink">{{ relativeFutureLabel(selectedTask.nextRunAt ?? selectedTask.dueAt) }}</p>
+            <p class="mt-1 font-mono text-[11px] text-ink-faint">{{ formatDateTime(selectedTask.nextRunAt ?? selectedTask.dueAt) }}</p>
+          </div>
+          <div class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
+            <p class="text-ink-faint">心跳 / 完成</p>
+            <p class="mt-1 font-medium text-ink">{{ selectedTask.finishedAt ? '已结束' : selectedTask.lastHeartbeat ? 'Worker 活跃' : '无心跳' }}</p>
+            <p class="mt-1 font-mono text-[11px] text-ink-faint">{{ formatDateTime(selectedTask.finishedAt ?? selectedTask.lastHeartbeat) }}</p>
           </div>
         </div>
 
@@ -326,8 +377,8 @@ async function runRerun(task: TaskItem) {
               <div class="mt-1 size-2 rounded-full bg-brand-400" />
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
-                  <AmTag :tone="eventTone[event.type] ?? 'neutral'" size="sm">{{ event.type }}</AmTag>
-                  <span class="text-[11px] text-ink-faint">{{ event.createdAt }}</span>
+                  <AmTag :tone="eventTone[event.type] ?? 'neutral'" size="sm">{{ eventLabel[event.type] ?? event.type }}</AmTag>
+                  <span class="font-mono text-[11px] text-ink-faint">{{ formatDateTime(event.createdAt) }}</span>
                   <span v-if="event.status" class="text-[11px] text-ink-faint">{{ event.status }}</span>
                 </div>
                 <p v-if="event.message" class="mt-1 text-xs text-ink-soft">{{ event.message }}</p>

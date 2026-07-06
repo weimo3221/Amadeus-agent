@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus import server as runtime_server
@@ -18,6 +19,7 @@ from amadeus.agent import AgentRuntime, PermissionBroker
 from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.memory import MessageMemoryStore
 from amadeus.runtime_events import RuntimeEventBus
+from scripts.dev_mcp_server import DevMcpHandler
 
 
 class NoopTaskWorker:
@@ -377,6 +379,49 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(executed["ok"])
         self.assertTrue(executed["toolOk"])
         self.assertEqual(executed["result"]["result"]["content"][0]["text"], "hello mcp")
+
+    def test_tools_config_can_execute_hermes_fixture_mcp_server(self) -> None:
+        mcpd = ThreadingHTTPServer(("127.0.0.1", 0), DevMcpHandler)
+        mcpd.fixture = "hermes"  # type: ignore[attr-defined]
+        mcp_thread = threading.Thread(target=mcpd.serve_forever, daemon=True)
+        mcp_thread.start()
+        try:
+            host, port = mcpd.server_address
+            self.post_json("/tools/config", {
+                "mcp": {
+                    "enabled": True,
+                    "permission": "ask",
+                    "servers": [{
+                        "name": "hermes-fixture",
+                        "url": f"http://{host}:{port}/mcp",
+                        "enabled": True,
+                        "permission": "allow",
+                        "timeoutSeconds": 5,
+                    }],
+                },
+            })
+            listed = self.get_json("/tools/list")
+            conversations = self.post_json("/tools/execute", {
+                "toolName": "mcp__hermes_fixture__conversations_list",
+                "args": {"platform": "telegram"},
+            })
+            messages = self.post_json("/tools/execute", {
+                "toolName": "mcp__hermes_fixture__messages_read",
+                "args": {"session_key": "agent:main:telegram:dm:123456", "limit": 2},
+            })
+        finally:
+            mcpd.shutdown()
+            mcpd.server_close()
+            mcp_thread.join(timeout=2)
+
+        schema_names = {entry["function"]["name"] for entry in listed["schemas"]}
+        self.assertIn("mcp__hermes_fixture__conversations_list", schema_names)
+        self.assertTrue(conversations["toolOk"])
+        conversation_text = conversations["result"]["result"]["content"][0]["text"]
+        self.assertIn("agent:main:telegram:dm:123456", conversation_text)
+        self.assertTrue(messages["toolOk"])
+        messages_text = messages["result"]["result"]["content"][0]["text"]
+        self.assertIn("I see the screenshot", messages_text)
 
     def test_skills_list_and_view_expose_runtime_skills(self) -> None:
         listed = self.get_json("/skills/list")

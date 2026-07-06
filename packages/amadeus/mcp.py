@@ -14,7 +14,7 @@ from amadeus.tools.base import ToolSpec
 
 logger = logging.getLogger(__name__)
 MCP_TOOL_PREFIX = "mcp__"
-MCP_TOOL_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+MCP_TOOL_NAME_RE = re.compile(r"[^a-zA-Z0-9_]+")
 
 
 @dataclass(frozen=True)

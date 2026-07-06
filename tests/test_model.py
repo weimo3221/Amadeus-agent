@@ -55,7 +55,7 @@ class ModelBoundaryTests(unittest.TestCase):
         self.assertEqual(config.provider, "deepseek")
         self.assertEqual(config.base_url, "https://api.deepseek.com/v1")
         self.assertEqual(config.api_key, "")
-        self.assertEqual(config.model, "deepseek-chat")
+        self.assertEqual(config.model, "deepseek-v4-pro")
 
     def test_openai_compatible_config_loads_environment_overrides(self) -> None:
         os.environ["AMADEUS_LLM_PROVIDER"] = "openai"

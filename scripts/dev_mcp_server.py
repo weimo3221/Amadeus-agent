@@ -32,6 +32,228 @@ TOOLS = [
     },
 ]
 
+HERMES_SESSION_KEY = "agent:main:telegram:dm:123456"
+HERMES_SESSION_ID = "20260329_120000_abc123"
+HERMES_CONVERSATIONS = {
+    HERMES_SESSION_KEY: {
+        "session_key": HERMES_SESSION_KEY,
+        "session_id": HERMES_SESSION_ID,
+        "platform": "telegram",
+        "chat_type": "dm",
+        "display_name": "Alice",
+        "created_at": "2026-03-29T12:00:00",
+        "updated_at": "2026-03-29T14:30:00",
+        "input_tokens": 50000,
+        "output_tokens": 2000,
+        "total_tokens": 52000,
+        "origin": {
+            "platform": "telegram",
+            "chat_id": "123456",
+            "chat_name": "Alice",
+            "chat_type": "dm",
+            "user_id": "123456",
+            "user_name": "Alice",
+            "thread_id": None,
+        },
+    },
+    "agent:main:slack:group:C1234:U5678": {
+        "session_key": "agent:main:slack:group:C1234:U5678",
+        "session_id": "20260328_090000_ghi789",
+        "platform": "slack",
+        "chat_type": "group",
+        "display_name": "Carol",
+        "created_at": "2026-03-28T09:00:00",
+        "updated_at": "2026-03-28T11:00:00",
+        "input_tokens": 10000,
+        "output_tokens": 500,
+        "total_tokens": 10500,
+        "origin": {
+            "platform": "slack",
+            "chat_id": "C1234",
+            "chat_name": "#engineering",
+            "chat_type": "group",
+            "user_id": "U5678",
+            "user_name": "Carol",
+            "thread_id": None,
+        },
+    },
+}
+
+HERMES_MESSAGES = {
+    HERMES_SESSION_ID: [
+        {"id": "1", "role": "user", "content": "Hello Alice!", "timestamp": "2026-03-29T12:00:01"},
+        {"id": "2", "role": "assistant", "content": "Hi! How can I help?", "timestamp": "2026-03-29T12:00:05"},
+        {
+            "id": "3",
+            "role": "user",
+            "content": "Check the image MEDIA: /tmp/screenshot.png please",
+            "timestamp": "2026-03-29T12:01:00",
+        },
+        {
+            "id": "4",
+            "role": "assistant",
+            "content": "I see the screenshot. It shows a terminal.",
+            "timestamp": "2026-03-29T12:01:10",
+        },
+    ],
+    "20260328_090000_ghi789": [
+        {"id": "1", "role": "user", "content": "Please summarize today's deploy notes.", "timestamp": "2026-03-28T09:00:01"},
+        {"id": "2", "role": "assistant", "content": "The deploy notes focus on MCP reliability.", "timestamp": "2026-03-28T09:00:10"},
+    ],
+}
+
+HERMES_TOOLS = [
+    {
+        "name": "conversations_list",
+        "description": "List local Hermes-style conversations without requiring platform tokens.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                "search": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "conversation_get",
+        "description": "Get one Hermes-style conversation by session key.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"session_key": {"type": "string"}},
+            "required": ["session_key"],
+        },
+    },
+    {
+        "name": "messages_read",
+        "description": "Read recent local Hermes-style messages for a conversation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_key": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+            "required": ["session_key"],
+        },
+    },
+    {
+        "name": "channels_list",
+        "description": "List local Hermes-style message targets derived from conversations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"platform": {"type": "string"}},
+        },
+    },
+]
+
+
+def _json_text(payload: dict[str, Any]) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}]}
+
+
+def _coerce_limit(value: Any, *, default: int = 50) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, 200))
+
+
+def _call_hermes_fixture_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "conversations_list":
+        platform = str(arguments.get("platform") or "").strip().lower()
+        search = str(arguments.get("search") or "").strip().lower()
+        limit = _coerce_limit(arguments.get("limit"))
+        conversations = []
+        for key, entry in HERMES_CONVERSATIONS.items():
+            origin = entry.get("origin", {})
+            entry_platform = str(entry.get("platform") or origin.get("platform") or "")
+            display_name = str(entry.get("display_name") or "")
+            chat_name = str(origin.get("chat_name") or "")
+            if platform and entry_platform.lower() != platform:
+                continue
+            if search and search not in display_name.lower() and search not in chat_name.lower() and search not in key.lower():
+                continue
+            conversations.append({
+                "session_key": key,
+                "session_id": entry.get("session_id", ""),
+                "platform": entry_platform,
+                "chat_type": entry.get("chat_type", origin.get("chat_type", "")),
+                "display_name": display_name,
+                "chat_name": chat_name,
+                "user_name": origin.get("user_name", ""),
+                "updated_at": entry.get("updated_at", ""),
+            })
+        conversations.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        return _json_text({"source": "hermes-agent/mcp_serve.py fixture", "count": len(conversations[:limit]), "conversations": conversations[:limit]})
+
+    if name == "conversation_get":
+        session_key = str(arguments.get("session_key") or "")
+        entry = HERMES_CONVERSATIONS.get(session_key)
+        if not entry:
+            return _json_text({"error": f"Conversation not found: {session_key}"})
+        origin = entry.get("origin", {})
+        return _json_text({
+            "session_key": session_key,
+            "session_id": entry.get("session_id", ""),
+            "platform": entry.get("platform") or origin.get("platform", ""),
+            "chat_type": entry.get("chat_type", origin.get("chat_type", "")),
+            "display_name": entry.get("display_name", ""),
+            "user_name": origin.get("user_name", ""),
+            "chat_name": origin.get("chat_name", ""),
+            "chat_id": origin.get("chat_id", ""),
+            "thread_id": origin.get("thread_id"),
+            "updated_at": entry.get("updated_at", ""),
+            "created_at": entry.get("created_at", ""),
+            "input_tokens": entry.get("input_tokens", 0),
+            "output_tokens": entry.get("output_tokens", 0),
+            "total_tokens": entry.get("total_tokens", 0),
+        })
+
+    if name == "messages_read":
+        session_key = str(arguments.get("session_key") or "")
+        limit = _coerce_limit(arguments.get("limit"))
+        entry = HERMES_CONVERSATIONS.get(session_key)
+        if not entry:
+            return _json_text({"error": f"Conversation not found: {session_key}"})
+        messages = HERMES_MESSAGES.get(str(entry.get("session_id") or ""), [])
+        return _json_text({
+            "session_key": session_key,
+            "count": len(messages[-limit:]),
+            "total_in_session": len(messages),
+            "messages": messages[-limit:],
+        })
+
+    if name == "channels_list":
+        platform = str(arguments.get("platform") or "").strip().lower()
+        channels = []
+        seen = set()
+        for entry in HERMES_CONVERSATIONS.values():
+            origin = entry.get("origin", {})
+            entry_platform = str(entry.get("platform") or origin.get("platform") or "")
+            chat_id = str(origin.get("chat_id") or "")
+            if platform and entry_platform.lower() != platform:
+                continue
+            target = f"{entry_platform}:{chat_id}" if chat_id else entry_platform
+            if target in seen:
+                continue
+            seen.add(target)
+            channels.append({
+                "target": target,
+                "platform": entry_platform,
+                "name": entry.get("display_name") or origin.get("chat_name", ""),
+                "chat_type": entry.get("chat_type", origin.get("chat_type", "")),
+            })
+        return _json_text({"count": len(channels), "channels": channels})
+
+    raise ValueError(f"unknown Hermes fixture tool: {name}")
+
+
+def tool_list_for_fixture(fixture: str) -> list[dict[str, Any]]:
+    if fixture == "hermes":
+        return HERMES_TOOLS
+    return TOOLS
+
 
 class DevMcpHandler(BaseHTTPRequestHandler):
     server_version = "AmadeusDevMCP/0.1"
@@ -48,7 +270,7 @@ class DevMcpHandler(BaseHTTPRequestHandler):
             params = request.get("params") if isinstance(request.get("params"), dict) else {}
 
             if method == "tools/list":
-                self.write_json(200, {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}})
+                self.write_json(200, {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tool_list_for_fixture(self.fixture)}})
                 return
 
             if method == "tools/call":
@@ -71,6 +293,9 @@ class DevMcpHandler(BaseHTTPRequestHandler):
     def call_tool(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+
+        if self.fixture == "hermes":
+            return _call_hermes_fixture_tool(str(name or ""), arguments)
 
         if name == "echo":
             text = str(arguments.get("text") or "")
@@ -116,15 +341,26 @@ class DevMcpHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
+    @property
+    def fixture(self) -> str:
+        return str(getattr(self.server, "fixture", "amadeus"))
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a tiny HTTP JSON-RPC MCP server for Amadeus development.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9000)
+    parser.add_argument(
+        "--fixture",
+        choices=["amadeus", "hermes"],
+        default="amadeus",
+        help="Tool fixture to expose. 'hermes' mirrors no-token local tools from ../hermes-agent/mcp_serve.py.",
+    )
     args = parser.parse_args()
 
     httpd = ThreadingHTTPServer((args.host, args.port), DevMcpHandler)
-    print(f"Amadeus dev MCP server listening at http://{args.host}:{args.port}/mcp", flush=True)
+    httpd.fixture = args.fixture  # type: ignore[attr-defined]
+    print(f"Amadeus dev MCP server listening at http://{args.host}:{args.port}/mcp fixture={args.fixture}", flush=True)
     httpd.serve_forever()
 
 

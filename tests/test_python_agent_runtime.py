@@ -175,9 +175,15 @@ class AgentRuntimeTests(unittest.TestCase):
 
         events = list(runtime.run_turn("default", "hi", lambda _request: False))
 
-        self.assertIn(("assistant.message", {"text": "Hello there"}), [(event.type, event.payload) for event in events])
+        assistant_messages = [event.payload for event in events if event.type == "assistant.message"]
+        self.assertEqual(assistant_messages[0]["text"], "Hello there")
+        self.assertIn("turnId", assistant_messages[0])
         self.assertEqual(self.memory.count("default"), 2)
-        self.assertEqual(self.memory.load("default"), [
+        loaded = [
+            {"role": message["role"], "content": message["content"]}
+            for message in self.memory.load("default")
+        ]
+        self.assertEqual(loaded, [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "Hello there"},
         ])
