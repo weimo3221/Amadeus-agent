@@ -15,9 +15,11 @@ context:
   # maxTokens * compactionTriggerRatio. Lower values compact earlier.
   compactionTriggerRatio: 0.85
 
-  # Fraction of maxTokens reserved for recent raw messages after compaction.
+  # Fraction of the compaction trigger budget reserved for recent raw messages
+  # after budget-driven compaction. With the defaults this keeps roughly
+  # maxTokens * compactionTriggerRatio * 0.20 as raw tail context.
   # Lower values keep fewer recent messages and rely more on summaries.
-  recentMessageTargetRatio: 0.45
+  recentMessageTargetRatio: 0.20
 
   # Context assembler budgets for API-call-time memory injection.
   # These limits control what is injected into the temporary model request,
@@ -43,8 +45,9 @@ summary:
   # Default number of latest raw messages to keep outside the summary.
   keepRecentMessages: 20
 
-  # Hard lower bound for recent raw messages kept during budget-driven
-  # compaction. Set to 0 only if fully summary-first behavior is acceptable.
+  # Lower bound for recent raw messages kept during budget-driven compaction.
+  # The runtime caps this floor internally so a large tool result cannot force
+  # an oversized tail. Set to 0 only if fully summary-first behavior is acceptable.
   minKeepRecentMessages: 4
 
   # Maximum older messages sent to the provider when generating one summary.

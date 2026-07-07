@@ -34,7 +34,7 @@ from amadeus.tasks import (
 )
 
 
-MessageRole = Literal["user", "assistant"]
+MessageRole = Literal["user", "assistant", "tool"]
 StableMemoryTarget = Literal["agent", "user"]
 MemoryItemScope = Literal["user", "agent", "project"]
 MemoryReviewCandidateStatus = Literal["pending", "accepted", "rejected", "superseded"]
@@ -120,8 +120,11 @@ class MessageMemoryStore:
                 CREATE TABLE IF NOT EXISTS messages (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   session_id TEXT NOT NULL,
-                  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
                   content TEXT NOT NULL,
+                  tool_call_id TEXT,
+                  tool_name TEXT,
+                  tool_calls TEXT,
                   created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session_created
@@ -320,6 +323,7 @@ class MessageMemoryStore:
                 """
             )
             self._migrate_roles_and_sessions(connection)
+            self._migrate_messages_for_tool_transcript(connection)
             self._migrate_conversation_summaries(connection)
             self._migrate_memory_review_candidates(connection)
             self._migrate_task_statuses(connection)
@@ -334,7 +338,7 @@ class MessageMemoryStore:
             connection.execute("DELETE FROM messages_fts")
             rows = connection.execute(
                 """
-                SELECT id, content, session_id, role, created_at
+                SELECT id, content, session_id, role, created_at, tool_name, tool_calls
                 FROM messages
                 """
             ).fetchall()
@@ -344,8 +348,77 @@ class MessageMemoryStore:
                     INSERT INTO messages_fts(rowid, content, session_id, role, created_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (int(row[0]), build_fts_index_content(str(row[1])), row[2], row[3], row[4]),
+                    (int(row[0]), build_fts_index_content(message_search_text(row[1], row[5], row[6])), row[2], row[3], row[4]),
                 )
+
+    def _migrate_messages_for_tool_transcript(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        create_sql_row = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'messages'
+            """
+        ).fetchone()
+        create_sql = str(create_sql_row[0] or "") if create_sql_row else ""
+        needs_rebuild = "tool" not in create_sql or not {"tool_call_id", "tool_name", "tool_calls"}.issubset(columns)
+        if not needs_rebuild:
+            return
+
+        connection.execute("DROP TABLE IF EXISTS messages_fts")
+        connection.execute(
+            """
+            CREATE TABLE messages_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id TEXT NOT NULL,
+              role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+              content TEXT NOT NULL,
+              tool_call_id TEXT,
+              tool_name TEXT,
+              tool_calls TEXT,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        select_columns = [
+            "id",
+            "session_id",
+            "role",
+            "content",
+            "tool_call_id" if "tool_call_id" in columns else "NULL AS tool_call_id",
+            "tool_name" if "tool_name" in columns else "NULL AS tool_name",
+            "tool_calls" if "tool_calls" in columns else "NULL AS tool_calls",
+            "created_at",
+        ]
+        connection.execute(
+            f"""
+            INSERT INTO messages_new (id, session_id, role, content, tool_call_id, tool_name, tool_calls, created_at)
+            SELECT {', '.join(select_columns)}
+            FROM messages
+            """
+        )
+        connection.execute("DROP TABLE messages")
+        connection.execute("ALTER TABLE messages_new RENAME TO messages")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_messages_session_created
+            ON messages(session_id, created_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+            USING fts5(
+              content,
+              session_id UNINDEXED,
+              role UNINDEXED,
+              created_at UNINDEXED
+            )
+            """
+        )
 
     def _migrate_roles_and_sessions(self, connection: sqlite3.Connection) -> None:
         now_dt = datetime.now(timezone.utc)
@@ -1012,13 +1085,25 @@ class MessageMemoryStore:
             if column not in columns:
                 connection.execute(statement)
 
-    def save(self, session_id: str, role: str, content: str) -> int:
-        if role not in ("user", "assistant"):
-            raise ValueError("role must be user or assistant")
+    def save(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        tool_call_id: str | None = None,
+        tool_name: str | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> int:
+        if role not in ("user", "assistant", "tool"):
+            raise ValueError("role must be user, assistant, or tool")
 
         normalized_session_id = normalize_session_id(session_id)
         self.ensure_session(normalized_session_id)
         now = datetime.now(timezone.utc).isoformat()
+        normalized_tool_call_id = normalize_optional_message_metadata(tool_call_id)
+        normalized_tool_name = normalize_optional_message_metadata(tool_name)
+        normalized_tool_calls = normalize_tool_calls_json(tool_calls)
         with self.connect() as connection:
             session_row = connection.execute(
                 """
@@ -1032,10 +1117,18 @@ class MessageMemoryStore:
             ).fetchone()
             cursor = connection.execute(
                 """
-                INSERT INTO messages (session_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, tool_calls, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (normalized_session_id, role, content, now),
+                (
+                    normalized_session_id,
+                    role,
+                    content,
+                    normalized_tool_call_id,
+                    normalized_tool_name,
+                    normalized_tool_calls,
+                    now,
+                ),
             )
             row_id = cursor.lastrowid
             connection.execute(
@@ -1062,7 +1155,7 @@ class MessageMemoryStore:
                 )
             row = connection.execute(
                 """
-                SELECT content, session_id, role, created_at
+                SELECT content, session_id, role, created_at, tool_name, tool_calls
                 FROM messages
                 WHERE id = ?
                 """,
@@ -1074,7 +1167,7 @@ class MessageMemoryStore:
                     INSERT INTO messages_fts(rowid, content, session_id, role, created_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (row_id, build_fts_index_content(str(row[0])), row[1], row[2], row[3]),
+                    (row_id, build_fts_index_content(message_search_text(row[0], row[4], row[5])), row[1], row[2], row[3]),
                 )
         return int(row_id)
 
@@ -1170,7 +1263,7 @@ class MessageMemoryStore:
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, role, content, created_at
+                SELECT id, role, content, created_at, tool_call_id, tool_name, tool_calls
                 FROM messages
                 WHERE {where}
                 ORDER BY id DESC
@@ -1179,15 +1272,7 @@ class MessageMemoryStore:
                 params,
             ).fetchall()
 
-        return [
-            {
-                "id": int(row[0]),
-                "role": str(row[1]),
-                "content": str(row[2]),
-                "createdAt": str(row[3]),
-            }
-            for row in reversed(rows)
-        ]
+        return [message_row_response(row) for row in reversed(rows)]
 
     def load_detailed(
         self,
@@ -1211,7 +1296,7 @@ class MessageMemoryStore:
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, role, content, created_at
+                SELECT id, role, content, created_at, tool_call_id, tool_name, tool_calls
                 FROM messages
                 WHERE {where}
                 ORDER BY id ASC
@@ -1220,15 +1305,7 @@ class MessageMemoryStore:
                 params,
             ).fetchall()
 
-        return [
-            {
-                "id": int(row[0]),
-                "role": str(row[1]),
-                "content": str(row[2]),
-                "createdAt": str(row[3]),
-            }
-            for row in rows
-        ]
+        return [message_row_response(row) for row in rows]
 
     def latest_message_id(self, session_id: str) -> int:
         with self.connect() as connection:
@@ -4506,6 +4583,65 @@ def memory_review_job_response(row: sqlite3.Row | tuple[object, ...]) -> dict[st
         "finishedAt": str(row[13]) if row[13] is not None else "",
         "durationMs": int(row[14]) if row[14] is not None else 0,
     }
+
+
+def normalize_optional_message_metadata(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def normalize_tool_calls_json(tool_calls: list[dict[str, Any]] | None) -> str | None:
+    if tool_calls is None:
+        return None
+    normalized = [tool_call for tool_call in tool_calls if isinstance(tool_call, dict)]
+    if not normalized:
+        return None
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+
+
+def parse_tool_calls_json(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def message_search_text(content: object, tool_name: object = None, tool_calls: object = None) -> str:
+    parts = [str(content or "")]
+    if tool_name:
+        parts.append(str(tool_name))
+    if tool_calls:
+        parts.append(str(tool_calls))
+    return "\n".join(part for part in parts if part)
+
+
+def message_row_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "id": int(row[0]),
+        "role": str(row[1]),
+        "content": str(row[2]),
+        "createdAt": str(row[3]),
+    }
+    tool_call_id = normalize_optional_message_metadata(str(row[4])) if row[4] is not None else None
+    tool_name = normalize_optional_message_metadata(str(row[5])) if row[5] is not None else None
+    tool_calls = parse_tool_calls_json(row[6])
+    if tool_call_id:
+        message["toolCallId"] = tool_call_id
+        message["tool_call_id"] = tool_call_id
+    if tool_name:
+        message["toolName"] = tool_name
+        message["tool_name"] = tool_name
+    if tool_calls:
+        message["toolCalls"] = tool_calls
+        message["tool_calls"] = tool_calls
+    return message
 
 
 def ensure_stable_memory_file(path: Path, target: str) -> None:

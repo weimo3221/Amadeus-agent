@@ -38,14 +38,21 @@ def read_session_messages(args: dict[str, Any], context: Any) -> dict[str, Any]:
     for raw_message in raw_messages:
         content = str(raw_message.get("content", ""))
         truncated = len(content) > max_message_chars
-        messages.append({
+        message: dict[str, Any] = {
             "id": raw_message.get("id"),
             "role": raw_message.get("role"),
             "createdAt": raw_message.get("createdAt"),
             "content": content[:max_message_chars] if truncated else content,
             "contentCharCount": len(content),
             "contentTruncated": truncated,
-        })
+        }
+        if raw_message.get("toolCallId"):
+            message["toolCallId"] = raw_message.get("toolCallId")
+        if raw_message.get("toolName"):
+            message["toolName"] = raw_message.get("toolName")
+        if raw_message.get("toolCalls"):
+            message["toolCalls"] = raw_message.get("toolCalls")
+        messages.append(message)
 
     last_id = int(messages[-1]["id"]) if messages and isinstance(messages[-1].get("id"), int) else int(after_message_id or 0)
     return {

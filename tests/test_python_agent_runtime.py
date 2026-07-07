@@ -778,6 +778,40 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("large old message 0", serialized_decision)
         self.assertIn("memory.summary.updated", [event.type for event in events])
 
+    def test_budget_recent_tail_uses_trigger_token_fraction(self) -> None:
+        self.memory.save("default", "user", "old large " + ("x" * 400))
+        self.memory.save("default", "assistant", "recent small one")
+        self.memory.save("default", "user", "recent small two")
+        runtime = FakeAgentRuntime(self.memory)
+        runtime.summary_keep_recent_messages = 10
+        runtime.summary_min_keep_recent_messages = 1
+        runtime.context_max_tokens = 1000
+        runtime.context_compaction_trigger_ratio = 0.5
+        runtime.context_recent_message_target_ratio = 0.2
+
+        keep_recent = runtime._budget_keep_recent_message_count("default")
+
+        self.assertEqual(keep_recent, 2)
+
+    def test_turn_end_compacts_when_final_response_pushes_context_over_budget(self) -> None:
+        self.memory.save("default", "user", "small old user")
+        self.memory.save("default", "assistant", "small old assistant")
+        runtime = FakeAgentRuntime(self.memory, deltas=["x" * 10000])
+        runtime.summary_trigger_message_count = 100
+        runtime.summary_keep_recent_messages = 1
+        runtime.summary_min_keep_recent_messages = 1
+        runtime.context_max_tokens = 12000
+        runtime.context_compaction_trigger_ratio = 0.5
+        runtime.context_recent_message_target_ratio = 0.2
+
+        events = list(runtime.run_turn("default", "small new request", lambda _request: False))
+
+        summary = self.memory.load_conversation_summary("default")
+        self.assertIsNotNone(summary)
+        self.assertIn("memory.summary.updated", [event.type for event in events])
+        self.assertEqual(len(runtime.summary_requests), 1)
+        self.assertIn("small old user", json.dumps(runtime.summary_requests[0]["messages"]))
+
     def test_manual_compact_force_bypasses_threshold(self) -> None:
         for index in range(3):
             self.memory.save("default", "user", f"message {index}")
@@ -1035,6 +1069,54 @@ class AgentRuntimeTests(unittest.TestCase):
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_time")
         self.assertIn("formatted", tool_messages[0]["content"])
+
+    def test_tool_transcript_is_persisted_and_reloaded_across_turns(self) -> None:
+        first_runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_time",
+                    "type": "function",
+                    "function": {"name": "get_current_time", "arguments": "{}"},
+                }],
+            },
+        )
+
+        list(first_runtime.run_turn("default", "what time is it", lambda _request: False))
+        stored_messages = self.memory.load("default")
+        second_runtime = FakeAgentRuntime(self.memory, tool_decision={"role": "assistant", "content": "done", "tool_calls": []})
+        list(second_runtime.run_turn("default", "continue from the tool result", lambda _request: False))
+
+        self.assertTrue(any(message.get("role") == "assistant" and message.get("tool_calls") for message in stored_messages))
+        self.assertTrue(any(message.get("role") == "tool" and message.get("tool_call_id") == "call_time" for message in stored_messages))
+        reloaded_history = second_runtime.decision_messages[0]
+        self.assertTrue(any(message.get("role") == "assistant" and message.get("tool_calls") for message in reloaded_history))
+        self.assertTrue(any(message.get("role") == "tool" and message.get("tool_call_id") == "call_time" for message in reloaded_history))
+
+    def test_summary_compaction_does_not_split_tool_call_pairs(self) -> None:
+        tool_calls = [{
+            "id": "call_time",
+            "type": "function",
+            "function": {"name": "get_current_time", "arguments": "{}"},
+        }]
+        self.memory.save("default", "user", "old setup")
+        self.memory.save("default", "assistant", "", tool_calls=tool_calls)
+        self.memory.save("default", "tool", '{"formatted": "12:00"}', tool_call_id="call_time", tool_name="get_current_time")
+        self.memory.save("default", "assistant", "It is noon.")
+        runtime = FakeAgentRuntime(self.memory)
+        runtime.summary_trigger_message_count = 1
+        runtime.summary_keep_recent_messages = 2
+
+        summary_event = runtime._maybe_compact_conversation("default")
+
+        self.assertIsNotNone(summary_event)
+        self.assertEqual([message["role"] for message in runtime.summary_requests[0]["messages"]], ["user"])
+        summary = self.memory.load_conversation_summary("default")
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["coveredThroughMessageId"], 1)
 
     def test_tool_loop_can_continue_after_tool_result_until_no_tool_calls(self) -> None:
         runtime = FakeAgentRuntime(

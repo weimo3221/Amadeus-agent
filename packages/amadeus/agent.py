@@ -48,7 +48,7 @@ HARNESSES_CONFIG_PATH = DEFAULT_HARNESSES_CONFIG_PATH
 SKILLS_ROOT = REPO_ROOT / "skills"
 CONTEXT_MAX_TOKENS = 24000
 CONTEXT_COMPACTION_TRIGGER_RATIO = 0.85
-CONTEXT_RECENT_MESSAGE_TARGET_RATIO = 0.45
+CONTEXT_RECENT_MESSAGE_TARGET_RATIO = 0.20
 CONTEXT_SUMMARY_CHARS = 4000
 CONTEXT_MEMORY_ITEM_LIMIT = 8
 CONTEXT_MEMORY_ITEM_CHARS = 500
@@ -61,6 +61,7 @@ CONTEXT_DIAGNOSTICS_LIMIT = 20
 SUMMARY_TRIGGER_MESSAGE_COUNT = 40
 SUMMARY_KEEP_RECENT_MESSAGES = 20
 SUMMARY_MIN_KEEP_RECENT_MESSAGES = 4
+SUMMARY_MAX_KEEP_RECENT_FLOOR = 8
 SUMMARY_SOURCE_MAX_MESSAGES = 120
 SUMMARY_FAILURE_COOLDOWN_SECONDS = 300
 MEMORY_REVIEW_SOURCE_MAX_MESSAGES = 40
@@ -826,7 +827,14 @@ class AgentRuntime:
             tool_reasoning_content = tool_decision.get("reasoning_content")
             if isinstance(tool_reasoning_content, str) and tool_reasoning_content:
                 yield AgentEvent("assistant.reasoning.delta", {"text": tool_reasoning_content, "turnId": turn_id})
-            history.append(self._assistant_history_message(tool_decision))
+            assistant_tool_message = self._assistant_history_message(tool_decision)
+            history.append(assistant_tool_message)
+            self.memory_store.save(
+                session_id,
+                "assistant",
+                str(assistant_tool_message.get("content") or ""),
+                tool_calls=assistant_tool_message.get("tool_calls") if isinstance(assistant_tool_message.get("tool_calls"), list) else None,
+            )
             tool_iterations += 1
 
             for tool_call in tool_calls:
@@ -905,7 +913,7 @@ class AgentRuntime:
             turn_id=turn_id,
             assistant_message_id=assistant_message_id,
         )
-        summary_event = self._maybe_compact_conversation(session_id)
+        summary_event = self._maybe_compact_conversation(session_id, reason="turn_end")
         logger.info(
             "Completed agent turn sessionId=%s turnId=%s assistantTextChars=%s memoryMessages=%s",
             session_id,
@@ -1369,7 +1377,8 @@ class AgentRuntime:
         limit: int = 40,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_context}]
-        messages.extend(self.memory_store.load(session_id, limit, after_message_id=covered_through_message_id or None))
+        history_messages = self.memory_store.load(session_id, limit, after_message_id=covered_through_message_id or None)
+        messages.extend(self._sanitize_tool_pairs([self._provider_history_message(message) for message in history_messages]))
         logger.info(
             "Loaded agent history sessionId=%s coveredThroughMessageId=%s messageCount=%s",
             session_id,
@@ -1477,7 +1486,8 @@ class AgentRuntime:
         )
 
     def _budget_keep_recent_message_count(self, session_id: str) -> int:
-        target_tokens = max(1, int(self.context_max_tokens * self.context_recent_message_target_ratio))
+        trigger_tokens = max(1, int(self.context_max_tokens * self.context_compaction_trigger_ratio))
+        target_tokens = max(1, int(trigger_tokens * self.context_recent_message_target_ratio))
         previous_summary = self.memory_store.load_conversation_summary(session_id)
         covered_through_id = int(previous_summary.get("coveredThroughMessageId", 0)) if previous_summary else 0
         uncovered_messages = self.memory_store.load_detailed(
@@ -1489,27 +1499,29 @@ class AgentRuntime:
             return self.summary_keep_recent_messages
 
         max_keep = min(self.summary_keep_recent_messages, len(uncovered_messages))
-        min_keep = min(max(0, self.summary_min_keep_recent_messages), max_keep)
+        min_keep = min(max(0, self.summary_min_keep_recent_messages), SUMMARY_MAX_KEEP_RECENT_FLOOR, max_keep)
         kept_tokens = 0
-        keep_count = 0
-        for message in reversed(uncovered_messages):
-            message_tokens = estimate_message_tokens({
-                "role": message.get("role", ""),
-                "content": message.get("content", ""),
-            })
+        keep_start_index = len(uncovered_messages)
+        for index in range(len(uncovered_messages) - 1, -1, -1):
+            message = uncovered_messages[index]
+            message_tokens = estimate_message_tokens(self._provider_history_message(message))
+            keep_count = len(uncovered_messages) - index
             if keep_count >= min_keep and kept_tokens + message_tokens > target_tokens:
                 break
-            keep_count += 1
+            keep_start_index = index
             kept_tokens += message_tokens
             if keep_count >= max_keep:
                 break
 
+        keep_count = len(uncovered_messages) - keep_start_index
         keep_count = max(min_keep, keep_count)
+        keep_count = self._aligned_keep_recent_message_count(uncovered_messages, keep_count)
         logger.info(
-            "Selected budget-aware summary keep window sessionId=%s keepRecent=%s targetTokens=%s keptTokens=%s uncoveredMessages=%s",
+            "Selected budget-aware summary keep window sessionId=%s keepRecent=%s targetTokens=%s triggerTokens=%s keptTokens=%s uncoveredMessages=%s",
             session_id,
             keep_count,
             target_tokens,
+            trigger_tokens,
             kept_tokens,
             len(uncovered_messages),
         )
@@ -1574,6 +1586,20 @@ class AgentRuntime:
         compactable_messages = uncovered_messages[:-effective_keep_recent_messages] if effective_keep_recent_messages else uncovered_messages
         if len(compactable_messages) > self.summary_source_max_messages:
             compactable_messages = compactable_messages[-self.summary_source_max_messages:]
+        compactable_messages, effective_keep_recent_messages = self._align_compaction_window_for_tool_pairs(
+            uncovered_messages,
+            compactable_messages,
+            effective_keep_recent_messages,
+        )
+        if not compactable_messages:
+            logger.info(
+                "Skipping summary compaction after tool-pair window alignment sessionId=%s uncoveredMessages=%s keepRecent=%s reason=%s",
+                session_id,
+                len(uncovered_messages),
+                effective_keep_recent_messages,
+                reason,
+            )
+            return None
         source_start_id = int(compactable_messages[0]["id"])
         source_end_id = int(compactable_messages[-1]["id"])
 
@@ -1639,7 +1665,7 @@ class AgentRuntime:
         messages: list[dict[str, str | int]],
     ) -> str:
         transcript_lines = [
-            f"{message['id']}. {message['role']}: {sanitize_memory_context_text(str(message['content']), max_chars=1200, collapse_whitespace=False)}"
+            self._summary_transcript_line(message, max_chars=1200)
             for message in messages
         ]
         previous = str(previous_summary.get("content", "")) if previous_summary else "None"
@@ -1803,7 +1829,7 @@ class AgentRuntime:
             )
             result = {"error": guardrail_decision.reason or "Tool call blocked by guardrail"}
             failure_code = guardrail_decision.failure_code or "guardrail_blocked"
-            self._record_tool_result(history, tool_call_id, result)
+            self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
                 ok=False,
@@ -1828,7 +1854,7 @@ class AgentRuntime:
             logger.info("Tool call failed: unknown tool sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Unknown tool: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
-            self._record_tool_result(history, tool_call_id, result)
+            self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
                 ok=False,
@@ -1853,7 +1879,7 @@ class AgentRuntime:
             logger.info("Tool call denied by role scope sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Tool is not enabled for this role: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
-            self._record_tool_result(history, tool_call_id, result)
+            self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
                 ok=False,
@@ -1878,7 +1904,7 @@ class AgentRuntime:
             logger.info("Tool call denied: disabled tool sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Tool is disabled: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
-            self._record_tool_result(history, tool_call_id, result)
+            self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
                 ok=False,
@@ -1903,7 +1929,7 @@ class AgentRuntime:
             logger.info("Tool call denied by policy sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Permission denied for tool: {tool_name}"}
             guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
-            self._record_tool_result(history, tool_call_id, result)
+            self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
             yield AgentEvent("tool.finished", self._tool_finished_payload(
                 tool_name,
                 ok=False,
@@ -1954,7 +1980,7 @@ class AgentRuntime:
                 )
                 result = {"error": f"Permission denied for tool: {tool_name}"}
                 guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
-                self._record_tool_result(history, tool_call_id, result)
+                self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
                 yield AgentEvent("tool.finished", self._tool_finished_payload(
                     tool_name,
                     ok=False,
@@ -2031,7 +2057,7 @@ class AgentRuntime:
             workspace_epoch,
             workspace_epoch_after,
         )
-        self._record_tool_result(history, tool_call_id, result.model_output)
+        self._record_tool_result(history, session_id, tool_call_id, tool_name, result.model_output)
         for event in self._maybe_inject_loaded_skill(
             history,
             session_id,
@@ -2132,6 +2158,141 @@ class AgentRuntime:
             base_url=self.model_client.config.base_url,
             reasoning=self._reasoning_config(),
         )
+
+    @staticmethod
+    def _provider_history_message(message: dict[str, Any]) -> dict[str, Any]:
+        role = str(message.get("role") or "")
+        provider_message: dict[str, Any] = {
+            "role": role,
+            "content": str(message.get("content") or ""),
+        }
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                provider_message["tool_calls"] = tool_calls
+        if role == "tool":
+            tool_call_id = message.get("tool_call_id") or message.get("toolCallId")
+            if tool_call_id:
+                provider_message["tool_call_id"] = str(tool_call_id)
+        return provider_message
+
+    @staticmethod
+    def _message_tool_call_ids(message: dict[str, Any]) -> list[str]:
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return []
+        call_ids: list[str] = []
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            call_id = tool_call.get("id")
+            if isinstance(call_id, str) and call_id:
+                call_ids.append(call_id)
+        return call_ids
+
+    @staticmethod
+    def _tool_message_call_id(message: dict[str, Any]) -> str:
+        call_id = message.get("tool_call_id") or message.get("toolCallId")
+        return str(call_id) if call_id else ""
+
+    def _sanitize_tool_pairs(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        valid_call_ids = {
+            call_id
+            for message in messages
+            if message.get("role") == "assistant"
+            for call_id in self._message_tool_call_ids(message)
+        }
+        result_ids = {
+            self._tool_message_call_id(message)
+            for message in messages
+            if message.get("role") == "tool" and self._tool_message_call_id(message) in valid_call_ids
+        }
+        sanitized: list[dict[str, Any]] = []
+        for message in messages:
+            if message.get("role") == "tool":
+                call_id = self._tool_message_call_id(message)
+                if not call_id or call_id not in valid_call_ids:
+                    continue
+            sanitized.append(message)
+            if message.get("role") == "assistant":
+                for call_id in self._message_tool_call_ids(message):
+                    if call_id not in result_ids:
+                        sanitized.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": json.dumps({
+                                "summary": "Result from earlier conversation; see conversation summary above.",
+                            }, ensure_ascii=False),
+                        })
+        return sanitized
+
+    def _aligned_keep_recent_message_count(self, messages: list[dict[str, Any]], keep_count: int) -> int:
+        keep_count = max(0, min(int(keep_count), len(messages)))
+        if keep_count <= 0 or keep_count >= len(messages):
+            return keep_count
+        start = len(messages) - keep_count
+        while start > 0 and messages[start].get("role") == "tool":
+            start -= 1
+        return len(messages) - start
+
+    def _align_compaction_window_for_tool_pairs(
+        self,
+        uncovered_messages: list[dict[str, Any]],
+        compactable_messages: list[dict[str, Any]],
+        keep_recent_messages: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not compactable_messages:
+            return compactable_messages, keep_recent_messages
+        aligned = list(compactable_messages)
+        while aligned and aligned[0].get("role") == "tool":
+            aligned = aligned[1:]
+        if not aligned:
+            return [], len(uncovered_messages)
+
+        last_id = aligned[-1].get("id")
+        boundary_index = next(
+            (index + 1 for index, message in enumerate(uncovered_messages) if message.get("id") == last_id),
+            len(aligned),
+        )
+        while aligned and boundary_index < len(uncovered_messages):
+            boundary_message = uncovered_messages[boundary_index]
+            previous_message = aligned[-1]
+            if boundary_message.get("role") == "tool" or self._message_tool_call_ids(previous_message):
+                aligned = aligned[:-1]
+                if not aligned:
+                    return [], len(uncovered_messages)
+                last_id = aligned[-1].get("id")
+                boundary_index = next(
+                    (index + 1 for index, message in enumerate(uncovered_messages) if message.get("id") == last_id),
+                    boundary_index - 1,
+                )
+                continue
+            break
+        return aligned, max(0, len(uncovered_messages) - boundary_index)
+
+    def _summary_transcript_line(self, message: dict[str, Any], *, max_chars: int) -> str:
+        message_id = message.get("id", "")
+        role = str(message.get("role") or "")
+        content = sanitize_memory_context_text(str(message.get("content", "")), max_chars=max_chars, collapse_whitespace=False)
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                call_names = []
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                    name = function.get("name") if isinstance(function.get("name"), str) else "unknown"
+                    call_id = tool_call.get("id") if isinstance(tool_call.get("id"), str) else ""
+                    call_names.append(f"{name}#{call_id}" if call_id else name)
+                suffix = f" tool_calls={', '.join(call_names)}" if call_names else ""
+                return f"{message_id}. assistant{suffix}: {content}"
+        if role == "tool":
+            tool_name = message.get("tool_name") or message.get("toolName") or "tool"
+            tool_call_id = message.get("tool_call_id") or message.get("toolCallId") or ""
+            suffix = f" {tool_name}#{tool_call_id}" if tool_call_id else f" {tool_name}"
+            return f"{message_id}. tool{suffix}: {content}"
+        return f"{message_id}. {role}: {content}"
 
     def _emit_assistant_state(self, session_id: str, turn_id: str | None, state: str) -> Iterable[AgentEvent]:
         payload: dict[str, Any] = {"state": state}
@@ -2360,13 +2521,27 @@ class AgentRuntime:
 
         return parsed if isinstance(parsed, dict) else {}
 
-    @staticmethod
-    def _record_tool_result(history: list[dict[str, Any]], tool_call_id: str, result: dict[str, Any]) -> None:
+    def _record_tool_result(
+        self,
+        history: list[dict[str, Any]],
+        session_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        result: dict[str, Any],
+    ) -> None:
+        content = json.dumps(result, ensure_ascii=False)
         history.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": json.dumps(result, ensure_ascii=False),
+            "content": content,
         })
+        self.memory_store.save(
+            session_id,
+            "tool",
+            content,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+        )
 
     @staticmethod
     def _tool_finished_payload(

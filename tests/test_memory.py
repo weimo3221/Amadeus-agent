@@ -145,6 +145,26 @@ class MessageMemoryStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 memory.save_conversation_summary("session-1", "  ")
 
+    def test_tool_transcript_messages_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database_path)
+            tool_calls = [{
+                "id": "call_time",
+                "type": "function",
+                "function": {"name": "get_current_time", "arguments": "{}"},
+            }]
+
+            memory.save("session-1", "assistant", "", tool_calls=tool_calls)
+            memory.save("session-1", "tool", '{"formatted": "12:00"}', tool_call_id="call_time", tool_name="get_current_time")
+            reloaded = MessageMemoryStore(database_path).load("session-1")
+
+        self.assertEqual(reloaded[0]["role"], "assistant")
+        self.assertEqual(reloaded[0]["tool_calls"], tool_calls)
+        self.assertEqual(reloaded[1]["role"], "tool")
+        self.assertEqual(reloaded[1]["tool_call_id"], "call_time")
+        self.assertEqual(reloaded[1]["tool_name"], "get_current_time")
+
     def test_memory_items_can_be_saved_listed_and_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

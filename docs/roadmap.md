@@ -17,7 +17,7 @@ The next implementation pass should proceed in this order:
 3. Current: turn MCP from a configured runtime bridge into a practical user-facing capability. The Main UI MCP tab now manages HTTP JSON-RPC servers, tests discovery, and reloads the Python ToolRegistry; `scripts/dev_mcp_server.py` provides local verification targets, including a no-token Hermes-style fixture. MCP tool schema names now normalize external server/tool identifiers into model-safe underscore names. Next MCP work should improve persisted diagnostics/audit surfaces and then evaluate stdio/SSE support.
 4. Current: tighten the skills/tool/MCP UI semantics around "globally available", "role-selected", "suggested", and "active" so the desktop can keep context small without hiding diagnostic depth. Role settings now persist runtime-scope allowlists; the next UI pass should replace the text-list editors with searchable multi-select controls backed by current tool, skill, and MCP inventories.
 5. Next: keep shrinking `apps/server` to transport/model-serving/feedback proxy responsibilities. Do not reintroduce TypeScript-owned agent, tool, memory, or audio turn logic.
-6. Next: keep ToolRuntime and Memory v2 in consolidation mode. Extend them only for real gaps found while implementing desktop, Live2D, audio, MCP, and user-facing runtime flows.
+6. Next: keep ToolRuntime and Memory v2 in consolidation mode. Tool-call transcripts now persist across turns, summary compaction preserves assistant/tool-result pairing, and budget-driven compaction now uses trigger-budget recent-tail retention across turn-start, provider-overflow retry, and turn-end paths. Follow-up work should focus on observability and selective old-tool-output pruning only when real high-volume tools need it.
 7. Later: implement the real CLI client only after the basic Main UI workflows are stable. It should default to its own session ID unless explicitly attached elsewhere.
 8. Later: after the desktop UI shape settles, add a real skill import/install flow, run `validate_skills.py` as part of that flow, and support runtime refresh so newly added skills become available without a full manual restart.
 9. Later: fix documentation drift when implementation boundaries move, especially package READMEs that still describe active runtime modules as placeholders.
@@ -276,7 +276,7 @@ Target deliverables:
 - First task runner abstraction complete: `TaskRunner` / `InProcessTaskRunner` separate scheduling/execution submission from the task state machine, leaving process-backed execution as a later implementation.
 - First task-state context slice complete: queued/running/blocked session tasks are injected as reference-only `<active-tasks>` context and recent terminal outcomes are injected as `<recent-tasks>` with diagnostics.
 - Durable multi-process task runner implementation.
-- Richer context compression.
+- Richer context compression: Hermes-style tool-call transcript persistence, pair-safe summary boundary alignment, trigger-budget recent-tail retention, and turn-start / overflow-retry / turn-end compaction paths are in place; remaining work is better compression observability, selective old-tool-output pruning, and quality audits for generated summaries.
 - Long task plans.
 - Human approval checkpoints.
 - Provider and harness profiles.
