@@ -976,7 +976,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(rejected["candidate"]["status"], "rejected")
         self.assertEqual(len(rejected_list["candidates"]), 1)
 
-    def test_memory_review_run_creates_pending_candidates_over_http(self) -> None:
+    def test_memory_review_run_auto_promotes_safe_candidates_over_http(self) -> None:
         runtime_server.memory_store.save("http-test", "user", "Please answer directly over HTTP.")
         runtime_server.memory_store.save("http-test", "assistant", "Understood.")
         runtime_server.agent_runtime = ReviewRuntime(
@@ -986,21 +986,25 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         )
 
         reviewed = self.post_json("/memory/review/run", {"sessionId": "http-test", "force": True})
-        listed = self.get_json("/memory/review/candidates?sessionId=http-test&status=pending")
+        listed = self.get_json("/memory/review/candidates?sessionId=http-test&status=accepted")
         jobs = self.get_json("/memory/review/jobs?sessionId=http-test&status=completed")
+        items = self.get_json("/memory/items?scope=user")
 
         self.assertTrue(reviewed["ok"])
         self.assertTrue(reviewed["reviewed"])
         self.assertEqual(reviewed["job"]["status"], "completed")
         self.assertEqual(reviewed["job"]["trigger"], "manual")
         self.assertEqual(reviewed["candidateCount"], 1)
+        self.assertEqual(reviewed["promotedItemCount"], 1)
         self.assertEqual(len(listed["candidates"]), 1)
+        self.assertEqual(listed["candidates"][0]["status"], "accepted")
         self.assertEqual(listed["candidates"][0]["content"], "The user prefers HTTP-reviewed direct answers.")
         self.assertTrue(jobs["ok"])
         self.assertEqual(len(jobs["jobs"]), 1)
         self.assertEqual(jobs["jobs"][0]["jobId"], reviewed["jobId"])
         self.assertEqual(jobs["jobs"][0]["savedCandidateCount"], 1)
-        self.assertEqual(self.get_json("/memory/items?scope=user")["items"], [])
+        self.assertEqual(len(items["items"]), 1)
+        self.assertEqual(items["items"][0]["content"], "The user prefers HTTP-reviewed direct answers.")
 
     def test_memory_summary_roundtrip_over_http(self) -> None:
         runtime_server.memory_store.save("http-test", "user", "Long setup")

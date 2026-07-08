@@ -193,7 +193,7 @@ Desktop can request memory review data and actions through the bridge:
 
 ### memory.review.candidates / memory.review.jobs / memory.review.updated
 
-The bridge emits memory review state in response to desktop `memory.review.*` requests and after review actions. Candidates are pending proposals only; durable memory is written only after an accept action.
+The bridge emits memory review state in response to desktop `memory.review.*` requests and after review actions. Runtime review auto-promotes safe candidates into durable memory and marks their candidate records as accepted; pending candidates remain for manual accept/reject flows.
 
 ### scheduled.updated
 

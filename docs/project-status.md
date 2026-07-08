@@ -301,9 +301,9 @@ Remaining Phase 7 work should be treated as incremental hardening: richer contex
 
 Status: core system landed; consolidation remains.
 
-Memory v2 is no longer just planned. Stable Markdown memory, SQLite-backed message history and FTS retrieval, structured memory facts, explicit memory tools, memory review candidates, accept/reject flows, automatic review gates, runtime memory config, schema metadata, and safety filters are in place.
+Memory v2 is no longer just planned. Stable Markdown memory, SQLite-backed message history and FTS retrieval, structured memory facts, explicit memory tools, memory review candidate audit records, accept/reject flows for exception-path candidates, automatic safe-candidate promotion, runtime memory config, schema metadata, and safety filters are in place.
 
-Remaining Phase 8 work is about making the memory behavior mature in practice: better summary/profile/retrieval policy, provider overflow compact-and-retry confidence, review quality tuning, and lightweight diagnostics endpoints to understand why a fact was retrieved, proposed, accepted, rejected, or suppressed.
+Remaining Phase 8 work is about making the memory behavior mature in practice: better summary/profile/retrieval policy, provider overflow compact-and-retry confidence, auto-promotion quality tuning, and lightweight diagnostics endpoints to understand why a fact was retrieved, proposed, accepted, rejected, or suppressed.
 
 ## Completed Subphase
 
@@ -416,11 +416,11 @@ Started.
 - Python exposes recent in-memory context assembler diagnostics through `GET /memory/context/diagnostics`, scoped by session and bounded by `context.diagnosticsLimit`.
 - Structured `memory_items` now persist durable `user` / `agent` / `project` facts, expose `GET /memory/items`, `POST /memory/items`, and `POST /memory/items/delete`, and inject the active top items into model context.
 - Explicit structured memory tools are now in place: `search_memory_items` reads durable facts without approval, while `memory_add`, `memory_replace`, and `memory_forget` mutate one durable fact only through the `ask` permission path.
-- Memory review candidates now provide a human-controlled promotion queue: `GET/POST /memory/review/candidates` manages pending candidates, `POST /memory/review/accept` promotes one into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory.
-- Background memory review runner can now be triggered with `POST /memory/review/run` or automatically after a completed turn when the threshold/cooldown gates allow it; it asks the provider to propose candidates from recent messages and only writes pending `memory_review_candidates`, never durable `memory_items`.
+- Memory review candidates now provide durable audit records plus a human-controlled exception queue: runtime review auto-promotes safe accepted candidates into `memory_items`, while `GET/POST /memory/review/candidates`, `POST /memory/review/accept`, and `POST /memory/review/reject` still manage pending/manual candidates.
+- Background memory review runner can now be triggered with `POST /memory/review/run` or automatically after a completed turn when the threshold/cooldown gates allow it; it asks the provider to propose candidates from recent messages, applies safety/scope filters, stores candidate audit records, and automatically promotes safe candidates into durable `memory_items`.
 - Memory review safety filters now block secret-like content, temporary debug/run state, uncertain claims, overly specific local/cache/generated paths, and obvious `user` / `agent` / `project` scope mismatches before candidates are persisted.
 - Rejected memory review candidates suppress later identical suggestions for the same session/scope/content.
-- Desktop now exposes the human review loop: it lists pending candidates, lets the user trigger review manually, and sends Accept / Reject actions over the WebSocket bridge.
+- Desktop still exposes the review loop for exception-path candidates: it lists pending candidates, lets the user trigger review manually, and sends Accept / Reject actions over the WebSocket bridge.
 - Memory review job observability is now persisted in SQLite `memory_review_jobs`: every manual/automatic review records `running`, `completed`, `skipped`, or `failed` state, trigger, skip reason/error, source message range/count, proposed/saved/suppressed candidate counts, and duration.
 - Python exposes `GET /memory/review/jobs`, the TypeScript bridge relays it as `memory.review.jobs`, and the desktop memory review panel shows the latest job summary next to the pending candidate count.
 - Summary compaction is now token-budget-aware: runtime estimates context tokens before provider calls and after turns, loads its defaults from `configs/runtime.yaml`, supports explicit HTTP reload and environment overrides such as `AMADEUS_CONTEXT_MAX_TOKENS`, dynamically reduces the recent-turn keep window from a trigger-budget fraction, applies a capped floor for recent raw turns, and retries once after provider context-overflow errors.
@@ -487,7 +487,7 @@ Started: the first restricted `delegate_task` research/search tool, session task
 - Add full sub-agent orchestration abstraction.
 - Add context compression.
 - Add long-task planning.
-- Add human approval checkpoints.
+- Add human approval checkpoints for destructive, sensitive, or low-confidence actions.
 - Add provider/harness profiles.
 - Add eval coverage for tool choice, permissions, memory, Live2D, audio, and guardrails.
 

@@ -469,7 +469,7 @@ harnesses:
 - 已完成 conversation summary 第一片：SQLite `conversation_summaries`、覆盖范围元数据、`GET /memory/summary`、`POST /memory/summary`、`POST /memory/compact`、阈值触发 compaction、context 注入。
 - 已完成 structured memory 第一片：SQLite `memory_items`、`user` / `agent` / `project` scope、显式 add/list/delete HTTP API、`<memory-items>` context 注入。
 - 已完成 explicit structured memory tools：`search_memory_items` 只读检索 durable facts，`memory_add` / `memory_replace` / `memory_forget` 通过 `ask` 权限写入、替换或删除单条 durable fact，并带重复检测、来源 session 元数据、模型输出裁剪和 no-progress guardrail。
-- 已完成 memory review candidate 队列第一片：SQLite `memory_review_candidates`、`pending` / `accepted` / `rejected` / `superseded` 状态、候选查询/创建 API、accept 提升到 `memory_items`、reject 不写入 durable memory，且 rejected 候选会 suppression 后续同 session/scope/content 的重复建议。
+- 已完成 memory review candidate 审计队列第一片：SQLite `memory_review_candidates`、`pending` / `accepted` / `rejected` / `superseded` 状态、候选查询/创建 API、安全候选自动 accepted 并提升到 `memory_items`、accept 可处理 pending 例外候选、reject 不写入 durable memory，且 rejected 候选会 suppression 后续同 session/scope/content 的重复建议。
 - 实现 context assembler：
   - system prompt。
   - character persona。
@@ -483,9 +483,9 @@ harnesses:
 - 继续扩展 explicit structured memory 工具：
   - 已完成：`search_memory_items`、`memory_add`、`memory_replace`、`memory_forget`。
 - 实现 background memory review runner：
-  - 已完成手动触发第一片：`POST /memory/review/run` 读取最近消息、已有 durable memory 和 pending candidates，只生成 `memory_review_candidates`，不直接写入 `memory_items`。
+  - 已完成手动触发第一片：`POST /memory/review/run` 读取最近消息、已有 durable memory 和 pending candidates，生成候选审计记录，并将通过 safety/scope filter 的安全候选自动提升到 `memory_items`。
   - 已完成自动调度第一片：每个 turn 的主回复发出后，按 message-count threshold、success/failure cooldown 和 no-new-message gate 判断是否运行 review。
-  - 自动调度不会自动 accept，也不会直接写 durable memory。
+  - 自动调度会自动提升安全候选；低质量、重复或不安全候选会被 suppressed，pending 队列保留给手动创建、旧数据和后续例外路径。
   - 已完成 job observability 第一片：SQLite `memory_review_jobs` 记录每次 manual/auto review 的 trigger、`running` / `completed` / `skipped` / `failed` 状态、skip reason/error、source message range/count、proposed/saved/suppressed candidate counts 和 duration；`GET /memory/review/jobs` 与 WebSocket `memory.review.jobs` 会把最近 job 暴露给桌面端。
   - 严禁保存 API key、临时状态和敏感内容。
 - `session_search` 支持跨会话召回。

@@ -1303,6 +1303,7 @@ class AgentRuntime:
             )
 
         saved_candidates = []
+        promoted_items = []
         suppressed_candidate_count = 0
         for proposed in proposed_candidates[:self.memory_review_max_candidates]:
             if not isinstance(proposed, dict):
@@ -1356,17 +1357,22 @@ class AgentRuntime:
             if candidate.get("suppressed"):
                 suppressed_candidate_count += 1
                 continue
-            saved_candidates.append(candidate)
+            accepted = self.memory_store.accept_memory_review_candidate(int(candidate["candidateId"]))
+            accepted_candidate = accepted.get("candidate") if isinstance(accepted.get("candidate"), dict) else candidate
+            saved_candidates.append(accepted_candidate)
+            if accepted.get("accepted") and isinstance(accepted.get("item"), dict):
+                promoted_items.append(accepted["item"])
 
         if not force:
             self._memory_review_cooldown_until[session_id] = perf_counter() + self.memory_review_success_cooldown_seconds
             self._memory_review_last_message_id[session_id] = latest_message_id
         logger.info(
-            "Memory review completed sessionId=%s sourceMessages=%s proposedCandidates=%s savedCandidates=%s suppressedCandidates=%s",
+            "Memory review completed sessionId=%s sourceMessages=%s proposedCandidates=%s savedCandidates=%s promotedItems=%s suppressedCandidates=%s",
             session_id,
             len(messages),
             len(proposed_candidates),
             len(saved_candidates),
+            len(promoted_items),
             suppressed_candidate_count,
         )
         return finish_job(
@@ -1377,8 +1383,10 @@ class AgentRuntime:
                 "sourceMessageCount": len(messages),
                 "proposedCandidateCount": len(proposed_candidates),
                 "candidateCount": len(saved_candidates),
+                "promotedItemCount": len(promoted_items),
                 "suppressedCandidateCount": suppressed_candidate_count,
                 "candidates": saved_candidates,
+                "items": promoted_items,
             },
             source_messages=messages,
             proposed_candidate_count=len(proposed_candidates),

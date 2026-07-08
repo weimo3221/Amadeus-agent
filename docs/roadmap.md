@@ -191,10 +191,10 @@ Target deliverables:
 - User profile facts and preferences.
 - SQLite FTS session search.
 - Explicit structured memory search/add/replace/forget tools.
-- Human-controlled memory review candidate queue.
-- Background memory review after turns that proposes candidates instead of directly writing durable memory.
+- Memory review candidate audit queue with human controls for exception-path candidates.
+- Background memory review after turns that auto-promotes safe durable facts after safety/scope filtering.
 - Persisted memory review jobs with status, skip/error reason, source message range, candidate counts, duration, HTTP query API, WebSocket event, and desktop summary.
-- Token-budget-aware summary compaction with dynamic recent-message retention and provider overflow compact-and-retry fallback.
+- Token-budget-aware summary compaction with dynamic recent-turn retention and provider overflow compact-and-retry fallback.
 - Context assembler that combines persona, summaries, profile, retrieved memory, recent messages, task state, and harness prompt fragments.
 
 Current status:

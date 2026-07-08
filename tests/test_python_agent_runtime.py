@@ -845,7 +845,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(current_user_messages), 1)
         self.assertIn("assistant.message", [event.type for event in events])
 
-    def test_memory_review_runner_saves_candidates_without_promoting(self) -> None:
+    def test_memory_review_runner_auto_promotes_safe_candidates(self) -> None:
         first_id = self.memory.save("default", "user", "Please keep responses direct.")
         last_id = self.memory.save("default", "assistant", "Understood.")
         runtime = FakeAgentRuntime(
@@ -866,7 +866,7 @@ class AgentRuntimeTests(unittest.TestCase):
         )
 
         result = runtime.review_memory("default", force=True)
-        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="accepted")
         items = self.memory.list_memory_items(scope="user")
 
         self.assertTrue(result["reviewed"])
@@ -878,15 +878,18 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(result["job"]["proposedCandidateCount"], 1)
         self.assertEqual(result["job"]["savedCandidateCount"], 1)
         self.assertEqual(result["candidateCount"], 1)
+        self.assertEqual(result["promotedItemCount"], 1)
         self.assertEqual(len(runtime.memory_review_requests), 1)
         self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["status"], "accepted")
         self.assertEqual(candidates[0]["content"], "The user prefers direct responses.")
         self.assertEqual(candidates[0]["scopeReason"], "This is a stable user preference.")
         self.assertEqual(candidates[0]["safetyLabels"], ["explicit", "non_secret", "non_transient", "correct_scope"])
         self.assertEqual(candidates[0]["retentionType"], "stable_preference")
         self.assertEqual(candidates[0]["sourceMessageStartId"], first_id)
         self.assertEqual(candidates[0]["sourceMessageEndId"], last_id)
-        self.assertEqual(items, [])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["content"], "The user prefers direct responses.")
 
     def test_memory_review_runner_suppresses_unsafe_candidates(self) -> None:
         self.memory.save("default", "user", "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz was used in this run.")
@@ -916,15 +919,19 @@ class AgentRuntimeTests(unittest.TestCase):
         )
 
         result = runtime.review_memory("default", force=True)
-        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="accepted")
+        items = self.memory.list_memory_items(scope="user")
 
         self.assertTrue(result["reviewed"])
         self.assertEqual(result["proposedCandidateCount"], 3)
         self.assertEqual(result["candidateCount"], 1)
+        self.assertEqual(result["promotedItemCount"], 1)
         self.assertEqual(result["suppressedCandidateCount"], 2)
         self.assertEqual(result["job"]["suppressedCandidateCount"], 2)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["content"], "The user prefers concise Chinese progress updates.")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["content"], "The user prefers concise Chinese progress updates.")
 
     def test_memory_review_runner_suppresses_scope_mismatches(self) -> None:
         self.memory.save("default", "user", "Please keep updates concise.")
@@ -954,15 +961,19 @@ class AgentRuntimeTests(unittest.TestCase):
         )
 
         result = runtime.review_memory("default", force=True)
-        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="accepted")
+        items = self.memory.list_memory_items(scope="project")
 
         self.assertTrue(result["reviewed"])
         self.assertEqual(result["proposedCandidateCount"], 3)
         self.assertEqual(result["candidateCount"], 1)
+        self.assertEqual(result["promotedItemCount"], 1)
         self.assertEqual(result["suppressedCandidateCount"], 2)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["scope"], "project")
         self.assertEqual(candidates[0]["content"], "The project exposes POST /runtime/config/reload for dynamic config reload.")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["content"], "The project exposes POST /runtime/config/reload for dynamic config reload.")
 
     def test_memory_review_runner_reports_provider_failure_without_candidates(self) -> None:
         self.memory.save("default", "user", "Remember nothing yet.")
@@ -982,9 +993,9 @@ class AgentRuntimeTests(unittest.TestCase):
             memory_review_response=[
                 {
                     "scope": "project",
-                    "content": "The project keeps memory review candidates pending for human approval.",
+                    "content": "The project automatically promotes safe memory review candidates.",
                     "confidence": 0.9,
-                    "reason": "The conversation states human approval is required.",
+                    "reason": "The conversation states safe memory can be promoted automatically.",
                     "sourceMessageStartId": 1,
                     "sourceMessageEndId": 2,
                 }
@@ -994,14 +1005,16 @@ class AgentRuntimeTests(unittest.TestCase):
 
         events = list(runtime.run_turn("default", "Memory writes need review.", lambda request: False))
         event_types = [event.type for event in events]
-        candidates = self.memory.list_memory_review_candidates(session_id="default", status="pending")
+        candidates = self.memory.list_memory_review_candidates(session_id="default", status="accepted")
+        items = self.memory.list_memory_items(scope="project")
 
         self.assertIn("assistant.message", event_types)
         self.assertIn("memory.review.updated", event_types)
         self.assertEqual(len(runtime.memory_review_requests), 1)
         self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0]["content"], "The project keeps memory review candidates pending for human approval.")
-        self.assertEqual(self.memory.list_memory_items(scope="project"), [])
+        self.assertEqual(candidates[0]["content"], "The project automatically promotes safe memory review candidates.")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["content"], "The project automatically promotes safe memory review candidates.")
 
     def test_auto_memory_review_uses_success_cooldown(self) -> None:
         for index in range(2):
