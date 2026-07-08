@@ -58,6 +58,18 @@ class CancellableRuntime:
         return {"sessionId": session_id, "turnId": turn_id, "cancelled": True, "reason": "cancel_requested"}
 
 
+class SlowRuntime:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": "turn-slow", "startedAt": "now"})
+        self.started.set()
+        self.release.wait(timeout=2)
+        yield AgentEvent("assistant.message", {"text": "slow completed"})
+
+
 class ImmediateTaskRunner:
     def __init__(self) -> None:
         self.submitted: list[str] = []
@@ -235,6 +247,78 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(finished["attemptCount"], 2)
         self.assertEqual([event["type"] for event in events], ["created", "running", "recovered", "running", "succeeded"])
         self.assertIn(("queued", "recovered"), published)
+
+    def test_worker_does_not_recover_running_task_with_active_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = SlowRuntime()
+            worker = TaskWorker(lambda: memory, lambda: runtime, max_workers=1, stale_after_seconds=1, lease_seconds=2)
+            task = memory.create_task(session_id="session-1", title="Lease protected")
+
+            worker.submit(str(task["id"]))
+            self.assertTrue(runtime.started.wait(timeout=2))
+            recovered = worker.recover()
+            running = memory.get_task(str(task["id"]))
+            runtime.release.set()
+            finished = self.wait_for_status(memory, str(task["id"]), "succeeded")
+            worker.shutdown()
+
+        self.assertEqual(recovered, [])
+        self.assertIsNotNone(running)
+        self.assertEqual(running["status"], "running")
+        self.assertIsNotNone(running["leaseOwner"])
+        self.assertIsNotNone(running["leaseExpiresAt"])
+        self.assertEqual(finished["status"], "succeeded")
+
+    def test_recover_uses_expired_lease_before_heartbeat_age(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = SuccessfulRuntime()
+            task = memory.create_task(session_id="session-1", title="Expired lease")
+            memory.start_task(
+                str(task["id"]),
+                claim_lock="lease-worker",
+                lease_owner="worker-a",
+                lease_seconds=30,
+                runner_kind="in_process",
+            )
+            now = datetime.now(timezone.utc)
+            expired = (now - timedelta(seconds=1)).isoformat()
+            fresh = now.isoformat()
+            with memory.connect() as connection:
+                connection.execute(
+                    "UPDATE tasks SET lease_expires_at = ?, last_heartbeat = ?, updated_at = ? WHERE id = ?",
+                    (expired, fresh, fresh, str(task["id"])),
+                )
+            worker = TaskWorker(lambda: memory, lambda: runtime, max_workers=1, stale_after_seconds=300)
+
+            recovered = worker.recover()
+            finished = self.wait_for_status(memory, str(task["id"]), "succeeded")
+            worker.shutdown()
+
+        self.assertEqual([task["id"] for task in recovered], [task["id"]])
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertIsNone(finished["leaseOwner"])
+        self.assertIsNone(finished["leaseExpiresAt"])
+
+    def test_task_artifacts_are_normalized_to_typed_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(
+                session_id="session-1",
+                title="Artifacts",
+                artifacts=[
+                    {"type": "file", "title": "Report", "path": "/tmp/report.md", "extra": {"ignored": True}},
+                    {"type": "unknown", "content": {"nested": True}},
+                ],
+            )
+
+        self.assertEqual(task["artifacts"][0]["type"], "file")
+        self.assertEqual(task["artifacts"][0]["title"], "Report")
+        self.assertEqual(task["artifacts"][0]["path"], "/tmp/report.md")
+        self.assertNotIn("extra", task["artifacts"][0])
+        self.assertEqual(task["artifacts"][1]["type"], "summary")
+        self.assertEqual(task["artifacts"][1]["content"], "{\"nested\": true}")
 
     def test_worker_cancel_marks_running_task_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

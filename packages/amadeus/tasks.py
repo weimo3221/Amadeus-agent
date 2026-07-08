@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -11,9 +12,11 @@ MAX_TASK_BODY_CHARS = 8000
 MAX_TASK_RESULT_CHARS = 12000
 MAX_TASK_ERROR_CHARS = 4000
 MAX_TASK_EVENT_MESSAGE_CHARS = 2000
+MAX_TASK_ARTIFACT_CONTENT_CHARS = 12000
 DEFAULT_TASK_MAX_ATTEMPTS = 3
 MAX_TASK_MAX_ATTEMPTS = 10
 TRUNCATION_MARKER = "... [truncated]"
+TASK_ARTIFACT_TYPES = {"file", "diff", "command_output", "summary", "link"}
 
 
 def normalize_task_status(status: Any, *, default: str = "queued") -> str:
@@ -102,3 +105,48 @@ def task_summary(tasks: list[dict[str, Any]]) -> dict[str, int]:
         if status in counts:
             counts[status] += 1
     return counts
+
+
+def normalize_task_artifacts(artifacts: object) -> str:
+    if artifacts is None:
+        return "[]"
+    if not isinstance(artifacts, list):
+        raise ValueError("artifacts must be an array")
+    return json.dumps([normalize_task_artifact(item) for item in artifacts[:50]], ensure_ascii=False)
+
+
+def normalize_task_artifact(artifact: object) -> dict[str, object]:
+    if not isinstance(artifact, dict):
+        return {
+            "type": "summary",
+            "title": "Artifact",
+            "content": truncate_text(str(artifact), MAX_TASK_ARTIFACT_CONTENT_CHARS),
+        }
+    raw_type = str(artifact.get("type") or "summary").strip().lower()
+    artifact_type = raw_type if raw_type in TASK_ARTIFACT_TYPES else "summary"
+    normalized: dict[str, object] = {
+        "type": artifact_type,
+        "title": normalize_optional_text(artifact.get("title"), max_chars=160, field_name="artifact.title")
+        or default_artifact_title(artifact_type),
+    }
+    for key in ("path", "url", "content", "summary", "language", "exitCode", "sourceTaskId", "jobId"):
+        if key not in artifact:
+            continue
+        value = artifact.get(key)
+        if isinstance(value, str):
+            normalized[key] = truncate_text(value, MAX_TASK_ARTIFACT_CONTENT_CHARS)
+        elif isinstance(value, (int, float, bool)) or value is None:
+            normalized[key] = value
+        else:
+            normalized[key] = truncate_text(json.dumps(value, ensure_ascii=False), MAX_TASK_ARTIFACT_CONTENT_CHARS)
+    return normalized
+
+
+def default_artifact_title(artifact_type: str) -> str:
+    return {
+        "file": "File",
+        "diff": "Diff",
+        "command_output": "Command output",
+        "summary": "Summary",
+        "link": "Link",
+    }.get(artifact_type, "Artifact")

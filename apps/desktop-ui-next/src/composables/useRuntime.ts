@@ -359,6 +359,9 @@ function tasksToItems(records: TaskRecord[]): TaskItem[] {
     reviewRequired: Boolean(task.reviewRequired),
     dueAt: task.dueAt ?? null,
     nextRunAt: task.nextRunAt ?? null,
+    leaseOwner: task.leaseOwner ?? null,
+    leaseExpiresAt: task.leaseExpiresAt ?? null,
+    runnerKind: task.runnerKind ?? null,
     lastHeartbeat: task.lastHeartbeat ?? null,
     finishedAt: task.finishedAt ?? null,
     artifacts: (task.artifacts ?? []).map((artifact) => ({

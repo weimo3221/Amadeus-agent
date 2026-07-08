@@ -312,9 +312,26 @@ async function runRerun(task: TaskItem) {
             <p class="mt-1 font-mono text-[11px] text-ink-faint">{{ formatDateTime(selectedTask.nextRunAt ?? selectedTask.dueAt) }}</p>
           </div>
           <div class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
-            <p class="text-ink-faint">心跳 / 完成</p>
-            <p class="mt-1 font-medium text-ink">{{ selectedTask.finishedAt ? '已结束' : selectedTask.lastHeartbeat ? 'Worker 活跃' : '无心跳' }}</p>
-            <p class="mt-1 font-mono text-[11px] text-ink-faint">{{ formatDateTime(selectedTask.finishedAt ?? selectedTask.lastHeartbeat) }}</p>
+            <p class="text-ink-faint">Lease / 完成</p>
+            <p class="mt-1 font-medium text-ink">
+              {{ selectedTask.finishedAt ? '已结束' : selectedTask.leaseExpiresAt ? 'Lease 有效' : selectedTask.lastHeartbeat ? '仅有心跳' : '无租约' }}
+            </p>
+            <p class="mt-1 font-mono text-[11px] text-ink-faint">{{ formatDateTime(selectedTask.finishedAt ?? selectedTask.leaseExpiresAt ?? selectedTask.lastHeartbeat) }}</p>
+          </div>
+        </div>
+
+        <div class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3 text-xs">
+          <p class="mb-2 font-semibold text-ink">Worker Lease</p>
+          <div class="grid gap-2 sm:grid-cols-3">
+            <p class="min-w-0 text-ink-faint">
+              Runner：<span class="font-mono text-ink">{{ selectedTask.runnerKind ?? 'in_process' }}</span>
+            </p>
+            <p class="min-w-0 text-ink-faint">
+              Owner：<span class="font-mono text-ink">{{ selectedTask.leaseOwner ?? '无' }}</span>
+            </p>
+            <p class="min-w-0 text-ink-faint">
+              Heartbeat：<span class="font-mono text-ink">{{ formatDateTime(selectedTask.lastHeartbeat) }}</span>
+            </p>
           </div>
         </div>
 

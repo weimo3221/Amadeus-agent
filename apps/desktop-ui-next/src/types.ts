@@ -79,6 +79,9 @@ export interface TaskItem {
   reviewRequired: boolean
   dueAt?: string | null
   nextRunAt?: string | null
+  leaseOwner?: string | null
+  leaseExpiresAt?: string | null
+  runnerKind?: string | null
   lastHeartbeat?: string | null
   finishedAt?: string | null
   artifacts: TaskArtifact[]

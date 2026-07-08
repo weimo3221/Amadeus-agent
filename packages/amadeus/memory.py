@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -25,6 +25,7 @@ from amadeus.tasks import (
     MAX_TASK_RESULT_CHARS,
     normalize_optional_text,
     normalize_task_body,
+    normalize_task_artifacts,
     normalize_task_max_attempts,
     normalize_task_event_type,
     normalize_task_priority,
@@ -238,6 +239,9 @@ class MessageMemoryStore:
                     max_attempts INTEGER NOT NULL DEFAULT 3,
                     next_run_at TEXT,
                     claim_lock TEXT,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    runner_kind TEXT NOT NULL DEFAULT 'in_process',
                     last_heartbeat TEXT,
                     result TEXT,
                     error TEXT,
@@ -534,6 +538,9 @@ class MessageMemoryStore:
               max_attempts INTEGER NOT NULL DEFAULT 3,
               next_run_at TEXT,
               claim_lock TEXT,
+              lease_owner TEXT,
+              lease_expires_at TEXT,
+              runner_kind TEXT NOT NULL DEFAULT 'in_process',
               last_heartbeat TEXT,
               result TEXT,
               error TEXT,
@@ -586,6 +593,9 @@ class MessageMemoryStore:
             "blocked_reason": "TEXT",
             "review_required": "INTEGER NOT NULL DEFAULT 0",
             "artifacts_json": "TEXT NOT NULL DEFAULT '[]'",
+            "lease_owner": "TEXT",
+            "lease_expires_at": "TEXT",
+            "runner_kind": "TEXT NOT NULL DEFAULT 'in_process'",
         }
         for name, definition in task_defaults.items():
             if name not in columns:
@@ -1732,7 +1742,8 @@ class MessageMemoryStore:
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
-                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
+                       lease_owner, lease_expires_at, runner_kind
                 FROM tasks
                 {where}
                 ORDER BY
@@ -1772,7 +1783,8 @@ class MessageMemoryStore:
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
-                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
+                       lease_owner, lease_expires_at, runner_kind
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -1790,7 +1802,8 @@ class MessageMemoryStore:
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
-                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
+                       lease_owner, lease_expires_at, runner_kind
                 FROM tasks
                 WHERE session_id = ? AND status IN ('succeeded', 'failed', 'cancelled')
                 ORDER BY COALESCE(finished_at, updated_at) DESC
@@ -2334,13 +2347,33 @@ class MessageMemoryStore:
             raise ValueError("scheduled job not found")
         return job
 
-    def start_task(self, task_id: str, *, claim_lock: str) -> dict[str, object] | None:
+    def start_task(
+        self,
+        task_id: str,
+        *,
+        claim_lock: str,
+        lease_owner: str | None = None,
+        lease_seconds: float = 300.0,
+        runner_kind: str | None = None,
+    ) -> dict[str, object] | None:
         normalized_task_id = normalize_task_id(task_id)
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
         if not normalized_claim_lock:
             raise ValueError("claim_lock is required")
+        normalized_lease_owner = normalize_optional_text(
+            lease_owner or claim_lock,
+            max_chars=120,
+            field_name="lease_owner",
+        )
+        normalized_runner_kind = normalize_optional_text(
+            runner_kind or "in_process",
+            max_chars=80,
+            field_name="runner_kind",
+        ) or "in_process"
+        lease_ttl = max(1.0, float(lease_seconds))
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
+        lease_expires_at = (now_dt + timedelta(seconds=lease_ttl)).isoformat()
         with self.connect() as connection:
             row = connection.execute(
                 """
@@ -2356,19 +2389,32 @@ class MessageMemoryStore:
                 return self.get_task(normalized_task_id)
             if not task_time_is_due(str(row[3] or ""), now_dt) or not task_time_is_due(str(row[4] or ""), now_dt):
                 return self.get_task(normalized_task_id)
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE tasks
                 SET status = 'running',
                     attempt_count = attempt_count + 1,
                     next_run_at = NULL,
                     claim_lock = ?,
+                    lease_owner = ?,
+                    lease_expires_at = ?,
+                    runner_kind = ?,
                     last_heartbeat = ?,
                     updated_at = ?
                 WHERE id = ? AND status = 'queued'
                 """,
-                (normalized_claim_lock, now, now, normalized_task_id),
+                (
+                    normalized_claim_lock,
+                    normalized_lease_owner,
+                    lease_expires_at,
+                    normalized_runner_kind,
+                    now,
+                    now,
+                    normalized_task_id,
+                ),
             )
+            if cursor.rowcount != 1:
+                return self.get_task(normalized_task_id)
             self._insert_task_event(
                 connection,
                 task_id=normalized_task_id,
@@ -2376,26 +2422,35 @@ class MessageMemoryStore:
                 event_type="running",
                 status="running",
                 message="Task worker started",
-                metadata={"claimLock": normalized_claim_lock},
+                metadata={
+                    "claimLock": normalized_claim_lock,
+                    "leaseOwner": normalized_lease_owner,
+                    "leaseExpiresAt": lease_expires_at,
+                    "runnerKind": normalized_runner_kind,
+                },
                 created_at=now,
             )
         return self.get_task(normalized_task_id)
 
-    def heartbeat_task(self, task_id: str, *, claim_lock: str) -> dict[str, object] | None:
+    def heartbeat_task(self, task_id: str, *, claim_lock: str, lease_seconds: float = 300.0) -> dict[str, object] | None:
         normalized_task_id = normalize_task_id(task_id)
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
         if not normalized_claim_lock:
             raise ValueError("claim_lock is required")
-        now = datetime.now(timezone.utc).isoformat()
+        lease_ttl = max(1.0, float(lease_seconds))
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        lease_expires_at = (now_dt + timedelta(seconds=lease_ttl)).isoformat()
         with self.connect() as connection:
             connection.execute(
                 """
                 UPDATE tasks
                 SET last_heartbeat = ?,
+                    lease_expires_at = ?,
                     updated_at = ?
                 WHERE id = ? AND status = 'running' AND claim_lock = ?
                 """,
-                (now, now, normalized_task_id, normalized_claim_lock),
+                (now, lease_expires_at, now, normalized_task_id, normalized_claim_lock),
             )
         return self.get_task(normalized_task_id)
 
@@ -2460,6 +2515,8 @@ class MessageMemoryStore:
                     blocked_reason = ?,
                     result = COALESCE(?, result),
                     claim_lock = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
                     last_heartbeat = NULL,
                     next_run_at = NULL,
                     updated_at = ?
@@ -2503,6 +2560,8 @@ class MessageMemoryStore:
                 SET status = 'queued',
                     blocked_reason = NULL,
                     claim_lock = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
                     last_heartbeat = NULL,
                     updated_at = ?,
                     finished_at = NULL
@@ -2546,6 +2605,10 @@ class MessageMemoryStore:
                 SET status = 'succeeded',
                     blocked_reason = NULL,
                     error = NULL,
+                    claim_lock = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_heartbeat = NULL,
                     updated_at = ?,
                     finished_at = ?
                 WHERE id = ? AND status = 'blocked' AND review_required = 1
@@ -2606,6 +2669,8 @@ class MessageMemoryStore:
                 UPDATE tasks
                 SET status = 'queued',
                     claim_lock = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
                     last_heartbeat = NULL,
                     next_run_at = ?,
                     error = ?,
@@ -2649,7 +2714,8 @@ class MessageMemoryStore:
                 SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
-                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
+                       lease_owner, lease_expires_at, runner_kind
                 FROM tasks
                 WHERE status = 'queued'
                 ORDER BY priority DESC, updated_at ASC
@@ -2668,11 +2734,11 @@ class MessageMemoryStore:
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
         stale_after = max(1.0, float(stale_after_seconds))
-        stale: list[tuple[str, str, str | None, str | None]] = []
+        stale: list[tuple[str, str, str | None, str | None, str | None, str | None]] = []
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, session_id, claim_lock, last_heartbeat
+                SELECT id, session_id, claim_lock, last_heartbeat, lease_owner, lease_expires_at
                 FROM tasks
                 WHERE status = 'running'
                 ORDER BY updated_at ASC
@@ -2682,15 +2748,27 @@ class MessageMemoryStore:
             ).fetchall()
             for row in rows:
                 heartbeat = parse_iso_datetime(str(row[3])) if row[3] else None
-                if heartbeat is not None and (now_dt - heartbeat).total_seconds() < stale_after:
+                lease_expires_at = parse_iso_datetime(str(row[5])) if row[5] else None
+                if lease_expires_at is not None and lease_expires_at > now_dt:
                     continue
-                stale.append((str(row[0]), str(row[1]), str(row[2]) if row[2] else None, str(row[3]) if row[3] else None))
-            for task_id, session_id, claim_lock, heartbeat in stale:
+                if lease_expires_at is None and heartbeat is not None and (now_dt - heartbeat).total_seconds() < stale_after:
+                    continue
+                stale.append((
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]) if row[2] else None,
+                    str(row[3]) if row[3] else None,
+                    str(row[4]) if row[4] else None,
+                    str(row[5]) if row[5] else None,
+                ))
+            for task_id, session_id, claim_lock, heartbeat, lease_owner, lease_expires_at in stale:
                 connection.execute(
                     """
                     UPDATE tasks
                     SET status = 'queued',
                         claim_lock = NULL,
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
                         last_heartbeat = NULL,
                         next_run_at = ?,
                         error = ?,
@@ -2714,11 +2792,13 @@ class MessageMemoryStore:
                     metadata={
                         "previousStatus": "running",
                         "claimLock": claim_lock,
+                        "leaseOwner": lease_owner,
+                        "leaseExpiresAt": lease_expires_at,
                         "lastHeartbeat": heartbeat,
                     },
                     created_at=now,
                 )
-        return [task for task_id, _, _, _ in stale if (task := self.get_task(task_id)) is not None]
+        return [task for task_id, _, _, _, _, _ in stale if (task := self.get_task(task_id)) is not None]
 
     def finish_task(
         self,
@@ -2767,6 +2847,8 @@ class MessageMemoryStore:
                     result = ?,
                     error = ?,
                     claim_lock = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
                     last_heartbeat = NULL,
                     next_run_at = NULL,
                     updated_at = ?,
@@ -2828,6 +2910,10 @@ class MessageMemoryStore:
                 UPDATE tasks
                 SET status = 'cancelled',
                     error = ?,
+                    claim_lock = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_heartbeat = NULL,
                     updated_at = ?,
                     finished_at = ?
                 WHERE id = ?
@@ -4077,45 +4163,6 @@ def normalize_task_worker_type(worker_type: object) -> str:
     raise ValueError("task worker_type must be agent, script, review, or delegated")
 
 
-def normalize_task_artifacts(artifacts: object) -> str:
-    if artifacts is None:
-        return "[]"
-    if not isinstance(artifacts, list):
-        raise ValueError("artifacts must be an array")
-    return json.dumps([normalize_task_artifact(item) for item in artifacts[:50]], ensure_ascii=False)
-
-
-def normalize_task_artifact(artifact: object) -> dict[str, object]:
-    if not isinstance(artifact, dict):
-        return {"type": "summary", "title": "Artifact", "content": str(artifact)}
-    raw_type = str(artifact.get("type") or "summary").strip().lower()
-    artifact_type = raw_type if raw_type in {"file", "diff", "command_output", "summary", "link"} else "summary"
-    normalized: dict[str, object] = {
-        "type": artifact_type,
-        "title": normalize_optional_text(artifact.get("title"), max_chars=160, field_name="artifact.title")
-        or default_artifact_title(artifact_type),
-    }
-    for key in ("path", "url", "content", "summary", "language", "exitCode", "sourceTaskId", "jobId"):
-        if key not in artifact:
-            continue
-        value = artifact.get(key)
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            normalized[key] = value
-        else:
-            normalized[key] = json.dumps(value, ensure_ascii=False)
-    return normalized
-
-
-def default_artifact_title(artifact_type: str) -> str:
-    return {
-        "file": "File",
-        "diff": "Diff",
-        "command_output": "Command output",
-        "summary": "Summary",
-        "link": "Link",
-    }.get(artifact_type, "Artifact")
-
-
 def normalize_scheduled_job_id(job_id: str) -> str:
     normalized = job_id.strip() if isinstance(job_id, str) else ""
     if not normalized:
@@ -4367,6 +4414,10 @@ def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
         artifacts = json.loads(str(row[24] or "[]")) if len(row) > 24 else []
     except json.JSONDecodeError:
         artifacts = []
+    try:
+        normalized_artifacts = json.loads(normalize_task_artifacts(artifacts))
+    except ValueError:
+        normalized_artifacts = []
     return {
         "id": str(row[0]),
         "sessionId": str(row[1]),
@@ -4379,7 +4430,7 @@ def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
         "workerType": normalize_task_worker_type(row[21]) if len(row) > 21 and row[21] else "agent",
         "blockedReason": str(row[22]) if len(row) > 22 and row[22] else None,
         "reviewRequired": bool(row[23]) if len(row) > 23 else False,
-        "artifacts": artifacts if isinstance(artifacts, list) else [],
+        "artifacts": normalized_artifacts if isinstance(normalized_artifacts, list) else [],
         "status": normalize_task_status(row[4]),
         "priority": int(row[5] or 0),
         "dueAt": str(row[6]) if row[6] else None,
@@ -4393,6 +4444,9 @@ def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
         "attemptCount": attempt_count,
         "maxAttempts": max_attempts,
         "nextRunAt": next_run_at,
+        "leaseOwner": str(row[25]) if len(row) > 25 and row[25] else None,
+        "leaseExpiresAt": str(row[26]) if len(row) > 26 and row[26] else None,
+        "runnerKind": str(row[27]) if len(row) > 27 and row[27] else "in_process",
     }
 
 

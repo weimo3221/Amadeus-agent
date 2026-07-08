@@ -305,6 +305,9 @@ export interface TaskRecord {
   maxAttempts?: number
   nextRunAt?: string | null
   claimLock?: string | null
+  leaseOwner?: string | null
+  leaseExpiresAt?: string | null
+  runnerKind?: string | null
   lastHeartbeat?: string | null
   result?: string | null
   error?: string | null

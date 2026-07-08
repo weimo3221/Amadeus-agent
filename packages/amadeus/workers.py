@@ -49,6 +49,8 @@ class TaskWorker:
         retry_base_delay_seconds: float = 1.0,
         retry_max_delay_seconds: float = 30.0,
         stale_after_seconds: float = 300.0,
+        lease_seconds: float | None = None,
+        runner_kind: str = "in_process",
         runner: TaskRunner | None = None,
     ) -> None:
         self._memory_store_provider = memory_store_provider
@@ -57,6 +59,10 @@ class TaskWorker:
         self._retry_base_delay_seconds = max(0.0, float(retry_base_delay_seconds))
         self._retry_max_delay_seconds = max(self._retry_base_delay_seconds, float(retry_max_delay_seconds))
         self._stale_after_seconds = max(1.0, float(stale_after_seconds))
+        self._lease_seconds = max(1.0, float(lease_seconds if lease_seconds is not None else stale_after_seconds))
+        self._heartbeat_interval_seconds = max(0.5, min(30.0, self._lease_seconds / 3.0))
+        self._runner_kind = str(runner_kind or "in_process").strip() or "in_process"
+        self._worker_id = f"{self._runner_kind}-{uuid4().hex[:12]}"
         self._runner = runner or InProcessTaskRunner(max_workers=max_workers)
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}
@@ -105,7 +111,13 @@ class TaskWorker:
         memory_store = self._memory_store_provider()
         claim_lock = f"worker-{uuid4().hex[:12]}"
         cancel_event = threading.Event()
-        task = memory_store.start_task(task_id, claim_lock=claim_lock)
+        task = memory_store.start_task(
+            task_id,
+            claim_lock=claim_lock,
+            lease_owner=self._worker_id,
+            lease_seconds=self._lease_seconds,
+            runner_kind=self._runner_kind,
+        )
         if not task or task.get("status") != "running":
             if task and task.get("status") == "queued":
                 self._schedule_if_needed(task)
@@ -119,6 +131,14 @@ class TaskWorker:
 
         result_text: str | None = None
         error_text: str | None = None
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(task_id, claim_lock, heartbeat_stop),
+            name=f"amadeus-task-heartbeat-{task_id[:8]}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
         try:
             prompt = self._task_prompt(task)
             runtime = self._agent_runtime_provider()
@@ -131,7 +151,11 @@ class TaskWorker:
                     payload = getattr(event, "payload", {})
                 if event_type == "agent.turn.started":
                     try:
-                        memory_store.heartbeat_task(task_id, claim_lock=claim_lock)
+                        memory_store.heartbeat_task(
+                            task_id,
+                            claim_lock=claim_lock,
+                            lease_seconds=self._lease_seconds,
+                        )
                     except Exception:
                         logger.debug("Task heartbeat failed taskId=%s", task_id, exc_info=True)
                     turn_id = str(payload.get("turnId") or "")
@@ -177,9 +201,22 @@ class TaskWorker:
             except Exception as finish_error:
                 logger.info("Task worker failed to mark task failed taskId=%s error=%s", task_id, finish_error)
         finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
             with self._lock:
                 self._running.pop(task_id, None)
                 self._turns.pop(task_id, None)
+
+    def _heartbeat_loop(self, task_id: str, claim_lock: str, stop_event: threading.Event) -> None:
+        while not stop_event.wait(self._heartbeat_interval_seconds):
+            try:
+                self._memory_store_provider().heartbeat_task(
+                    task_id,
+                    claim_lock=claim_lock,
+                    lease_seconds=self._lease_seconds,
+                )
+            except Exception:
+                logger.debug("Task lease heartbeat failed taskId=%s", task_id, exc_info=True)
 
     @staticmethod
     def _task_prompt(task: dict[str, object]) -> str:

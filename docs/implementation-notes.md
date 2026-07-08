@@ -111,7 +111,9 @@ To add a simple tool, implement a JSON-serializable handler in a focused module 
 
 For external tools, prefer MCP config over new built-ins when the capability naturally belongs to another local service. The first supported transport is HTTP JSON-RPC with `tools/list` and `tools/call`; stdio/process lifecycle management is still future work.
 
-Task worker execution is split at the `TaskRunner` boundary. `TaskWorker` owns task claim/retry/recovery/cancel/event semantics, while `InProcessTaskRunner` owns the current thread-pool submission mechanism. Future process-backed runners should implement the same `submit(task_id, run_task)` and `shutdown(wait=...)` contract without changing task state transitions.
+Task worker execution is split at the `TaskRunner` boundary. `TaskWorker` owns task claim/retry/recovery/cancel/event semantics, while `InProcessTaskRunner` owns the current thread-pool submission mechanism. Running tasks now persist a lease (`leaseOwner`, `leaseExpiresAt`, `runnerKind`) in addition to the legacy `claimLock`; worker heartbeat threads renew the lease during long turns, startup recovery requeues expired leases or legacy stale heartbeats, and terminal transitions clear lease state. Future process-backed runners should implement the same `submit(task_id, run_task)` and `shutdown(wait=...)` contract without changing task state transitions. Do not introduce a parallel Kanban/swarm scheduler until this runner boundary has been exercised.
+
+Task artifacts stay embedded in `tasks.artifacts_json` for now, but normalization lives in `amadeus.tasks` and enforces the first typed payload set (`file`, `diff`, `command_output`, `summary`, `link`) with bounded textual fields. Richer artifact producers can add fields through that normalizer before a separate artifact table is justified.
 
 ## AIRI Code to Study First
 
