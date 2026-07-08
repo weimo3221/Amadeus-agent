@@ -23,6 +23,7 @@ sys.path.insert(0, str(PACKAGES_DIR))
 from amadeus.memory import MessageMemoryStore
 from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, AudioTranscriptCommand, AudioTranscriptFailure, AsrRuntime, LocalAudioLibrary, MacOsSayConfig, MacOsSayTtsProvider, create_asr_provider_from_config, create_tts_provider_from_config
+from amadeus.embeddings import BGE_M3_DIMENSIONS, BGE_M3_MODEL_ID, BGE_M3_PROVIDER_ID, LocalEmbeddingConfig, LocalEmbeddingDeploymentManager, default_bge_m3_model_dir, normalize_embedding_local_dir
 from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.mcp import McpServerConfig, list_mcp_tools
 from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_positive_int_value, parse_providers_config, parse_reasoning_effort, provider_profile
@@ -38,6 +39,7 @@ PORT = int(os.environ.get("AMADEUS_PYTHON_RUNTIME_PORT", os.environ.get("AMADEUS
 DATABASE_PATH = Path(os.environ.get("AMADEUS_MEMORY_DB", str(REPO_ROOT / "data" / "amadeus.sqlite")))
 AUDIO_ROOT = Path(os.environ.get("AMADEUS_AUDIO_ROOT", str(RUNTIME_DIR / "assets" / "audio")))
 LIVE2D_ROOT = Path(os.environ.get("AMADEUS_LIVE2D_ROOT", str(REPO_ROOT / "models" / "live2d")))
+EMBEDDING_MODELS_ROOT = Path(os.environ.get("AMADEUS_EMBEDDING_MODELS_ROOT", str(REPO_ROOT / "models" / "embeddings")))
 HARNESSES_CONFIG_PATH = Path(os.environ.get("AMADEUS_HARNESSES_CONFIG", str(REPO_ROOT / "configs" / "harnesses.yaml")))
 PROVIDERS_CONFIG_PATH = REPO_ROOT / "configs" / "providers.yaml"
 TOOLS_CONFIG_PATH = REPO_ROOT / "configs" / "tools.yaml"
@@ -95,6 +97,10 @@ audio_library = LocalAudioLibrary(AUDIO_ROOT, PUBLIC_BASE_URL)
 live2d_library = LocalLive2DModelLibrary(LIVE2D_ROOT, PUBLIC_BASE_URL, HARNESSES_CONFIG_PATH)
 audio_runtime = AudioRuntime(audio_library, create_tts_provider_from_config(audio_library))
 asr_runtime = AsrRuntime(audio_library, create_asr_provider_from_config(audio_library))
+embedding_deployment_manager = LocalEmbeddingDeploymentManager(
+    repo_root=REPO_ROOT,
+    default_model_dir=default_bge_m3_model_dir(REPO_ROOT),
+)
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
 runtime_event_bus = RuntimeEventBus()
@@ -383,6 +389,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path == "/memory/embedding/config":
+            logger.info("Handling memory embedding config request")
+            self.write_json(200, build_embedding_config_payload())
+            return
+
         if parsed.path == "/memory/review/candidates":
             query = parse_qs(parsed.query)
             session_id = optional_query_string(query, "sessionId")
@@ -600,6 +611,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/memory/items/delete":
             self.handle_memory_item_delete()
+            return
+
+        if self.path == "/memory/embedding/deploy":
+            self.handle_memory_embedding_deploy()
+            return
+
+        if self.path == "/memory/embedding/cancel":
+            self.handle_memory_embedding_cancel()
             return
 
         if self.path == "/memory/review/candidates":
@@ -1591,6 +1610,44 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:
             self.write_json(500, {"ok": False, "error": str(error)})
 
+    def handle_memory_embedding_deploy(self) -> None:
+        try:
+            body = self.read_json_body()
+            local_dir = normalize_embedding_local_dir(body.get("localDir"), repo_root=REPO_ROOT)
+            force = parse_bool_value(body.get("force"), False)
+            config = write_local_bge_m3_embedding_config(local_dir)
+            payload = embedding_deployment_manager.deploy(config, force=force)
+            logger.info(
+                "Started memory embedding deploy provider=%s modelId=%s localDir=%s force=%s status=%s phase=%s",
+                config.provider,
+                config.model_id,
+                config.local_dir,
+                force,
+                payload.get("deployment", {}).get("status") if isinstance(payload.get("deployment"), dict) else "",
+                payload.get("deployment", {}).get("phase") if isinstance(payload.get("deployment"), dict) else "",
+            )
+            self.write_json(202, {"ok": True, **build_embedding_config_payload()})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Memory embedding deploy failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_embedding_cancel(self) -> None:
+        try:
+            result = embedding_deployment_manager.cancel()
+            logger.info(
+                "Cancelled memory embedding deploy cancelled=%s status=%s",
+                result.get("cancelled"),
+                result.get("deployment", {}).get("status") if isinstance(result.get("deployment"), dict) else "",
+            )
+            payload = build_embedding_config_payload()
+            payload["cancelResult"] = result
+            self.write_json(200, payload)
+        except Exception as error:
+            logger.info("Memory embedding cancel failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
     def handle_memory_review_candidate_save(self) -> None:
         try:
             body = self.read_json_body()
@@ -2126,6 +2183,7 @@ def build_runtime_health() -> dict[str, Any]:
         "runtime": runtime_health_check(),
         "model": model_health_check(),
         "memory": memory_health_check(),
+        "embedding": embedding_health_check(),
         "tools": tools_health_check(),
         "live2d": live2d_health_check(),
         "audio": audio_health_check(),
@@ -2201,6 +2259,33 @@ def memory_health_check() -> dict[str, Any]:
             "status": "error",
             "databasePath": str(memory_store.database_path),
             "databaseExists": memory_store.database_path.exists(),
+            "error": str(error),
+        }
+
+
+def embedding_health_check() -> dict[str, Any]:
+    try:
+        payload = build_embedding_config_payload()
+        embedding = payload["embedding"]
+        deployed = bool(embedding.get("deployed")) if isinstance(embedding, dict) else False
+        configured = bool(embedding.get("configured")) if isinstance(embedding, dict) else False
+        deployment = embedding.get("deployment") if isinstance(embedding, dict) else {}
+        active = bool(deployment.get("active")) if isinstance(deployment, dict) else False
+        return {
+            "status": "ok" if deployed else ("degraded" if configured or active else "disabled"),
+            "configured": configured,
+            "deployed": deployed,
+            "provider": embedding.get("provider") if isinstance(embedding, dict) else "",
+            "modelId": embedding.get("modelId") if isinstance(embedding, dict) else "",
+            "localDir": embedding.get("localDir") if isinstance(embedding, dict) else "",
+            "dependenciesInstalled": embedding.get("dependenciesInstalled") if isinstance(embedding, dict) else False,
+            "modelInstalled": embedding.get("modelInstalled") if isinstance(embedding, dict) else False,
+            "deployment": deployment,
+        }
+    except Exception as error:
+        logger.info("Embedding health check failed error=%s", error)
+        return {
+            "status": "error",
             "error": str(error),
         }
 
@@ -2319,6 +2404,114 @@ def build_runtime_config_payload() -> dict[str, Any]:
             "runtimeConfig": str(agent_runtime.runtime_config_path),
         },
     }
+
+
+def build_embedding_config_payload() -> dict[str, Any]:
+    config = current_local_bge_m3_embedding_config()
+    status = embedding_deployment_manager.status(config)
+    status["configured"] = local_bge_m3_embedding_is_configured()
+    provider_types = [
+        {
+            "id": BGE_M3_PROVIDER_ID,
+            "label": "BGE-M3 本地 Embedding",
+            "type": "flag_embedding",
+            "modelId": BGE_M3_MODEL_ID,
+            "dimensions": BGE_M3_DIMENSIONS,
+        },
+        {
+            "id": "disabled",
+            "label": "关闭本地 Embedding",
+            "type": "none",
+            "modelId": "",
+            "dimensions": 0,
+        },
+    ]
+    return {
+        "ok": True,
+        "embedding": status,
+        "providerTypes": provider_types,
+        "paths": {
+            "env": str(ENV_CONFIG_PATH),
+            "providersConfig": str(PROVIDERS_CONFIG_PATH),
+            "defaultModelDir": str(default_bge_m3_model_dir(REPO_ROOT)),
+            "modelsRoot": str(EMBEDDING_MODELS_ROOT),
+        },
+    }
+
+
+def local_bge_m3_embedding_is_configured() -> bool:
+    config = parse_providers_config(PROVIDERS_CONFIG_PATH)
+    embedding = config.get("embedding") if isinstance(config.get("embedding"), dict) else {}
+    providers = embedding.get("providers") if isinstance(embedding.get("providers"), dict) else {}
+    env_provider = os.environ.get("AMADEUS_EMBEDDING_PROVIDER", "").strip()
+    return (
+        env_provider == BGE_M3_PROVIDER_ID
+        or str(embedding.get("default") or "") == BGE_M3_PROVIDER_ID
+        or isinstance(providers.get(BGE_M3_PROVIDER_ID), dict)
+    )
+
+
+def current_local_bge_m3_embedding_config() -> LocalEmbeddingConfig:
+    config = parse_providers_config(PROVIDERS_CONFIG_PATH)
+    embedding = config.get("embedding") if isinstance(config.get("embedding"), dict) else {}
+    providers = embedding.get("providers") if isinstance(embedding.get("providers"), dict) else {}
+    default_provider = str(os.environ.get("AMADEUS_EMBEDDING_PROVIDER") or embedding.get("default") or BGE_M3_PROVIDER_ID)
+    provider_entry = providers.get(default_provider) if isinstance(providers.get(default_provider), dict) else {}
+    model_id = str(provider_entry.get("model") or os.environ.get("AMADEUS_BGE_M3_MODEL_ID") or BGE_M3_MODEL_ID)
+    local_dir_value = (
+        provider_entry.get("localPath")
+        or os.environ.get("AMADEUS_BGE_M3_MODEL_DIR")
+        or str(default_bge_m3_model_dir(REPO_ROOT))
+    )
+    dimensions = parse_positive_int_value(provider_entry.get("dimensions")) or BGE_M3_DIMENSIONS
+    batch_size = parse_positive_int_value(provider_entry.get("batchSize")) or 8
+    return LocalEmbeddingConfig(
+        provider=default_provider,
+        model_id=model_id,
+        local_dir=normalize_embedding_local_dir(str(local_dir_value), repo_root=REPO_ROOT),
+        dimensions=dimensions,
+        normalize_embeddings=parse_bool_value(provider_entry.get("normalizeEmbeddings"), True),
+        batch_size=batch_size,
+        device=str(provider_entry.get("device") or "auto"),
+    )
+
+
+def write_local_bge_m3_embedding_config(local_dir: Path) -> LocalEmbeddingConfig:
+    config = LocalEmbeddingConfig(
+        provider=BGE_M3_PROVIDER_ID,
+        model_id=BGE_M3_MODEL_ID,
+        local_dir=local_dir,
+        dimensions=BGE_M3_DIMENSIONS,
+        normalize_embeddings=True,
+        batch_size=8,
+        device="auto",
+    )
+    env_updates = {
+        "AMADEUS_EMBEDDING_PROVIDER": BGE_M3_PROVIDER_ID,
+        "AMADEUS_BGE_M3_MODEL_ID": BGE_M3_MODEL_ID,
+        "AMADEUS_BGE_M3_MODEL_DIR": str(local_dir),
+    }
+    update_env_file(ENV_CONFIG_PATH, env_updates)
+    os.environ.update(env_updates)
+    assemble_providers_config(embedding_lines=local_bge_m3_embedding_section_lines(config))
+    return config
+
+
+def local_bge_m3_embedding_section_lines(config: LocalEmbeddingConfig) -> list[str]:
+    return [
+        "embedding:",
+        f"  default: {config.provider}",
+        "  providers:",
+        f"    {BGE_M3_PROVIDER_ID}:",
+        "      label: BGE-M3 Local",
+        "      type: flag_embedding",
+        f"      model: {quote_yaml_value(config.model_id)}",
+        f"      localPath: {quote_yaml_value(str(config.local_dir))}",
+        f"      dimensions: {config.dimensions}",
+        f"      normalizeEmbeddings: {str(config.normalize_embeddings).lower()}",
+        f"      batchSize: {config.batch_size}",
+        f"      device: {quote_yaml_value(config.device)}",
+    ]
 
 
 def build_tools_config_payload() -> dict[str, Any]:
@@ -2724,6 +2917,7 @@ def assemble_providers_config(
     llm_lines: list[str] | None = None,
     tts_lines: list[str] | None = None,
     asr_lines: list[str] | None = None,
+    embedding_lines: list[str] | None = None,
 ) -> None:
     """Rewrite providers.yaml, replacing only the supplied sections and keeping
     the rest verbatim so ``${VAR}`` templates and unrelated settings survive."""
@@ -2731,12 +2925,21 @@ def assemble_providers_config(
     llm = llm_lines if llm_lines is not None else (existing.get("llm") or DEFAULT_LLM_SECTION_LINES)
     tts = tts_lines if tts_lines is not None else (existing.get("tts") or DEFAULT_TTS_SECTION_LINES)
     asr = asr_lines if asr_lines is not None else (existing.get("asr") or DEFAULT_ASR_SECTION_LINES)
+    embedding = embedding_lines if embedding_lines is not None else existing.get("embedding")
 
-    content = list(llm)
-    content.append("")
-    content.extend(tts)
-    content.append("")
-    content.extend(asr)
+    content: list[str] = []
+    for section in (llm, tts, asr, embedding):
+        if not section:
+            continue
+        if content:
+            content.append("")
+        content.extend(section)
+    for name, section in existing.items():
+        if name in {"llm", "tts", "asr", "embedding"}:
+            continue
+        if content:
+            content.append("")
+        content.extend(section)
     PROVIDERS_CONFIG_PATH.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")
 
 

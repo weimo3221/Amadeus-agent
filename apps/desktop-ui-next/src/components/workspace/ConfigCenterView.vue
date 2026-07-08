@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useRuntime } from '@/composables/useRuntime'
 import AmInput from '@/components/ui/AmInput.vue'
@@ -17,13 +17,25 @@ interface BehaviorFormEntry {
   intensity: string
 }
 
-const { state, saveApiConfig, saveAudioConfig, saveLive2dBehaviors, importLive2d, selectLive2d, refreshMcpDiagnostics } =
+const {
+  state,
+  saveApiConfig,
+  saveAudioConfig,
+  saveLive2dBehaviors,
+  importLive2d,
+  selectLive2d,
+  refreshMcpDiagnostics,
+  refreshEmbeddingConfig,
+  deployEmbedding,
+  cancelEmbedding,
+} =
   useRuntime()
 
 const activeTab = ref('model')
 
 const tabs = [
   { value: 'model', label: '模型', icon: 'ph:cpu-duotone' },
+  { value: 'memory', label: '记忆', icon: 'ph:brain-duotone' },
   { value: 'live2d', label: '形象', icon: 'ph:sparkle-duotone' },
   { value: 'voice', label: '语音', icon: 'ph:waveform-duotone' },
   { value: 'mcp', label: 'MCP', icon: 'ph:plugs-connected-duotone' },
@@ -130,6 +142,125 @@ async function saveModel() {
     apiKey.value = ''
     flash(apiFlash)
   }
+}
+
+/* ---------------- 记忆 Embedding ---------------- */
+const embeddingLocalDir = ref('')
+const embeddingDeploying = ref(false)
+const embeddingRefreshing = ref(false)
+const embeddingCancelling = ref(false)
+const embeddingFlash = ref(false)
+const embeddingError = ref('')
+let embeddingPollTimer: number | null = null
+
+const embedding = computed(() => state.embeddingConfig?.embedding ?? null)
+const embeddingDeployment = computed(() => embedding.value?.deployment ?? null)
+const embeddingDeploymentActive = computed(() => embeddingDeployment.value?.active === true)
+const embeddingStatusTone = computed<ToolTone>(() => {
+  if (embeddingDeploymentActive.value) return 'info'
+  if (embeddingDeployment.value?.status === 'failed') return 'danger'
+  if (embedding.value?.deployed) return 'success'
+  if (embedding.value?.configured || embedding.value?.dependenciesInstalled || embedding.value?.modelInstalled) return 'warning'
+  return 'neutral'
+})
+
+const embeddingStatusLabel = computed(() => {
+  if (!embedding.value) return '未加载'
+  if (embeddingDeploymentActive.value) return '部署中'
+  if (embeddingDeployment.value?.status === 'failed') return '部署失败'
+  if (embedding.value.deployed) return '已部署'
+  if (!embedding.value.configured) return '未配置'
+  return '待部署'
+})
+
+const embeddingPhaseLabel = computed(() => {
+  const phase = embeddingDeployment.value?.phase || 'idle'
+  const labels: Record<string, string> = {
+    idle: '空闲',
+    queued: '排队',
+    dependencies: '检查依赖',
+    installing_dependencies: '安装依赖',
+    downloading_model: '下载模型',
+    verifying: '校验文件',
+    ready: '就绪',
+    cancelling: '取消中',
+    cancelled: '已取消',
+    failed: '失败',
+  }
+  return labels[phase] ?? phase
+})
+
+const embeddingDependencyRows = computed(() =>
+  Object.entries(embedding.value?.dependencyModules ?? {}).map(([name, installed]) => ({
+    name,
+    installed,
+  })),
+)
+
+function loadEmbeddingForm() {
+  const current = embedding.value
+  if (!current) return
+  if (!embeddingLocalDir.value || !embeddingDeploymentActive.value) {
+    embeddingLocalDir.value = current.localDir
+  }
+}
+
+watch(() => state.embeddingConfig, loadEmbeddingForm, { immediate: true })
+
+function syncEmbeddingPolling() {
+  if (activeTab.value === 'memory' && embeddingDeploymentActive.value) {
+    startEmbeddingPolling()
+    return
+  }
+  stopEmbeddingPolling()
+}
+
+watch(activeTab, syncEmbeddingPolling)
+watch(embeddingDeploymentActive, syncEmbeddingPolling)
+onUnmounted(stopEmbeddingPolling)
+
+function startEmbeddingPolling() {
+  if (embeddingPollTimer !== null) return
+  embeddingPollTimer = window.setInterval(() => {
+    void refreshEmbeddingConfig()
+  }, 1800)
+}
+
+function stopEmbeddingPolling() {
+  if (embeddingPollTimer === null) return
+  window.clearInterval(embeddingPollTimer)
+  embeddingPollTimer = null
+}
+
+async function refreshEmbedding() {
+  embeddingRefreshing.value = true
+  await refreshEmbeddingConfig()
+  embeddingRefreshing.value = false
+}
+
+async function runEmbeddingDeploy(force = false) {
+  embeddingDeploying.value = true
+  embeddingError.value = ''
+  const ok = await deployEmbedding(embeddingLocalDir.value.trim() || undefined, force)
+  embeddingDeploying.value = false
+  if (!ok) {
+    embeddingError.value = '部署请求失败，请查看 Python runtime 日志。'
+    return
+  }
+  startEmbeddingPolling()
+  flash(embeddingFlash)
+}
+
+async function cancelEmbeddingDeployAction() {
+  embeddingCancelling.value = true
+  embeddingError.value = ''
+  const ok = await cancelEmbedding()
+  embeddingCancelling.value = false
+  if (!ok) {
+    embeddingError.value = '取消部署失败，请稍后刷新状态。'
+    return
+  }
+  await refreshEmbeddingConfig()
 }
 
 /* ---------------- 语音 TTS ---------------- */
@@ -419,7 +550,7 @@ async function refreshMcp() {
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-      <div class="mx-auto max-w-2xl space-y-7">
+      <div class="mx-auto w-full max-w-5xl space-y-7">
         <!-- ============ 模型 ============ -->
         <template v-if="activeTab === 'model'">
           <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
@@ -546,6 +677,174 @@ async function refreshMcp() {
           <p class="px-1 text-[11px] leading-relaxed text-ink-faint">
             密钥写入 <code class="font-mono">.env</code>，连接参数写入
             <code class="font-mono">configs/providers.yaml</code>，保存后立即热切换生效。
+          </p>
+        </template>
+
+        <!-- ============ 记忆 Embedding ============ -->
+        <template v-else-if="activeTab === 'memory'">
+          <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-center gap-2">
+                <Icon icon="ph:brain-duotone" :width="18" class="text-brand-500" />
+                <span class="text-sm font-semibold text-ink">BGE-M3 本地 Embedding</span>
+              </div>
+              <AmTag :tone="embeddingStatusTone" size="sm" dot>
+                {{ embeddingStatusLabel }}
+              </AmTag>
+            </div>
+
+            <p class="text-[11px] leading-relaxed text-ink-faint">
+              本地 BGE-M3 用于后续 memory vector / hybrid retrieval。部署会写入
+              <code class="font-mono">.env</code> 和 <code class="font-mono">configs/providers.yaml</code>，
+              并在后台安装可选依赖、下载模型缓存；不会阻塞当前对话。
+            </p>
+
+            <div class="grid gap-3 sm:grid-cols-4">
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">配置</p>
+                <div class="mt-2">
+                  <AmTag :tone="embedding?.configured ? 'success' : 'neutral'" size="sm">
+                    {{ embedding?.configured ? '已配置' : '未配置' }}
+                  </AmTag>
+                </div>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">依赖</p>
+                <div class="mt-2">
+                  <AmTag :tone="embedding?.dependenciesInstalled ? 'success' : 'warning'" size="sm">
+                    {{ embedding?.dependenciesInstalled ? '已安装' : '待安装' }}
+                  </AmTag>
+                </div>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">模型缓存</p>
+                <div class="mt-2">
+                  <AmTag :tone="embedding?.modelInstalled ? 'success' : 'warning'" size="sm">
+                    {{ embedding?.modelInstalled ? '已下载' : '待下载' }}
+                  </AmTag>
+                </div>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">维度</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ embedding?.dimensions ?? 1024 }}</p>
+              </div>
+            </div>
+
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-ink-soft">本地模型目录</label>
+              <AmInput
+                v-model="embeddingLocalDir"
+                icon="ph:folder-open-duotone"
+                :disabled="embeddingDeploymentActive"
+                placeholder="默认 models/embeddings/bge-m3"
+              />
+              <p class="text-[11px] text-ink-faint">
+                当前模型：<code class="font-mono">{{ embedding?.modelId || 'BAAI/bge-m3' }}</code>
+                <span v-if="state.embeddingConfig?.paths.defaultModelDir">
+                  · 默认目录 <code class="font-mono">{{ state.embeddingConfig.paths.defaultModelDir }}</code>
+                </span>
+              </p>
+            </div>
+
+            <div class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3">
+              <div class="flex flex-wrap items-center gap-2">
+                <AmTag :tone="embeddingDeploymentActive ? 'info' : embeddingStatusTone" size="sm">
+                  {{ embeddingPhaseLabel }}
+                </AmTag>
+                <span class="text-[11px] text-ink-faint">
+                  {{ embeddingDeployment?.message || '等待部署操作' }}
+                </span>
+              </div>
+              <p v-if="embeddingDeployment?.startedAt" class="mt-2 text-[11px] text-ink-faint">
+                开始：{{ shortDateTime(embeddingDeployment.startedAt) }}
+                <span v-if="embeddingDeployment.finishedAt">
+                  · 结束：{{ shortDateTime(embeddingDeployment.finishedAt) }}
+                </span>
+              </p>
+              <p v-if="embeddingDeployment?.error" class="mt-2 rounded-[var(--radius-xl2)] bg-danger/10 p-2 text-[11px] text-danger">
+                {{ embeddingDeployment.error }}
+              </p>
+            </div>
+
+            <div v-if="embeddingDependencyRows.length" class="rounded-[var(--radius-xl2)] bg-surface-muted/50 p-3">
+              <p class="text-[11px] font-semibold text-ink-soft">可选依赖</p>
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                <AmTag
+                  v-for="row in embeddingDependencyRows"
+                  :key="row.name"
+                  :tone="row.installed ? 'success' : 'warning'"
+                  size="sm"
+                >
+                  {{ row.name }}
+                </AmTag>
+              </div>
+              <p v-if="embedding?.dependencyInstallCommand" class="mt-2 break-all font-mono text-[10px] text-ink-faint">
+                {{ embedding.dependencyInstallCommand }}
+              </p>
+            </div>
+
+            <p v-if="embeddingError" class="rounded-[var(--radius-xl2)] bg-danger/10 p-3 text-xs text-danger">
+              {{ embeddingError }}
+            </p>
+
+            <div class="flex flex-wrap items-center justify-end gap-3">
+              <transition
+                enter-active-class="transition duration-200"
+                enter-from-class="opacity-0 translate-x-1"
+                leave-active-class="transition duration-200"
+                leave-to-class="opacity-0"
+              >
+                <span v-if="embeddingFlash" class="mr-auto inline-flex items-center gap-1.5 text-[13px] font-medium text-success">
+                  <Icon icon="ph:check-circle-fill" :width="16" /> 部署任务已提交
+                </span>
+              </transition>
+              <AmButton
+                variant="ghost"
+                size="sm"
+                icon="ph:arrow-clockwise-bold"
+                :loading="embeddingRefreshing"
+                @click="refreshEmbedding"
+              >
+                刷新
+              </AmButton>
+              <AmButton
+                v-if="embeddingDeploymentActive"
+                variant="danger"
+                size="sm"
+                icon="ph:x-bold"
+                :loading="embeddingCancelling"
+                @click="cancelEmbeddingDeployAction"
+              >
+                取消部署
+              </AmButton>
+              <AmButton
+                v-else
+                variant="secondary"
+                size="sm"
+                icon="ph:download-simple-bold"
+                :loading="embeddingDeploying"
+                :disabled="!embeddingLocalDir.trim()"
+                @click="runEmbeddingDeploy(false)"
+              >
+                {{ embedding?.deployed ? '重新检查部署' : '安装并部署' }}
+              </AmButton>
+              <AmButton
+                v-if="!embeddingDeploymentActive"
+                variant="primary"
+                size="sm"
+                icon="ph:arrow-counter-clockwise-bold"
+                :loading="embeddingDeploying"
+                :disabled="!embeddingLocalDir.trim()"
+                @click="runEmbeddingDeploy(true)"
+              >
+                强制重装
+              </AmButton>
+            </div>
+          </div>
+
+          <p class="px-1 text-[11px] leading-relaxed text-ink-faint">
+            当前只做本地 BGE-M3 的资源部署与配置观测，后续 hybrid retrieval 会复用这个 provider 边界接入
+            memory vector index。
           </p>
         </template>
 

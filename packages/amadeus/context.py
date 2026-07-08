@@ -360,13 +360,21 @@ class ContextAssembler:
             if not snippet:
                 continue
             source_id = str(result.get("id", ""))
+            retrieval_provider = sanitize_context_text(str(result.get("retrievalProvider", "fts_session")), max_chars=48)
+            source_provider = sanitize_context_text(str(result.get("sourceProvider", "")), max_chars=80)
             lines.append(f"{index}. role={role} createdAt={created_at} snippet={snippet}")
             sources.append(ContextSource(
                 kind="retrieval",
                 source_id=source_id,
                 content_chars=len(snippet),
                 reason="FTS match for current user message",
-                metadata={"role": role, "createdAt": created_at},
+                metadata={
+                    "role": role,
+                    "createdAt": created_at,
+                    "retrievalProvider": retrieval_provider,
+                    "sourceProvider": source_provider,
+                    "sessionId": result.get("sessionId", ""),
+                },
             ))
 
         lines.append("</memory-context>")

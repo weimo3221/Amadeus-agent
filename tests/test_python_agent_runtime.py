@@ -494,6 +494,9 @@ class AgentRuntimeTests(unittest.TestCase):
                 "  retrievalLimit: 2",
                 "  retrievalSnippetChars: 99",
                 "  diagnosticsLimit: 6",
+                "memory:",
+                "  provider: builtin_runtime",
+                "  globalRetrievalFallback: false",
                 "summary:",
                 "  triggerMessageCount: 9",
                 "  keepRecentTurns: 5",
@@ -523,6 +526,8 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.context_retrieval_limit, 2)
         self.assertEqual(runtime.context_retrieval_snippet_chars, 99)
         self.assertEqual(runtime.context_diagnostics_limit, 6)
+        self.assertEqual(runtime.memory_provider_name, "builtin_runtime")
+        self.assertFalse(runtime.memory_global_retrieval_fallback)
         self.assertEqual(runtime.summary_trigger_message_count, 9)
         self.assertEqual(runtime.summary_keep_recent_turns, 5)
         self.assertEqual(runtime.summary_min_keep_recent_turns, 2)
@@ -535,6 +540,36 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.memory_review_max_candidates, 3)
         self.assertEqual(runtime.memory_review_success_cooldown_seconds, 44)
         self.assertEqual(runtime.memory_review_failure_cooldown_seconds, 55)
+
+    def test_runtime_memory_provider_defaults_to_hybrid_and_can_reload_to_builtin(self) -> None:
+        config_path = Path(self.tmpdir.name) / "runtime-memory.yaml"
+        config_path.write_text(
+            "\n".join([
+                "memory:",
+                "  provider: hybrid_runtime",
+                "  globalRetrievalFallback: true",
+            ]),
+            encoding="utf-8",
+        )
+        runtime = FakeAgentRuntime(self.memory, runtime_config_path=config_path)
+
+        self.assertEqual(runtime.memory_provider_name, "hybrid_runtime")
+        self.assertEqual(runtime.memory_manager.runtime_provider.name, "hybrid_runtime")
+
+        config_path.write_text(
+            "\n".join([
+                "memory:",
+                "  provider: builtin_runtime",
+                "  globalRetrievalFallback: false",
+            ]),
+            encoding="utf-8",
+        )
+        snapshot = runtime.reload_runtime_config()["config"]
+
+        self.assertEqual(runtime.memory_provider_name, "builtin_runtime")
+        self.assertEqual(runtime.memory_manager.runtime_provider.name, "builtin_runtime")
+        self.assertEqual(snapshot["memory"]["provider"], "builtin_runtime")
+        self.assertFalse(snapshot["memory"]["globalRetrievalFallback"])
 
     def test_runtime_config_env_overrides_file_values(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime.yaml"

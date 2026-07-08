@@ -49,3 +49,16 @@ asr:
       language: ${FASTER_WHISPER_LANGUAGE}
       beamSize: ${FASTER_WHISPER_BEAM_SIZE}
       downloadRoot: ${FASTER_WHISPER_DOWNLOAD_ROOT}
+
+embedding:
+  default: local_bge_m3
+  providers:
+    local_bge_m3:
+      label: BGE-M3 Local
+      type: flag_embedding
+      model: BAAI/bge-m3
+      localPath: models/embeddings/bge-m3
+      dimensions: 1024
+      normalizeEmbeddings: true
+      batchSize: 8
+      device: auto

@@ -298,6 +298,64 @@ export async function fetchMemoryContextDiagnostics(
   return data?.diagnostics ?? []
 }
 
+export interface EmbeddingProviderType {
+  id: string
+  label: string
+  type: string
+  modelId: string
+  dimensions: number
+}
+
+export interface EmbeddingDeploymentPayload {
+  status: 'idle' | 'running' | 'completed' | 'cancelled' | 'failed'
+  phase: string
+  message: string
+  error: string
+  startedAt: string
+  finishedAt: string
+  modelId: string
+  localDir: string
+  active: boolean
+}
+
+export interface EmbeddingConfigPayload {
+  configured: boolean
+  provider: string
+  modelId: string
+  localDir: string
+  dimensions: number
+  normalizeEmbeddings: boolean
+  batchSize: number
+  device: string
+  dependenciesInstalled: boolean
+  dependencyModules: Record<string, boolean>
+  dependencyInstallCommand: string
+  modelInstalled: boolean
+  deployed: boolean
+  deployment: EmbeddingDeploymentPayload
+}
+
+export interface EmbeddingConfigResult {
+  embedding: EmbeddingConfigPayload
+  providerTypes: EmbeddingProviderType[]
+  paths: { env: string; providersConfig: string; defaultModelDir: string; modelsRoot: string }
+  cancelResult?: { cancelled: boolean; deployment: EmbeddingDeploymentPayload }
+}
+
+export async function fetchEmbeddingConfig(): Promise<EmbeddingConfigResult | null> {
+  return getJson<EmbeddingConfigResult>('/memory/embedding/config')
+}
+
+export async function deployEmbeddingModel(
+  body: { localDir?: string; force?: boolean } = {},
+): Promise<EmbeddingConfigResult | null> {
+  return postJson<EmbeddingConfigResult>('/memory/embedding/deploy', body)
+}
+
+export async function cancelEmbeddingDeploy(): Promise<EmbeddingConfigResult | null> {
+  return postJson<EmbeddingConfigResult>('/memory/embedding/cancel', {})
+}
+
 export interface ProviderPreset {
   id: string
   label: string

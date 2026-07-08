@@ -182,6 +182,33 @@ class ModelBoundaryTests(unittest.TestCase):
         self.assertEqual(provider["model"], "test-model")
         self.assertTrue(provider["streaming"])
 
+    def test_parse_providers_config_reads_embedding_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "providers.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "embedding:",
+                    "  default: local_bge_m3",
+                    "  providers:",
+                    "    local_bge_m3:",
+                    "      type: flag_embedding",
+                    "      model: BAAI/bge-m3",
+                    "      localPath: /tmp/bge-m3",
+                    "      dimensions: 1024",
+                    "      normalizeEmbeddings: true",
+                ]),
+                encoding="utf-8",
+            )
+
+            config = parse_providers_config(config_path)
+
+        provider = config["embedding"]["providers"]["local_bge_m3"]
+        self.assertEqual(config["embedding"]["default"], "local_bge_m3")
+        self.assertEqual(provider["model"], "BAAI/bge-m3")
+        self.assertEqual(provider["localPath"], "/tmp/bge-m3")
+        self.assertEqual(provider["dimensions"], 1024)
+        self.assertTrue(provider["normalizeEmbeddings"])
+
     @staticmethod
     def _restore_env(name: str, value: str | None) -> None:
         if value is None:

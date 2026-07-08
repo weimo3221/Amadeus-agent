@@ -5,6 +5,19 @@ agent:
   # Env override: AMADEUS_AGENT_MAX_TOOL_ITERATIONS.
   maxToolIterations: 90
 
+memory:
+  # Runtime memory provider used for turn-time context assembly.
+  # hybrid_runtime keeps the legacy builtin provider and adds a second
+  # cross-session retrieval lane. Set to builtin_runtime to use the original
+  # provider exactly as before.
+  # Env override: AMADEUS_MEMORY_PROVIDER.
+  provider: hybrid_runtime
+
+  # When the current session has fewer FTS hits than the retrieval budget,
+  # hybrid_runtime may fill the remaining slots from global conversation FTS.
+  # Env override: AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK.
+  globalRetrievalFallback: true
+
 context:
   # Estimated maximum context budget before a provider call.
   # This is tokenizer-free and intentionally conservative; env override:

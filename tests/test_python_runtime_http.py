@@ -32,6 +32,70 @@ class NoopTaskWorker:
         return runtime_server.memory_store.cancel_task(task_id, reason=reason)
 
 
+class FakeEmbeddingDeploymentManager:
+    def __init__(self) -> None:
+        self.deploy_calls: list[tuple[Any, bool]] = []
+        self.cancel_calls = 0
+        self.status_payload = {
+            "status": "idle",
+            "phase": "idle",
+            "message": "waiting",
+            "error": "",
+            "startedAt": "",
+            "finishedAt": "",
+            "modelId": "BAAI/bge-m3",
+            "localDir": "",
+            "active": False,
+        }
+
+    def status(self, config: Any = None) -> dict[str, Any]:
+        local_dir = str(getattr(config, "local_dir", "") or "")
+        model_id = str(getattr(config, "model_id", "BAAI/bge-m3") or "BAAI/bge-m3")
+        return {
+            "configured": True,
+            "provider": str(getattr(config, "provider", "local_bge_m3") or "local_bge_m3"),
+            "modelId": model_id,
+            "localDir": local_dir,
+            "dimensions": int(getattr(config, "dimensions", 1024) or 1024),
+            "normalizeEmbeddings": bool(getattr(config, "normalize_embeddings", True)),
+            "batchSize": int(getattr(config, "batch_size", 8) or 8),
+            "device": str(getattr(config, "device", "auto") or "auto"),
+            "dependenciesInstalled": False,
+            "dependencyModules": {"huggingface_hub": False, "FlagEmbedding": False},
+            "dependencyInstallCommand": "python -m pip install --upgrade huggingface_hub FlagEmbedding",
+            "modelInstalled": False,
+            "deployed": False,
+            "deployment": {**self.status_payload, "modelId": model_id, "localDir": local_dir},
+        }
+
+    def deploy(self, config: Any, *, force: bool = False) -> dict[str, Any]:
+        self.deploy_calls.append((config, force))
+        self.status_payload = {
+            "status": "running",
+            "phase": "queued",
+            "message": "fake deploy queued",
+            "error": "",
+            "startedAt": "2026-07-09T00:00:00+00:00",
+            "finishedAt": "",
+            "modelId": str(getattr(config, "model_id", "BAAI/bge-m3")),
+            "localDir": str(getattr(config, "local_dir", "")),
+            "active": True,
+        }
+        return self.status(config)
+
+    def cancel(self) -> dict[str, Any]:
+        self.cancel_calls += 1
+        self.status_payload = {
+            **self.status_payload,
+            "status": "cancelled",
+            "phase": "cancelled",
+            "message": "fake deploy cancelled",
+            "finishedAt": "2026-07-09T00:00:01+00:00",
+            "active": False,
+        }
+        return {"cancelled": True, "deployment": self.status_payload}
+
+
 class FakeMcpHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -325,6 +389,42 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertIn("mcp__local__lookup", tool_names)
         self.assertEqual(tool_names["mcp__local__lookup"]["permission"], "allow")
         self.assertIn("mcp__local__lookup", schema_names)
+
+    def test_providers_config_assembly_preserves_embedding_section(self) -> None:
+        previous_path = runtime_server.PROVIDERS_CONFIG_PATH
+        try:
+            config_path = Path(self.tmpdir.name) / "providers.yaml"
+            runtime_server.PROVIDERS_CONFIG_PATH = config_path
+            config_path.write_text(
+                "\n".join([
+                    "llm:",
+                    "  default: deepseek",
+                    "  providers:",
+                    "    deepseek:",
+                    "      model: deepseek-v4-pro",
+                    "",
+                    "embedding:",
+                    "  default: local_bge_m3",
+                    "  providers:",
+                    "    local_bge_m3:",
+                    "      model: BAAI/bge-m3",
+                    "      localPath: /tmp/bge-m3",
+                    "",
+                    "customSection:",
+                    "  enabled: true",
+                ]),
+                encoding="utf-8",
+            )
+
+            runtime_server.assemble_providers_config(tts_lines=runtime_server.DEFAULT_TTS_SECTION_LINES)
+
+            content = config_path.read_text(encoding="utf-8")
+        finally:
+            runtime_server.PROVIDERS_CONFIG_PATH = previous_path
+
+        self.assertIn("embedding:", content)
+        self.assertIn("local_bge_m3:", content)
+        self.assertIn("customSection:", content)
 
     def test_tools_config_test_reports_mcp_discovery(self) -> None:
         mcpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeMcpHandler)
@@ -699,7 +799,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         payload = self.get_json("/runtime/health")
 
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["status"], "ok")
+        self.assertIn(payload["status"], {"ok", "degraded"})
         self.assertIn("timestamp", payload)
         self.assertEqual(payload["checks"]["runtime"]["runtime"], "python")
         self.assertEqual(payload["checks"]["runtime"]["serverVersion"], "AmadeusPythonRuntime/0.1")
@@ -708,6 +808,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["checks"]["memory"]["status"], "ok")
         self.assertEqual(payload["checks"]["memory"]["databasePath"], str(runtime_server.memory_store.database_path))
         self.assertEqual(payload["checks"]["memory"]["messageCount"], 0)
+        self.assertIn(payload["checks"]["embedding"]["status"], {"ok", "degraded", "disabled"})
+        self.assertEqual(payload["checks"]["embedding"]["modelId"], "BAAI/bge-m3")
         self.assertEqual(payload["checks"]["tools"]["status"], "ok")
         self.assertGreater(payload["checks"]["tools"]["enabledSchemaCount"], 0)
         self.assertEqual(payload["checks"]["live2d"]["status"], "ok")
@@ -717,6 +819,104 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["checks"]["config"]["runtimeConfig"], str(self.runtime_config_path))
         self.assertFalse(payload["checks"]["config"]["runtimeConfigExists"])
         self.assertEqual(payload["checks"]["config"]["harnessesConfig"], str(self.harnesses_config_path))
+
+    def test_memory_embedding_config_reports_local_bge_defaults(self) -> None:
+        payload = self.get_json("/memory/embedding/config")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["embedding"]["provider"], "local_bge_m3")
+        self.assertEqual(payload["embedding"]["modelId"], "BAAI/bge-m3")
+        self.assertEqual(payload["embedding"]["dimensions"], 1024)
+        self.assertIn("dependenciesInstalled", payload["embedding"])
+        self.assertIn("modelInstalled", payload["embedding"])
+        self.assertIn("deployment", payload["embedding"])
+        self.assertTrue(payload["paths"]["defaultModelDir"].endswith("models/embeddings/bge-m3"))
+
+    def test_memory_embedding_deploy_writes_config_and_queues_manager(self) -> None:
+        previous_provider_path = runtime_server.PROVIDERS_CONFIG_PATH
+        previous_env_path = runtime_server.ENV_CONFIG_PATH
+        previous_manager = runtime_server.embedding_deployment_manager
+        env_keys = ["AMADEUS_EMBEDDING_PROVIDER", "AMADEUS_BGE_M3_MODEL_ID", "AMADEUS_BGE_M3_MODEL_DIR"]
+        previous_env = {key: os.environ.get(key) for key in env_keys}
+        fake_manager = FakeEmbeddingDeploymentManager()
+        try:
+            providers_path = Path(self.tmpdir.name) / "providers-embedding.yaml"
+            env_path = Path(self.tmpdir.name) / ".env.embedding"
+            local_dir = Path(self.tmpdir.name) / "models" / "bge-m3"
+            runtime_server.PROVIDERS_CONFIG_PATH = providers_path
+            runtime_server.ENV_CONFIG_PATH = env_path
+            runtime_server.embedding_deployment_manager = fake_manager
+
+            payload = self.post_json_status(
+                "/memory/embedding/deploy",
+                {"localDir": str(local_dir), "force": True},
+                expected_status=202,
+            )
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(len(fake_manager.deploy_calls), 1)
+            config, force = fake_manager.deploy_calls[0]
+            self.assertTrue(force)
+            self.assertEqual(config.provider, "local_bge_m3")
+            self.assertEqual(config.model_id, "BAAI/bge-m3")
+            self.assertEqual(config.local_dir, local_dir)
+            self.assertEqual(payload["embedding"]["deployment"]["status"], "running")
+            self.assertTrue(payload["embedding"]["deployment"]["active"])
+
+            env_content = env_path.read_text(encoding="utf-8")
+            providers_content = providers_path.read_text(encoding="utf-8")
+            self.assertIn("AMADEUS_EMBEDDING_PROVIDER=local_bge_m3", env_content)
+            self.assertIn(f"AMADEUS_BGE_M3_MODEL_DIR={local_dir}", env_content)
+            self.assertIn("embedding:", providers_content)
+            self.assertIn("local_bge_m3:", providers_content)
+            self.assertIn(str(local_dir), providers_content)
+        finally:
+            runtime_server.PROVIDERS_CONFIG_PATH = previous_provider_path
+            runtime_server.ENV_CONFIG_PATH = previous_env_path
+            runtime_server.embedding_deployment_manager = previous_manager
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_memory_embedding_cancel_calls_manager(self) -> None:
+        previous_provider_path = runtime_server.PROVIDERS_CONFIG_PATH
+        previous_manager = runtime_server.embedding_deployment_manager
+        fake_manager = FakeEmbeddingDeploymentManager()
+        try:
+            providers_path = Path(self.tmpdir.name) / "providers-embedding-cancel.yaml"
+            providers_path.write_text(
+                "\n".join([
+                    "embedding:",
+                    "  default: local_bge_m3",
+                    "  providers:",
+                    "    local_bge_m3:",
+                    "      model: BAAI/bge-m3",
+                    "      localPath: models/embeddings/bge-m3",
+                ]),
+                encoding="utf-8",
+            )
+            fake_manager.status_payload = {
+                **fake_manager.status_payload,
+                "status": "running",
+                "phase": "downloading_model",
+                "message": "fake deploy running",
+                "active": True,
+            }
+            runtime_server.PROVIDERS_CONFIG_PATH = providers_path
+            runtime_server.embedding_deployment_manager = fake_manager
+
+            payload = self.post_json("/memory/embedding/cancel", {})
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(fake_manager.cancel_calls, 1)
+            self.assertTrue(payload["cancelResult"]["cancelled"])
+            self.assertEqual(payload["cancelResult"]["deployment"]["status"], "cancelled")
+            self.assertEqual(payload["embedding"]["deployment"]["status"], "cancelled")
+        finally:
+            runtime_server.PROVIDERS_CONFIG_PATH = previous_provider_path
+            runtime_server.embedding_deployment_manager = previous_manager
 
     def test_runtime_feedback_records_desktop_capabilities_and_audio_state(self) -> None:
         main_capabilities = self.post_json("/runtime/feedback", {

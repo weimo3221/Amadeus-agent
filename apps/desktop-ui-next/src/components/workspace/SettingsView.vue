@@ -296,7 +296,7 @@ function reset() {
         description="连接运行时后，角色配置会在这里显示"
       />
 
-      <div v-else class="mx-auto max-w-2xl space-y-7">
+      <div v-else class="mx-auto w-full max-w-5xl space-y-7">
         <!-- role picker -->
         <div>
           <p class="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-faint">选择角色</p>
@@ -410,8 +410,8 @@ function reset() {
           <p class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs leading-relaxed text-ink-soft">
             这些选择只对当前角色生效，用来收窄每轮注入的工具、Skills 和 MCP server。每组留空表示跟随全局可用集合。
           </p>
-          <div class="grid gap-4">
-            <div class="space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
+          <div class="grid min-w-0 gap-4">
+            <div class="min-w-0 space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p class="text-xs font-semibold text-ink">Tools</p>
@@ -449,7 +449,7 @@ function reset() {
                   v-for="option in visibleToolOptions"
                   :key="option.id"
                   type="button"
-                  class="flex w-full items-start gap-3 rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
+                  class="flex min-w-0 w-full items-start gap-3 overflow-hidden rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
                   :class="[
                     runtimeTools.includes(option.id)
                       ? 'border-brand-200 bg-brand-50'
@@ -466,8 +466,8 @@ function reset() {
                     <Icon icon="ph:check-bold" :width="12" />
                   </span>
                   <span class="min-w-0 flex-1">
-                    <span class="flex flex-wrap items-center gap-2">
-                      <span class="truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
+                    <span class="flex min-w-0 flex-wrap items-center gap-2">
+                      <span class="min-w-0 truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
                       <AmTag :tone="option.tone" size="sm">{{ option.available ? '可用' : '不可用' }}</AmTag>
                     </span>
                     <span class="mt-1 block truncate font-mono text-[11px] text-ink-faint">{{ option.detail }}</span>
@@ -479,7 +479,7 @@ function reset() {
               </div>
             </div>
 
-            <div class="space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
+            <div class="min-w-0 space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p class="text-xs font-semibold text-ink">Skills</p>
@@ -517,7 +517,7 @@ function reset() {
                   v-for="option in visibleSkillOptions"
                   :key="option.id"
                   type="button"
-                  class="flex w-full items-start gap-3 rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
+                  class="flex min-w-0 w-full items-start gap-3 overflow-hidden rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
                   :class="[
                     runtimeSkills.includes(option.id)
                       ? 'border-brand-200 bg-brand-50'
@@ -534,8 +534,8 @@ function reset() {
                     <Icon icon="ph:check-bold" :width="12" />
                   </span>
                   <span class="min-w-0 flex-1">
-                    <span class="flex flex-wrap items-center gap-2">
-                      <span class="truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
+                    <span class="flex min-w-0 flex-wrap items-center gap-2">
+                      <span class="min-w-0 truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
                       <AmTag :tone="option.tone" size="sm">{{ option.available ? '可用' : '未发现' }}</AmTag>
                     </span>
                     <span class="mt-1 block truncate text-[11px] text-ink-faint">{{ option.detail }}</span>
@@ -547,7 +547,7 @@ function reset() {
               </div>
             </div>
 
-            <div class="space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
+            <div class="min-w-0 space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p class="text-xs font-semibold text-ink">MCP Servers</p>
@@ -585,7 +585,7 @@ function reset() {
                   v-for="option in visibleMcpServerOptions"
                   :key="option.id"
                   type="button"
-                  class="flex w-full items-start gap-3 rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
+                  class="flex min-w-0 w-full items-start gap-3 overflow-hidden rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
                   :class="[
                     runtimeMcpServers.includes(option.id)
                       ? 'border-brand-200 bg-brand-50'
@@ -602,8 +602,8 @@ function reset() {
                     <Icon icon="ph:check-bold" :width="12" />
                   </span>
                   <span class="min-w-0 flex-1">
-                    <span class="flex flex-wrap items-center gap-2">
-                      <span class="truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
+                    <span class="flex min-w-0 flex-wrap items-center gap-2">
+                      <span class="min-w-0 truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
                       <AmTag :tone="option.tone" size="sm">{{ option.available ? '启用' : '停用/未发现' }}</AmTag>
                     </span>
                     <span class="mt-1 block truncate font-mono text-[11px] text-ink-faint">{{ option.detail }}</span>

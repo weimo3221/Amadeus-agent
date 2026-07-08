@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.context import ContextAssembler, ContextAssemblerConfig
 from amadeus.memory import MessageMemoryStore
-from amadeus.memory_provider import ExternalMemoryResult, LocalRuntimeMemoryProvider, RuntimeMemoryManager
+from amadeus.memory_provider import ExternalMemoryResult, HybridRuntimeMemoryProvider, LocalRuntimeMemoryProvider, RuntimeMemoryManager
 
 
 class ContextAssemblerTests(unittest.TestCase):
@@ -85,6 +85,24 @@ class ContextAssemblerTests(unittest.TestCase):
             self.assertEqual(len(artifacts.memory_items), 1)
             self.assertGreaterEqual(len(artifacts.retrievals), 1)
             self.assertNotIn("messages", artifacts.__dict__)
+
+    def test_hybrid_runtime_memory_provider_preserves_legacy_and_adds_global_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-a", "assistant", "Alpha release uses a local BGE memory provider.")
+            memory.save("session-b", "assistant", "Beta release uses a remote cache.")
+
+            legacy = LocalRuntimeMemoryProvider(memory)
+            legacy_artifacts = legacy.prefetch("BGE memory provider", session_id="session-b", retrieval_limit=2)
+            hybrid = HybridRuntimeMemoryProvider(memory)
+            hybrid_artifacts = hybrid.prefetch("BGE memory provider", session_id="session-b", retrieval_limit=2)
+
+            self.assertEqual(legacy_artifacts.provider, "builtin_runtime")
+            self.assertFalse(any(result.get("sessionId") == "session-a" for result in legacy_artifacts.retrievals))
+            self.assertEqual(hybrid_artifacts.provider, "hybrid_runtime")
+            self.assertTrue(any(result.get("sessionId") == "session-a" for result in hybrid_artifacts.retrievals))
+            self.assertTrue(any(result.get("retrievalProvider") == "fts_global" for result in hybrid_artifacts.retrievals))
+            self.assertEqual(hybrid_artifacts.memory_items, legacy_artifacts.memory_items)
 
     def test_context_assembler_formats_external_memory_provider_results(self) -> None:
         class Provider:

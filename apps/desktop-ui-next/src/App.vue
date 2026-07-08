@@ -36,7 +36,7 @@ function onNavigate(key: string) {
         @navigate="onNavigate"
       />
 
-      <main class="flex min-h-0 flex-1 flex-col gap-4">
+      <main class="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
         <AppHeader
           :sessions="state.sessions"
           :active-id="state.activeSessionId"

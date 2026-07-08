@@ -16,6 +16,15 @@ from amadeus.tools.structured_memory import (
 logger = logging.getLogger(__name__)
 
 
+BUILTIN_RUNTIME_PROVIDER_NAME = "builtin_runtime"
+HYBRID_RUNTIME_PROVIDER_NAME = "hybrid_runtime"
+DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME = HYBRID_RUNTIME_PROVIDER_NAME
+SUPPORTED_RUNTIME_MEMORY_PROVIDERS = {
+    BUILTIN_RUNTIME_PROVIDER_NAME,
+    HYBRID_RUNTIME_PROVIDER_NAME,
+}
+
+
 class RuntimeMemoryProvider(Protocol):
     name: str
 
@@ -68,7 +77,7 @@ class TurnMemoryBundle:
 
 
 class LocalRuntimeMemoryProvider:
-    name = "builtin_runtime"
+    name = BUILTIN_RUNTIME_PROVIDER_NAME
 
     def __init__(self, memory_store: Any) -> None:
         self.memory_store = memory_store
@@ -115,6 +124,132 @@ class LocalRuntimeMemoryProvider:
             if spec.name == tool_name:
                 return spec.handler(args, context)
         return {"error": f"memory provider {self.name} does not handle tool {tool_name}"}
+
+
+class HybridRuntimeMemoryProvider:
+    """Runtime memory provider that preserves the legacy local provider and
+    adds a second retrieval lane for cross-session recall.
+
+    This is intentionally conservative: durable memory items, summaries, and
+    memory tools still come from the legacy provider. The new behavior only
+    fills sparse current-session retrievals with global FTS matches, which makes
+    the provider boundary ready for a later BGE-M3 vector lane without changing
+    existing tool semantics.
+    """
+
+    name = HYBRID_RUNTIME_PROVIDER_NAME
+
+    def __init__(
+        self,
+        memory_store: Any,
+        *,
+        legacy_provider: LocalRuntimeMemoryProvider | None = None,
+        global_retrieval_fallback: bool = True,
+    ) -> None:
+        self.memory_store = memory_store
+        self.legacy_provider = legacy_provider or LocalRuntimeMemoryProvider(memory_store)
+        self.global_retrieval_fallback = bool(global_retrieval_fallback)
+
+    def prefetch(
+        self,
+        query: str,
+        *,
+        session_id: str,
+        memory_item_limit: int = 8,
+        retrieval_limit: int = 3,
+    ) -> RuntimeMemoryArtifacts:
+        legacy = self.legacy_provider.prefetch(
+            query,
+            session_id=session_id,
+            memory_item_limit=memory_item_limit,
+            retrieval_limit=retrieval_limit,
+        )
+        retrievals = [
+            self._tag_retrieval(result, "fts_session", self.legacy_provider.name)
+            for result in legacy.retrievals
+        ]
+        if self.global_retrieval_fallback and query.strip() and len(retrievals) < retrieval_limit:
+            retrievals.extend(
+                self._global_fallback_retrievals(
+                    query,
+                    session_id=session_id,
+                    existing_retrievals=retrievals,
+                    remaining=retrieval_limit - len(retrievals),
+                )
+            )
+
+        return RuntimeMemoryArtifacts(
+            provider=self.name,
+            summary=legacy.summary,
+            memory_items=legacy.memory_items,
+            retrievals=tuple(retrievals[:retrieval_limit]),
+            covered_through_message_id=legacy.covered_through_message_id,
+        )
+
+    def get_tool_specs(self) -> list[ToolSpec]:
+        return self.legacy_provider.get_tool_specs()
+
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], context: Any) -> dict[str, Any]:
+        return self.legacy_provider.handle_tool_call(tool_name, args, context)
+
+    def _global_fallback_retrievals(
+        self,
+        query: str,
+        *,
+        session_id: str,
+        existing_retrievals: list[dict[str, Any]],
+        remaining: int,
+    ) -> list[dict[str, Any]]:
+        if remaining <= 0:
+            return []
+        normalized_query = query.strip()
+        seen_ids = {str(result.get("id", "")) for result in existing_retrievals}
+        fallback: list[dict[str, Any]] = []
+        for result in self.memory_store.search(query, session_id=None, limit=remaining + len(existing_retrievals) + 5):
+            result_id = str(result.get("id", ""))
+            if result_id in seen_ids:
+                continue
+            if str(result.get("content", "")).strip() == normalized_query:
+                continue
+            seen_ids.add(result_id)
+            lane = "fts_session" if str(result.get("sessionId", "")) == session_id else "fts_global"
+            fallback.append(self._tag_retrieval(result, lane, self.name))
+            if len(fallback) >= remaining:
+                break
+        return fallback
+
+    def _tag_retrieval(self, result: dict[str, Any], retrieval_provider: str, source_provider: str) -> dict[str, Any]:
+        tagged = dict(result)
+        tagged.setdefault("retrievalProvider", retrieval_provider)
+        tagged.setdefault("sourceProvider", source_provider)
+        return tagged
+
+
+def normalize_runtime_memory_provider_name(value: str | None) -> str:
+    normalized = str(value or DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME).strip()
+    if normalized in {"", "default", "hybrid", "local_hybrid"}:
+        return HYBRID_RUNTIME_PROVIDER_NAME
+    if normalized in {"builtin", "local", "legacy"}:
+        return BUILTIN_RUNTIME_PROVIDER_NAME
+    if normalized in SUPPORTED_RUNTIME_MEMORY_PROVIDERS:
+        return normalized
+    logger.info("Unsupported runtime memory provider %s; falling back to %s", value, DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME)
+    return DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME
+
+
+def create_runtime_memory_provider(
+    memory_store: Any,
+    *,
+    provider_name: str | None = None,
+    global_retrieval_fallback: bool = True,
+) -> RuntimeMemoryProvider:
+    normalized = normalize_runtime_memory_provider_name(provider_name)
+    if normalized == BUILTIN_RUNTIME_PROVIDER_NAME:
+        return LocalRuntimeMemoryProvider(memory_store)
+    return HybridRuntimeMemoryProvider(
+        memory_store,
+        global_retrieval_fallback=global_retrieval_fallback,
+    )
 
 
 class RuntimeMemoryManager:

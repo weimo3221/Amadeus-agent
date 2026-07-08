@@ -9,6 +9,7 @@ build/
 !.env.example
 *.log
 data/
+models/
 *.sqlite
 *.sqlite3
 coverage/

@@ -16,7 +16,13 @@ from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
 from amadeus.context import ContextAssembler, ContextAssemblerConfig, sanitize_context_markup
 from amadeus.harness import DEFAULT_HARNESSES_CONFIG_PATH, HarnessContext, HarnessFeedbackPolicy, HarnessRegistry
 from amadeus.memory import MessageMemoryStore
-from amadeus.memory_provider import ExternalMemoryProvider, LocalRuntimeMemoryProvider, RuntimeMemoryManager
+from amadeus.memory_provider import (
+    DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME,
+    ExternalMemoryProvider,
+    RuntimeMemoryManager,
+    create_runtime_memory_provider,
+    normalize_runtime_memory_provider_name,
+)
 from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.model import (
     ChatStreamDelta,
@@ -213,8 +219,16 @@ class AgentRuntime:
         load_dotenv()
         self.memory_store = memory_store
         self.external_memory_providers = list(external_memory_providers or ())
+        self.runtime_config_path = runtime_config_path
+        initial_memory_config = parse_runtime_config(runtime_config_path).get("memory", {})
+        self.memory_provider_name = configured_runtime_memory_provider_name(initial_memory_config)
+        self.memory_global_retrieval_fallback = configured_runtime_memory_global_fallback(initial_memory_config)
         self.memory_manager = RuntimeMemoryManager(
-            LocalRuntimeMemoryProvider(self.memory_store),
+            create_runtime_memory_provider(
+                self.memory_store,
+                provider_name=self.memory_provider_name,
+                global_retrieval_fallback=self.memory_global_retrieval_fallback,
+            ),
             external_providers=self.external_memory_providers,
         )
         self.audio_runtime = audio_runtime
@@ -246,7 +260,6 @@ class AgentRuntime:
         self._workspace_epoch_lock = threading.Lock()
         self._running_turns_by_session: dict[str, RunningTurn] = {}
         self._running_turns_lock = threading.Lock()
-        self.runtime_config_path = runtime_config_path
         self._load_runtime_config(reason="startup")
         self._summary_failure_until: dict[str, float] = {}
         self._memory_review_cooldown_until: dict[str, float] = {}
@@ -373,13 +386,18 @@ class AgentRuntime:
                 emitted_events.append(AgentEvent(emitted_type, emitted_payload))
         return emitted_events
 
-    def _load_runtime_config(self, *, reason: str) -> dict[str, dict[str, int | float]]:
+    def _load_runtime_config(self, *, reason: str) -> dict[str, dict[str, Any]]:
         runtime_config = parse_runtime_config(self.runtime_config_path)
         context_config = runtime_config.get("context", {})
         summary_config = runtime_config.get("summary", {})
+        memory_config = runtime_config.get("memory", {})
         memory_review_config = runtime_config.get("memoryReview", {})
         desktop_config = runtime_config.get("desktop", {})
         agent_config = runtime_config.get("agent", {})
+        self._configure_runtime_memory_provider(
+            configured_runtime_memory_provider_name(memory_config),
+            global_retrieval_fallback=configured_runtime_memory_global_fallback(memory_config),
+        )
         self.agent_max_tool_iterations = parse_positive_int_env(
             "AMADEUS_AGENT_MAX_TOOL_ITERATIONS",
             parse_positive_int_value(agent_config.get("maxToolIterations"), AGENT_MAX_TOOL_ITERATIONS),
@@ -543,6 +561,31 @@ class AgentRuntime:
         self.harness_registry = HarnessRegistry.from_config(
             self.harnesses_config_path,
             audio_library=self.audio_runtime.library if self.audio_runtime is not None else None,
+        )
+
+    def _configure_runtime_memory_provider(self, provider_name: str, *, global_retrieval_fallback: bool) -> None:
+        normalized = normalize_runtime_memory_provider_name(provider_name)
+        fallback_enabled = bool(global_retrieval_fallback)
+        if (
+            getattr(self, "memory_provider_name", None) == normalized
+            and getattr(self, "memory_global_retrieval_fallback", None) == fallback_enabled
+            and getattr(getattr(self, "memory_manager", None), "runtime_provider", None) is not None
+        ):
+            return
+        self.memory_provider_name = normalized
+        self.memory_global_retrieval_fallback = fallback_enabled
+        self.memory_manager = RuntimeMemoryManager(
+            create_runtime_memory_provider(
+                self.memory_store,
+                provider_name=normalized,
+                global_retrieval_fallback=fallback_enabled,
+            ),
+            external_providers=self.external_memory_providers,
+        )
+        logger.info(
+            "Configured runtime memory provider provider=%s globalRetrievalFallback=%s",
+            self.memory_provider_name,
+            self.memory_global_retrieval_fallback,
         )
 
     def reload_tool_registry(self) -> dict[str, Any]:
@@ -1115,10 +1158,15 @@ class AgentRuntime:
                 for session_id, records in self._context_diagnostics_by_session.items()
             }
 
-    def _runtime_config_snapshot(self) -> dict[str, dict[str, int | float]]:
+    def _runtime_config_snapshot(self) -> dict[str, dict[str, Any]]:
         return {
             "agent": {
                 "maxToolIterations": self.agent_max_tool_iterations,
+            },
+            "memory": {
+                "provider": self.memory_provider_name,
+                "activeProvider": self.memory_manager.active_provider_name,
+                "globalRetrievalFallback": self.memory_global_retrieval_fallback,
             },
             "context": {
                 "maxTokens": self.context_max_tokens,
@@ -2764,6 +2812,33 @@ def parse_scalar_config_value(value: str) -> Any:
         return value.strip('"').strip("'")
 
 
+def configured_runtime_memory_provider_name(config: dict[str, Any]) -> str:
+    raw_value = os.environ.get("AMADEUS_MEMORY_PROVIDER")
+    if raw_value is None:
+        raw_value = str(config.get("provider") or DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME)
+    return normalize_runtime_memory_provider_name(raw_value)
+
+
+def configured_runtime_memory_global_fallback(config: dict[str, Any]) -> bool:
+    return parse_bool_env(
+        "AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK",
+        parse_bool_value(config.get("globalRetrievalFallback"), True),
+    )
+
+
+def parse_bool_value(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def parse_positive_int_value(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -2817,6 +2892,13 @@ def parse_non_negative_int_env(name: str, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed >= 0 else default
+
+
+def parse_bool_env(name: str, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    return parse_bool_value(raw_value, default)
 
 
 def parse_int_env(name: str, default: int) -> int:

@@ -30,11 +30,14 @@ import { AgentRuntimeClient, type ConnectionPhase, type ToolPermissionPrompt } f
 import { COMPANION_SESSION_ID, SESSION_ID } from '@/runtime/config'
 import {
   cancelTaskRequest,
+  cancelEmbeddingDeploy,
   approveTaskRequest,
   createScheduledJobRequest,
   createTaskRequest,
   createSessionRequest,
   deleteSessionRequest,
+  deployEmbeddingModel,
+  fetchEmbeddingConfig,
   fetchAudioConfig,
   fetchLive2dBehaviors,
   fetchLive2dModels,
@@ -64,6 +67,7 @@ import {
   updateRuntimeApiConfig,
   type AudioConfigResult,
   type AudioConfigUpdate,
+  type EmbeddingConfigResult,
   type Live2dBehavior,
   type Live2dBehaviorsResult,
   type Live2dImportResult,
@@ -109,6 +113,7 @@ interface RuntimeState {
   ttsProvider: string
   ttsSupportsEnumeration: boolean
   runtimeConfig: RuntimeConfigResult | null
+  embeddingConfig: EmbeddingConfigResult | null
   audioConfig: AudioConfigResult | null
   live2dBehaviors: Live2dBehaviorsResult | null
   toolsConfig: ToolsConfigResult | null
@@ -152,6 +157,7 @@ const state = reactive<RuntimeState>({
   ttsProvider: 'none',
   ttsSupportsEnumeration: false,
   runtimeConfig: null,
+  embeddingConfig: null,
   audioConfig: null,
   live2dBehaviors: null,
   toolsConfig: null,
@@ -578,12 +584,13 @@ async function loadMemoryDiagnostics(): Promise<void> {
 }
 
 async function loadConfigOptions(): Promise<void> {
-  const [presets, live2dModels, ttsVoices, runtimeConfig, audioConfig, live2dBehaviors] =
+  const [presets, live2dModels, ttsVoices, runtimeConfig, embeddingConfig, audioConfig, live2dBehaviors] =
     await Promise.all([
       fetchProviderPresets(),
       fetchLive2dModels(),
       fetchTtsVoices(),
       fetchRuntimeConfig(),
+      fetchEmbeddingConfig(),
       fetchAudioConfig(),
       fetchLive2dBehaviors(),
     ])
@@ -593,6 +600,7 @@ async function loadConfigOptions(): Promise<void> {
   state.ttsProvider = ttsVoices.provider
   state.ttsSupportsEnumeration = ttsVoices.supportsEnumeration
   state.runtimeConfig = runtimeConfig
+  state.embeddingConfig = embeddingConfig
   state.audioConfig = audioConfig
   state.live2dBehaviors = live2dBehaviors
 }
@@ -898,6 +906,24 @@ export function useRuntime() {
     await loadMemoryDiagnostics()
   }
 
+  async function refreshEmbeddingConfig(): Promise<void> {
+    state.embeddingConfig = await fetchEmbeddingConfig()
+  }
+
+  async function deployEmbedding(localDir?: string, force = false): Promise<boolean> {
+    const result = await deployEmbeddingModel({ localDir, force })
+    if (!result) return false
+    state.embeddingConfig = result
+    return true
+  }
+
+  async function cancelEmbedding(): Promise<boolean> {
+    const result = await cancelEmbeddingDeploy()
+    if (!result) return false
+    state.embeddingConfig = result
+    return true
+  }
+
   async function refreshTasks(): Promise<void> {
     await refreshPlanAndTasks()
   }
@@ -998,6 +1024,9 @@ export function useRuntime() {
     selectLive2d,
     refreshMcpDiagnostics,
     refreshMemoryDiagnostics,
+    refreshEmbeddingConfig,
+    deployEmbedding,
+    cancelEmbedding,
     refreshTasks,
     createTaskFromPlan,
     loadTaskEvents,
