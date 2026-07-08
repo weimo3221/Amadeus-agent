@@ -1,0 +1,37 @@
+docs/agent-maturity-upgrade-plan.md
+  s_a5b0612913c0c8::t_7652de4d871edc 472,486,488
+docs/event-protocol.md
+  s_a5b0612913c0c8::t_60ab0fa9be9bd9 196
+docs/implementation-notes.md
+  s_a5b0612913c0c8::t_b2390e58e78594 54,101
+docs/project-status.md
+  s_a5b0612913c0c8::t_56879df6dc9ddb 304,306,419-420,423,490
+docs/roadmap.md
+  s_a5b0612913c0c8::t_ea72634baa74cd 194-195,197
+packages/amadeus/README.md
+  s_a5b0612913c0c8::t_b03e91219a51b0 80-82
+packages/amadeus/agent.py
+  s_a5b0612913c0c8::t_b2a56017e1a1f1 1306,1360-1364,1370,1375,1386,1389
+tests/test_python_agent_runtime.py
+  s_a5b0612913c0c8::t_a792d9487a8e1d 848,869,881,884,891-892,922-923,928,933-934,964-965,970,975-976,996,998,1008-1009,1015-1017
+tests/test_python_runtime_http.py
+  s_a5b0612913c0c8::t_25018e4df14e08 979,989,991,998,1000,1006-1007
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c9b75290ea4ade89c3c9b82cd7022e250a9ec834",
+  "prompts": {},
+  "sessions": {
+    "s_a5b0612913c0c8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4102-6969-7da0-9b34-59b5ab97fe20",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
