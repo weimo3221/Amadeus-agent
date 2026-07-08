@@ -1,0 +1,37 @@
+configs/runtime.yaml
+  s_a5b0612913c0c8::t_5dba05a1a3053d 21,45-47,49-50,53
+docs/agent-maturity-upgrade-plan.md
+  s_a5b0612913c0c8::t_030170998fff6a 482
+docs/project-status.md
+  s_a5b0612913c0c8::t_5d37ae4b239e25 426
+packages/amadeus/README.md
+  s_a5b0612913c0c8::t_030b274e8742c2 43,77
+packages/amadeus/agent.py
+  s_a5b0612913c0c8::t_c4f4c820c35170 62-64,267-282,458-460,462-472,1136-1137,1401,1404-1408,1411,1414,1492,1527,1529-1536,1538-1546,1548,1550-1557,1560,1563,1611-1617,1621,1639,1675,1683,1692,2282-2299
+packages/amadeus/memory.py
+  s_a5b0612913c0c8::t_fa3cb606a4ebff 1287-1340
+packages/amadeus/server.py
+  s_a5b0612913c0c8::t_169829eb9838fb 66-67,88-91,2959
+tests/test_memory.py
+  s_a5b0612913c0c8::t_7c3e49212bffd2 130-157
+tests/test_python_agent_runtime.py
+  s_a5b0612913c0c8::t_2aa37213bd40af 499-500,527-528,743,781,786-787,794,1110,1114-1115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3f145dab9d3ab73d0fdd214ff5c6253bc7c04458",
+  "prompts": {},
+  "sessions": {
+    "s_a5b0612913c0c8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4102-6969-7da0-9b34-59b5ab97fe20",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
