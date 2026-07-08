@@ -496,8 +496,8 @@ class AgentRuntimeTests(unittest.TestCase):
                 "  diagnosticsLimit: 6",
                 "summary:",
                 "  triggerMessageCount: 9",
-                "  keepRecentMessages: 5",
-                "  minKeepRecentMessages: 2",
+                "  keepRecentTurns: 5",
+                "  minKeepRecentTurns: 2",
                 "  sourceMaxMessages: 17",
                 "  failureCooldownSeconds: 33",
                 "memoryReview:",
@@ -524,8 +524,8 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.context_retrieval_snippet_chars, 99)
         self.assertEqual(runtime.context_diagnostics_limit, 6)
         self.assertEqual(runtime.summary_trigger_message_count, 9)
-        self.assertEqual(runtime.summary_keep_recent_messages, 5)
-        self.assertEqual(runtime.summary_min_keep_recent_messages, 2)
+        self.assertEqual(runtime.summary_keep_recent_turns, 5)
+        self.assertEqual(runtime.summary_min_keep_recent_turns, 2)
         self.assertEqual(runtime.summary_source_max_messages, 17)
         self.assertEqual(runtime.summary_failure_cooldown_seconds, 33)
         self.assertEqual(runtime.memory_review_trigger_message_count, 4)
@@ -740,7 +740,7 @@ class AgentRuntimeTests(unittest.TestCase):
             self.memory.save("default", "user" if index % 2 == 0 else "assistant", f"old message {index}")
         runtime = FakeAgentRuntime(self.memory, deltas=["final"])
         runtime.summary_trigger_message_count = 4
-        runtime.summary_keep_recent_messages = 2
+        runtime.summary_keep_recent_turns = 1
 
         events = list(runtime.run_turn("default", "new request", lambda _request: False))
         summary = self.memory.load_conversation_summary("default")
@@ -778,20 +778,20 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("large old message 0", serialized_decision)
         self.assertIn("memory.summary.updated", [event.type for event in events])
 
-    def test_budget_recent_tail_uses_trigger_token_fraction(self) -> None:
+    def test_budget_recent_tail_uses_trigger_token_fraction_by_turn(self) -> None:
         self.memory.save("default", "user", "old large " + ("x" * 400))
         self.memory.save("default", "assistant", "recent small one")
         self.memory.save("default", "user", "recent small two")
         runtime = FakeAgentRuntime(self.memory)
-        runtime.summary_keep_recent_messages = 10
-        runtime.summary_min_keep_recent_messages = 1
+        runtime.summary_keep_recent_turns = 10
+        runtime.summary_min_keep_recent_turns = 1
         runtime.context_max_tokens = 1000
         runtime.context_compaction_trigger_ratio = 0.5
         runtime.context_recent_message_target_ratio = 0.2
 
         keep_recent = runtime._budget_keep_recent_message_count("default")
 
-        self.assertEqual(keep_recent, 2)
+        self.assertEqual(keep_recent, 1)
 
     def test_turn_end_compacts_when_final_response_pushes_context_over_budget(self) -> None:
         self.memory.save("default", "user", "small old user")
@@ -1107,16 +1107,12 @@ class AgentRuntimeTests(unittest.TestCase):
         self.memory.save("default", "assistant", "It is noon.")
         runtime = FakeAgentRuntime(self.memory)
         runtime.summary_trigger_message_count = 1
-        runtime.summary_keep_recent_messages = 2
+        runtime.summary_keep_recent_turns = 2
 
         summary_event = runtime._maybe_compact_conversation("default")
 
-        self.assertIsNotNone(summary_event)
-        self.assertEqual([message["role"] for message in runtime.summary_requests[0]["messages"]], ["user"])
-        summary = self.memory.load_conversation_summary("default")
-        self.assertIsNotNone(summary)
-        assert summary is not None
-        self.assertEqual(summary["coveredThroughMessageId"], 1)
+        self.assertIsNone(summary_event)
+        self.assertEqual(runtime.summary_requests, [])
 
     def test_tool_loop_can_continue_after_tool_result_until_no_tool_calls(self) -> None:
         runtime = FakeAgentRuntime(

@@ -1284,6 +1284,60 @@ class MessageMemoryStore:
 
         return [message_row_response(row) for row in reversed(rows)]
 
+    def load_recent_turns(
+        self,
+        session_id: str,
+        turn_count: int,
+        after_message_id: int | None = None,
+    ) -> list[dict[str, str | int]]:
+        normalized_after_id = normalize_optional_non_negative_int(after_message_id, "after_message_id")
+        bounded_turn_count = max(1, int(turn_count))
+        where = "session_id = ?"
+        params: list[object] = [session_id]
+        if normalized_after_id:
+            where += " AND id > ?"
+            params.append(normalized_after_id)
+
+        with self.connect() as connection:
+            user_rows = connection.execute(
+                f"""
+                SELECT id
+                FROM messages
+                WHERE {where} AND role = 'user'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                [*params, bounded_turn_count],
+            ).fetchall()
+            if user_rows:
+                start_id = min(int(row[0]) for row in user_rows)
+            else:
+                latest_row = connection.execute(
+                    f"""
+                    SELECT id
+                    FROM messages
+                    WHERE {where}
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    params,
+                ).fetchone()
+                start_id = int(latest_row[0]) if latest_row else None
+            if start_id is None:
+                return []
+
+            rows = connection.execute(
+                """
+                SELECT id, role, content, created_at, tool_call_id, tool_name, tool_calls
+                FROM messages
+                WHERE session_id = ? AND id >= ?
+                ORDER BY id ASC
+                """,
+                (session_id, start_id),
+            ).fetchall()
+
+        return [message_row_response(row) for row in rows]
+
     def load_detailed(
         self,
         session_id: str,

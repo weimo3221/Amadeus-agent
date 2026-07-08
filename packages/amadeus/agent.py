@@ -59,9 +59,9 @@ CONTEXT_RECENT_TASK_LIMIT = 3
 CONTEXT_TASK_RESULT_CHARS = 280
 CONTEXT_DIAGNOSTICS_LIMIT = 20
 SUMMARY_TRIGGER_MESSAGE_COUNT = 40
-SUMMARY_KEEP_RECENT_MESSAGES = 20
-SUMMARY_MIN_KEEP_RECENT_MESSAGES = 4
-SUMMARY_MAX_KEEP_RECENT_FLOOR = 8
+SUMMARY_KEEP_RECENT_TURNS = 3
+SUMMARY_MIN_KEEP_RECENT_TURNS = 1
+SUMMARY_MAX_KEEP_RECENT_TURN_FLOOR = 3
 SUMMARY_SOURCE_MAX_MESSAGES = 120
 SUMMARY_FAILURE_COOLDOWN_SECONDS = 300
 MEMORY_REVIEW_SOURCE_MAX_MESSAGES = 40
@@ -265,6 +265,22 @@ class AgentRuntime:
         self.task_worker = task_worker
 
     @property
+    def summary_keep_recent_messages(self) -> int:
+        return self.summary_keep_recent_turns
+
+    @summary_keep_recent_messages.setter
+    def summary_keep_recent_messages(self, value: int) -> None:
+        self.summary_keep_recent_turns = max(1, int(value))
+
+    @property
+    def summary_min_keep_recent_messages(self) -> int:
+        return self.summary_min_keep_recent_turns
+
+    @summary_min_keep_recent_messages.setter
+    def summary_min_keep_recent_messages(self, value: int) -> None:
+        self.summary_min_keep_recent_turns = max(0, int(value))
+
+    @property
     def base_url(self) -> str:
         return self.model_client.base_url
 
@@ -439,13 +455,21 @@ class AgentRuntime:
             "AMADEUS_SUMMARY_TRIGGER_MESSAGE_COUNT",
             parse_positive_int_value(summary_config.get("triggerMessageCount"), SUMMARY_TRIGGER_MESSAGE_COUNT),
         )
-        self.summary_keep_recent_messages = parse_positive_int_env(
-            "AMADEUS_SUMMARY_KEEP_RECENT_MESSAGES",
-            parse_positive_int_value(summary_config.get("keepRecentMessages"), SUMMARY_KEEP_RECENT_MESSAGES),
+        keep_recent_turns_default = parse_positive_int_value(
+            summary_config.get("keepRecentTurns", summary_config.get("keepRecentMessages")),
+            SUMMARY_KEEP_RECENT_TURNS,
         )
-        self.summary_min_keep_recent_messages = parse_non_negative_int_env(
-            "AMADEUS_SUMMARY_MIN_KEEP_RECENT_MESSAGES",
-            parse_non_negative_int_value(summary_config.get("minKeepRecentMessages"), SUMMARY_MIN_KEEP_RECENT_MESSAGES),
+        self.summary_keep_recent_turns = parse_positive_int_env(
+            "AMADEUS_SUMMARY_KEEP_RECENT_TURNS",
+            parse_positive_int_env("AMADEUS_SUMMARY_KEEP_RECENT_MESSAGES", keep_recent_turns_default),
+        )
+        min_keep_recent_turns_default = parse_non_negative_int_value(
+            summary_config.get("minKeepRecentTurns", summary_config.get("minKeepRecentMessages")),
+            SUMMARY_MIN_KEEP_RECENT_TURNS,
+        )
+        self.summary_min_keep_recent_turns = parse_non_negative_int_env(
+            "AMADEUS_SUMMARY_MIN_KEEP_RECENT_TURNS",
+            parse_non_negative_int_env("AMADEUS_SUMMARY_MIN_KEEP_RECENT_MESSAGES", min_keep_recent_turns_default),
         )
         self.summary_source_max_messages = parse_positive_int_env(
             "AMADEUS_SUMMARY_SOURCE_MAX_MESSAGES",
@@ -1109,8 +1133,8 @@ class AgentRuntime:
             },
             "summary": {
                 "triggerMessageCount": self.summary_trigger_message_count,
-                "keepRecentMessages": self.summary_keep_recent_messages,
-                "minKeepRecentMessages": self.summary_min_keep_recent_messages,
+                "keepRecentTurns": self.summary_keep_recent_turns,
+                "minKeepRecentTurns": self.summary_min_keep_recent_turns,
                 "sourceMaxMessages": self.summary_source_max_messages,
                 "failureCooldownSeconds": self.summary_failure_cooldown_seconds,
             },
@@ -1374,15 +1398,20 @@ class AgentRuntime:
         *,
         system_context: str,
         covered_through_message_id: int,
-        limit: int = 40,
+        recent_turns: int | None = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_context}]
-        history_messages = self.memory_store.load(session_id, limit, after_message_id=covered_through_message_id or None)
+        history_messages = self.memory_store.load_recent_turns(
+            session_id,
+            recent_turns if recent_turns is not None else self.summary_keep_recent_turns,
+            after_message_id=covered_through_message_id or None,
+        )
         messages.extend(self._sanitize_tool_pairs([self._provider_history_message(message) for message in history_messages]))
         logger.info(
-            "Loaded agent history sessionId=%s coveredThroughMessageId=%s messageCount=%s",
+            "Loaded agent history sessionId=%s coveredThroughMessageId=%s recentTurns=%s messageCount=%s",
             session_id,
             covered_through_message_id,
+            recent_turns if recent_turns is not None else self.summary_keep_recent_turns,
             len(messages) - 1,
         )
         return messages
@@ -1460,7 +1489,7 @@ class AgentRuntime:
 
         keep_recent_messages = self._budget_keep_recent_message_count(session_id)
         logger.info(
-            "Forcing summary compaction for context budget sessionId=%s phase=%s keepRecent=%s estimatedTokens=%s triggerTokens=%s",
+            "Forcing summary compaction for context budget sessionId=%s phase=%s keepRecentMessages=%s estimatedTokens=%s triggerTokens=%s",
             session_id,
             phase,
             keep_recent_messages,
@@ -1493,33 +1522,45 @@ class AgentRuntime:
         uncovered_messages = self.memory_store.load_detailed(
             session_id,
             after_message_id=covered_through_id or None,
-            limit=self.summary_source_max_messages + self.summary_keep_recent_messages + 1,
         )
         if not uncovered_messages:
-            return self.summary_keep_recent_messages
+            return 0
 
-        max_keep = min(self.summary_keep_recent_messages, len(uncovered_messages))
-        min_keep = min(max(0, self.summary_min_keep_recent_messages), SUMMARY_MAX_KEEP_RECENT_FLOOR, max_keep)
+        user_turn_count = sum(1 for message in uncovered_messages if message.get("role") == "user")
+        max_keep_turns = min(self.summary_keep_recent_turns, user_turn_count) if user_turn_count else 1
+        min_keep_turns = min(
+            max(0, self.summary_min_keep_recent_turns),
+            SUMMARY_MAX_KEEP_RECENT_TURN_FLOOR,
+            max_keep_turns,
+        )
+        keep_count = 0
         kept_tokens = 0
-        keep_start_index = len(uncovered_messages)
-        for index in range(len(uncovered_messages) - 1, -1, -1):
-            message = uncovered_messages[index]
-            message_tokens = estimate_message_tokens(self._provider_history_message(message))
-            keep_count = len(uncovered_messages) - index
-            if keep_count >= min_keep and kept_tokens + message_tokens > target_tokens:
+        first_candidate_turn = max(1, min_keep_turns)
+        for turn_count in range(first_candidate_turn, max_keep_turns + 1):
+            candidate_keep_count = self._recent_turn_message_count(uncovered_messages, turn_count)
+            candidate_tail = uncovered_messages[-candidate_keep_count:] if candidate_keep_count else []
+            candidate_tokens = estimate_messages_tokens([
+                self._provider_history_message(message)
+                for message in candidate_tail
+            ])
+            if turn_count > first_candidate_turn and candidate_tokens > target_tokens:
                 break
-            keep_start_index = index
-            kept_tokens += message_tokens
-            if keep_count >= max_keep:
+            if min_keep_turns == 0 and candidate_tokens > target_tokens:
                 break
-
-        keep_count = len(uncovered_messages) - keep_start_index
-        keep_count = max(min_keep, keep_count)
+            keep_count = candidate_keep_count
+            kept_tokens = candidate_tokens
+        if keep_count == 0 and min_keep_turns > 0:
+            keep_count = self._recent_turn_message_count(uncovered_messages, first_candidate_turn)
+            kept_tokens = estimate_messages_tokens([
+                self._provider_history_message(message)
+                for message in uncovered_messages[-keep_count:]
+            ]) if keep_count else 0
         keep_count = self._aligned_keep_recent_message_count(uncovered_messages, keep_count)
         logger.info(
-            "Selected budget-aware summary keep window sessionId=%s keepRecent=%s targetTokens=%s triggerTokens=%s keptTokens=%s uncoveredMessages=%s",
+            "Selected budget-aware summary keep window sessionId=%s keepRecentMessages=%s keepRecentTurns=%s targetTokens=%s triggerTokens=%s keptTokens=%s uncoveredMessages=%s",
             session_id,
             keep_count,
+            self.summary_keep_recent_turns,
             target_tokens,
             trigger_tokens,
             kept_tokens,
@@ -1564,18 +1605,20 @@ class AgentRuntime:
         if keep_recent_messages is None and should_compact_for_budget:
             keep_recent_messages = self._budget_keep_recent_message_count(session_id)
             reason = "context_budget:auto"
-        effective_keep_recent_messages = max(
-            0,
-            int(keep_recent_messages) if keep_recent_messages is not None else self.summary_keep_recent_messages,
-        )
         uncovered_messages = self.memory_store.load_detailed(
             session_id,
             after_message_id=covered_through_id or None,
-            limit=self.summary_source_max_messages + effective_keep_recent_messages + 1,
+        )
+        effective_keep_recent_messages = max(
+            0,
+            int(keep_recent_messages) if keep_recent_messages is not None else self._recent_turn_message_count(
+                uncovered_messages,
+                self.summary_keep_recent_turns,
+            ),
         )
         if len(uncovered_messages) <= effective_keep_recent_messages:
             logger.info(
-                "Skipping summary compaction no compactable window sessionId=%s uncoveredMessages=%s keepRecent=%s reason=%s",
+                "Skipping summary compaction no compactable window sessionId=%s uncoveredMessages=%s keepRecentMessages=%s reason=%s",
                 session_id,
                 len(uncovered_messages),
                 effective_keep_recent_messages,
@@ -1593,7 +1636,7 @@ class AgentRuntime:
         )
         if not compactable_messages:
             logger.info(
-                "Skipping summary compaction after tool-pair window alignment sessionId=%s uncoveredMessages=%s keepRecent=%s reason=%s",
+                "Skipping summary compaction after tool-pair window alignment sessionId=%s uncoveredMessages=%s keepRecentMessages=%s reason=%s",
                 session_id,
                 len(uncovered_messages),
                 effective_keep_recent_messages,
@@ -1629,7 +1672,7 @@ class AgentRuntime:
         )
         self._summary_failure_until.pop(session_id, None)
         logger.info(
-            "Saved conversation summary sessionId=%s summaryId=%s sourceStartId=%s sourceEndId=%s coveredMessageCount=%s reason=%s keepRecent=%s",
+            "Saved conversation summary sessionId=%s summaryId=%s sourceStartId=%s sourceEndId=%s coveredMessageCount=%s reason=%s keepRecentMessages=%s keepRecentTurns=%s",
             session_id,
             summary["summaryId"],
             source_start_id,
@@ -1637,6 +1680,7 @@ class AgentRuntime:
             summary["coveredMessageCount"],
             reason,
             effective_keep_recent_messages,
+            self.summary_keep_recent_turns,
         )
         return AgentEvent("memory.summary.updated", {"summary": summary})
 
@@ -1645,7 +1689,7 @@ class AgentRuntime:
             return False
         keep_recent_messages = self._budget_keep_recent_message_count(session_id)
         logger.info(
-            "Provider context overflow detected sessionId=%s phase=%s; forcing summary compaction keepRecent=%s",
+            "Provider context overflow detected sessionId=%s phase=%s; forcing summary compaction keepRecentMessages=%s",
             session_id,
             phase,
             keep_recent_messages,
@@ -2234,6 +2278,24 @@ class AgentRuntime:
         while start > 0 and messages[start].get("role") == "tool":
             start -= 1
         return len(messages) - start
+
+    def _recent_turn_message_count(self, messages: list[dict[str, Any]], turn_count: int) -> int:
+        bounded_turn_count = max(0, int(turn_count))
+        if bounded_turn_count <= 0 or not messages:
+            return 0
+
+        seen_user_turns = 0
+        start_index = 0
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user":
+                seen_user_turns += 1
+                if seen_user_turns == bounded_turn_count:
+                    start_index = index
+                    break
+        else:
+            return len(messages)
+
+        return self._aligned_keep_recent_message_count(messages, len(messages) - start_index)
 
     def _align_compaction_window_for_tool_pairs(
         self,

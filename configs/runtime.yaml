@@ -18,7 +18,7 @@ context:
   # Fraction of the compaction trigger budget reserved for recent raw messages
   # after budget-driven compaction. With the defaults this keeps roughly
   # maxTokens * compactionTriggerRatio * 0.20 as raw tail context.
-  # Lower values keep fewer recent messages and rely more on summaries.
+  # Lower values keep fewer recent turn messages and rely more on summaries.
   recentMessageTargetRatio: 0.20
 
   # Context assembler budgets for API-call-time memory injection.
@@ -42,13 +42,15 @@ summary:
   # context budget pressure triggers compaction earlier.
   triggerMessageCount: 40
 
-  # Default number of latest raw messages to keep outside the summary.
-  keepRecentMessages: 20
+  # Default number of latest user/assistant conversation turns to keep outside
+  # the summary. Tool messages attached to those turns are kept with them.
+  keepRecentTurns: 3
 
-  # Lower bound for recent raw messages kept during budget-driven compaction.
+  # Lower bound for recent user/assistant conversation turns kept during
+  # budget-driven compaction.
   # The runtime caps this floor internally so a large tool result cannot force
   # an oversized tail. Set to 0 only if fully summary-first behavior is acceptable.
-  minKeepRecentMessages: 4
+  minKeepRecentTurns: 1
 
   # Maximum older messages sent to the provider when generating one summary.
   sourceMaxMessages: 120

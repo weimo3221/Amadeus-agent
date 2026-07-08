@@ -63,6 +63,8 @@ RUNTIME_CONFIG_FIELDS: dict[str, dict[str, tuple[type, float | int | None, float
     },
     "summary": {
         "triggerMessageCount": (int, 1, None),
+        "keepRecentTurns": (int, 1, None),
+        "minKeepRecentTurns": (int, 0, None),
         "keepRecentMessages": (int, 1, None),
         "minKeepRecentMessages": (int, 0, None),
         "sourceMaxMessages": (int, 1, None),
@@ -82,6 +84,10 @@ RUNTIME_CONFIG_FIELDS: dict[str, dict[str, tuple[type, float | int | None, float
         "companionLive2dOffsetX": (int, None, None),
         "companionLive2dOffsetY": (int, None, None),
     },
+}
+RUNTIME_CONFIG_FIELD_ALIASES: dict[tuple[str, str], str] = {
+    ("summary", "keepRecentMessages"): "keepRecentTurns",
+    ("summary", "minKeepRecentMessages"): "minKeepRecentTurns",
 }
 
 memory_store = MessageMemoryStore(DATABASE_PATH, default_workspace_path=REPO_ROOT)
@@ -2950,6 +2956,7 @@ def update_runtime_config_file(payload: dict[str, Any]) -> None:
         current_section = dict(current.get(section, {}))
         updates[section] = {}
         for key, value in section_payload.items():
+            key = RUNTIME_CONFIG_FIELD_ALIASES.get((section, key), key)
             field_schema = RUNTIME_CONFIG_FIELDS[section].get(key)
             if field_schema is None:
                 raise ValueError(f"unsupported runtime config field: {section}.{key}")

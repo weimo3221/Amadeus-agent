@@ -127,6 +127,34 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertIsInstance(messages[0]["id"], int)
         self.assertIsInstance(messages[0]["createdAt"], str)
 
+    def test_load_recent_turns_keeps_complete_user_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "user", "turn one")
+            memory.save("session-1", "assistant", "answer one")
+            memory.save("session-1", "user", "turn two")
+            memory.save("session-1", "assistant", "", tool_calls=[{
+                "id": "call_time",
+                "type": "function",
+                "function": {"name": "get_current_time", "arguments": "{}"},
+            }])
+            memory.save("session-1", "tool", '{"formatted": "12:00"}', tool_call_id="call_time", tool_name="get_current_time")
+            memory.save("session-1", "assistant", "answer two")
+            memory.save("session-1", "user", "turn three")
+
+            messages = memory.load_recent_turns("session-1", 2)
+
+        self.assertEqual(
+            [(message["role"], message["content"]) for message in messages],
+            [
+                ("user", "turn two"),
+                ("assistant", ""),
+                ("tool", '{"formatted": "12:00"}'),
+                ("assistant", "answer two"),
+                ("user", "turn three"),
+            ],
+        )
+
     def test_reset_deletes_conversation_summary_for_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
