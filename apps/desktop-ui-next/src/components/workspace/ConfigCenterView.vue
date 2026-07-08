@@ -7,6 +7,7 @@ import AmSelect from '@/components/ui/AmSelect.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 import AmTabs from '@/components/ui/AmTabs.vue'
 import AmTag from '@/components/ui/AmTag.vue'
+import type { ToolTone } from '@/types'
 import type { Live2dBehavior } from '@/runtime/http'
 
 interface BehaviorFormEntry {
@@ -281,12 +282,117 @@ const mcpRefreshing = ref(false)
 
 const mcpConfig = computed(() => state.toolsConfig?.mcp ?? null)
 const mcpServers = computed(() => mcpConfig.value?.servers ?? [])
+const allTools = computed(() => state.toolsConfig?.tools ?? [])
+const effectiveTools = computed(() => state.effectiveTools?.tools ?? [])
+const effectiveToolNames = computed(() => new Set(effectiveTools.value.map((tool) => tool.name)))
+const roleScope = computed(() => state.activeRole?.runtimeScope ?? { tools: [], skills: [], mcpServers: [] })
 const mcpToolCount = computed(() =>
-  (state.toolsConfig?.tools ?? []).filter((tool) => tool.name.startsWith('mcp__')).length,
+  allTools.value.filter((tool) => tool.name.startsWith('mcp__')).length,
+)
+const effectiveMcpToolCount = computed(() =>
+  effectiveTools.value.filter((tool) => tool.name.startsWith('mcp__')).length,
 )
 const mcpFailedCount = computed(() =>
   state.mcpAuditRecords.filter((record) => record.ok === false || record.failureCode).length,
 )
+const toolAuditFailedCount = computed(() =>
+  state.toolAuditRecords.filter((record) => record.ok === false || record.failureCode || record.decision === 'failed').length,
+)
+const toolAuditDeniedCount = computed(() =>
+  state.toolAuditRecords.filter((record) => record.decision === 'denied' || record.decision === 'blocked').length,
+)
+const averageToolDuration = computed(() => {
+  const durations = state.toolAuditRecords
+    .map((record) => record.durationMs)
+    .filter((duration): duration is number => typeof duration === 'number')
+  if (!durations.length) return 0
+  return Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
+})
+const roleHiddenTools = computed(() =>
+  allTools.value.filter((tool) => tool.enabled !== false && !effectiveToolNames.value.has(tool.name)),
+)
+const recentToolAuditRecords = computed(() => state.toolAuditRecords.slice(-30).reverse())
+const recentMcpAuditRecords = computed(() => state.mcpAuditRecords.slice().reverse())
+
+const decisionLabels: Record<string, string> = {
+  started: '开始',
+  finished: '完成',
+  denied: '拒绝',
+  blocked: '阻断',
+  failed: '失败',
+}
+
+function normalizeMcpIdentifier(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function mcpToolPrefix(serverName: string): string {
+  return `mcp__${normalizeMcpIdentifier(serverName)}__`
+}
+
+function toolsForMcpServer(serverName: string) {
+  const prefix = mcpToolPrefix(serverName)
+  return allTools.value.filter((tool) => tool.name.startsWith(prefix))
+}
+
+function effectiveToolsForMcpServer(serverName: string) {
+  const prefix = mcpToolPrefix(serverName)
+  return effectiveTools.value.filter((tool) => tool.name.startsWith(prefix))
+}
+
+function latestAuditForPrefix(prefix: string) {
+  for (let index = state.toolAuditRecords.length - 1; index >= 0; index -= 1) {
+    const record = state.toolAuditRecords[index]
+    if (record.toolName.startsWith(prefix)) return record
+  }
+  return null
+}
+
+const mcpServerDiagnostics = computed(() =>
+  mcpServers.value.map((server) => {
+    const prefix = mcpToolPrefix(server.name)
+    const discoveredTools = toolsForMcpServer(server.name)
+    const visibleTools = effectiveToolsForMcpServer(server.name)
+    const latestAudit = latestAuditForPrefix(prefix)
+    const hiddenByRole = discoveredTools.length - visibleTools.length
+    const hasScopeRestriction = roleScope.value.mcpServers.length > 0 || roleScope.value.tools.length > 0
+    const tone: ToolTone = !server.enabled
+      ? 'neutral'
+      : discoveredTools.length === 0
+        ? 'warning'
+        : hiddenByRole === discoveredTools.length && hasScopeRestriction
+          ? 'danger'
+          : 'success'
+    return {
+      ...server,
+      discoveredTools,
+      visibleTools,
+      hiddenByRole,
+      latestAudit,
+      hasScopeRestriction,
+      tone,
+    }
+  }),
+)
+
+function auditTone(record: { decision: string; ok?: boolean; failureCode?: string }): ToolTone {
+  if (record.ok === false || record.failureCode || record.decision === 'failed') return 'danger'
+  if (record.decision === 'denied' || record.decision === 'blocked') return 'warning'
+  if (record.ok === true || record.decision === 'finished') return 'success'
+  return 'neutral'
+}
+
+function metadataPreview(metadata?: Record<string, unknown> | null): string {
+  if (!metadata) return ''
+  try {
+    return JSON.stringify(metadata)
+  } catch {
+    return ''
+  }
+}
 
 async function refreshMcp() {
   mcpRefreshing.value = true
@@ -744,7 +850,7 @@ async function refreshMcp() {
               </AmButton>
             </div>
 
-            <div class="grid gap-3 sm:grid-cols-3">
+            <div class="grid gap-3 sm:grid-cols-4">
               <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
                 <p class="text-[11px] font-medium text-ink-faint">全局状态</p>
                 <div class="mt-2">
@@ -761,22 +867,66 @@ async function refreshMcp() {
                 <p class="text-[11px] font-medium text-ink-faint">已发现工具</p>
                 <p class="mt-2 text-lg font-semibold text-ink">{{ mcpToolCount }}</p>
               </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">当前角色可见</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ effectiveMcpToolCount }}</p>
+              </div>
             </div>
 
             <p class="text-[11px] leading-relaxed text-ink-faint">
-              MCP 配置仍由 <code class="font-mono">/tools/config</code> 管理；这里先提供运行诊断与最近调用审计。
-              后续再补编辑、保存、测试 discovery 的完整 UI。
+              这里展示的是全局 MCP discovery 与当前会话角色过滤后的有效工具差异。当前不扩展 stdio/SSE；
+              优先把 HTTP JSON-RPC MCP 的发现、权限、耗时、失败和 role scope 过滤结果看清楚。
+            </p>
+          </div>
+
+          <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex items-center gap-2">
+              <Icon icon="ph:funnel-duotone" :width="18" class="text-brand-500" />
+              <span class="text-sm font-semibold text-ink">当前角色过滤结果</span>
+            </div>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">Tools allowlist</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ roleScope.tools.length || '全局' }}</p>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">MCP server allowlist</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ roleScope.mcpServers.length || '全局' }}</p>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">被过滤工具</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ roleHiddenTools.length }}</p>
+              </div>
+            </div>
+            <div v-if="roleHiddenTools.length" class="rounded-[var(--radius-xl2)] bg-warning-soft/45 p-3">
+              <p class="text-[11px] font-semibold text-[#b9791a]">当前角色不可见的工具</p>
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                <AmTag
+                  v-for="tool in roleHiddenTools.slice(0, 16)"
+                  :key="tool.name"
+                  tone="warning"
+                  size="sm"
+                >
+                  {{ tool.name }}
+                </AmTag>
+                <AmTag v-if="roleHiddenTools.length > 16" tone="neutral" size="sm">
+                  +{{ roleHiddenTools.length - 16 }}
+                </AmTag>
+              </div>
+            </div>
+            <p v-else class="rounded-[var(--radius-xl2)] bg-success-soft/45 p-3 text-xs text-success">
+              当前角色没有额外过滤全局启用工具。
             </p>
           </div>
 
           <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
             <div class="flex items-center gap-2">
               <Icon icon="ph:server-duotone" :width="18" class="text-brand-500" />
-              <span class="text-sm font-semibold text-ink">MCP Server</span>
+              <span class="text-sm font-semibold text-ink">MCP Server Discovery</span>
             </div>
-            <div v-if="mcpServers.length" class="space-y-2">
+            <div v-if="mcpServerDiagnostics.length" class="space-y-2">
               <div
-                v-for="server in mcpServers"
+                v-for="server in mcpServerDiagnostics"
                 :key="server.name"
                 class="flex items-start gap-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3"
               >
@@ -793,9 +943,37 @@ async function refreshMcp() {
                       {{ server.enabled ? '启用' : '停用' }}
                     </AmTag>
                     <AmTag tone="info" size="sm">{{ server.permission }}</AmTag>
+                    <AmTag :tone="server.tone" size="sm" dot>
+                      {{ server.discoveredTools.length }} discovered / {{ server.visibleTools.length }} visible
+                    </AmTag>
                   </div>
                   <p class="mt-1 truncate font-mono text-[11px] text-ink-faint">{{ server.url }}</p>
-                  <p class="mt-1 text-[11px] text-ink-faint">超时 {{ server.timeoutSeconds }}s</p>
+                  <p class="mt-1 text-[11px] text-ink-faint">
+                    超时 {{ server.timeoutSeconds }}s
+                    <span v-if="server.hiddenByRole > 0"> · role scope 过滤 {{ server.hiddenByRole }} 个工具</span>
+                    <span v-if="server.latestAudit">
+                      · 最近调用 {{ decisionLabels[server.latestAudit.decision] ?? server.latestAudit.decision }}
+                      <template v-if="server.latestAudit.durationMs !== undefined">
+                        / {{ server.latestAudit.durationMs }}ms
+                      </template>
+                      <template v-if="server.latestAudit.failureCode">
+                        / {{ server.latestAudit.failureCode }}
+                      </template>
+                    </span>
+                  </p>
+                  <div v-if="server.discoveredTools.length" class="mt-2 flex flex-wrap gap-1.5">
+                    <AmTag
+                      v-for="tool in server.discoveredTools.slice(0, 8)"
+                      :key="tool.name"
+                      :tone="effectiveToolNames.has(tool.name) ? 'success' : 'neutral'"
+                      size="sm"
+                    >
+                      {{ tool.name.replace(mcpToolPrefix(server.name), '') }}
+                    </AmTag>
+                    <AmTag v-if="server.discoveredTools.length > 8" tone="neutral" size="sm">
+                      +{{ server.discoveredTools.length - 8 }}
+                    </AmTag>
+                  </div>
                 </div>
               </div>
             </div>
@@ -808,16 +986,35 @@ async function refreshMcp() {
             <div class="flex items-center justify-between gap-3">
               <div class="flex items-center gap-2">
                 <Icon icon="ph:list-checks-duotone" :width="18" class="text-brand-500" />
-                <span class="text-sm font-semibold text-ink">最近 MCP 调用</span>
+                <span class="text-sm font-semibold text-ink">ToolRuntime 审计</span>
               </div>
-              <AmTag :tone="mcpFailedCount ? 'warning' : 'success'" size="sm" dot>
-                {{ mcpFailedCount ? `${mcpFailedCount} 条异常` : '无异常' }}
+              <AmTag :tone="toolAuditFailedCount || toolAuditDeniedCount ? 'warning' : 'success'" size="sm" dot>
+                {{ toolAuditFailedCount }} 失败 · {{ toolAuditDeniedCount }} 权限/阻断
               </AmTag>
             </div>
 
-            <div v-if="state.mcpAuditRecords.length" class="space-y-2">
+            <div class="grid gap-3 sm:grid-cols-4">
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">审计记录</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ state.toolAuditRecords.length }}</p>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">平均耗时</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ averageToolDuration }}ms</p>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">MCP 异常</p>
+                <p class="mt-2 text-lg font-semibold text-ink">{{ mcpFailedCount }}</p>
+              </div>
+              <div class="rounded-[var(--radius-xl2)] bg-surface-muted/60 p-3">
+                <p class="text-[11px] font-medium text-ink-faint">当前 Session</p>
+                <p class="mt-2 truncate text-sm font-semibold text-ink">{{ state.activeSessionId }}</p>
+              </div>
+            </div>
+
+            <div v-if="recentToolAuditRecords.length" class="space-y-2">
               <div
-                v-for="record in state.mcpAuditRecords"
+                v-for="record in recentToolAuditRecords"
                 :key="record.recordId"
                 class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3"
               >
@@ -826,10 +1023,53 @@ async function refreshMcp() {
                     {{ record.toolName }}
                   </p>
                   <AmTag
-                    :tone="record.ok === false || record.failureCode ? 'danger' : record.ok === true ? 'success' : 'neutral'"
+                    :tone="auditTone(record)"
                     size="sm"
                   >
-                    {{ record.failureCode || record.decision }}
+                    {{ record.failureCode || decisionLabels[record.decision] || record.decision }}
+                  </AmTag>
+                </div>
+                <p class="mt-1 text-[11px] text-ink-faint">
+                  {{ shortDateTime(record.timestamp) }}
+                  <span v-if="record.durationMs !== undefined"> · {{ record.durationMs }}ms</span>
+                  <span> · {{ record.sessionId }}</span>
+                  <span> · {{ record.toolName.startsWith('mcp__') ? 'MCP' : 'local' }}</span>
+                </p>
+                <p v-if="record.detail" class="mt-1 line-clamp-2 text-[11px] text-ink-faint">
+                  {{ record.detail }}
+                </p>
+                <p v-if="metadataPreview(record.metadata)" class="mt-1 line-clamp-2 font-mono text-[10px] text-ink-faint">
+                  {{ metadataPreview(record.metadata) }}
+                </p>
+              </div>
+            </div>
+            <p v-else class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs text-ink-faint">
+              当前会话还没有 ToolRuntime 审计记录。执行一次工具后，这里会显示权限判定、耗时、失败原因和 metadata。
+            </p>
+          </div>
+
+          <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2">
+                <Icon icon="ph:plugs-connected-duotone" :width="18" class="text-brand-500" />
+                <span class="text-sm font-semibold text-ink">最近 MCP 调用</span>
+              </div>
+              <AmTag :tone="mcpFailedCount ? 'warning' : 'success'" size="sm" dot>
+                {{ mcpFailedCount ? `${mcpFailedCount} 条异常` : '无异常' }}
+              </AmTag>
+            </div>
+            <div v-if="recentMcpAuditRecords.length" class="space-y-2">
+              <div
+                v-for="record in recentMcpAuditRecords"
+                :key="`mcp-${record.recordId}`"
+                class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3"
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <p class="min-w-0 truncate font-mono text-[12px] font-semibold text-ink">
+                    {{ record.toolName }}
+                  </p>
+                  <AmTag :tone="auditTone(record)" size="sm">
+                    {{ record.failureCode || decisionLabels[record.decision] || record.decision }}
                   </AmTag>
                 </div>
                 <p class="mt-1 text-[11px] text-ink-faint">
@@ -843,7 +1083,7 @@ async function refreshMcp() {
               </div>
             </div>
             <p v-else class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs text-ink-faint">
-              当前会话还没有 MCP 工具审计记录。执行一次 MCP 工具后，这里会显示最近调用、耗时和失败原因。
+              当前会话还没有 MCP 工具审计记录。
             </p>
           </div>
         </template>

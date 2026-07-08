@@ -18,8 +18,8 @@ const isE2eOpenMainUi = process.env.AMADEUS_E2E_OPEN_MAIN_UI === '1'
 const isE2eCompanionHover = process.env.AMADEUS_E2E_COMPANION_HOVER === '1'
 const defaultCompanionSessionId = process.env.AMADEUS_SESSION_ID || 'companion:default'
 
-// The new Vue main UI (apps/desktop-ui-next) replaces the legacy vanilla renderer.
-// E2E flows still assert against the legacy renderer DOM, so they keep loading it.
+// The Vue main UI (apps/desktop-ui-next) is the production workbench.
+// The vanilla renderer is retained only as an explicit fallback and for older E2E DOM assertions.
 const isAnyE2e = isE2eSmoke
   || isE2eRuntimeUi
   || isE2eLive2D
@@ -152,7 +152,7 @@ function mainUiQueryString(sessionId: string): string {
 }
 
 function loadMainUi(window: BrowserWindow, sessionId: string): void {
-  // E2E and the explicit legacy flag keep the vanilla renderer so DOM assertions hold.
+  // E2E and the explicit legacy flag keep the deprecated vanilla renderer so DOM assertions hold.
   if (useLegacyMainUi) {
     if (process.env.AMADEUS_DESKTOP_DEV === '1') {
       const url = new URL(rendererDevUrl('main-ui'))
@@ -165,7 +165,7 @@ function loadMainUi(window: BrowserWindow, sessionId: string): void {
     return
   }
 
-  // Default: the Vue main UI (apps/desktop-ui-next).
+  // Default production path: the Vue main UI (apps/desktop-ui-next).
   const search = mainUiQueryString(sessionId)
   if (process.env.AMADEUS_DESKTOP_DEV === '1') {
     const url = new URL(mainUiDevServerUrl)

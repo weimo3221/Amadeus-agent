@@ -385,6 +385,11 @@ export interface ToolsConfigResult {
   schemas: Array<{ function?: { name?: string }; name?: string }>
 }
 
+export interface ToolsListResult {
+  tools: Array<{ name: string; displayName?: string; permission?: string; enabled?: boolean }>
+  schemas: Array<{ function?: { name?: string }; name?: string }>
+}
+
 export interface ToolAuditRecordPayload {
   recordId: string
   timestamp: string
@@ -395,6 +400,7 @@ export interface ToolAuditRecordPayload {
   durationMs?: number
   failureCode?: string
   detail?: string
+  metadata?: Record<string, unknown> | null
 }
 
 export interface RuntimeApiUpdate {
@@ -424,6 +430,14 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfigResult | null> 
 
 export async function fetchToolsConfig(): Promise<ToolsConfigResult | null> {
   return getJson<ToolsConfigResult>('/tools/config')
+}
+
+export async function fetchToolsList(sessionId?: string): Promise<ToolsListResult> {
+  const params = new URLSearchParams()
+  if (sessionId) params.set('sessionId', sessionId)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const data = await getJson<ToolsListResult>(`/tools/list${suffix}`)
+  return { tools: data?.tools ?? [], schemas: data?.schemas ?? [] }
 }
 
 export async function fetchToolAudit(

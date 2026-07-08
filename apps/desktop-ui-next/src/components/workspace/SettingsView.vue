@@ -6,8 +6,17 @@ import AmInput from '@/components/ui/AmInput.vue'
 import AmSelect from '@/components/ui/AmSelect.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 import AmEmptyState from '@/components/ui/AmEmptyState.vue'
+import AmTag from '@/components/ui/AmTag.vue'
 
 const { state, updateRole } = useRuntime()
+
+interface ScopeOption {
+  id: string
+  label: string
+  detail: string
+  tone: 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'neutral'
+  available: boolean
+}
 
 const editRoleId = ref('')
 const roleName = ref('')
@@ -17,9 +26,12 @@ const persona = ref('')
 const style = ref('')
 const live2dModel = ref('')
 const ttsVoice = ref('')
-const runtimeTools = ref('')
-const runtimeSkills = ref('')
-const runtimeMcpServers = ref('')
+const runtimeTools = ref<string[]>([])
+const runtimeSkills = ref<string[]>([])
+const runtimeMcpServers = ref<string[]>([])
+const toolSearch = ref('')
+const skillSearch = ref('')
+const mcpSearch = ref('')
 const saving = ref(false)
 const savedFlash = ref(false)
 
@@ -56,19 +68,14 @@ function loadForm(id: string) {
   style.value = role.style
   live2dModel.value = role.live2dModel
   ttsVoice.value = role.ttsVoice
-  runtimeTools.value = formatScopeList(role.runtimeScope?.tools)
-  runtimeSkills.value = formatScopeList(role.runtimeScope?.skills)
-  runtimeMcpServers.value = formatScopeList(role.runtimeScope?.mcpServers)
+  runtimeTools.value = normalizeScopeList(role.runtimeScope?.tools)
+  runtimeSkills.value = normalizeScopeList(role.runtimeScope?.skills)
+  runtimeMcpServers.value = normalizeScopeList(role.runtimeScope?.mcpServers)
 }
 
-function formatScopeList(items?: string[]) {
-  return (items ?? []).join('\n')
-}
-
-function parseScopeList(value: string) {
+function normalizeScopeList(items?: string[]) {
   const seen = new Set<string>()
-  return value
-    .split(/[\n,]/)
+  return (items ?? [])
     .map((item) => item.trim())
     .filter((item) => {
       if (!item || seen.has(item)) return false
@@ -81,6 +88,115 @@ function sameList(left: string[], right?: string[]) {
   const normalizedRight = right ?? []
   return left.length === normalizedRight.length && left.every((item, index) => item === normalizedRight[index])
 }
+
+function buildSelectedAwareOptions(inventory: ScopeOption[], selected: string[]) {
+  const byId = new Map(inventory.map((option) => [option.id, option]))
+  const unknownSelected = selected
+    .filter((id) => !byId.has(id))
+    .map((id) => ({
+      id,
+      label: id,
+      detail: '已保存，但当前 inventory 未发现',
+      tone: 'warning' as const,
+      available: false,
+    }))
+  return [...inventory, ...unknownSelected]
+}
+
+function filterScopeOptions(options: ScopeOption[], query: string) {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return options
+  return options.filter((option) =>
+    `${option.id} ${option.label} ${option.detail}`.toLowerCase().includes(normalized),
+  )
+}
+
+function toggleScopeList(items: string[], id: string) {
+  return items.includes(id)
+    ? items.filter((item) => item !== id)
+    : [...items, id]
+}
+
+function toggleTool(id: string) {
+  runtimeTools.value = toggleScopeList(runtimeTools.value, id)
+}
+
+function toggleSkill(id: string) {
+  runtimeSkills.value = toggleScopeList(runtimeSkills.value, id)
+}
+
+function toggleMcpServer(id: string) {
+  runtimeMcpServers.value = toggleScopeList(runtimeMcpServers.value, id)
+}
+
+function clearTools() {
+  runtimeTools.value = []
+}
+
+function clearSkills() {
+  runtimeSkills.value = []
+}
+
+function clearMcpServers() {
+  runtimeMcpServers.value = []
+}
+
+function selectedOptions(options: ScopeOption[], selected: string[]) {
+  const byId = new Map(options.map((option) => [option.id, option]))
+  return selected.map((id) => byId.get(id) ?? {
+    id,
+    label: id,
+    detail: '已保存，但当前 inventory 未发现',
+    tone: 'warning' as const,
+    available: false,
+  })
+}
+
+const toolOptions = computed(() =>
+  buildSelectedAwareOptions(
+    (state.toolsConfig?.tools ?? []).map((tool) => ({
+      id: tool.name,
+      label: tool.displayName || tool.name,
+      detail: `${tool.name}${tool.permission ? ` · ${tool.permission}` : ''}${tool.enabled === false ? ' · 全局停用' : ''}`,
+      tone: tool.enabled === false ? 'neutral' : tool.permission === 'ask' ? 'warning' : 'success',
+      available: tool.enabled !== false,
+    })),
+    runtimeTools.value,
+  ),
+)
+
+const skillOptions = computed(() =>
+  buildSelectedAwareOptions(
+    state.skills.map((skill) => ({
+      id: skill.id,
+      label: skill.name,
+      detail: `${skill.category}${skill.summary ? ` · ${skill.summary}` : ''}`,
+      tone: 'brand',
+      available: true,
+    })),
+    runtimeSkills.value,
+  ),
+)
+
+const mcpServerOptions = computed(() =>
+  buildSelectedAwareOptions(
+    (state.toolsConfig?.mcp?.servers ?? []).map((server) => ({
+      id: server.name,
+      label: server.name,
+      detail: `${server.url}${server.permission ? ` · ${server.permission}` : ''}${server.enabled ? '' : ' · 停用'}`,
+      tone: server.enabled ? 'info' : 'neutral',
+      available: server.enabled,
+    })),
+    runtimeMcpServers.value,
+  ),
+)
+
+const visibleToolOptions = computed(() => filterScopeOptions(toolOptions.value, toolSearch.value))
+const visibleSkillOptions = computed(() => filterScopeOptions(skillOptions.value, skillSearch.value))
+const visibleMcpServerOptions = computed(() => filterScopeOptions(mcpServerOptions.value, mcpSearch.value))
+const selectedToolOptions = computed(() => selectedOptions(toolOptions.value, runtimeTools.value))
+const selectedSkillOptions = computed(() => selectedOptions(skillOptions.value, runtimeSkills.value))
+const selectedMcpServerOptions = computed(() => selectedOptions(mcpServerOptions.value, runtimeMcpServers.value))
 
 watch(
   () => [state.roles, state.activeRole] as const,
@@ -119,9 +235,9 @@ const dirty = computed(() => {
     style.value !== role.style ||
     live2dModel.value !== role.live2dModel ||
     ttsVoice.value.trim() !== role.ttsVoice ||
-    !sameList(parseScopeList(runtimeTools.value), role.runtimeScope?.tools) ||
-    !sameList(parseScopeList(runtimeSkills.value), role.runtimeScope?.skills) ||
-    !sameList(parseScopeList(runtimeMcpServers.value), role.runtimeScope?.mcpServers)
+    !sameList(runtimeTools.value, role.runtimeScope?.tools) ||
+    !sameList(runtimeSkills.value, role.runtimeScope?.skills) ||
+    !sameList(runtimeMcpServers.value, role.runtimeScope?.mcpServers)
   )
 })
 
@@ -138,9 +254,9 @@ async function save() {
     live2dModel: live2dModel.value,
     ttsVoice: ttsVoice.value.trim(),
     runtimeScope: {
-      tools: parseScopeList(runtimeTools.value),
-      skills: parseScopeList(runtimeSkills.value),
-      mcpServers: parseScopeList(runtimeMcpServers.value),
+      tools: runtimeTools.value,
+      skills: runtimeSkills.value,
+      mcpServers: runtimeMcpServers.value,
     },
   })
   saving.value = false
@@ -292,44 +408,211 @@ function reset() {
             <span class="text-sm font-semibold text-ink">上下文范围</span>
           </div>
           <p class="rounded-[var(--radius-xl2)] bg-surface-muted p-3 text-xs leading-relaxed text-ink-soft">
-            这些列表只对当前角色生效，用来收窄每轮注入的工具、Skills 和 MCP。留空表示跟随全局可用集合。
+            这些选择只对当前角色生效，用来收窄每轮注入的工具、Skills 和 MCP server。每组留空表示跟随全局可用集合。
           </p>
-          <div class="grid gap-4 lg:grid-cols-3">
-            <div class="space-y-1.5">
-              <label class="text-xs font-medium text-ink-soft">Tools</label>
-              <textarea
-                v-model="runtimeTools"
-                rows="5"
-                placeholder="get_current_time&#10;read_file"
-                class="w-full resize-y rounded-[var(--radius-xl2)] border border-line bg-surface px-3 py-2.5 font-mono text-xs leading-relaxed text-ink outline-none
-                       transition-all duration-200 ease-[var(--ease-soft)] placeholder:text-ink-faint
-                       hover:border-brand-200 hover:shadow-[var(--shadow-soft)]
-                       focus:border-brand-300 focus:shadow-[var(--shadow-glow)]"
-              />
+          <div class="grid gap-4">
+            <div class="space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p class="text-xs font-semibold text-ink">Tools</p>
+                  <p class="text-[11px] text-ink-faint">
+                    {{ runtimeTools.length ? `仅注入 ${runtimeTools.length} 个工具` : '不限制工具，使用全局启用集合' }}
+                  </p>
+                </div>
+                <AmButton
+                  variant="ghost"
+                  size="sm"
+                  :disabled="!runtimeTools.length"
+                  @click="clearTools"
+                >
+                  清空
+                </AmButton>
+              </div>
+              <AmInput v-model="toolSearch" icon="ph:magnifying-glass-duotone" clearable placeholder="搜索工具名称、权限或显示名" />
+              <div v-if="selectedToolOptions.length" class="flex flex-wrap gap-2">
+                <button
+                  v-for="option in selectedToolOptions"
+                  :key="`selected-tool-${option.id}`"
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-medium text-brand-700 ring-1 ring-brand-100 transition-colors hover:bg-danger-soft hover:text-danger hover:ring-danger/15"
+                  @click="toggleTool(option.id)"
+                >
+                  {{ option.label }}
+                  <Icon icon="ph:x-bold" :width="11" />
+                </button>
+              </div>
+              <p v-else class="rounded-[var(--radius-xl2)] bg-white/55 p-2 text-[11px] text-ink-faint">
+                当前未选择工具，角色会看到全局启用的工具集合。
+              </p>
+              <div class="max-h-56 space-y-2 overflow-y-auto pr-1">
+                <button
+                  v-for="option in visibleToolOptions"
+                  :key="option.id"
+                  type="button"
+                  class="flex w-full items-start gap-3 rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
+                  :class="[
+                    runtimeTools.includes(option.id)
+                      ? 'border-brand-200 bg-brand-50'
+                      : 'border-white/70 bg-white/55 hover:border-brand-200 hover:bg-brand-50/70',
+                    !option.available && !runtimeTools.includes(option.id) ? 'cursor-not-allowed opacity-55' : '',
+                  ]"
+                  :disabled="!option.available && !runtimeTools.includes(option.id)"
+                  @click="toggleTool(option.id)"
+                >
+                  <span
+                    class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border"
+                    :class="runtimeTools.includes(option.id) ? 'border-brand-500 bg-brand-500 text-white' : 'border-line text-transparent'"
+                  >
+                    <Icon icon="ph:check-bold" :width="12" />
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-center gap-2">
+                      <span class="truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
+                      <AmTag :tone="option.tone" size="sm">{{ option.available ? '可用' : '不可用' }}</AmTag>
+                    </span>
+                    <span class="mt-1 block truncate font-mono text-[11px] text-ink-faint">{{ option.detail }}</span>
+                  </span>
+                </button>
+                <p v-if="!visibleToolOptions.length" class="rounded-[var(--radius-xl2)] bg-white/55 p-3 text-xs text-ink-faint">
+                  没有匹配的工具。
+                </p>
+              </div>
             </div>
-            <div class="space-y-1.5">
-              <label class="text-xs font-medium text-ink-soft">Skills</label>
-              <textarea
-                v-model="runtimeSkills"
-                rows="5"
-                placeholder="development/runtime-debug"
-                class="w-full resize-y rounded-[var(--radius-xl2)] border border-line bg-surface px-3 py-2.5 font-mono text-xs leading-relaxed text-ink outline-none
-                       transition-all duration-200 ease-[var(--ease-soft)] placeholder:text-ink-faint
-                       hover:border-brand-200 hover:shadow-[var(--shadow-soft)]
-                       focus:border-brand-300 focus:shadow-[var(--shadow-glow)]"
-              />
+
+            <div class="space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p class="text-xs font-semibold text-ink">Skills</p>
+                  <p class="text-[11px] text-ink-faint">
+                    {{ runtimeSkills.length ? `仅注入 ${runtimeSkills.length} 个技能` : '不限制技能，使用全局技能目录' }}
+                  </p>
+                </div>
+                <AmButton
+                  variant="ghost"
+                  size="sm"
+                  :disabled="!runtimeSkills.length"
+                  @click="clearSkills"
+                >
+                  清空
+                </AmButton>
+              </div>
+              <AmInput v-model="skillSearch" icon="ph:magnifying-glass-duotone" clearable placeholder="搜索技能名称、类别或描述" />
+              <div v-if="selectedSkillOptions.length" class="flex flex-wrap gap-2">
+                <button
+                  v-for="option in selectedSkillOptions"
+                  :key="`selected-skill-${option.id}`"
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-medium text-brand-700 ring-1 ring-brand-100 transition-colors hover:bg-danger-soft hover:text-danger hover:ring-danger/15"
+                  @click="toggleSkill(option.id)"
+                >
+                  {{ option.label }}
+                  <Icon icon="ph:x-bold" :width="11" />
+                </button>
+              </div>
+              <p v-else class="rounded-[var(--radius-xl2)] bg-white/55 p-2 text-[11px] text-ink-faint">
+                当前未选择技能，角色会看到全局技能目录。
+              </p>
+              <div class="max-h-56 space-y-2 overflow-y-auto pr-1">
+                <button
+                  v-for="option in visibleSkillOptions"
+                  :key="option.id"
+                  type="button"
+                  class="flex w-full items-start gap-3 rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
+                  :class="[
+                    runtimeSkills.includes(option.id)
+                      ? 'border-brand-200 bg-brand-50'
+                      : 'border-white/70 bg-white/55 hover:border-brand-200 hover:bg-brand-50/70',
+                    !option.available && !runtimeSkills.includes(option.id) ? 'cursor-not-allowed opacity-55' : '',
+                  ]"
+                  :disabled="!option.available && !runtimeSkills.includes(option.id)"
+                  @click="toggleSkill(option.id)"
+                >
+                  <span
+                    class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border"
+                    :class="runtimeSkills.includes(option.id) ? 'border-brand-500 bg-brand-500 text-white' : 'border-line text-transparent'"
+                  >
+                    <Icon icon="ph:check-bold" :width="12" />
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-center gap-2">
+                      <span class="truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
+                      <AmTag :tone="option.tone" size="sm">{{ option.available ? '可用' : '未发现' }}</AmTag>
+                    </span>
+                    <span class="mt-1 block truncate text-[11px] text-ink-faint">{{ option.detail }}</span>
+                  </span>
+                </button>
+                <p v-if="!visibleSkillOptions.length" class="rounded-[var(--radius-xl2)] bg-white/55 p-3 text-xs text-ink-faint">
+                  没有匹配的技能。
+                </p>
+              </div>
             </div>
-            <div class="space-y-1.5">
-              <label class="text-xs font-medium text-ink-soft">MCP Servers</label>
-              <textarea
-                v-model="runtimeMcpServers"
-                rows="5"
-                placeholder="hermes-fixture"
-                class="w-full resize-y rounded-[var(--radius-xl2)] border border-line bg-surface px-3 py-2.5 font-mono text-xs leading-relaxed text-ink outline-none
-                       transition-all duration-200 ease-[var(--ease-soft)] placeholder:text-ink-faint
-                       hover:border-brand-200 hover:shadow-[var(--shadow-soft)]
-                       focus:border-brand-300 focus:shadow-[var(--shadow-glow)]"
-              />
+
+            <div class="space-y-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/35 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p class="text-xs font-semibold text-ink">MCP Servers</p>
+                  <p class="text-[11px] text-ink-faint">
+                    {{ runtimeMcpServers.length ? `仅允许 ${runtimeMcpServers.length} 个 MCP server` : '不限制 MCP server，使用全局 MCP 配置' }}
+                  </p>
+                </div>
+                <AmButton
+                  variant="ghost"
+                  size="sm"
+                  :disabled="!runtimeMcpServers.length"
+                  @click="clearMcpServers"
+                >
+                  清空
+                </AmButton>
+              </div>
+              <AmInput v-model="mcpSearch" icon="ph:magnifying-glass-duotone" clearable placeholder="搜索 MCP server 名称、URL 或权限" />
+              <div v-if="selectedMcpServerOptions.length" class="flex flex-wrap gap-2">
+                <button
+                  v-for="option in selectedMcpServerOptions"
+                  :key="`selected-mcp-${option.id}`"
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-medium text-brand-700 ring-1 ring-brand-100 transition-colors hover:bg-danger-soft hover:text-danger hover:ring-danger/15"
+                  @click="toggleMcpServer(option.id)"
+                >
+                  {{ option.label }}
+                  <Icon icon="ph:x-bold" :width="11" />
+                </button>
+              </div>
+              <p v-else class="rounded-[var(--radius-xl2)] bg-white/55 p-2 text-[11px] text-ink-faint">
+                当前未选择 MCP server，角色会看到全局启用的 MCP 工具。
+              </p>
+              <div class="max-h-56 space-y-2 overflow-y-auto pr-1">
+                <button
+                  v-for="option in visibleMcpServerOptions"
+                  :key="option.id"
+                  type="button"
+                  class="flex w-full items-start gap-3 rounded-[var(--radius-xl2)] border p-3 text-left transition-all duration-150"
+                  :class="[
+                    runtimeMcpServers.includes(option.id)
+                      ? 'border-brand-200 bg-brand-50'
+                      : 'border-white/70 bg-white/55 hover:border-brand-200 hover:bg-brand-50/70',
+                    !option.available && !runtimeMcpServers.includes(option.id) ? 'cursor-not-allowed opacity-55' : '',
+                  ]"
+                  :disabled="!option.available && !runtimeMcpServers.includes(option.id)"
+                  @click="toggleMcpServer(option.id)"
+                >
+                  <span
+                    class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border"
+                    :class="runtimeMcpServers.includes(option.id) ? 'border-brand-500 bg-brand-500 text-white' : 'border-line text-transparent'"
+                  >
+                    <Icon icon="ph:check-bold" :width="12" />
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-center gap-2">
+                      <span class="truncate text-[13px] font-semibold text-ink">{{ option.label }}</span>
+                      <AmTag :tone="option.tone" size="sm">{{ option.available ? '启用' : '停用/未发现' }}</AmTag>
+                    </span>
+                    <span class="mt-1 block truncate font-mono text-[11px] text-ink-faint">{{ option.detail }}</span>
+                  </span>
+                </button>
+                <p v-if="!visibleMcpServerOptions.length" class="rounded-[var(--radius-xl2)] bg-white/55 p-3 text-xs text-ink-faint">
+                  没有匹配的 MCP server。
+                </p>
+              </div>
             </div>
           </div>
         </div>

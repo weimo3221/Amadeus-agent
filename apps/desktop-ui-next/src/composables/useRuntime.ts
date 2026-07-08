@@ -51,6 +51,7 @@ import {
   fetchSkills,
   fetchToolAudit,
   fetchToolsConfig,
+  fetchToolsList,
   fetchTasks,
   fetchTaskEvents,
   resumeTaskRequest,
@@ -78,6 +79,7 @@ import {
   type SkillPayload,
   type StoredMessage,
   type ToolAuditRecordPayload,
+  type ToolsListResult,
   type ToolsConfigResult,
   type TtsVoicePayload,
 } from '@/runtime/http'
@@ -110,6 +112,8 @@ interface RuntimeState {
   audioConfig: AudioConfigResult | null
   live2dBehaviors: Live2dBehaviorsResult | null
   toolsConfig: ToolsConfigResult | null
+  effectiveTools: ToolsListResult | null
+  toolAuditRecords: ToolAuditRecordPayload[]
   mcpAuditRecords: ToolAuditRecordPayload[]
   taskNotifications: TaskNotification[]
 }
@@ -151,6 +155,8 @@ const state = reactive<RuntimeState>({
   audioConfig: null,
   live2dBehaviors: null,
   toolsConfig: null,
+  effectiveTools: null,
+  toolAuditRecords: [],
   mcpAuditRecords: [],
   taskNotifications: [],
 })
@@ -589,11 +595,14 @@ async function loadConfigOptions(): Promise<void> {
 }
 
 async function loadToolDiagnostics(): Promise<void> {
-  const [toolsConfig, auditRecords] = await Promise.all([
+  const [toolsConfig, effectiveTools, auditRecords] = await Promise.all([
     fetchToolsConfig(),
+    fetchToolsList(state.activeSessionId),
     fetchToolAudit({ sessionId: state.activeSessionId, limit: 100 }),
   ])
   state.toolsConfig = toolsConfig
+  state.effectiveTools = effectiveTools
+  state.toolAuditRecords = auditRecords
   state.mcpAuditRecords = auditRecords.filter((record) => record.toolName.startsWith('mcp__')).slice(-20)
 }
 

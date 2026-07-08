@@ -8,7 +8,7 @@ import AmTag from '@/components/ui/AmTag.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 import AmEmptyState from '@/components/ui/AmEmptyState.vue'
 
-const { state, sendMessage, respondPermission } = useRuntime()
+const { state, sendMessage, respondPermission, selectCompanionSession } = useRuntime()
 
 const emit = defineEmits<{
   navigate: [key: string]
@@ -17,6 +17,30 @@ const emit = defineEmits<{
 const chatLog = ref<HTMLElement | null>(null)
 
 const runningCount = computed(() => state.tasks.filter((t) => t.status === 'running').length)
+const blockedCount = computed(() => state.tasks.filter((t) => t.status === 'blocked').length)
+const pendingPermissionLabel = computed(() =>
+  state.toolPermission ? `等待授权：${state.toolPermission.displayName}` : '无待授权工具',
+)
+const latestMemoryDiagnostic = computed(() =>
+  state.memoryContextDiagnostics[state.memoryContextDiagnostics.length - 1] ?? null,
+)
+const memorySourceCount = computed(() => {
+  const diagnostic = latestMemoryDiagnostic.value
+  return diagnostic?.sources?.length ?? 0
+})
+const mcpConfig = computed(() => state.toolsConfig?.mcp ?? null)
+const mcpServerCount = computed(() => mcpConfig.value?.servers?.filter((server) => server.enabled).length ?? 0)
+const mcpToolCount = computed(() =>
+  (state.toolsConfig?.tools ?? []).filter((tool) => tool.name.startsWith('mcp__')).length,
+)
+const roleScopeSummary = computed(() => {
+  const scope = state.activeRole?.runtimeScope
+  const tools = scope?.tools?.length ?? 0
+  const skills = scope?.skills?.length ?? 0
+  const mcpServers = scope?.mcpServers?.length ?? 0
+  if (!tools && !skills && !mcpServers) return '跟随全局可用集合'
+  return `${tools} 工具 · ${skills} 技能 · ${mcpServers} MCP`
+})
 const connectionLabel = computed(() => {
   if (state.connection === 'online') return '在线 · 实时已连接'
   if (state.connection === 'connecting') return '连接中…'
@@ -209,6 +233,115 @@ scrollToBottom()
                   当前会话共 {{ state.chat.length }} 条消息。
                 </li>
               </ul>
+            </div>
+            <div class="rounded-[var(--radius-xl3)] border border-line bg-surface-muted/50 p-4">
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <Icon icon="ph:radar-duotone" :width="18" class="text-brand-500" />
+                  <span class="text-sm font-semibold text-ink">工作流状态</span>
+                </div>
+                <AmTag :tone="state.sessionContext.viewingCompanion ? 'brand' : 'neutral'" size="sm" dot>
+                  {{ state.sessionContext.viewingCompanion ? '已附着 Companion' : '独立会话' }}
+                </AmTag>
+              </div>
+
+              <div class="mt-3 space-y-2">
+                <div
+                  class="w-full rounded-[var(--radius-xl2)] border border-white/70 bg-white/55 p-3 text-left"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-ink">
+                      <Icon icon="ph:sparkle-duotone" :width="16" class="shrink-0 text-brand-500" />
+                      <span class="truncate">Companion 会话</span>
+                    </span>
+                    <button
+                      v-if="!state.sessionContext.viewingCompanion"
+                      type="button"
+                      class="shrink-0 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-medium text-brand-700 transition-colors hover:bg-brand-100"
+                      @click.stop="selectCompanionSession"
+                    >
+                      附着
+                    </button>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-relaxed text-ink-faint">
+                    {{ state.sessionContext.viewingCompanion
+                      ? `Main UI 正在查看桌面 Companion 的默认会话，${state.sessionContext.companionMessageCount} 条消息。`
+                      : `当前查看 ${state.sessionContext.activeTitle}；需要共享桌面伴随窗口上下文时，可直接附着到 ${state.sessionContext.companionTitle}。` }}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  class="w-full rounded-[var(--radius-xl2)] border border-white/70 bg-white/55 p-3 text-left transition-colors hover:border-brand-200 hover:bg-brand-50"
+                  @click="emit('navigate', 'tasks')"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-ink">
+                      <Icon icon="ph:list-checks-duotone" :width="16" class="shrink-0 text-info" />
+                      <span class="truncate">任务执行</span>
+                    </span>
+                    <AmTag :tone="blockedCount ? 'warning' : runningCount ? 'info' : 'neutral'" size="sm" dot>
+                      {{ runningCount }} 运行 · {{ blockedCount }} 阻塞
+                    </AmTag>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-relaxed text-ink-faint">
+                    任务详情、时间线、取消、重跑、审核通过与恢复都集中在任务页。
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  class="w-full rounded-[var(--radius-xl2)] border border-white/70 bg-white/55 p-3 text-left transition-colors hover:border-brand-200 hover:bg-brand-50"
+                  @click="state.toolPermission ? emit('navigate', 'chat') : emit('navigate', 'config')"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-ink">
+                      <Icon icon="ph:shield-check-duotone" :width="16" class="shrink-0 text-warning" />
+                      <span class="truncate">权限与 MCP</span>
+                    </span>
+                    <AmTag :tone="state.toolPermission ? 'warning' : mcpConfig?.enabled ? 'success' : 'neutral'" size="sm" dot>
+                      {{ state.toolPermission ? '等待确认' : mcpConfig?.enabled ? `${mcpToolCount} 工具` : '未启用' }}
+                    </AmTag>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-relaxed text-ink-faint">
+                    {{ pendingPermissionLabel }}；{{ mcpServerCount }} 个 MCP server 已启用，调用审计在配置中心查看。
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  class="w-full rounded-[var(--radius-xl2)] border border-white/70 bg-white/55 p-3 text-left transition-colors hover:border-brand-200 hover:bg-brand-50"
+                  @click="emit('navigate', 'memory')"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-ink">
+                      <Icon icon="ph:brain-duotone" :width="16" class="shrink-0 text-brand-500" />
+                      <span class="truncate">记忆上下文</span>
+                    </span>
+                    <AmTag tone="brand" size="sm">{{ state.memoryItems.length }} 条事实</AmTag>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-relaxed text-ink-faint">
+                    最近一次上下文装配使用 {{ memorySourceCount }} 个来源；记忆事实与诊断集中在记忆页。
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  class="w-full rounded-[var(--radius-xl2)] border border-white/70 bg-white/55 p-3 text-left transition-colors hover:border-brand-200 hover:bg-brand-50"
+                  @click="emit('navigate', 'settings')"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-ink">
+                      <Icon icon="ph:funnel-duotone" :width="16" class="shrink-0 text-success" />
+                      <span class="truncate">角色上下文范围</span>
+                    </span>
+                    <AmTag tone="success" size="sm">runtimeScope</AmTag>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-relaxed text-ink-faint">
+                    当前角色：{{ roleScopeSummary }}。在设置页收窄每轮可见工具、Skills 和 MCP server。
+                  </p>
+                </button>
+              </div>
             </div>
             <div
               v-if="state.taskNotifications.length"
