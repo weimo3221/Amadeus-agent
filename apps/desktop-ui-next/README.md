@@ -44,11 +44,15 @@ directly from the Python runtime over HTTP; endpoints in use include:
 
 - `GET /sessions`, `POST /sessions`, `DELETE /sessions/:id` (archive)
 - `GET /roles`, `PUT /roles/:id` (name / persona / style / provider / model)
-- `GET /skills/list`
-- `GET /memory/items`
+- `GET /memory/messages`, `GET /memory/items`, memory diagnostics/review APIs
+- `GET /tasks`, task event/action APIs, and `GET /sessions/:id/plan-runs`
+- `GET /scheduled-jobs` and scheduled-job action APIs
+- `GET /skills/list`, skill view/manage APIs
+- runtime, model, Live2D, audio, MCP/tool, and ToolRuntime audit/config APIs
 
-Some endpoints (`/tasks`, `/scheduled-jobs`, `/sessions/:id/plan`) may not be
-available depending on runtime state; the UI degrades gracefully to empty lists.
+The Vue workbench is the production Main UI surface. The older vanilla
+`apps/desktop/src/renderer/main-ui` path is retained only as an explicit
+fallback and for older E2E compatibility.
 
 ## Structure
 
