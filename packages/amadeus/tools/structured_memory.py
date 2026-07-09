@@ -17,6 +17,8 @@ def memory_add(args: dict[str, Any], context: Any) -> dict[str, Any]:
     scope = args.get("scope").strip() if isinstance(args.get("scope"), str) else ""
     content = args.get("content").strip() if isinstance(args.get("content"), str) else ""
     confidence = args.get("confidence", 1.0)
+    memory_type = args.get("memoryType") if isinstance(args.get("memoryType"), str) else None
+    metadata = args.get("metadata") if isinstance(args.get("metadata"), dict) else None
     source_message_id = args.get("sourceMessageId") if isinstance(args.get("sourceMessageId"), int) else None
     session_id = getattr(context, "session_id", "default")
 
@@ -37,6 +39,9 @@ def memory_add(args: dict[str, Any], context: Any) -> dict[str, Any]:
             confidence=float(confidence),
             source_session_id=session_id,
             source_message_id=source_message_id,
+            memory_type=memory_type,
+            metadata=metadata,
+            actor="tool",
         )
         return {
             "added": True,
@@ -53,13 +58,15 @@ def search_memory_items(args: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"error": "memory store is not available"}
 
     scope = args.get("scope") if isinstance(args.get("scope"), str) and args.get("scope").strip() else None
+    memory_type = args.get("memoryType") if isinstance(args.get("memoryType"), str) and args.get("memoryType").strip() else None
     query = args.get("query") if isinstance(args.get("query"), str) and args.get("query").strip() else None
     limit = normalize_positive_int(args.get("limit"), DEFAULT_MEMORY_ITEMS_LIMIT, 1, MAX_MEMORY_ITEMS_LIMIT)
 
     try:
-        items = memory_store.list_memory_items(scope=scope, query=query, limit=limit)
+        items = memory_store.list_memory_items(scope=scope, memory_type=memory_type, query=query, limit=limit)
         return {
             "scope": scope,
+            "memoryType": memory_type,
             "query": query,
             "limit": limit,
             "resultCount": len(items),
@@ -78,6 +85,8 @@ def memory_replace(args: dict[str, Any], context: Any) -> dict[str, Any]:
     content = args.get("content").strip() if isinstance(args.get("content"), str) else ""
     scope = args.get("scope").strip() if isinstance(args.get("scope"), str) and args.get("scope").strip() else None
     confidence = args.get("confidence")
+    memory_type = args.get("memoryType") if isinstance(args.get("memoryType"), str) else None
+    metadata = args.get("metadata") if isinstance(args.get("metadata"), dict) else None
     if not isinstance(memory_item_id, int):
         return {"error": "memoryItemId must be an integer"}
 
@@ -87,6 +96,9 @@ def memory_replace(args: dict[str, Any], context: Any) -> dict[str, Any]:
             content,
             scope=scope,
             confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
+            memory_type=memory_type,
+            metadata=metadata,
+            actor="tool",
         )
         if item is None:
             return {"replaced": False, "memoryItemId": memory_item_id, "error": "active memory item not found"}
@@ -105,7 +117,7 @@ def memory_forget(args: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"error": "memoryItemId must be an integer"}
 
     try:
-        forgotten = memory_store.delete_memory_item(memory_item_id)
+        forgotten = memory_store.delete_memory_item(memory_item_id, actor="tool")
         return {"forgotten": forgotten, "memoryItemId": memory_item_id}
     except ValueError as error:
         return {"error": str(error)}
@@ -142,6 +154,15 @@ MEMORY_ADD_TOOL_SPEC = ToolSpec(
                     "confidence": {
                         "type": "number",
                         "description": "Confidence from 0 to 1. Defaults to 1.0 for explicit user-provided facts.",
+                    },
+                    "memoryType": {
+                        "type": "string",
+                        "enum": ["semantic", "episodic", "procedural", "preference", "project_fact", "agent_instruction"],
+                        "description": "Optional Mem0-like memory type. Defaults to semantic.",
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional compact JSON metadata for source, tags, or lifecycle hints.",
                     },
                     "sourceMessageId": {
                         "type": "integer",
@@ -187,6 +208,15 @@ MEMORY_REPLACE_TOOL_SPEC = ToolSpec(
                     "confidence": {
                         "type": "number",
                         "description": "Optional corrected confidence from 0 to 1.",
+                    },
+                    "memoryType": {
+                        "type": "string",
+                        "enum": ["semantic", "episodic", "procedural", "preference", "project_fact", "agent_instruction"],
+                        "description": "Optional corrected Mem0-like memory type.",
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional replacement metadata object.",
                     },
                 },
                 "required": ["memoryItemId", "content"],
@@ -248,6 +278,11 @@ SEARCH_MEMORY_ITEMS_TOOL_SPEC = ToolSpec(
                     "query": {
                         "type": "string",
                         "description": "Optional text filter for memory content.",
+                    },
+                    "memoryType": {
+                        "type": "string",
+                        "enum": ["semantic", "episodic", "procedural", "preference", "project_fact", "agent_instruction"],
+                        "description": "Optional Mem0-like memory type filter.",
                     },
                     "limit": {
                         "type": "number",

@@ -361,18 +361,21 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/memory/items":
             query = parse_qs(parsed.query)
             scope = optional_query_string(query, "scope")
+            memory_type = optional_query_string(query, "memoryType") or optional_query_string(query, "memory_type")
             search_query = optional_query_string(query, "query")
             include_deleted = parse_optional_bool(optional_query_string(query, "includeDeleted")) or False
             limit = parse_int(query.get("limit", ["20"])[0], 20, 1, 100)
             items = memory_store.list_memory_items(
                 scope=scope,
+                memory_type=memory_type,
                 query=search_query,
                 include_deleted=include_deleted,
                 limit=limit,
             )
             logger.info(
-                "Handling memory items list scope=%s queryChars=%s includeDeleted=%s count=%s",
+                "Handling memory items list scope=%s memoryType=%s queryChars=%s includeDeleted=%s count=%s",
                 scope,
+                memory_type,
                 len(search_query or ""),
                 include_deleted,
                 len(items),
@@ -382,8 +385,30 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "items": items,
                 "filters": {
                     "scope": scope,
+                    "memoryType": memory_type,
                     "query": search_query,
                     "includeDeleted": include_deleted,
+                    "limit": limit,
+                },
+            })
+            return
+
+        if parsed.path == "/memory/items/history":
+            query = parse_qs(parsed.query)
+            memory_item_id = parse_int(query.get("memoryItemId", ["0"])[0], 0, 0, 2_147_483_647)
+            limit = parse_int(query.get("limit", ["50"])[0], 50, 1, 200)
+            if memory_item_id <= 0:
+                self.write_json(400, {"ok": False, "error": "memoryItemId must be a positive integer"})
+                return
+            history = memory_store.list_memory_item_history(memory_item_id, limit=limit)
+            logger.info("Handling memory item history itemId=%s count=%s", memory_item_id, len(history))
+            self.write_json(200, {
+                "ok": True,
+                "memoryItemId": memory_item_id,
+                "history": history,
+                "count": len(history),
+                "filters": {
+                    "memoryItemId": memory_item_id,
                     "limit": limit,
                 },
             })
@@ -1564,6 +1589,8 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             confidence = body.get("confidence", 1.0)
             source_session_id = body.get("sourceSessionId")
             source_message_id = body.get("sourceMessageId")
+            memory_type = body.get("memoryType", body.get("memory_type"))
+            metadata = body.get("metadata")
 
             if not isinstance(scope, str) or not isinstance(content, str):
                 self.write_json(400, {"ok": False, "error": "scope and content must be strings"})
@@ -1577,6 +1604,12 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             if source_message_id is not None and not isinstance(source_message_id, int):
                 self.write_json(400, {"ok": False, "error": "sourceMessageId must be an integer"})
                 return
+            if memory_type is not None and not isinstance(memory_type, str):
+                self.write_json(400, {"ok": False, "error": "memoryType must be a string"})
+                return
+            if metadata is not None and not isinstance(metadata, dict):
+                self.write_json(400, {"ok": False, "error": "metadata must be an object"})
+                return
 
             item = memory_store.save_memory_item(
                 scope,
@@ -1584,11 +1617,15 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 confidence=float(confidence),
                 source_session_id=source_session_id,
                 source_message_id=source_message_id,
+                memory_type=memory_type,
+                metadata=metadata,
+                actor="api",
             )
             logger.info(
-                "Saved memory item itemId=%s scope=%s confidence=%s contentChars=%s",
+                "Saved memory item itemId=%s scope=%s memoryType=%s confidence=%s contentChars=%s",
                 item["memoryItemId"],
                 item["scope"],
+                item["memoryType"],
                 item["confidence"],
                 item["charCount"],
             )
@@ -1604,7 +1641,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 self.write_json(400, {"ok": False, "error": "memoryItemId must be an integer"})
                 return
 
-            deleted = memory_store.delete_memory_item(memory_item_id)
+            deleted = memory_store.delete_memory_item(memory_item_id, actor="api")
             logger.info("Deleted memory item itemId=%s deleted=%s", memory_item_id, deleted)
             self.write_json(200, {"ok": True, "deleted": deleted, "memoryItemId": memory_item_id})
         except Exception as error:

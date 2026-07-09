@@ -30,7 +30,7 @@ Amadeus Agent is not just a chat window. The character reacts through facial exp
 |---|---|---|
 | 🎭 | **Live2D companion** | Transparent, frameless, always-on-top desktop presence with gaze tracking, motion, and expression driven by agent state. |
 | 🗣️ | **Voice in & out** | Local `faster-whisper` ASR for microphone input and `auto`-selected TTS (GPT-SoVITS or macOS `say`) with hybrid lipsync. |
-| 🧠 | **Memory v2** | SQLite-backed history, FTS retrieval, structured facts, human-reviewed memory promotion, and API-call-time context assembly. |
+| 🧠 | **Memory v2** | SQLite-backed history, FTS retrieval, Mem0-like typed long-term memories, automatic safe memory promotion, and API-call-time context assembly. |
 | 🛠️ | **ToolRuntime** | Formal registry with `allow` / `ask` / `deny` permissions, audit trail, timeouts, cancellation, and repeated-call guardrails. |
 | 💭 | **Reasoning-aware** | DeepSeek V4 thinking mode handled through a provider-aware reasoning layer that replays `reasoning_content` only where required. |
 | ⏰ | **Proactive agent** | Scheduled companion messages, persistent session todos, and in-process task workers with retry and stale-run recovery. |

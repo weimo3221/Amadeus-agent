@@ -73,9 +73,9 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - Guardrails block repeated exact failures and repeated same-signature completed calls inside one turn. File-observing signatures for `search_files`, `read_file`, `patch`, and `write_file` include the session workspace epoch, so a successful workspace mutation can make the same file read/search meaningful again.
 - Role identity is stored as `data/roles/<roleId>/SOUL.md`. Stable Markdown memory is stored per role under `data/roles/<roleId>/memory/MEMORY.md` and `data/roles/<roleId>/memory/USER.md`, with legacy default-role migration from `data/memory/`.
 - Task execution now goes through a `TaskRunner` boundary. `InProcessTaskRunner` preserves the current thread-pool behavior, while the state machine, retry/recovery logic, cancellation, and event publishing remain in `TaskWorker`.
-- `ContextAssembler` builds API-call-time context each turn from the active runtime memory provider. Stable Markdown memory (`MEMORY.md` / `USER.md`) remains in the prompt layer. `configs/runtime.yaml` defaults to `memory.provider: hybrid_runtime`, which preserves the original `builtin_runtime` provider for summaries, accepted structured memories, current-session FTS snippets, and default memory tools, then optionally fills sparse retrieval slots from global SQLite FTS. Set `memory.provider: builtin_runtime` to use the original provider exactly as before. If an external provider is configured, it replaces the runtime provider for prefetch and memory-tool exposure so the model sees only one memory backend. Active session plan items, todos, task state, and recent terminal task outcomes are runtime state, not durable memory. Relevant prior snippets go into a sanitized `<memory-context>` block on the current user message, external provider results go into `<external-memory-context>`, and `memory.context.used` reports which sources were used, including `retrievalProvider` metadata. These injected blocks are not persisted. The runtime keeps the most recent `context.diagnosticsLimit` diagnostics per session in an in-memory ring buffer for developer inspection.
+- `ContextAssembler` builds API-call-time context each turn from the active runtime memory provider. Stable Markdown memory (`MEMORY.md` / `USER.md`) remains in the prompt layer. `configs/runtime.yaml` defaults to `memory.provider: mem0_like_runtime`, which keeps the hybrid provider's summary/current-session FTS/global FTS lanes and treats durable long-term facts as typed `memory + metadata + history` records. Set `memory.provider: hybrid_runtime` for the previous provider, or `builtin_runtime` for the original local provider exactly as before. If an external provider is configured, it replaces the runtime provider for prefetch and memory-tool exposure so the model sees only one memory backend. Active session plan items, todos, task state, and recent terminal task outcomes are runtime state, not durable memory. Relevant prior snippets go into a sanitized `<memory-context>` block on the current user message, external provider results go into `<external-memory-context>`, and `memory.context.used` reports which sources were used, including `retrievalProvider` metadata. These injected blocks are not persisted. The runtime keeps the most recent `context.diagnosticsLimit` diagnostics per session in an in-memory ring buffer for developer inspection.
 - Conversation summaries are persisted in SQLite through `GET /memory/summary` and `POST /memory/summary`, injected as reference-only context, and refreshed by threshold-based compaction or manual `POST /memory/compact`. Raw history loaded for each model call uses the latest configured conversation turns after the summary boundary rather than a raw message count.
-- Structured `memory_items` store durable `user` / `agent` / `project` facts in SQLite, expose explicit HTTP add/list/delete APIs, are searchable through the read-only `search_memory_items` tool, can be added/replaced/forgotten through approval-gated tools, and inject a small active set into model context as reference-only `<memory-items>`.
+- Structured `memory_items` store durable `user` / `agent` / `project` facts in SQLite using a Mem0-like shape: `content`, `memoryType`, JSON `metadata`, `contentHash`, source ids, access stats, timestamps, and soft deletion. They expose explicit HTTP add/list/delete/history APIs, are searchable through the read-only `search_memory_items` tool, can be added/replaced/forgotten through approval-gated tools, and inject a small active set into model context as reference-only `<memory-items>`.
 - Memory query tokenization uses `jieba` plus bounded CJK n-gram fallback. `messages_fts` indexes the original message text plus tokenized terms so Chinese queries can match Chinese historical messages by segmented terms; search results still return the original message content. Structured `memory_items` reuse the same tokenizer for LIKE-based fact filtering.
 - Memory review candidates are persisted in SQLite as an audit and exception-handling queue. `POST /memory/review/run` asks the provider to propose candidates from recent messages, filters secret-like content, temporary debug/run state, uncertain claims, overly specific local/cache/generated paths, and obvious `user` / `agent` / `project` scope mismatches, then automatically promotes safe candidates into `memory_items` while marking their candidate records as `accepted`. `GET/POST /memory/review/candidates` still lists or creates candidates, `POST /memory/review/accept` promotes a pending candidate into `memory_items`, and `POST /memory/review/reject` rejects one without writing durable memory. Rejected candidates suppress later identical suggestions for the same session/scope/content.
 - Automatic memory review can run after a completed turn once the message threshold is met. It is cooldown-gated and writes safe durable memory items directly after pre-persistence safety checks.
@@ -141,13 +141,14 @@ Turn-time memory assembly is configured in `configs/runtime.yaml`:
 
 ```yaml
 memory:
-  provider: hybrid_runtime
+  provider: mem0_like_runtime
   globalRetrievalFallback: true
 ```
 
-- `hybrid_runtime` is the default provider. It preserves the original local provider behavior for summaries, accepted structured memory, current-session FTS snippets, and memory tools, then optionally fills sparse retrieval slots from global SQLite FTS.
+- `mem0_like_runtime` is the default provider. It keeps the hybrid retrieval behavior and records long-term memory as typed items with metadata, access stats, and history.
+- `hybrid_runtime` is the preserved previous provider. It keeps summaries, accepted structured memory, current-session FTS snippets, and memory tools, then optionally fills sparse retrieval slots from global SQLite FTS.
 - `builtin_runtime` is the preserved original provider. Set `memory.provider: builtin_runtime` to disable the new hybrid lane and use the previous behavior exactly.
-- `memory.globalRetrievalFallback: false` keeps `hybrid_runtime` selected but disables cross-session FTS fallback.
+- `memory.globalRetrievalFallback: false` keeps `mem0_like_runtime` or `hybrid_runtime` selected but disables cross-session FTS fallback.
 - Environment overrides are available through `AMADEUS_MEMORY_PROVIDER` and `AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK`.
 
 The BGE-M3 embedding deployment controls configure the local model resource first; vector indexing/backfill is intentionally a follow-up layer on top of this provider boundary.
@@ -170,7 +171,8 @@ The BGE-M3 embedding deployment controls configure the local model resource firs
 - `GET /memory/messages?sessionId=default&limit=40`
 - `GET /memory/context/diagnostics?sessionId=default&limit=10`：query recent in-memory context assembler diagnostics for developer inspection.
 - `GET /memory/search?sessionId=default&query=hello&limit=10`
-- `GET /memory/items?scope=user&query=preference&limit=20`
+- `GET /memory/items?scope=user&memoryType=preference&query=preference&limit=20`
+- `GET /memory/items/history?memoryItemId=1&limit=50`
 - `GET /memory/embedding/config`：inspect local BGE-M3 embedding configuration, optional FlagEmbedding dependencies, model cache, and deployment state.
 - `GET /memory/summary?sessionId=default`
 - `GET /memory/review/candidates?sessionId=default&status=pending&limit=50`
@@ -184,7 +186,7 @@ The BGE-M3 embedding deployment controls configure the local model resource firs
 - `GET /todos?sessionId=companion:default&activeOnly=true&limit=100`：list persistent session todo items.
 - `PUT /todos`：replace or merge the session todo list with `{ "sessionId": "...", "merge": true, "todos": [{ "id": "a", "content": "Buy tea", "status": "pending" }] }`. The `todo` tool exposes the same read/write behavior to the agent.
 - `POST /memory/messages`
-- `POST /memory/items`
+- `POST /memory/items`：add a typed long-term memory item; accepts optional `memoryType` and `metadata`.
 - `POST /memory/items/delete`
 - `POST /memory/embedding/deploy`：configure and start local BGE-M3 dependency/model deployment.
 - `POST /memory/embedding/cancel`：cancel an active local BGE-M3 deployment.

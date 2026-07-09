@@ -44,7 +44,7 @@ directly from the Python runtime over HTTP; endpoints in use include:
 
 - `GET /sessions`, `POST /sessions`, `DELETE /sessions/:id` (archive)
 - `GET /roles`, `PUT /roles/:id` (name / persona / style / provider / model)
-- `GET /memory/messages`, `GET /memory/items`, memory diagnostics/review APIs, and BGE-M3 embedding deployment controls
+- `GET /memory/messages`, `GET /memory/items`, `GET /memory/items/history`, memory diagnostics/review APIs, and BGE-M3 embedding deployment controls
 - `GET /tasks`, task event/action APIs, and `GET /sessions/:id/plan-runs`
 - `GET /scheduled-jobs` and scheduled-job action APIs
 - `GET /skills/list`, skill view/manage APIs

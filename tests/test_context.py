@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.context import ContextAssembler, ContextAssemblerConfig
 from amadeus.memory import MessageMemoryStore
-from amadeus.memory_provider import ExternalMemoryResult, HybridRuntimeMemoryProvider, LocalRuntimeMemoryProvider, RuntimeMemoryManager
+from amadeus.memory_provider import ExternalMemoryResult, HybridRuntimeMemoryProvider, LocalRuntimeMemoryProvider, Mem0LikeRuntimeMemoryProvider, RuntimeMemoryManager
 
 
 class ContextAssemblerTests(unittest.TestCase):
@@ -103,6 +103,25 @@ class ContextAssemblerTests(unittest.TestCase):
             self.assertTrue(any(result.get("sessionId") == "session-a" for result in hybrid_artifacts.retrievals))
             self.assertTrue(any(result.get("retrievalProvider") == "fts_global" for result in hybrid_artifacts.retrievals))
             self.assertEqual(hybrid_artifacts.memory_items, legacy_artifacts.memory_items)
+
+    def test_mem0_like_runtime_provider_tracks_memory_item_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            item = memory.save_memory_item(
+                "project",
+                "The deployment target is a local desktop app.",
+                memory_type="project_fact",
+                confidence=0.8,
+            )
+            provider = Mem0LikeRuntimeMemoryProvider(memory)
+
+            artifacts = provider.prefetch("deployment target", session_id="session-1")
+            accessed = memory.list_memory_items(scope="project", query="deployment target")[0]
+
+        self.assertEqual(artifacts.provider, "mem0_like_runtime")
+        self.assertEqual(artifacts.memory_items[0]["memoryItemId"], item["memoryItemId"])
+        self.assertEqual(accessed["accessCount"], 1)
+        self.assertTrue(accessed["lastAccessedAt"])
 
     def test_context_assembler_formats_external_memory_provider_results(self) -> None:
         class Provider:

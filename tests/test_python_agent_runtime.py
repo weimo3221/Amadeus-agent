@@ -541,7 +541,13 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.memory_review_success_cooldown_seconds, 44)
         self.assertEqual(runtime.memory_review_failure_cooldown_seconds, 55)
 
-    def test_runtime_memory_provider_defaults_to_hybrid_and_can_reload_to_builtin(self) -> None:
+    def test_runtime_memory_provider_defaults_to_mem0_like(self) -> None:
+        runtime = FakeAgentRuntime(self.memory, skills_root=self.skills_root)
+
+        self.assertEqual(runtime.memory_provider_name, "mem0_like_runtime")
+        self.assertEqual(runtime.memory_manager.runtime_provider.name, "mem0_like_runtime")
+
+    def test_runtime_memory_provider_can_use_hybrid_and_reload_to_builtin(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime-memory.yaml"
         config_path.write_text(
             "\n".join([

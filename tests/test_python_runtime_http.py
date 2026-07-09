@@ -1102,24 +1102,38 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             "scope": "user",
             "content": "The user prefers short updates.",
             "confidence": 0.75,
+            "memoryType": "preference",
+            "metadata": {"source": "http", "tags": ["updates"]},
             "sourceSessionId": "http-test",
             "sourceMessageId": 3,
         })
-        listed = self.get_json("/memory/items?scope=user&query=short&limit=10")
+        listed = self.get_json("/memory/items?scope=user&memoryType=preference&query=short&limit=10")
+        history = self.get_json(f"/memory/items/history?memoryItemId={saved['item']['memoryItemId']}")
         deleted = self.post_json("/memory/items/delete", {
             "memoryItemId": saved["item"]["memoryItemId"],
         })
+        history_after_delete = self.get_json(f"/memory/items/history?memoryItemId={saved['item']['memoryItemId']}")
         listed_after_delete = self.get_json("/memory/items?scope=user")
 
         self.assertTrue(saved["ok"])
         self.assertEqual(saved["item"]["scope"], "user")
+        self.assertEqual(saved["item"]["memoryType"], "preference")
+        self.assertEqual(saved["item"]["metadata"], {"source": "http", "tags": ["updates"]})
         self.assertEqual(saved["item"]["confidence"], 0.75)
         self.assertEqual(saved["item"]["sourceSessionId"], "http-test")
         self.assertTrue(listed["ok"])
+        self.assertEqual(listed["filters"]["memoryType"], "preference")
         self.assertEqual(len(listed["items"]), 1)
         self.assertEqual(listed["items"][0]["content"], "The user prefers short updates.")
+        self.assertTrue(history["ok"])
+        self.assertEqual(history["count"], 1)
+        self.assertEqual(history["history"][0]["event"], "ADD")
+        self.assertEqual(history["history"][0]["actor"], "api")
         self.assertTrue(deleted["ok"])
         self.assertTrue(deleted["deleted"])
+        self.assertEqual(history_after_delete["count"], 2)
+        self.assertEqual(history_after_delete["history"][0]["event"], "DELETE")
+        self.assertEqual(history_after_delete["history"][0]["actor"], "api")
         self.assertEqual(listed_after_delete["items"], [])
 
     def test_memory_review_candidates_accept_and_reject_over_http(self) -> None:

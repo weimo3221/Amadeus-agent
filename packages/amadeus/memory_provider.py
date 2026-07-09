@@ -18,10 +18,12 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_RUNTIME_PROVIDER_NAME = "builtin_runtime"
 HYBRID_RUNTIME_PROVIDER_NAME = "hybrid_runtime"
-DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME = HYBRID_RUNTIME_PROVIDER_NAME
+MEM0_LIKE_RUNTIME_PROVIDER_NAME = "mem0_like_runtime"
+DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME = MEM0_LIKE_RUNTIME_PROVIDER_NAME
 SUPPORTED_RUNTIME_MEMORY_PROVIDERS = {
     BUILTIN_RUNTIME_PROVIDER_NAME,
     HYBRID_RUNTIME_PROVIDER_NAME,
+    MEM0_LIKE_RUNTIME_PROVIDER_NAME,
 }
 
 
@@ -225,9 +227,45 @@ class HybridRuntimeMemoryProvider:
         return tagged
 
 
+class Mem0LikeRuntimeMemoryProvider(HybridRuntimeMemoryProvider):
+    """Mem0-shaped runtime provider over Amadeus' local SQLite memory.
+
+    The first cut keeps the hybrid retrieval lanes but treats durable
+    memory_items as typed long-term memories with metadata, access stats, and
+    history. Vector ranking can slot behind the same provider boundary later.
+    """
+
+    name = MEM0_LIKE_RUNTIME_PROVIDER_NAME
+
+    def prefetch(
+        self,
+        query: str,
+        *,
+        session_id: str,
+        memory_item_limit: int = 8,
+        retrieval_limit: int = 3,
+    ) -> RuntimeMemoryArtifacts:
+        artifacts = super().prefetch(
+            query,
+            session_id=session_id,
+            memory_item_limit=memory_item_limit,
+            retrieval_limit=retrieval_limit,
+        )
+        memory_item_ids = [
+            int(item["memoryItemId"])
+            for item in artifacts.memory_items
+            if isinstance(item.get("memoryItemId"), int)
+        ]
+        if memory_item_ids:
+            self.memory_store.record_memory_item_access(memory_item_ids)
+        return artifacts
+
+
 def normalize_runtime_memory_provider_name(value: str | None) -> str:
     normalized = str(value or DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME).strip()
-    if normalized in {"", "default", "hybrid", "local_hybrid"}:
+    if normalized in {"", "default", "mem0", "mem0_like", "memory_v2"}:
+        return MEM0_LIKE_RUNTIME_PROVIDER_NAME
+    if normalized in {"hybrid", "local_hybrid"}:
         return HYBRID_RUNTIME_PROVIDER_NAME
     if normalized in {"builtin", "local", "legacy"}:
         return BUILTIN_RUNTIME_PROVIDER_NAME
@@ -246,6 +284,11 @@ def create_runtime_memory_provider(
     normalized = normalize_runtime_memory_provider_name(provider_name)
     if normalized == BUILTIN_RUNTIME_PROVIDER_NAME:
         return LocalRuntimeMemoryProvider(memory_store)
+    if normalized == MEM0_LIKE_RUNTIME_PROVIDER_NAME:
+        return Mem0LikeRuntimeMemoryProvider(
+            memory_store,
+            global_retrieval_fallback=global_retrieval_fallback,
+        )
     return HybridRuntimeMemoryProvider(
         memory_store,
         global_retrieval_fallback=global_retrieval_fallback,

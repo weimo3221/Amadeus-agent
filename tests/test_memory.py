@@ -223,6 +223,100 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(len(deleted_items), 1)
         self.assertTrue(deleted_items[0]["deleted"])
 
+    def test_memory_items_have_mem0_like_fields_history_and_access_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            item = memory.save_memory_item(
+                "user",
+                "The user prefers careful status updates.",
+                confidence=0.88,
+                source_session_id="session-1",
+                source_message_id=7,
+                memory_type="preference",
+                metadata={"tags": ["status"], "source": "explicit"},
+                actor="test",
+            )
+            memory.record_memory_item_access([int(item["memoryItemId"])])
+            accessed = memory.list_memory_items(memory_type="preference", query="status updates")[0]
+            replaced = memory.replace_memory_item(
+                int(item["memoryItemId"]),
+                "The user prefers concise but careful status updates.",
+                metadata={"tags": ["status", "tone"], "source": "correction"},
+                actor="test",
+            )
+            assert replaced is not None
+            deleted = memory.delete_memory_item(int(item["memoryItemId"]))
+            history = memory.list_memory_item_history(int(item["memoryItemId"]))
+
+        self.assertEqual(item["memoryType"], "preference")
+        self.assertEqual(item["metadata"], {"source": "explicit", "tags": ["status"]})
+        self.assertEqual(len(item["contentHash"]), 64)
+        self.assertEqual(item["accessCount"], 0)
+        self.assertEqual(accessed["accessCount"], 1)
+        self.assertIsInstance(accessed["lastAccessedAt"], str)
+        self.assertEqual(replaced["metadata"], {"source": "correction", "tags": ["status", "tone"]})
+        self.assertTrue(deleted)
+        self.assertEqual([event["event"] for event in history], ["DELETE", "UPDATE", "ADD"])
+        self.assertEqual(history[0]["actor"], "runtime")
+        self.assertEqual(history[1]["actor"], "test")
+        self.assertEqual(history[2]["newMetadata"], {"source": "explicit", "tags": ["status"]})
+
+    def test_memory_item_migration_preserves_legacy_rows_and_backfills_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "amadeus.sqlite"
+            now = "2026-07-09T00:00:00+00:00"
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE memory_items (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      scope TEXT NOT NULL CHECK (scope IN ('user', 'agent', 'project')),
+                      content TEXT NOT NULL,
+                      confidence REAL NOT NULL DEFAULT 1.0,
+                      source_session_id TEXT,
+                      source_message_id INTEGER,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      deleted_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO memory_items (
+                      scope,
+                      content,
+                      confidence,
+                      source_session_id,
+                      source_message_id,
+                      created_at,
+                      updated_at
+                    )
+                    VALUES ('project', 'Legacy memory row survives migration.', 0.7, 'legacy-session', 9, ?, ?)
+                    """,
+                    (now, now),
+                )
+
+            memory = MessageMemoryStore(database_path)
+            with sqlite3.connect(database_path) as connection:
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(memory_items)").fetchall()
+                }
+            items = memory.list_memory_items(scope="project", query="Legacy")
+            history = memory.list_memory_item_history(int(items[0]["memoryItemId"]))
+
+        self.assertIn("memory_type", columns)
+        self.assertIn("metadata_json", columns)
+        self.assertIn("content_hash", columns)
+        self.assertIn("last_accessed_at", columns)
+        self.assertIn("access_count", columns)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["memoryType"], "semantic")
+        self.assertEqual(items[0]["metadata"], {})
+        self.assertEqual(len(items[0]["contentHash"]), 64)
+        self.assertEqual(history, [])
+
     def test_chinese_memory_search_uses_jieba_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
@@ -454,6 +548,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(result["candidate"]["safetyLabels"], ["explicit", "correct_scope"])
         self.assertEqual(result["candidate"]["retentionType"], "durable_project_fact")
         self.assertEqual(result["item"]["content"], "Amadeus uses Python-first runtime.")
+        self.assertEqual(result["item"]["memoryType"], "project_fact")
+        self.assertEqual(result["item"]["metadata"]["retentionType"], "durable_project_fact")  # type: ignore[index]
+        self.assertEqual(result["item"]["metadata"]["source"], "memory_review")  # type: ignore[index]
         self.assertEqual(result["item"]["sourceSessionId"], "session-1")
         self.assertEqual(result["item"]["sourceMessageId"], 9)
         self.assertEqual(len(accepted), 1)

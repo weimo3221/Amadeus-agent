@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -38,6 +39,8 @@ from amadeus.tasks import (
 MessageRole = Literal["user", "assistant", "tool"]
 StableMemoryTarget = Literal["agent", "user"]
 MemoryItemScope = Literal["user", "agent", "project"]
+MemoryItemType = Literal["semantic", "episodic", "procedural", "preference", "project_fact", "agent_instruction"]
+MemoryItemHistoryEvent = Literal["ADD", "UPDATE", "DELETE"]
 MemoryReviewCandidateStatus = Literal["pending", "accepted", "rejected", "superseded"]
 MemoryReviewRetentionType = Literal["long_term", "stable_preference", "durable_project_fact", "agent_instruction"]
 MemoryReviewJobStatus = Literal["running", "completed", "skipped", "failed"]
@@ -47,6 +50,7 @@ TodoStatus = Literal["pending", "in_progress", "completed", "cancelled"]
 MemoryReviewCandidatePayload = dict[str, str | int | float | bool | list[str]]
 CONVERSATION_SUMMARY_LIMIT = 12000
 MEMORY_ITEM_LIMIT = 2000
+MEMORY_ITEM_METADATA_LIMIT = 4000
 MEMORY_REVIEW_REASON_LIMIT = 1000
 MEMORY_REVIEW_LABEL_LIMIT = 64
 MEMORY_REVIEW_MAX_SAFETY_LABELS = 8
@@ -149,15 +153,36 @@ class MessageMemoryStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     scope TEXT NOT NULL CHECK (scope IN ('user', 'agent', 'project')),
                     content TEXT NOT NULL,
+                    memory_type TEXT NOT NULL DEFAULT 'semantic' CHECK (memory_type IN ('semantic', 'episodic', 'procedural', 'preference', 'project_fact', 'agent_instruction')),
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    content_hash TEXT NOT NULL DEFAULT '',
                     confidence REAL NOT NULL DEFAULT 1.0,
                     source_session_id TEXT,
                     source_message_id INTEGER,
+                    last_accessed_at TEXT,
+                    access_count INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     deleted_at TEXT
                   );
                   CREATE INDEX IF NOT EXISTS idx_memory_items_scope_updated
                   ON memory_items(scope, deleted_at, updated_at);
+                  CREATE TABLE IF NOT EXISTS memory_item_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_item_id INTEGER NOT NULL,
+                    event TEXT NOT NULL CHECK (event IN ('ADD', 'UPDATE', 'DELETE')),
+                    old_content TEXT,
+                    new_content TEXT,
+                    old_metadata_json TEXT,
+                    new_metadata_json TEXT,
+                    actor TEXT NOT NULL DEFAULT 'runtime',
+                    source_session_id TEXT,
+                    source_message_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(memory_item_id) REFERENCES memory_items(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_memory_item_history_item_created
+                  ON memory_item_history(memory_item_id, created_at);
                   CREATE TABLE IF NOT EXISTS memory_review_candidates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -329,6 +354,7 @@ class MessageMemoryStore:
             self._migrate_roles_and_sessions(connection)
             self._migrate_messages_for_tool_transcript(connection)
             self._migrate_conversation_summaries(connection)
+            self._migrate_memory_items(connection)
             self._migrate_memory_review_candidates(connection)
             self._migrate_task_statuses(connection)
             self._migrate_task_reliability_columns(connection)
@@ -1080,6 +1106,70 @@ class MessageMemoryStore:
         for column, statement in migrations.items():
             if column not in columns:
                 connection.execute(statement)
+
+    def _migrate_memory_items(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(memory_items)").fetchall()
+        }
+        migrations = {
+            "memory_type": "ALTER TABLE memory_items ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'semantic'",
+            "metadata_json": "ALTER TABLE memory_items ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'",
+            "content_hash": "ALTER TABLE memory_items ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+            "last_accessed_at": "ALTER TABLE memory_items ADD COLUMN last_accessed_at TEXT",
+            "access_count": "ALTER TABLE memory_items ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                connection.execute(statement)
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_items_hash_scope
+            ON memory_items(scope, content_hash, deleted_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_items_type_updated
+            ON memory_items(memory_type, deleted_at, updated_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_item_history (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              memory_item_id INTEGER NOT NULL,
+              event TEXT NOT NULL CHECK (event IN ('ADD', 'UPDATE', 'DELETE')),
+              old_content TEXT,
+              new_content TEXT,
+              old_metadata_json TEXT,
+              new_metadata_json TEXT,
+              actor TEXT NOT NULL DEFAULT 'runtime',
+              source_session_id TEXT,
+              source_message_id INTEGER,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(memory_item_id) REFERENCES memory_items(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_item_history_item_created
+            ON memory_item_history(memory_item_id, created_at)
+            """
+        )
+        rows = connection.execute(
+            """
+            SELECT id, content
+            FROM memory_items
+            WHERE content_hash IS NULL OR content_hash = ''
+            """
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                "UPDATE memory_items SET content_hash = ? WHERE id = ?",
+                (compute_memory_item_hash(str(row[1])), int(row[0])),
+            )
 
     def _migrate_memory_review_candidates(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -3199,12 +3289,19 @@ class MessageMemoryStore:
         confidence: float = 1.0,
         source_session_id: str | None = None,
         source_message_id: int | None = None,
-    ) -> dict[str, str | int | float | bool]:
+        memory_type: str | None = None,
+        metadata: dict[str, object] | None = None,
+        actor: str = "runtime",
+    ) -> dict[str, Any]:
         normalized_scope = normalize_memory_item_scope(scope)
         normalized_content = normalize_memory_item_content(content)
+        normalized_memory_type = normalize_memory_item_type(memory_type)
+        normalized_metadata_json = normalize_memory_item_metadata(metadata)
+        content_hash = compute_memory_item_hash(normalized_content)
         normalized_confidence = normalize_confidence(confidence)
         normalized_source_session_id = normalize_optional_text(source_session_id, "source_session_id", max_chars=200)
         normalized_source_message_id = normalize_optional_non_negative_int(source_message_id, "source_message_id")
+        normalized_actor = normalize_memory_item_actor(actor)
         now = datetime.now(timezone.utc).isoformat()
 
         with self.connect() as connection:
@@ -3213,17 +3310,23 @@ class MessageMemoryStore:
                 INSERT INTO memory_items (
                   scope,
                   content,
+                  memory_type,
+                  metadata_json,
+                  content_hash,
                   confidence,
                   source_session_id,
                   source_message_id,
                   created_at,
                   updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     normalized_scope,
                     normalized_content,
+                    normalized_memory_type,
+                    normalized_metadata_json,
+                    content_hash,
                     normalized_confidence,
                     normalized_source_session_id,
                     normalized_source_message_id,
@@ -3231,30 +3334,33 @@ class MessageMemoryStore:
                     now,
                 ),
             )
-            item_id = cursor.lastrowid
+            item_id = int(cursor.lastrowid)
+            self._record_memory_item_history(
+                connection,
+                item_id,
+                "ADD",
+                new_content=normalized_content,
+                new_metadata_json=normalized_metadata_json,
+                actor=normalized_actor,
+                source_session_id=normalized_source_session_id,
+                source_message_id=normalized_source_message_id,
+                created_at=now,
+            )
+            row = self._load_memory_item_row(connection, item_id)
 
-        return {
-            "memoryItemId": int(item_id),
-            "scope": normalized_scope,
-            "content": normalized_content,
-            "charCount": len(normalized_content),
-            "confidence": normalized_confidence,
-            "sourceSessionId": normalized_source_session_id or "",
-            "sourceMessageId": normalized_source_message_id or 0,
-            "createdAt": now,
-            "updatedAt": now,
-            "deleted": False,
-        }
+        return memory_item_response(row)
 
     def list_memory_items(
         self,
         *,
         scope: str | None = None,
+        memory_type: str | None = None,
         query: str | None = None,
         include_deleted: bool = False,
         limit: int = 20,
-    ) -> list[dict[str, str | int | float | bool]]:
+    ) -> list[dict[str, Any]]:
         normalized_scope = normalize_memory_item_scope(scope) if scope else None
+        normalized_memory_type = normalize_memory_item_type(memory_type) if memory_type else None
         normalized_query = query.strip() if isinstance(query, str) else ""
         query_terms = memory_item_query_terms(normalized_query)
         bounded_limit = max(1, min(100, int(limit)))
@@ -3263,11 +3369,17 @@ class MessageMemoryStore:
         if normalized_scope:
             where += " AND scope = ?"
             params.append(normalized_scope)
+        if normalized_memory_type:
+            where += " AND memory_type = ?"
+            params.append(normalized_memory_type)
         if query_terms:
-            clauses = ["content LIKE ?"]
+            clauses = ["content LIKE ?", "metadata_json LIKE ?"]
+            params.append(f"%{normalized_query}%")
             params.append(f"%{normalized_query}%")
             for term in query_terms:
                 clauses.append("content LIKE ?")
+                params.append(f"%{term}%")
+                clauses.append("metadata_json LIKE ?")
                 params.append(f"%{term}%")
             where += " AND (" + " OR ".join(clauses) + ")"
         if not include_deleted:
@@ -3281,15 +3393,20 @@ class MessageMemoryStore:
                   id,
                   scope,
                   content,
+                  memory_type,
+                  metadata_json,
+                  content_hash,
                   confidence,
                   source_session_id,
                   source_message_id,
+                  last_accessed_at,
+                  access_count,
                   created_at,
                   updated_at,
                   deleted_at
                 FROM memory_items
                 WHERE {where}
-                ORDER BY confidence DESC, updated_at DESC, id DESC
+                ORDER BY confidence DESC, access_count DESC, updated_at DESC, id DESC
                 LIMIT ?
                 """,
                 params,
@@ -3297,12 +3414,16 @@ class MessageMemoryStore:
 
         return [memory_item_response(row) for row in rows]
 
-    def delete_memory_item(self, memory_item_id: int) -> bool:
+    def delete_memory_item(self, memory_item_id: int, *, actor: str = "runtime") -> bool:
         normalized_id = int(memory_item_id)
         if normalized_id <= 0:
             raise ValueError("memory_item_id must be positive")
+        normalized_actor = normalize_memory_item_actor(actor)
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
+            existing = self._load_memory_item_row(connection, normalized_id, active_only=True)
+            if existing is None:
+                return False
             cursor = connection.execute(
                 """
                 UPDATE memory_items
@@ -3310,6 +3431,19 @@ class MessageMemoryStore:
                 WHERE id = ? AND deleted_at IS NULL
                 """,
                 (now, now, normalized_id),
+            )
+            if cursor.rowcount <= 0:
+                return False
+            self._record_memory_item_history(
+                connection,
+                normalized_id,
+                "DELETE",
+                old_content=str(existing[2]),
+                old_metadata_json=str(existing[4] or "{}"),
+                actor=normalized_actor,
+                source_session_id=str(existing[7]) if existing[7] is not None else None,
+                source_message_id=int(existing[8]) if existing[8] is not None else None,
+                created_at=now,
             )
         return cursor.rowcount > 0
 
@@ -3320,26 +3454,42 @@ class MessageMemoryStore:
         *,
         scope: str | None = None,
         confidence: float | None = None,
-    ) -> dict[str, str | int | float | bool] | None:
+        memory_type: str | None = None,
+        metadata: dict[str, object] | None = None,
+        actor: str = "runtime",
+    ) -> dict[str, Any] | None:
         normalized_id = int(memory_item_id)
         if normalized_id <= 0:
             raise ValueError("memory_item_id must be positive")
         normalized_content = normalize_memory_item_content(content)
         normalized_scope = normalize_memory_item_scope(scope) if scope else None
         normalized_confidence = normalize_confidence(confidence) if confidence is not None else None
+        normalized_memory_type = normalize_memory_item_type(memory_type) if memory_type else None
+        normalized_metadata_json = normalize_memory_item_metadata(metadata) if metadata is not None else None
+        normalized_actor = normalize_memory_item_actor(actor)
+        content_hash = compute_memory_item_hash(normalized_content)
         now = datetime.now(timezone.utc).isoformat()
 
-        assignments = ["content = ?", "updated_at = ?"]
-        params: list[object] = [normalized_content, now]
+        assignments = ["content = ?", "content_hash = ?", "updated_at = ?"]
+        params: list[object] = [normalized_content, content_hash, now]
         if normalized_scope:
             assignments.append("scope = ?")
             params.append(normalized_scope)
         if normalized_confidence is not None:
             assignments.append("confidence = ?")
             params.append(normalized_confidence)
+        if normalized_memory_type is not None:
+            assignments.append("memory_type = ?")
+            params.append(normalized_memory_type)
+        if normalized_metadata_json is not None:
+            assignments.append("metadata_json = ?")
+            params.append(normalized_metadata_json)
         params.append(normalized_id)
 
         with self.connect() as connection:
+            existing = self._load_memory_item_row(connection, normalized_id, active_only=True)
+            if existing is None:
+                return None
             cursor = connection.execute(
                 f"""
                 UPDATE memory_items
@@ -3350,25 +3500,150 @@ class MessageMemoryStore:
             )
             if cursor.rowcount <= 0:
                 return None
-            row = connection.execute(
+            row = self._load_memory_item_row(connection, normalized_id)
+            self._record_memory_item_history(
+                connection,
+                normalized_id,
+                "UPDATE",
+                old_content=str(existing[2]),
+                new_content=normalized_content,
+                old_metadata_json=str(existing[4] or "{}"),
+                new_metadata_json=str(row[4] or "{}"),
+                actor=normalized_actor,
+                source_session_id=str(row[7]) if row[7] is not None else None,
+                source_message_id=int(row[8]) if row[8] is not None else None,
+                created_at=now,
+            )
+
+        return memory_item_response(row)
+
+    def record_memory_item_access(self, memory_item_ids: list[int] | tuple[int, ...]) -> None:
+        normalized_ids = [int(memory_item_id) for memory_item_id in memory_item_ids if int(memory_item_id) > 0]
+        if not normalized_ids:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        placeholders = ", ".join("?" for _ in normalized_ids)
+        with self.connect() as connection:
+            connection.execute(
+                f"""
+                UPDATE memory_items
+                SET access_count = access_count + 1,
+                    last_accessed_at = ?
+                WHERE id IN ({placeholders}) AND deleted_at IS NULL
+                """,
+                [now, *normalized_ids],
+            )
+
+    def list_memory_item_history(self, memory_item_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
+        normalized_id = int(memory_item_id)
+        if normalized_id <= 0:
+            raise ValueError("memory_item_id must be positive")
+        bounded_limit = max(1, min(200, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
                 """
                 SELECT
                   id,
-                  scope,
-                  content,
-                  confidence,
+                  memory_item_id,
+                  event,
+                  old_content,
+                  new_content,
+                  old_metadata_json,
+                  new_metadata_json,
+                  actor,
                   source_session_id,
                   source_message_id,
-                  created_at,
-                  updated_at,
-                  deleted_at
-                FROM memory_items
-                WHERE id = ?
+                  created_at
+                FROM memory_item_history
+                WHERE memory_item_id = ?
+                ORDER BY id DESC
+                LIMIT ?
                 """,
-                (normalized_id,),
-            ).fetchone()
+                (normalized_id, bounded_limit),
+            ).fetchall()
+        return [memory_item_history_response(row) for row in rows]
 
-        return memory_item_response(row)
+    def _load_memory_item_row(
+        self,
+        connection: sqlite3.Connection,
+        memory_item_id: int,
+        *,
+        active_only: bool = False,
+    ) -> sqlite3.Row | None:
+        where = "id = ?"
+        if active_only:
+            where += " AND deleted_at IS NULL"
+        return connection.execute(
+            f"""
+            SELECT
+              id,
+              scope,
+              content,
+              memory_type,
+              metadata_json,
+              content_hash,
+              confidence,
+              source_session_id,
+              source_message_id,
+              last_accessed_at,
+              access_count,
+              created_at,
+              updated_at,
+              deleted_at
+            FROM memory_items
+            WHERE {where}
+            """,
+            (memory_item_id,),
+        ).fetchone()
+
+    def _record_memory_item_history(
+        self,
+        connection: sqlite3.Connection,
+        memory_item_id: int,
+        event: str,
+        *,
+        old_content: str | None = None,
+        new_content: str | None = None,
+        old_metadata_json: str | None = None,
+        new_metadata_json: str | None = None,
+        actor: str = "runtime",
+        source_session_id: str | None = None,
+        source_message_id: int | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        normalized_event = normalize_memory_item_history_event(event)
+        normalized_actor = normalize_memory_item_actor(actor)
+        normalized_source_session_id = normalize_optional_text(source_session_id, "source_session_id", max_chars=200)
+        normalized_source_message_id = normalize_optional_non_negative_int(source_message_id, "source_message_id")
+        connection.execute(
+            """
+            INSERT INTO memory_item_history (
+              memory_item_id,
+              event,
+              old_content,
+              new_content,
+              old_metadata_json,
+              new_metadata_json,
+              actor,
+              source_session_id,
+              source_message_id,
+              created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(memory_item_id),
+                normalized_event,
+                old_content,
+                new_content,
+                old_metadata_json,
+                new_metadata_json,
+                normalized_actor,
+                normalized_source_session_id,
+                normalized_source_message_id,
+                created_at or datetime.now(timezone.utc).isoformat(),
+            ),
+        )
 
     def save_memory_review_candidate(
         self,
@@ -3802,6 +4077,17 @@ class MessageMemoryStore:
             confidence=float(candidate["confidence"]),
             source_session_id=str(candidate["sessionId"]),
             source_message_id=int(candidate["sourceMessageEndId"]) or None,
+            memory_type=memory_type_from_review_retention(str(candidate["retentionType"])),
+            metadata={
+                "source": "memory_review",
+                "reason": str(candidate["reason"]),
+                "scopeReason": str(candidate["scopeReason"]),
+                "safetyLabels": candidate["safetyLabels"],
+                "retentionType": str(candidate["retentionType"]),
+                "sourceMessageStartId": int(candidate["sourceMessageStartId"]),
+                "sourceMessageEndId": int(candidate["sourceMessageEndId"]),
+            },
+            actor="memory_review",
         )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -4545,6 +4831,79 @@ def normalize_memory_item_content(content: str) -> str:
     return normalized
 
 
+def compute_memory_item_hash(content: str) -> str:
+    normalized = content.strip() if isinstance(content, str) else str(content or "").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def normalize_memory_item_type(value: str | None) -> MemoryItemType:
+    normalized = str(value or "semantic").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "long_term": "semantic",
+        "fact": "semantic",
+        "stable_preference": "preference",
+        "durable_project_fact": "project_fact",
+    }
+    normalized = aliases.get(normalized, normalized)
+    allowed: set[MemoryItemType] = {
+        "semantic",
+        "episodic",
+        "procedural",
+        "preference",
+        "project_fact",
+        "agent_instruction",
+    }
+    if normalized not in allowed:
+        raise ValueError("memory_type must be semantic, episodic, procedural, preference, project_fact, or agent_instruction")
+    return normalized  # type: ignore[return-value]
+
+
+def memory_type_from_review_retention(value: str | None) -> MemoryItemType:
+    return normalize_memory_item_type(value)
+
+
+def normalize_memory_item_metadata(metadata: dict[str, object] | None) -> str:
+    if metadata is None:
+        return "{}"
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object")
+    try:
+        encoded = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("metadata must be JSON serializable") from error
+    if len(encoded) > MEMORY_ITEM_METADATA_LIMIT:
+        raise ValueError(f"metadata must be at most {MEMORY_ITEM_METADATA_LIMIT} characters")
+    return encoded
+
+
+def parse_memory_item_metadata(raw: object) -> dict[str, object]:
+    if raw is None:
+        return {}
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def normalize_memory_item_actor(actor: str | None) -> str:
+    normalized = str(actor or "runtime").strip().lower().replace(" ", "_").replace("-", "_")
+    if not normalized:
+        return "runtime"
+    if "\x00" in normalized:
+        raise ValueError("actor must be UTF-8 text")
+    if len(normalized) > 80:
+        raise ValueError("actor must be at most 80 characters")
+    return normalized
+
+
+def normalize_memory_item_history_event(event: str | None) -> MemoryItemHistoryEvent:
+    normalized = str(event or "").strip().upper()
+    if normalized not in {"ADD", "UPDATE", "DELETE"}:
+        raise ValueError("memory history event must be ADD, UPDATE, or DELETE")
+    return normalized  # type: ignore[return-value]
+
+
 def normalize_confidence(confidence: float) -> float:
     normalized = float(confidence)
     if normalized < 0 or normalized > 1:
@@ -4633,21 +4992,42 @@ def parse_memory_review_safety_labels(raw: object) -> list[str]:
     return [label for label in parsed if isinstance(label, str)]
 
 
-def memory_item_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, str | int | float | bool]:
-    deleted_at = row[8]
+def memory_item_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, Any]:
+    deleted_at = row[13]
     content = str(row[2])
     return {
         "memoryItemId": int(row[0]),
         "scope": str(row[1]),
         "content": content,
         "charCount": len(content),
-        "confidence": float(row[3]),
-        "sourceSessionId": str(row[4]) if row[4] is not None else "",
-        "sourceMessageId": int(row[5]) if row[5] is not None else 0,
-        "createdAt": str(row[6]),
-        "updatedAt": str(row[7]),
+        "memoryType": normalize_memory_item_type(str(row[3]) if row[3] is not None else None),
+        "metadata": parse_memory_item_metadata(row[4]),
+        "contentHash": str(row[5] or ""),
+        "confidence": float(row[6]),
+        "sourceSessionId": str(row[7]) if row[7] is not None else "",
+        "sourceMessageId": int(row[8]) if row[8] is not None else 0,
+        "lastAccessedAt": str(row[9]) if row[9] is not None else "",
+        "accessCount": int(row[10] or 0),
+        "createdAt": str(row[11]),
+        "updatedAt": str(row[12]),
         "deleted": deleted_at is not None,
         "deletedAt": str(deleted_at) if deleted_at is not None else "",
+    }
+
+
+def memory_item_history_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, Any]:
+    return {
+        "historyId": int(row[0]),
+        "memoryItemId": int(row[1]),
+        "event": normalize_memory_item_history_event(str(row[2])),
+        "oldContent": str(row[3]) if row[3] is not None else "",
+        "newContent": str(row[4]) if row[4] is not None else "",
+        "oldMetadata": parse_memory_item_metadata(row[5]),
+        "newMetadata": parse_memory_item_metadata(row[6]),
+        "actor": normalize_memory_item_actor(str(row[7]) if row[7] is not None else None),
+        "sourceSessionId": str(row[8]) if row[8] is not None else "",
+        "sourceMessageId": int(row[9]) if row[9] is not None else 0,
+        "createdAt": str(row[10]),
     }
 
 
