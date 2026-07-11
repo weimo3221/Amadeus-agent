@@ -1138,7 +1138,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             "sourceSessionId": "http-test",
             "sourceMessageId": 3,
         })
-        listed = self.get_json("/memory/items?scope=user&memoryType=preference&query=short&limit=10")
+        listed = self.get_json("/memory/items?scope=user&memoryType=preference&query=short&metadata.source=http&limit=10")
         history = self.get_json(f"/memory/items/history?memoryItemId={saved['item']['memoryItemId']}")
         deleted = self.post_json("/memory/items/delete", {
             "memoryItemId": saved["item"]["memoryItemId"],
@@ -1154,6 +1154,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(saved["item"]["sourceSessionId"], "http-test")
         self.assertTrue(listed["ok"])
         self.assertEqual(listed["filters"]["memoryType"], "preference")
+        self.assertEqual(listed["filters"]["metadataFilter"], {"source": "http"})
         self.assertEqual(len(listed["items"]), 1)
         self.assertEqual(listed["items"][0]["content"], "The user prefers short updates.")
         self.assertTrue(history["ok"])

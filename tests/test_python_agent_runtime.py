@@ -693,7 +693,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("recent uncovered detail", serialized)
         self.assertNotIn("covered old task", serialized)
 
-    def test_history_includes_structured_memory_items(self) -> None:
+    def test_history_excludes_structured_memory_items_from_automatic_context(self) -> None:
         self.memory.save_memory_item("user", "The user prefers direct answers.", confidence=0.95)
         self.memory.save_memory_item("project", "Amadeus uses Python-first runtime.", confidence=0.9)
         runtime = FakeAgentRuntime(self.memory)
@@ -701,12 +701,12 @@ class AgentRuntimeTests(unittest.TestCase):
         list(runtime.run_turn("default", "What direct Python runtime preference matters?", lambda _request: False))
         system_content = runtime.decision_messages[-1][0]["content"]
 
-        self.assertIn("<memory-items>", system_content)
-        self.assertIn("direct answers", system_content)
-        self.assertIn("Python-first runtime", system_content)
-        self.assertIn("Current user message has priority", system_content)
+        self.assertNotIn("<memory-items>", system_content)
+        self.assertNotIn("direct answers", system_content)
+        self.assertNotIn("Python-first runtime", system_content)
+        self.assertIn("search_memory_items", system_content)
 
-    def test_history_excludes_unrelated_structured_memory_items(self) -> None:
+    def test_history_keeps_structured_memory_available_as_tool_only(self) -> None:
         self.memory.save_memory_item("user", "The user prefers direct answers.", confidence=0.95)
         self.memory.save_memory_item("project", "The deployment target is a desktop app.", confidence=0.9)
         runtime = FakeAgentRuntime(self.memory)
@@ -714,7 +714,9 @@ class AgentRuntimeTests(unittest.TestCase):
         list(runtime.run_turn("default", "What is the deployment target?", lambda _request: False))
         system_content = runtime.decision_messages[-1][0]["content"]
 
-        self.assertIn("deployment target", system_content)
+        self.assertIn("search_memory_items", system_content)
+        self.assertNotIn("<memory-items>", system_content)
+        self.assertNotIn("desktop app", system_content)
         self.assertNotIn("direct answers", system_content)
 
     def test_external_memory_provider_context_is_appended_to_user_message(self) -> None:

@@ -588,10 +588,9 @@ Current behavior:
   "payload": {
     "sourceCounts": {
       "conversation_summary": 1,
-      "memory_item": 2,
       "retrieval": 1
     },
-    "sourceCount": 4,
+	    "sourceCount": 2,
     "coveredThroughMessageId": 12,
     "sessionId": "default",
     "turnId": "turn-uuid",
@@ -599,13 +598,13 @@ Current behavior:
     "timestamp": "2026-06-21T12:00:00+00:00",
     "sources": [
       {
-        "kind": "memory_item",
-        "sourceId": "7",
-        "contentChars": 86,
-        "reason": "accepted durable structured memory",
+	        "kind": "retrieval",
+	        "sourceId": "42",
+	        "contentChars": 120,
+	        "reason": "FTS match for current user message",
         "metadata": {
-          "scope": "project",
-          "confidence": 0.9
+	          "retrievalProvider": "fts_session",
+	          "sessionId": "default"
         }
       }
     ]
@@ -616,7 +615,8 @@ Current behavior:
 Current behavior:
 
 - Python emits this diagnostic after assembling per-turn model context.
-- Summary and accepted structured memory are injected into the temporary system message.
+- Summary is injected into the temporary system message.
+- Structured long-term memory is not injected automatically; it is available through `search_memory_items`.
 - Active plan items may be injected into the temporary system message as `<active-plan>` and reported as an `active_plan` source.
 - FTS retrieval snippets are injected into the temporary current user message as `<memory-context>`.
 - Injected context is API-call-time only and is not written back to SQLite message history.

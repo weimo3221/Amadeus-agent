@@ -371,12 +371,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             scope = optional_query_string(query, "scope")
             memory_type = optional_query_string(query, "memoryType") or optional_query_string(query, "memory_type")
             search_query = optional_query_string(query, "query")
+            metadata_filter = parse_metadata_filter_query(query)
             include_deleted = parse_optional_bool(optional_query_string(query, "includeDeleted")) or False
             limit = parse_int(query.get("limit", ["20"])[0], 20, 1, 100)
             items = memory_store.list_memory_items(
                 scope=scope,
                 memory_type=memory_type,
                 query=search_query,
+                metadata_filter=metadata_filter,
                 include_deleted=include_deleted,
                 limit=limit,
             )
@@ -395,6 +397,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                     "scope": scope,
                     "memoryType": memory_type,
                     "query": search_query,
+                    "metadataFilter": metadata_filter,
                     "includeDeleted": include_deleted,
                     "limit": limit,
                 },
@@ -1534,6 +1537,8 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 ToolContext(
                     session_id=session_id,
                     memory_store=memory_store,
+                    memory_embedding_provider=agent_runtime.memory_embedding_provider,
+                    memory_vector_candidate_limit=agent_runtime.memory_vector_candidate_limit,
                     task_worker=task_worker,
                     tool_name=tool_name,
                     permission_decision="direct_execute",
@@ -2262,6 +2267,28 @@ def optional_query_string(query: dict[str, list[str]], key: str) -> str | None:
         return None
     value = values[0].strip()
     return value or None
+
+
+def parse_metadata_filter_query(query: dict[str, list[str]]) -> dict[str, object]:
+    metadata_filter: dict[str, object] = {}
+    raw_filter = optional_query_string(query, "metadataFilter") or optional_query_string(query, "metadata_filter")
+    if raw_filter:
+        try:
+            parsed = json.loads(raw_filter)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            metadata_filter.update(parsed)
+    for key, values in query.items():
+        if not key.startswith("metadata.") or not values:
+            continue
+        metadata_key = key[len("metadata."):].strip()
+        if not metadata_key:
+            continue
+        value = values[0].strip()
+        if value:
+            metadata_filter[metadata_key] = value
+    return metadata_filter
 
 
 def parse_optional_bool(value: str | None) -> bool | None:

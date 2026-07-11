@@ -2162,6 +2162,8 @@ class AgentRuntime:
                 session_id=session_id,
                 cwd=self._workspace_root_for_session(session_id),
                 memory_store=self.memory_store,
+                memory_embedding_provider=self.memory_embedding_provider,
+                memory_vector_candidate_limit=self.memory_vector_candidate_limit,
                 task_worker=self.task_worker,
                 turn_id=turn_id,
                 user_message_id=user_message_id,

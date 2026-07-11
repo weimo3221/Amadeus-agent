@@ -20,13 +20,14 @@ memory:
   # Env override: AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK.
   globalRetrievalFallback: true
 
-  # Enable semantic vector recall over typed long-term memory items when the
+  # Enable semantic vector recall for the search_memory_items tool when the
   # local BGE-M3 embedding provider is configured and deployed. Falls back to
-  # SQL/FTS memory item search automatically when unavailable.
+  # SQL/FTS memory item search automatically when unavailable. Typed long-term
+  # memory is not injected into every turn by the runtime provider.
   # Env override: AMADEUS_MEMORY_VECTOR_RETRIEVAL.
   vectorRetrieval: true
 
-  # Number of durable memory items considered by hybrid vector/text ranking.
+  # Number of durable memory items considered by tool-driven hybrid vector/text ranking.
   # Env override: AMADEUS_MEMORY_VECTOR_CANDIDATE_LIMIT.
   vectorCandidateLimit: 80
 

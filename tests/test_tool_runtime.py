@@ -853,21 +853,31 @@ class ToolRegistryTests(unittest.TestCase):
             from amadeus.memory import MessageMemoryStore
 
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
-            memory.save_memory_item("user", "The user prefers concise updates.", confidence=0.95)
+            memory.save_memory_item(
+                "user",
+                "The user prefers concise updates.",
+                confidence=0.95,
+                memory_type="preference",
+                metadata={"source": "profile", "tags": ["updates"]},
+            )
             memory.save_memory_item("project", "Amadeus uses Python-first runtime.", confidence=0.9)
             registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
 
             result = registry.execute(
                 "search_memory_items",
-                {"scope": "user", "query": "concise", "limit": 5},
+                {"scope": "user", "query": "concise", "metadataFilter": {"tags": "updates"}, "limit": 5},
                 ToolContext(session_id="session-1", memory_store=memory),
             )
+            accessed = memory.list_memory_items(scope="user", query="concise")[0]
 
         self.assertTrue(result.ok)
         self.assertEqual(result.output["scope"], "user")
         self.assertEqual(result.output["query"], "concise")
+        self.assertEqual(result.output["metadataFilter"], {"tags": "updates"})
+        self.assertEqual(result.output["retrievalProvider"], "memory_items_bm25")
         self.assertEqual(result.output["resultCount"], 1)
         self.assertIn("concise updates", result.output["items"][0]["content"])
+        self.assertEqual(accessed["accessCount"], 1)
 
     def test_memory_add_writes_structured_memory_and_deduplicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

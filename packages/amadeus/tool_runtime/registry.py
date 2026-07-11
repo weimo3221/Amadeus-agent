@@ -46,6 +46,8 @@ class ToolContext:
     session_id: str
     cwd: Path = REPO_ROOT
     memory_store: Any | None = None
+    memory_embedding_provider: Any | None = None
+    memory_vector_candidate_limit: int = 80
     task_worker: Any | None = None
     turn_id: str | None = None
     user_message_id: int | None = None
@@ -649,6 +651,10 @@ def normalize_search_memory_items_output(
             "accessCount",
             "createdAt",
             "updatedAt",
+            "retrievalProvider",
+            "hybridScore",
+            "vectorScore",
+            "bm25Score",
         ):
             if key in raw_item:
                 model_item[key] = raw_item[key]
@@ -670,6 +676,7 @@ def normalize_search_memory_items_output(
         "tool_name": tool_name,
         "scope": output.get("scope"),
         "query": output.get("query"),
+        "retrievalProvider": output.get("retrievalProvider"),
         "limit": output.get("limit"),
         "resultCount": result_count,
         "includedItems": len(model_items),

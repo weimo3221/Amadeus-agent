@@ -92,11 +92,8 @@ class LocalRuntimeMemoryProvider:
         memory_item_limit: int = 8,
         retrieval_limit: int = 3,
     ) -> RuntimeMemoryArtifacts:
+        _ = memory_item_limit
         summary = self.memory_store.load_conversation_summary(session_id)
-        memory_items = self.memory_store.list_memory_items(
-            query=query,
-            limit=memory_item_limit,
-        )
         normalized_query = query.strip()
         retrievals = [
             result
@@ -107,7 +104,6 @@ class LocalRuntimeMemoryProvider:
         return RuntimeMemoryArtifacts(
             provider=self.name,
             summary=summary,
-            memory_items=tuple(memory_items),
             retrievals=tuple(retrievals),
             covered_through_message_id=covered_through_id,
         )
@@ -133,10 +129,9 @@ class HybridRuntimeMemoryProvider:
     adds a second retrieval lane for cross-session recall.
 
     This is intentionally conservative: durable memory items, summaries, and
-    memory tools still come from the legacy provider. The new behavior only
-    fills sparse current-session retrievals with global FTS matches, which makes
-    the provider boundary ready for a later BGE-M3 vector lane without changing
-    existing tool semantics.
+    memory tools still come from the legacy provider. Runtime prefetch only
+    supplies summary and transcript-retrieval artifacts; structured long-term
+    memory is read through the explicit memory tools.
     """
 
     name = HYBRID_RUNTIME_PROVIDER_NAME
@@ -236,75 +231,13 @@ class HybridRuntimeMemoryProvider:
 class Mem0LikeRuntimeMemoryProvider(HybridRuntimeMemoryProvider):
     """Mem0-shaped runtime provider over Amadeus' local SQLite memory.
 
-    The first cut keeps the hybrid retrieval lanes but treats durable
-    memory_items as typed long-term memories with metadata, access stats, and
-    history. Vector ranking can slot behind the same provider boundary later.
+    Long-term memory items are still automatically built and indexed, but they
+    are intentionally exposed through the explicit ``search_memory_items`` tool
+    rather than injected into every turn. Runtime prefetch keeps the summary and
+    transcript retrieval lanes small and stable.
     """
 
     name = MEM0_LIKE_RUNTIME_PROVIDER_NAME
-
-    def prefetch(
-        self,
-        query: str,
-        *,
-        session_id: str,
-        memory_item_limit: int = 8,
-        retrieval_limit: int = 3,
-    ) -> RuntimeMemoryArtifacts:
-        artifacts = super().prefetch(
-            query,
-            session_id=session_id,
-            memory_item_limit=memory_item_limit,
-            retrieval_limit=retrieval_limit,
-        )
-        memory_items = self._hybrid_memory_items(query, fallback_items=artifacts.memory_items, limit=memory_item_limit)
-        memory_item_ids = [
-            int(item["memoryItemId"])
-            for item in memory_items
-            if isinstance(item.get("memoryItemId"), int)
-        ]
-        if memory_item_ids:
-            self.memory_store.record_memory_item_access(memory_item_ids)
-        return RuntimeMemoryArtifacts(
-            provider=self.name,
-            summary=artifacts.summary,
-            memory_items=tuple(memory_items),
-            retrievals=artifacts.retrievals,
-            covered_through_message_id=artifacts.covered_through_message_id,
-        )
-
-    def _hybrid_memory_items(
-        self,
-        query: str,
-        *,
-        fallback_items: tuple[dict[str, Any], ...],
-        limit: int,
-    ) -> tuple[dict[str, Any], ...]:
-        embedding_provider = self.embedding_provider
-        if (
-            not self.vector_retrieval_enabled
-            or embedding_provider is None
-            or not query.strip()
-            or not callable(getattr(embedding_provider, "encode_texts", None))
-        ):
-            return fallback_items
-        try:
-            if callable(getattr(embedding_provider, "available", None)) and not embedding_provider.available():
-                return fallback_items
-            query_vector = embedding_provider.encode_texts([query])[0]
-            items = self.memory_store.search_memory_items_hybrid(
-                query=query,
-                query_embedding=query_vector,
-                provider=str(getattr(embedding_provider, "provider", "")),
-                model=str(getattr(embedding_provider, "model_id", "")),
-                dimensions=int(getattr(embedding_provider, "dimensions", 0)),
-                limit=limit,
-                candidate_limit=self.vector_candidate_limit,
-            )
-        except Exception as error:
-            logger.info("Runtime memory vector retrieval failed; falling back to SQL/FTS memory items error=%s", error)
-            return fallback_items
-        return tuple(items) if items else fallback_items
 
 
 def normalize_runtime_memory_provider_name(value: str | None) -> str:

@@ -365,6 +365,14 @@ class MessageMemoryStore:
                   role UNINDEXED,
                   created_at UNINDEXED
                 );
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts
+                USING fts5(
+                  content,
+                  metadata,
+                  scope,
+                  memory_type,
+                  updated_at UNINDEXED
+                );
                 """
             )
             self._migrate_roles_and_sessions(connection)
@@ -396,6 +404,7 @@ class MessageMemoryStore:
                     """,
                     (int(row[0]), build_fts_index_content(message_search_text(row[1], row[5], row[6])), row[2], row[3], row[4]),
                 )
+            self._rebuild_memory_items_fts(connection)
 
     def _migrate_messages_for_tool_transcript(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -1196,6 +1205,18 @@ class MessageMemoryStore:
             ON memory_item_embeddings(provider, model, dimensions, updated_at)
             """
         )
+        connection.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts
+            USING fts5(
+              content,
+              metadata,
+              scope,
+              memory_type,
+              updated_at UNINDEXED
+            )
+            """
+        )
         rows = connection.execute(
             """
             SELECT id, content
@@ -1208,6 +1229,62 @@ class MessageMemoryStore:
                 "UPDATE memory_items SET content_hash = ? WHERE id = ?",
                 (compute_memory_item_hash(str(row[1])), int(row[0])),
             )
+
+    def _rebuild_memory_items_fts(self, connection: sqlite3.Connection) -> None:
+        connection.execute("DELETE FROM memory_items_fts")
+        rows = connection.execute(
+            """
+            SELECT
+              id,
+              content,
+              metadata_json,
+              scope,
+              memory_type,
+              updated_at
+            FROM memory_items
+            WHERE deleted_at IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            self._upsert_memory_item_fts(
+                connection,
+                memory_item_id=int(row[0]),
+                content=str(row[1]),
+                metadata_json=str(row[2] or "{}"),
+                scope=str(row[3]),
+                memory_type=str(row[4]),
+                updated_at=str(row[5]),
+            )
+
+    def _upsert_memory_item_fts(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        memory_item_id: int,
+        content: str,
+        metadata_json: str,
+        scope: str,
+        memory_type: str,
+        updated_at: str,
+    ) -> None:
+        connection.execute("DELETE FROM memory_items_fts WHERE rowid = ?", (int(memory_item_id),))
+        connection.execute(
+            """
+            INSERT INTO memory_items_fts(rowid, content, metadata, scope, memory_type, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(memory_item_id),
+                build_fts_index_content(content),
+                build_fts_index_content(memory_item_metadata_search_text(metadata_json)),
+                build_fts_index_content(scope),
+                build_fts_index_content(memory_type),
+                updated_at,
+            ),
+        )
+
+    def _delete_memory_item_fts(self, connection: sqlite3.Connection, memory_item_id: int) -> None:
+        connection.execute("DELETE FROM memory_items_fts WHERE rowid = ?", (int(memory_item_id),))
 
     def _migrate_memory_review_candidates(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -3384,6 +3461,15 @@ class MessageMemoryStore:
                 source_message_id=normalized_source_message_id,
                 created_at=now,
             )
+            self._upsert_memory_item_fts(
+                connection,
+                memory_item_id=item_id,
+                content=normalized_content,
+                metadata_json=normalized_metadata_json,
+                scope=normalized_scope,
+                memory_type=normalized_memory_type,
+                updated_at=now,
+            )
             row = self._load_memory_item_row(connection, item_id)
 
         return memory_item_response(row)
@@ -3394,14 +3480,126 @@ class MessageMemoryStore:
         scope: str | None = None,
         memory_type: str | None = None,
         query: str | None = None,
+        metadata_filter: dict[str, object] | None = None,
         include_deleted: bool = False,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         normalized_scope = normalize_memory_item_scope(scope) if scope else None
         normalized_memory_type = normalize_memory_item_type(memory_type) if memory_type else None
         normalized_query = query.strip() if isinstance(query, str) else ""
+        normalized_metadata_filter = normalize_memory_item_metadata_filter(metadata_filter)
+        bounded_limit = max(1, min(100, int(limit)))
+        if normalized_query and not include_deleted:
+            try:
+                return self.search_memory_items_bm25(
+                    query=normalized_query,
+                    scope=normalized_scope,
+                    memory_type=normalized_memory_type,
+                    metadata_filter=normalized_metadata_filter,
+                    limit=bounded_limit,
+                )
+            except sqlite3.OperationalError:
+                pass
+        return self._list_memory_items_sql(
+            scope=normalized_scope,
+            memory_type=normalized_memory_type,
+            query=normalized_query,
+            metadata_filter=normalized_metadata_filter,
+            include_deleted=include_deleted,
+            limit=bounded_limit,
+        )
+
+    def search_memory_items_bm25(
+        self,
+        *,
+        query: str,
+        scope: str | None = None,
+        memory_type: str | None = None,
+        metadata_filter: dict[str, object] | None = None,
+        include_deleted: bool = False,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        normalized_query = query.strip() if isinstance(query, str) else ""
+        if not normalized_query:
+            return []
+        normalized_scope = normalize_memory_item_scope(scope) if scope else None
+        normalized_memory_type = normalize_memory_item_type(memory_type) if memory_type else None
+        normalized_metadata_filter = normalize_memory_item_metadata_filter(metadata_filter)
+        bounded_limit = max(1, min(100, int(limit)))
+        scan_limit = MEMORY_ITEM_LIMIT if normalized_metadata_filter else bounded_limit
+        fts_query = make_fts_query(normalized_query)
+        where = "memory_items_fts MATCH ?"
+        params: list[object] = [fts_query]
+        if normalized_scope:
+            where += " AND i.scope = ?"
+            params.append(normalized_scope)
+        if normalized_memory_type:
+            where += " AND i.memory_type = ?"
+            params.append(normalized_memory_type)
+        if not include_deleted:
+            where += " AND i.deleted_at IS NULL"
+        params.append(scan_limit)
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                  i.id,
+                  i.scope,
+                  i.content,
+                  i.memory_type,
+                  i.metadata_json,
+                  i.content_hash,
+                  i.confidence,
+                  i.source_session_id,
+                  i.source_message_id,
+                  i.last_accessed_at,
+                  i.access_count,
+                  i.created_at,
+                  i.updated_at,
+                  i.deleted_at,
+                  bm25(memory_items_fts, 8.0, 2.0, 0.8, 0.8) AS bm25_score
+                FROM memory_items_fts
+                JOIN memory_items i ON i.id = memory_items_fts.rowid
+                WHERE {where}
+                ORDER BY bm25(memory_items_fts, 8.0, 2.0, 0.8, 0.8), i.confidence DESC, i.access_count DESC, i.updated_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        items: list[dict[str, Any]] = []
+        total_rows = max(1, len(rows))
+        for index, row in enumerate(rows):
+            item = memory_item_response(row[:14])
+            if not memory_item_matches_metadata_filter(item, normalized_metadata_filter):
+                continue
+            rank_score = 1.0 - (index / total_rows)
+            item["bm25Score"] = round(rank_score, 6)
+            item["bm25RawScore"] = float(row[14] or 0.0)
+            item["retrievalProvider"] = "memory_items_bm25"
+            items.append(item)
+            if len(items) >= bounded_limit:
+                break
+        return items
+
+    def _list_memory_items_sql(
+        self,
+        *,
+        scope: str | None = None,
+        memory_type: str | None = None,
+        query: str | None = None,
+        metadata_filter: dict[str, object] | None = None,
+        include_deleted: bool = False,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        normalized_scope = normalize_memory_item_scope(scope) if scope else None
+        normalized_memory_type = normalize_memory_item_type(memory_type) if memory_type else None
+        normalized_query = query.strip() if isinstance(query, str) else ""
+        normalized_metadata_filter = normalize_memory_item_metadata_filter(metadata_filter)
         query_terms = memory_item_query_terms(normalized_query)
         bounded_limit = max(1, min(100, int(limit)))
+        scan_limit = MEMORY_ITEM_LIMIT if normalized_metadata_filter else bounded_limit
         where = "1 = 1"
         params: list[object] = []
         if normalized_scope:
@@ -3422,7 +3620,7 @@ class MessageMemoryStore:
             where += " AND (" + " OR ".join(clauses) + ")"
         if not include_deleted:
             where += " AND deleted_at IS NULL"
-        params.append(bounded_limit)
+        params.append(scan_limit)
 
         with self.connect() as connection:
             rows = connection.execute(
@@ -3450,7 +3648,13 @@ class MessageMemoryStore:
                 params,
             ).fetchall()
 
-        return [memory_item_response(row) for row in rows]
+        items = [memory_item_response(row) for row in rows]
+        if normalized_metadata_filter:
+            items = [
+                item for item in items
+                if memory_item_matches_metadata_filter(item, normalized_metadata_filter)
+            ]
+        return items[:bounded_limit]
 
     def delete_memory_item(self, memory_item_id: int, *, actor: str = "runtime") -> bool:
         normalized_id = int(memory_item_id)
@@ -3472,6 +3676,7 @@ class MessageMemoryStore:
             )
             if cursor.rowcount <= 0:
                 return False
+            self._delete_memory_item_fts(connection, normalized_id)
             self._record_memory_item_history(
                 connection,
                 normalized_id,
@@ -3539,6 +3744,15 @@ class MessageMemoryStore:
             if cursor.rowcount <= 0:
                 return None
             row = self._load_memory_item_row(connection, normalized_id)
+            self._upsert_memory_item_fts(
+                connection,
+                memory_item_id=normalized_id,
+                content=str(row[2]),
+                metadata_json=str(row[4] or "{}"),
+                scope=str(row[1]),
+                memory_type=str(row[3]),
+                updated_at=str(row[12]),
+            )
             self._record_memory_item_history(
                 connection,
                 normalized_id,
@@ -3784,6 +3998,7 @@ class MessageMemoryStore:
         dimensions: int,
         scope: str | None = None,
         memory_type: str | None = None,
+        metadata_filter: dict[str, object] | None = None,
         limit: int = 8,
         candidate_limit: int = 80,
     ) -> list[dict[str, Any]]:
@@ -3793,6 +4008,7 @@ class MessageMemoryStore:
         normalized_dimensions = normalize_memory_embedding_dimensions(dimensions)
         normalized_scope = normalize_memory_item_scope(scope) if scope else None
         normalized_memory_type = normalize_memory_item_type(memory_type) if memory_type else None
+        normalized_metadata_filter = normalize_memory_item_metadata_filter(metadata_filter)
         bounded_limit = max(1, min(100, int(limit)))
         bounded_candidate_limit = max(bounded_limit, min(500, int(candidate_limit)))
         normalized_query_embedding = (
@@ -3849,30 +4065,53 @@ class MessageMemoryStore:
         vectors_by_id: dict[int, list[float]] = {}
         for row in vector_rows:
             item = memory_item_response(row[:14])
+            if not memory_item_matches_metadata_filter(item, normalized_metadata_filter):
+                continue
             item_id = int(item["memoryItemId"])
             candidates[item_id] = item
             vectors_by_id[item_id] = deserialize_memory_embedding_vector(row[14], dimensions=normalized_dimensions)
 
-        for item in self.list_memory_items(
-            scope=normalized_scope,
-            memory_type=normalized_memory_type,
-            query=normalized_query,
-            limit=bounded_candidate_limit,
-        ):
-            candidates.setdefault(int(item["memoryItemId"]), item)
+        bm25_items: list[dict[str, Any]]
+        try:
+            bm25_items = self.search_memory_items_bm25(
+                query=normalized_query,
+                scope=normalized_scope,
+                memory_type=normalized_memory_type,
+                metadata_filter=normalized_metadata_filter,
+                limit=bounded_candidate_limit,
+            )
+        except sqlite3.OperationalError:
+            bm25_items = self._list_memory_items_sql(
+                scope=normalized_scope,
+                memory_type=normalized_memory_type,
+                query=normalized_query,
+                metadata_filter=normalized_metadata_filter,
+                limit=bounded_candidate_limit,
+            )
+        for item in bm25_items:
+            item_id = int(item["memoryItemId"])
+            if item_id in candidates:
+                candidates[item_id].update({
+                    key: value
+                    for key, value in item.items()
+                    if key in {"bm25Score", "bm25RawScore"}
+                })
+            else:
+                candidates[item_id] = item
 
         scored: list[dict[str, Any]] = []
         for item_id, item in candidates.items():
             vector_score = 0.0
             if normalized_query_embedding is not None and item_id in vectors_by_id:
                 vector_score = memory_embedding_cosine_similarity(normalized_query_embedding, vectors_by_id[item_id])
-            text_score = memory_item_text_match_score(item, normalized_query)
+            bm25_score = max(0.0, min(1.0, float(item.get("bm25Score") or 0.0)))
+            keyword_score = max(bm25_score, memory_item_text_match_score(item, normalized_query))
             confidence_score = max(0.0, min(1.0, float(item.get("confidence") or 0.0)))
             access_score = memory_item_access_score(int(item.get("accessCount") or 0))
             recency_score = memory_item_recency_score(str(item.get("updatedAt") or ""))
             hybrid_score = (
-                0.60 * vector_score
-                + 0.20 * text_score
+                0.55 * vector_score
+                + 0.25 * keyword_score
                 + 0.10 * confidence_score
                 + 0.05 * access_score
                 + 0.05 * recency_score
@@ -3880,7 +4119,8 @@ class MessageMemoryStore:
             enriched = dict(item)
             enriched["hybridScore"] = round(hybrid_score, 6)
             enriched["vectorScore"] = round(vector_score, 6)
-            enriched["textScore"] = round(text_score, 6)
+            enriched["bm25Score"] = round(bm25_score, 6)
+            enriched["keywordScore"] = round(keyword_score, 6)
             enriched["retrievalProvider"] = "memory_items_hybrid"
             enriched["embeddingProvider"] = normalized_provider
             enriched["embeddingModel"] = normalized_model
@@ -5334,6 +5574,90 @@ def parse_memory_item_metadata(raw: object) -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def normalize_memory_item_metadata_filter(metadata_filter: dict[str, object] | None) -> dict[str, object]:
+    if metadata_filter is None:
+        return {}
+    if not isinstance(metadata_filter, dict):
+        raise ValueError("metadataFilter must be an object")
+    normalized: dict[str, object] = {}
+    for raw_key, value in metadata_filter.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        if "\x00" in key:
+            raise ValueError("metadataFilter keys must be UTF-8 text")
+        if len(key) > 120:
+            raise ValueError("metadataFilter keys must be at most 120 characters")
+        normalized[key] = value
+    return normalized
+
+
+def memory_item_metadata_search_text(metadata_json: object) -> str:
+    metadata = parse_memory_item_metadata(metadata_json)
+    if not metadata:
+        return ""
+    parts: list[str] = []
+
+    def visit(value: object, prefix: str = "") -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                normalized_key = str(key)
+                parts.append(normalized_key)
+                visit(nested, f"{prefix}.{normalized_key}" if prefix else normalized_key)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item, prefix)
+            return
+        if value is None:
+            return
+        if prefix:
+            parts.append(prefix)
+        parts.append(str(value))
+
+    visit(metadata)
+    return " ".join(parts)
+
+
+def memory_item_matches_metadata_filter(item: dict[str, Any], metadata_filter: dict[str, object] | None) -> bool:
+    normalized_filter = normalize_memory_item_metadata_filter(metadata_filter)
+    if not normalized_filter:
+        return True
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if not isinstance(metadata, dict):
+        return False
+    for key, expected in normalized_filter.items():
+        actual = memory_item_metadata_value(metadata, key)
+        if not memory_item_metadata_value_matches(actual, expected):
+            return False
+    return True
+
+
+def memory_item_metadata_value(metadata: dict[str, object], key: str) -> object:
+    current: object = metadata
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def memory_item_metadata_value_matches(actual: object, expected: object) -> bool:
+    if isinstance(actual, list):
+        if isinstance(expected, list):
+            return all(any(memory_item_metadata_value_matches(candidate, item) for candidate in actual) for item in expected)
+        return any(memory_item_metadata_value_matches(candidate, expected) for candidate in actual)
+    if isinstance(expected, list):
+        return any(memory_item_metadata_value_matches(actual, candidate) for candidate in expected)
+    if isinstance(actual, dict) or isinstance(expected, dict):
+        return actual == expected
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return isinstance(actual, bool) and isinstance(expected, bool) and actual is expected
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        return float(actual) == float(expected)
+    return str(actual or "").strip().lower() == str(expected or "").strip().lower()
 
 
 def normalize_memory_item_actor(actor: str | None) -> str:

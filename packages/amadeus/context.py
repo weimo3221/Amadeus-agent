@@ -103,11 +103,6 @@ class ContextAssembler:
         sections = [base_system_prompt or self.base_system_prompt]
         reference_blocks: list[str] = []
 
-        memory_items_block, memory_item_sources = self._format_memory_items(list(memory_bundle.runtime.memory_items))
-        if memory_items_block:
-            sections.append(memory_items_block)
-            sources.extend(memory_item_sources)
-
         active_plan_block, active_plan_source = self._format_active_plan(active_plan)
         if active_plan_block:
             reference_blocks.append(active_plan_block)

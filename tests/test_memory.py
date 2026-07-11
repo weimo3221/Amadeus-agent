@@ -365,6 +365,62 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(results[0]["retrievalProvider"], "memory_items_hybrid")
         self.assertGreater(results[0]["vectorScore"], results[1]["vectorScore"])
 
+    def test_memory_items_bm25_search_indexes_metadata_and_delete_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            item = memory.save_memory_item(
+                "user",
+                "The user prefers short status notes.",
+                confidence=0.9,
+                memory_type="preference",
+                metadata={"source": "http", "tags": ["updates"], "nested": {"channel": "feishu"}},
+            )
+
+            metadata_results = memory.list_memory_items(
+                query="http updates",
+                metadata_filter={"source": "http", "tags": "updates"},
+                limit=5,
+            )
+            nested_results = memory.list_memory_items(query="feishu", metadata_filter={"nested.channel": "feishu"})
+            deleted = memory.delete_memory_item(int(item["memoryItemId"]))
+            after_delete = memory.list_memory_items(query="http updates", limit=5)
+
+        self.assertEqual(len(metadata_results), 1)
+        self.assertEqual(metadata_results[0]["memoryItemId"], item["memoryItemId"])
+        self.assertEqual(metadata_results[0]["retrievalProvider"], "memory_items_bm25")
+        self.assertGreater(metadata_results[0]["bm25Score"], 0)
+        self.assertEqual(len(nested_results), 1)
+        self.assertTrue(deleted)
+        self.assertEqual(after_delete, [])
+
+    def test_memory_items_hybrid_search_unions_vector_and_bm25_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            vector_item = memory.save_memory_item("project", "The deployment target is a local desktop app.", confidence=0.8)
+            bm25_item = memory.save_memory_item("project", "The release codename is heliotrope.", confidence=0.8)
+            memory.upsert_memory_item_embedding(
+                int(vector_item["memoryItemId"]),
+                provider="fake",
+                model="fake-model",
+                dimensions=2,
+                vector=[1.0, 0.0],
+            )
+
+            results = memory.search_memory_items_hybrid(
+                query="heliotrope release",
+                query_embedding=[1.0, 0.0],
+                provider="fake",
+                model="fake-model",
+                dimensions=2,
+                limit=3,
+            )
+
+        by_id = {int(item["memoryItemId"]): item for item in results}
+        self.assertIn(int(vector_item["memoryItemId"]), by_id)
+        self.assertIn(int(bm25_item["memoryItemId"]), by_id)
+        self.assertGreater(by_id[int(bm25_item["memoryItemId"])]["bm25Score"], 0)
+        self.assertEqual(by_id[int(vector_item["memoryItemId"])]["vectorScore"], 1.0)
+
     def test_memory_item_migration_preserves_legacy_rows_and_backfills_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             database_path = Path(tmpdir) / "amadeus.sqlite"
