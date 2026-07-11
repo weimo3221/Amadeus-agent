@@ -207,6 +207,7 @@ Production Main UI workspace:
 - A Vue 3 + Vite + TypeScript + Tailwind CSS v4 workspace that now provides the default Electron Main UI.
 - It connects to the TypeScript bridge WebSocket and Python HTTP runtime for real chat, session history, tasks, timed messages, skills, memory, runtime/model configuration, Live2D model management, and audio/TTS configuration.
 - It owns the larger workbench experience while Companion remains the lightweight Live2D surface.
+- Chat history renders assistant-side turn plans, collapsed tool-call detail cards with tool names/arguments, and grouped Agent avatars so intermediate tool decisions stay inspectable without visually repeating the Agent identity on every step.
 - Layout: `AppSidebar`, `AppHeader`, chat/workspace views, task and timed-message views, settings/config center, and reusable `Am*` UI components.
 - Reusable component set under `src/components/ui` (`AmButton`, `AmInput`, `AmSelect`, `AmCard`, `AmTag`, `AmTabs`, `AmTable`, `AmModal`, `AmEmptyState`, `AmLoading`) and shared design tokens in `src/styles/main.css`.
 

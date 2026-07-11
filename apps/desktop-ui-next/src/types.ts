@@ -12,10 +12,17 @@ export interface ChatMessage {
   turnId?: string
   pending?: boolean
   toolName?: string
+  toolCalls?: ChatToolCall[]
   plan?: PlanItem[]
   planArchived?: boolean
   planIncomplete?: boolean
   planCollapsed?: boolean
+}
+
+export interface ChatToolCall {
+  id?: string
+  name: string
+  argumentsText?: string
 }
 
 export interface SessionItem {

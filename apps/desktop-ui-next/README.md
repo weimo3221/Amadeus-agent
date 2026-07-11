@@ -60,6 +60,11 @@ missing/stale long-term `memory_items`. Runtime memory provider selection itself
 remains Python runtime configuration in `configs/runtime.yaml`, so the UI
 observes deployment/index state without owning retrieval policy.
 
+Chat history treats model plans and tool decisions as Agent-side work. Turn plans
+render on assistant messages, persisted assistant `tool_calls` render as
+collapsed tool-call cards with tool names and formatted arguments, and consecutive
+Agent messages in the same user turn only show the avatar on the last Agent reply.
+
 ## Structure
 
 ```text

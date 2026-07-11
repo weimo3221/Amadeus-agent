@@ -267,7 +267,7 @@ Goal: support complex long-running tasks.
 Target deliverables:
 
 - First turn-control slice complete: session-scoped running turn state, `POST /agent/cancel`, cooperative tool cancellation, and `agent.turn.started` / `agent.turn.cancelled` events.
-- First turn-scoped planning slice complete: model `update_plan` events carry `turnId`, Main UI attaches the live plan to the initiating user message, Python persists `plan_runs`, and the plan panel restores/archives under the same user turn.
+- First turn-scoped planning slice complete: model `update_plan` events carry `turnId`, Main UI attaches the live plan to an assistant-side turn message, Python persists `plan_runs`, and the plan panel restores/archives under the same user turn without making the plan look user-authored.
 - First delegation slice complete: restricted `delegate_task` research/search tool with depth 1, concurrency 2, no write tools, and summary-only parent results.
 - First prompt-surface slice complete: per-role `SOUL.md` identity, core prompt assembly, per-tool `prompt_hint` routing, role `workspacePath`, repository-root default workspace assignment, workspace-level `AGENT.md` project context, role-scoped stable memory, and Role-scoped runtime selection for tools, skills, and MCP servers.
 - First task-worker reliability slice complete: persisted task attempts, retry scheduling, stale `running` recovery, startup reclaim, and worker status event broadcasting.

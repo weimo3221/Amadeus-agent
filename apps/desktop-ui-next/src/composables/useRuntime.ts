@@ -10,6 +10,7 @@ import type {
 } from '@amadeus-agent/amadeus/events'
 import type {
   ChatMessage,
+  ChatToolCall,
   ConnectionState,
   MemoryItem,
   PlanItem,
@@ -202,16 +203,72 @@ function relativeLabel(iso?: string | null): string {
   return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
+function truncateToolArgumentText(text: string): string {
+  const normalized = text.trim()
+  if (normalized.length <= 1200) return normalized
+  return `${normalized.slice(0, 1200)}\n...`
+}
+
+function formatToolArguments(raw: unknown): string {
+  if (raw === null || raw === undefined) return ''
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    if (!trimmed) return ''
+    try {
+      return truncateToolArgumentText(JSON.stringify(JSON.parse(trimmed), null, 2))
+    } catch {
+      return truncateToolArgumentText(trimmed)
+    }
+  }
+  try {
+    return truncateToolArgumentText(JSON.stringify(raw, null, 2))
+  } catch {
+    return truncateToolArgumentText(String(raw))
+  }
+}
+
+function normalizeToolCalls(raw: unknown): ChatToolCall[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null
+      const record = item as Record<string, unknown>
+      const fn = record.function && typeof record.function === 'object'
+        ? record.function as Record<string, unknown>
+        : {}
+      const rawName = fn.name ?? record.name ?? record.toolName ?? record.tool_name
+      const name = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : `tool_${index + 1}`
+      const rawArguments = fn.arguments ?? record.arguments ?? record.args
+      const id = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : undefined
+      const call: ChatToolCall = {
+        name,
+        argumentsText: formatToolArguments(rawArguments),
+      }
+      if (id) call.id = id
+      return call
+    })
+    .filter((item): item is ChatToolCall => item !== null)
+}
+
 function messagesToChat(messages: StoredMessage[]): ChatMessage[] {
   return messages
-    .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m, index) => ({
-      id: m.id ? `m-${m.id}` : `h-${index}`,
-      messageId: m.id,
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content ?? '',
-      createdAt: m.createdAt ? relativeLabel(m.createdAt) : '',
-    }))
+    .filter((m) => {
+      if (m.role === 'user') return true
+      if (m.role !== 'assistant') return false
+      const toolCalls = normalizeToolCalls(m.toolCalls ?? m.tool_calls)
+      return Boolean((m.content ?? '').trim() || toolCalls.length)
+    })
+    .map((m, index) => {
+      const toolCalls = normalizeToolCalls(m.toolCalls ?? m.tool_calls)
+      return {
+        id: m.id ? `m-${m.id}` : `h-${index}`,
+        messageId: m.id,
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content ?? '',
+        createdAt: m.createdAt ? relativeLabel(m.createdAt) : '',
+        ...(toolCalls.length ? { toolCalls } : {}),
+      }
+    })
 }
 
 const planStatusMap: Record<TaskPlanItem['status'], PlanItem['status'] | null> = {
@@ -256,6 +313,14 @@ function latestUserMessage(): ChatMessage | null {
   return null
 }
 
+function latestAssistantMessage(): ChatMessage | null {
+  for (let index = state.chat.length - 1; index >= 0; index -= 1) {
+    const message = state.chat[index]
+    if (message.role === 'assistant') return message
+  }
+  return null
+}
+
 function userMessageForTurn(turnId?: string | null): ChatMessage | null {
   if (turnId) {
     const byTurn = state.chat.find((message) => message.role === 'user' && message.turnId === turnId)
@@ -268,6 +333,39 @@ function userMessageForTurn(turnId?: string | null): ChatMessage | null {
   return latestUserMessage()
 }
 
+function createAssistantMessage(turnId?: string | null): ChatMessage {
+  const message: ChatMessage = {
+    id: `a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: 'assistant',
+    content: '',
+    createdAt: timeLabel(),
+    turnId: turnId ?? undefined,
+    pending: true,
+  }
+  state.chat.push(message)
+  pendingAssistantId.value = message.id
+  return message
+}
+
+function assistantMessageForTurn(turnId?: string | null, options: { create?: boolean } = {}): ChatMessage | null {
+  const create = Boolean(options.create)
+  if (pendingAssistantId.value) {
+    const pending = state.chat.find((message) => message.id === pendingAssistantId.value)
+    if (pending?.role === 'assistant') {
+      if (turnId) pending.turnId = turnId
+      return pending
+    }
+  }
+  if (turnId) {
+    for (let index = state.chat.length - 1; index >= 0; index -= 1) {
+      const message = state.chat[index]
+      if (message.role === 'assistant' && message.turnId === turnId) return message
+    }
+  }
+  if (!create) return turnId ? null : latestAssistantMessage()
+  return createAssistantMessage(turnId)
+}
+
 function bindTurnToLatestUser(turnId: string): void {
   activeTurnId.value = turnId
   const message = userMessageForTurn(turnId) ?? latestUserMessage()
@@ -277,19 +375,18 @@ function bindTurnToLatestUser(turnId: string): void {
 }
 
 function attachPlanToTurn(items: PlanItem[], turnId?: string | null): void {
-  const message = userMessageForTurn(turnId)
+  const message = assistantMessageForTurn(turnId, { create: true })
   if (!message) return
   if (turnId) message.turnId = turnId
   message.plan = items
   message.planArchived = false
   message.planIncomplete = false
   message.planCollapsed = false
-  activeTurnUserMessageId.value = message.id
   if (turnId) activeTurnId.value = turnId
 }
 
 function archivePlanForTurn(turnId?: string | null): void {
-  const message = userMessageForTurn(turnId)
+  const message = assistantMessageForTurn(turnId)
   if (message?.plan?.length) {
     const complete = planIsComplete(message.plan)
     message.planArchived = true
@@ -304,26 +401,47 @@ function archivePlanForTurn(turnId?: string | null): void {
 
 function attachLoadedPlanToLatestTurn(items: PlanItem[]): void {
   if (!items.length) return
-  const message = latestUserMessage()
+  const message = latestAssistantMessage() ?? createAssistantMessage(activeTurnId.value)
   if (!message) return
   message.plan = items
   message.planArchived = true
   message.planIncomplete = !planIsComplete(items)
   message.planCollapsed = planIsComplete(items)
+  message.pending = false
 }
 
 function attachPlanRunsToMessages(runs: PlanRunPayload[]): void {
-  const byMessageId = new Map<number, ChatMessage>()
+  const byUserMessageId = new Map<number, ChatMessage>()
+  const byAssistantMessageId = new Map<number, ChatMessage>()
   for (const message of state.chat) {
-    if (message.role === 'user' && message.messageId) {
-      byMessageId.set(message.messageId, message)
+    if (!message.messageId) continue
+    if (message.role === 'user') {
+      byUserMessageId.set(message.messageId, message)
+    }
+    if (message.role === 'assistant') {
+      byAssistantMessageId.set(message.messageId, message)
     }
   }
   for (const rawRun of runs) {
     const run = planRunToItem(rawRun)
-    if (!run.items.length || !run.userMessageId) continue
-    const message = byMessageId.get(run.userMessageId)
-    if (!message) continue
+    if (!run.items.length) continue
+    let message = run.assistantMessageId ? byAssistantMessageId.get(run.assistantMessageId) : undefined
+    if (!message) {
+      message = {
+        id: `plan-${run.turnId}`,
+        role: 'assistant',
+        content: '',
+        createdAt: relativeLabel(run.archivedAt ?? run.updatedAt),
+        turnId: run.turnId,
+      }
+      const userMessage = run.userMessageId ? byUserMessageId.get(run.userMessageId) : null
+      const insertIndex = userMessage ? state.chat.findIndex((candidate) => candidate.id === userMessage.id) + 1 : 0
+      if (insertIndex > 0) {
+        state.chat.splice(insertIndex, 0, message)
+      } else {
+        state.chat.push(message)
+      }
+    }
     message.turnId = run.turnId
     message.plan = run.items
     message.planArchived = run.status !== 'active'
@@ -512,17 +630,7 @@ function ensurePendingAssistant(turnId?: string): ChatMessage {
       return existing
     }
   }
-  const message: ChatMessage = {
-    id: `a-${Date.now()}`,
-    role: 'assistant',
-    content: '',
-    createdAt: timeLabel(),
-    turnId,
-    pending: true,
-  }
-  state.chat.push(message)
-  pendingAssistantId.value = message.id
-  return message
+  return createAssistantMessage(turnId)
 }
 
 async function loadSessionData(sessionId: string): Promise<void> {
@@ -678,8 +786,10 @@ function createClient(): AgentRuntimeClient {
         pendingAssistantId.value = null
       },
       onToolStarted: (_toolName, displayName) => {
-        const message = ensurePendingAssistant()
-        message.toolName = displayName
+        const message = pendingAssistantId.value
+          ? state.chat.find((candidate) => candidate.id === pendingAssistantId.value)
+          : null
+        if (message?.role === 'assistant') message.toolName = displayName
       },
       onToolFinished: (toolName) => {
         if (toolName.startsWith('mcp__')) {

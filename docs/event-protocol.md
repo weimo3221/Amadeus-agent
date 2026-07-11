@@ -498,7 +498,7 @@ Current behavior:
 
 - Python emits this after the `update_plan` tool successfully reads or writes the SQLite-backed session plan. During `/agent/turn`, the event includes `turnId`.
 - Only `pending` and `in_progress` items are injected into model context as `<active-plan>`.
-- Main UI renders runtime plan updates under the user message for the matching `turnId`, so repeated `update_plan` calls in one turn refresh one live panel instead of creating multiple global panels. On `assistant.message`, the panel is archived under that user turn; completed plans collapse by default, incomplete plans remain marked incomplete.
+- Main UI renders runtime plan updates on an assistant-side message for the matching `turnId`, so repeated `update_plan` calls in one turn refresh one live Agent panel instead of creating multiple global panels or making the plan look user-authored. On `assistant.message`, the panel is archived under that user turn; completed plans collapse by default, incomplete plans remain marked incomplete.
 - Main UI still restores the latest session plan with `GET /sessions/{id}/plan` as a compatibility fallback for reloaded sessions.
 - Companion does not render the full plan in the Live2D bubble.
 

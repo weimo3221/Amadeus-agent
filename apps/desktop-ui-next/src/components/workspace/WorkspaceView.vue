@@ -58,6 +58,17 @@ function handleSend(text: string) {
   sendMessage(text)
 }
 
+function shouldShowMessageAvatar(index: number): boolean {
+  const message = state.chat[index]
+  if (!message || message.role !== 'assistant') return true
+  for (let nextIndex = index + 1; nextIndex < state.chat.length; nextIndex += 1) {
+    const next = state.chat[nextIndex]
+    if (next.role === 'user') return true
+    if (next.role === 'assistant') return false
+  }
+  return true
+}
+
 scrollToBottom()
 </script>
 
@@ -115,7 +126,12 @@ scrollToBottom()
           title="开始新的对话"
           description="发送一条消息，与你的桌面智能体开始协作。"
         />
-        <ChatMessageBubble v-for="m in state.chat" :key="m.id" :message="m" />
+        <ChatMessageBubble
+          v-for="(m, index) in state.chat"
+          :key="m.id"
+          :message="m"
+          :show-avatar="shouldShowMessageAvatar(index)"
+        />
       </div>
 
       <!-- tool permission prompt -->

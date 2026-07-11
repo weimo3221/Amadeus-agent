@@ -25,6 +25,8 @@ export interface StoredMessage {
   role?: string
   content?: string
   createdAt?: string
+  toolCalls?: unknown[]
+  tool_calls?: unknown[]
 }
 
 export interface PlanRunPayload {
