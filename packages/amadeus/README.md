@@ -143,15 +143,19 @@ Turn-time memory assembly is configured in `configs/runtime.yaml`:
 memory:
   provider: mem0_like_runtime
   globalRetrievalFallback: true
+  vectorRetrieval: true
+  vectorCandidateLimit: 80
 ```
 
-- `mem0_like_runtime` is the default provider. It keeps the hybrid retrieval behavior and records long-term memory as typed items with metadata, access stats, and history.
+- `mem0_like_runtime` is the default provider. It keeps the hybrid retrieval behavior and records long-term memory as typed items with metadata, access stats, history, and optional BGE-M3 vector embeddings.
 - `hybrid_runtime` is the preserved previous provider. It keeps summaries, accepted structured memory, current-session FTS snippets, and memory tools, then optionally fills sparse retrieval slots from global SQLite FTS.
 - `builtin_runtime` is the preserved original provider. Set `memory.provider: builtin_runtime` to disable the new hybrid lane and use the previous behavior exactly.
 - `memory.globalRetrievalFallback: false` keeps `mem0_like_runtime` or `hybrid_runtime` selected but disables cross-session FTS fallback.
-- Environment overrides are available through `AMADEUS_MEMORY_PROVIDER` and `AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK`.
+- `memory.vectorRetrieval: true` lets `mem0_like_runtime` use local BGE-M3 dense vectors for typed long-term memory when the embedding provider is configured and deployed. If BGE-M3 is unavailable, runtime recall automatically falls back to the SQL/FTS memory item path.
+- `memory.vectorCandidateLimit` bounds the durable memory item candidate set used by hybrid vector/text ranking.
+- Environment overrides are available through `AMADEUS_MEMORY_PROVIDER`, `AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK`, `AMADEUS_MEMORY_VECTOR_RETRIEVAL`, and `AMADEUS_MEMORY_VECTOR_CANDIDATE_LIMIT`.
 
-The BGE-M3 embedding deployment controls configure the local model resource first; vector indexing/backfill is intentionally a follow-up layer on top of this provider boundary.
+The BGE-M3 embedding layer is local-first. `GET /memory/embedding/config` reports dependency/model deployment state plus vector index coverage. `POST /memory/embedding/deploy` installs/configures the local `BAAI/bge-m3` provider through FlagEmbedding, and `POST /memory/embedding/backfill` embeds stale or missing `memory_items` rows into the SQLite `memory_item_embeddings` derived table.
 
 ## Current HTTP API
 
@@ -173,7 +177,7 @@ The BGE-M3 embedding deployment controls configure the local model resource firs
 - `GET /memory/search?sessionId=default&query=hello&limit=10`
 - `GET /memory/items?scope=user&memoryType=preference&query=preference&limit=20`
 - `GET /memory/items/history?memoryItemId=1&limit=50`
-- `GET /memory/embedding/config`：inspect local BGE-M3 embedding configuration, optional FlagEmbedding dependencies, model cache, and deployment state.
+- `GET /memory/embedding/config`：inspect local BGE-M3 embedding configuration, optional FlagEmbedding dependencies, model cache, deployment state, vector index coverage, and active backfill status.
 - `GET /memory/summary?sessionId=default`
 - `GET /memory/review/candidates?sessionId=default&status=pending&limit=50`
 - `GET /memory/review/jobs?sessionId=default&limit=20`
@@ -190,6 +194,7 @@ The BGE-M3 embedding deployment controls configure the local model resource firs
 - `POST /memory/items/delete`
 - `POST /memory/embedding/deploy`：configure and start local BGE-M3 dependency/model deployment.
 - `POST /memory/embedding/cancel`：cancel an active local BGE-M3 deployment.
+- `POST /memory/embedding/backfill`：embed missing/stale long-term `memory_items` through the configured local BGE-M3 provider and update `memory_item_embeddings`.
 - `POST /memory/review/candidates`
 - `POST /memory/review/accept`
 - `POST /memory/review/reject`

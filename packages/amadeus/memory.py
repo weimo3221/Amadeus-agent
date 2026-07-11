@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import sqlite3
+import struct
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -183,6 +185,20 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_memory_item_history_item_created
                   ON memory_item_history(memory_item_id, created_at);
+                  CREATE TABLE IF NOT EXISTS memory_item_embeddings (
+                    memory_item_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(memory_item_id, provider, model),
+                    FOREIGN KEY(memory_item_id) REFERENCES memory_items(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_memory_item_embeddings_provider_model
+                  ON memory_item_embeddings(provider, model, dimensions, updated_at);
                   CREATE TABLE IF NOT EXISTS memory_review_candidates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -1156,6 +1172,28 @@ class MessageMemoryStore:
             """
             CREATE INDEX IF NOT EXISTS idx_memory_item_history_item_created
             ON memory_item_history(memory_item_id, created_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_item_embeddings (
+              memory_item_id INTEGER NOT NULL,
+              provider TEXT NOT NULL,
+              model TEXT NOT NULL,
+              dimensions INTEGER NOT NULL,
+              content_hash TEXT NOT NULL,
+              embedding BLOB NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(memory_item_id, provider, model),
+              FOREIGN KEY(memory_item_id) REFERENCES memory_items(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_item_embeddings_provider_model
+            ON memory_item_embeddings(provider, model, dimensions, updated_at)
             """
         )
         rows = connection.execute(
@@ -3563,6 +3601,302 @@ class MessageMemoryStore:
             ).fetchall()
         return [memory_item_history_response(row) for row in rows]
 
+    def upsert_memory_item_embedding(
+        self,
+        memory_item_id: int,
+        *,
+        provider: str,
+        model: str,
+        dimensions: int,
+        vector: list[float] | tuple[float, ...],
+    ) -> dict[str, Any]:
+        normalized_id = int(memory_item_id)
+        if normalized_id <= 0:
+            raise ValueError("memory_item_id must be positive")
+        normalized_provider = normalize_memory_embedding_provider(provider)
+        normalized_model = normalize_memory_embedding_model(model)
+        normalized_dimensions = normalize_memory_embedding_dimensions(dimensions)
+        normalized_vector = normalize_memory_embedding_vector(vector, dimensions=normalized_dimensions)
+        serialized_vector = serialize_memory_embedding_vector(normalized_vector)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = self._load_memory_item_row(connection, normalized_id, active_only=True)
+            if row is None:
+                raise ValueError("memory item not found")
+            content_hash = str(row[5] or "")
+            connection.execute(
+                """
+                INSERT INTO memory_item_embeddings (
+                  memory_item_id,
+                  provider,
+                  model,
+                  dimensions,
+                  content_hash,
+                  embedding,
+                  created_at,
+                  updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_item_id, provider, model) DO UPDATE SET
+                  dimensions = excluded.dimensions,
+                  content_hash = excluded.content_hash,
+                  embedding = excluded.embedding,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_id,
+                    normalized_provider,
+                    normalized_model,
+                    normalized_dimensions,
+                    content_hash,
+                    serialized_vector,
+                    now,
+                    now,
+                ),
+            )
+        return {
+            "memoryItemId": normalized_id,
+            "provider": normalized_provider,
+            "model": normalized_model,
+            "dimensions": normalized_dimensions,
+            "contentHash": content_hash,
+            "updatedAt": now,
+        }
+
+    def list_memory_items_needing_embeddings(
+        self,
+        *,
+        provider: str,
+        model: str,
+        dimensions: int,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        normalized_provider = normalize_memory_embedding_provider(provider)
+        normalized_model = normalize_memory_embedding_model(model)
+        normalized_dimensions = normalize_memory_embedding_dimensions(dimensions)
+        bounded_limit = max(1, min(500, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                  i.id,
+                  i.scope,
+                  i.content,
+                  i.memory_type,
+                  i.metadata_json,
+                  i.content_hash,
+                  i.confidence,
+                  i.source_session_id,
+                  i.source_message_id,
+                  i.last_accessed_at,
+                  i.access_count,
+                  i.created_at,
+                  i.updated_at,
+                  i.deleted_at
+                FROM memory_items i
+                LEFT JOIN memory_item_embeddings e
+                  ON e.memory_item_id = i.id
+                 AND e.provider = ?
+                 AND e.model = ?
+                WHERE i.deleted_at IS NULL
+                  AND (
+                    e.memory_item_id IS NULL
+                    OR e.content_hash != i.content_hash
+                    OR e.dimensions != ?
+                  )
+                ORDER BY i.updated_at ASC, i.id ASC
+                LIMIT ?
+                """,
+                (normalized_provider, normalized_model, normalized_dimensions, bounded_limit),
+            ).fetchall()
+        return [memory_item_response(row) for row in rows]
+
+    def memory_item_embedding_coverage(
+        self,
+        *,
+        provider: str,
+        model: str,
+        dimensions: int,
+    ) -> dict[str, Any]:
+        normalized_provider = normalize_memory_embedding_provider(provider)
+        normalized_model = normalize_memory_embedding_model(model)
+        normalized_dimensions = normalize_memory_embedding_dimensions(dimensions)
+        with self.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM memory_items WHERE deleted_at IS NULL").fetchone()[0])
+            ready = int(connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_items i
+                JOIN memory_item_embeddings e
+                  ON e.memory_item_id = i.id
+                 AND e.provider = ?
+                 AND e.model = ?
+                 AND e.dimensions = ?
+                 AND e.content_hash = i.content_hash
+                WHERE i.deleted_at IS NULL
+                """,
+                (normalized_provider, normalized_model, normalized_dimensions),
+            ).fetchone()[0])
+            stale = int(connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_items i
+                JOIN memory_item_embeddings e
+                  ON e.memory_item_id = i.id
+                 AND e.provider = ?
+                 AND e.model = ?
+                WHERE i.deleted_at IS NULL
+                  AND (e.dimensions != ? OR e.content_hash != i.content_hash)
+                """,
+                (normalized_provider, normalized_model, normalized_dimensions),
+            ).fetchone()[0])
+            missing = int(connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_items i
+                LEFT JOIN memory_item_embeddings e
+                  ON e.memory_item_id = i.id
+                 AND e.provider = ?
+                 AND e.model = ?
+                WHERE i.deleted_at IS NULL
+                  AND e.memory_item_id IS NULL
+                """,
+                (normalized_provider, normalized_model),
+            ).fetchone()[0])
+        return {
+            "provider": normalized_provider,
+            "model": normalized_model,
+            "dimensions": normalized_dimensions,
+            "total": total,
+            "ready": ready,
+            "missing": missing,
+            "stale": stale,
+            "coverageRatio": round(ready / total, 4) if total else 1.0,
+        }
+
+    def search_memory_items_hybrid(
+        self,
+        *,
+        query: str,
+        query_embedding: list[float] | tuple[float, ...] | None,
+        provider: str,
+        model: str,
+        dimensions: int,
+        scope: str | None = None,
+        memory_type: str | None = None,
+        limit: int = 8,
+        candidate_limit: int = 80,
+    ) -> list[dict[str, Any]]:
+        normalized_query = query.strip() if isinstance(query, str) else ""
+        normalized_provider = normalize_memory_embedding_provider(provider)
+        normalized_model = normalize_memory_embedding_model(model)
+        normalized_dimensions = normalize_memory_embedding_dimensions(dimensions)
+        normalized_scope = normalize_memory_item_scope(scope) if scope else None
+        normalized_memory_type = normalize_memory_item_type(memory_type) if memory_type else None
+        bounded_limit = max(1, min(100, int(limit)))
+        bounded_candidate_limit = max(bounded_limit, min(500, int(candidate_limit)))
+        normalized_query_embedding = (
+            normalize_memory_embedding_vector(query_embedding, dimensions=normalized_dimensions)
+            if query_embedding is not None
+            else None
+        )
+
+        vector_rows: list[tuple[object, ...]] = []
+        where = "i.deleted_at IS NULL"
+        params: list[object] = [normalized_provider, normalized_model, normalized_dimensions]
+        if normalized_scope:
+            where += " AND i.scope = ?"
+            params.append(normalized_scope)
+        if normalized_memory_type:
+            where += " AND i.memory_type = ?"
+            params.append(normalized_memory_type)
+        params.append(bounded_candidate_limit)
+        if normalized_query_embedding is not None:
+            with self.connect() as connection:
+                vector_rows = connection.execute(
+                    f"""
+                    SELECT
+                      i.id,
+                      i.scope,
+                      i.content,
+                      i.memory_type,
+                      i.metadata_json,
+                      i.content_hash,
+                      i.confidence,
+                      i.source_session_id,
+                      i.source_message_id,
+                      i.last_accessed_at,
+                      i.access_count,
+                      i.created_at,
+                      i.updated_at,
+                      i.deleted_at,
+                      e.embedding
+                    FROM memory_items i
+                    JOIN memory_item_embeddings e
+                      ON e.memory_item_id = i.id
+                     AND e.provider = ?
+                     AND e.model = ?
+                     AND e.dimensions = ?
+                     AND e.content_hash = i.content_hash
+                    WHERE {where}
+                    ORDER BY i.updated_at DESC, i.id DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+
+        candidates: dict[int, dict[str, Any]] = {}
+        vectors_by_id: dict[int, list[float]] = {}
+        for row in vector_rows:
+            item = memory_item_response(row[:14])
+            item_id = int(item["memoryItemId"])
+            candidates[item_id] = item
+            vectors_by_id[item_id] = deserialize_memory_embedding_vector(row[14], dimensions=normalized_dimensions)
+
+        for item in self.list_memory_items(
+            scope=normalized_scope,
+            memory_type=normalized_memory_type,
+            query=normalized_query,
+            limit=bounded_candidate_limit,
+        ):
+            candidates.setdefault(int(item["memoryItemId"]), item)
+
+        scored: list[dict[str, Any]] = []
+        for item_id, item in candidates.items():
+            vector_score = 0.0
+            if normalized_query_embedding is not None and item_id in vectors_by_id:
+                vector_score = memory_embedding_cosine_similarity(normalized_query_embedding, vectors_by_id[item_id])
+            text_score = memory_item_text_match_score(item, normalized_query)
+            confidence_score = max(0.0, min(1.0, float(item.get("confidence") or 0.0)))
+            access_score = memory_item_access_score(int(item.get("accessCount") or 0))
+            recency_score = memory_item_recency_score(str(item.get("updatedAt") or ""))
+            hybrid_score = (
+                0.60 * vector_score
+                + 0.20 * text_score
+                + 0.10 * confidence_score
+                + 0.05 * access_score
+                + 0.05 * recency_score
+            )
+            enriched = dict(item)
+            enriched["hybridScore"] = round(hybrid_score, 6)
+            enriched["vectorScore"] = round(vector_score, 6)
+            enriched["textScore"] = round(text_score, 6)
+            enriched["retrievalProvider"] = "memory_items_hybrid"
+            enriched["embeddingProvider"] = normalized_provider
+            enriched["embeddingModel"] = normalized_model
+            scored.append(enriched)
+
+        scored.sort(
+            key=lambda item: (
+                float(item.get("hybridScore") or 0.0),
+                float(item.get("confidence") or 0.0),
+                str(item.get("updatedAt") or ""),
+                int(item.get("memoryItemId") or 0),
+            ),
+            reverse=True,
+        )
+        return scored[:bounded_limit]
+
     def _load_memory_item_row(
         self,
         connection: sqlite3.Connection,
@@ -4834,6 +5168,122 @@ def normalize_memory_item_content(content: str) -> str:
 def compute_memory_item_hash(content: str) -> str:
     normalized = content.strip() if isinstance(content, str) else str(content or "").strip()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def normalize_memory_embedding_provider(provider: object) -> str:
+    normalized = str(provider or "").strip()
+    if not normalized:
+        raise ValueError("embedding provider is required")
+    if "\x00" in normalized:
+        raise ValueError("embedding provider must be UTF-8 text")
+    if len(normalized) > 120:
+        raise ValueError("embedding provider must be at most 120 characters")
+    return normalized
+
+
+def normalize_memory_embedding_model(model: object) -> str:
+    normalized = str(model or "").strip()
+    if not normalized:
+        raise ValueError("embedding model is required")
+    if "\x00" in normalized:
+        raise ValueError("embedding model must be UTF-8 text")
+    if len(normalized) > 240:
+        raise ValueError("embedding model must be at most 240 characters")
+    return normalized
+
+
+def normalize_memory_embedding_dimensions(dimensions: object) -> int:
+    try:
+        parsed = int(dimensions)
+    except (TypeError, ValueError):
+        raise ValueError("embedding dimensions must be an integer") from None
+    if parsed <= 0 or parsed > 16384:
+        raise ValueError("embedding dimensions must be between 1 and 16384")
+    return parsed
+
+
+def normalize_memory_embedding_vector(
+    vector: list[float] | tuple[float, ...] | None,
+    *,
+    dimensions: int,
+) -> list[float]:
+    normalized_dimensions = normalize_memory_embedding_dimensions(dimensions)
+    if vector is None:
+        raise ValueError("embedding vector is required")
+    if len(vector) != normalized_dimensions:
+        raise ValueError(f"embedding vector must have {normalized_dimensions} dimensions")
+    normalized: list[float] = []
+    for value in vector:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("embedding vector values must be numeric") from None
+        if not math.isfinite(parsed):
+            raise ValueError("embedding vector values must be finite")
+        normalized.append(parsed)
+    return normalized
+
+
+def serialize_memory_embedding_vector(vector: list[float]) -> bytes:
+    if not vector:
+        raise ValueError("embedding vector is required")
+    return struct.pack(f"<{len(vector)}f", *vector)
+
+
+def deserialize_memory_embedding_vector(value: object, *, dimensions: int) -> list[float]:
+    normalized_dimensions = normalize_memory_embedding_dimensions(dimensions)
+    raw = bytes(value or b"")
+    expected_size = normalized_dimensions * 4
+    if len(raw) != expected_size:
+        raise ValueError(f"embedding blob must be {expected_size} bytes")
+    return list(struct.unpack(f"<{normalized_dimensions}f", raw))
+
+
+def memory_embedding_cosine_similarity(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if left_norm <= 0 or right_norm <= 0:
+        return 0.0
+    return max(0.0, min(1.0, dot / (left_norm * right_norm)))
+
+
+def memory_item_text_match_score(item: dict[str, Any], query: str) -> float:
+    normalized_query = query.strip().lower() if isinstance(query, str) else ""
+    if not normalized_query:
+        return 0.0
+    terms = memory_item_query_terms(normalized_query)
+    if not terms:
+        return 0.0
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    haystack = " ".join([
+        str(item.get("content") or ""),
+        str(item.get("scope") or ""),
+        str(item.get("memoryType") or ""),
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+    ]).lower()
+    if not haystack:
+        return 0.0
+    matched = sum(1 for term in terms if term.lower() in haystack)
+    exact_bonus = 0.25 if normalized_query in haystack else 0.0
+    return max(0.0, min(1.0, matched / max(1, len(terms)) + exact_bonus))
+
+
+def memory_item_access_score(access_count: int) -> float:
+    return max(0.0, min(1.0, math.log1p(max(0, int(access_count))) / math.log(11)))
+
+
+def memory_item_recency_score(updated_at: str) -> float:
+    try:
+        updated = datetime.fromisoformat(str(updated_at))
+    except ValueError:
+        return 0.0
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds() / 86400)
+    return 1.0 / (1.0 + age_days / 30.0)
 
 
 def normalize_memory_item_type(value: str | None) -> MemoryItemType:

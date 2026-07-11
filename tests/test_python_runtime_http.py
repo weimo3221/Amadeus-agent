@@ -96,6 +96,18 @@ class FakeEmbeddingDeploymentManager:
         return {"cancelled": True, "deployment": self.status_payload}
 
 
+class FakeMemoryEmbeddingProvider:
+    provider = "local_bge_m3"
+    model_id = "BAAI/bge-m3"
+    dimensions = 1024
+
+    def available(self) -> bool:
+        return True
+
+    def encode_texts(self, texts: list[str] | tuple[str, ...]) -> list[list[float]]:
+        return [[1.0, *([0.0] * (self.dimensions - 1))] for _ in texts]
+
+
 class FakeMcpHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -830,6 +842,10 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertIn("dependenciesInstalled", payload["embedding"])
         self.assertIn("modelInstalled", payload["embedding"])
         self.assertIn("deployment", payload["embedding"])
+        self.assertEqual(payload["index"]["provider"], "local_bge_m3")
+        self.assertEqual(payload["index"]["model"], "BAAI/bge-m3")
+        self.assertIn("coverageRatio", payload["index"])
+        self.assertIn("backfill", payload)
         self.assertTrue(payload["paths"]["defaultModelDir"].endswith("models/embeddings/bge-m3"))
 
     def test_memory_embedding_deploy_writes_config_and_queues_manager(self) -> None:
@@ -917,6 +933,21 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         finally:
             runtime_server.PROVIDERS_CONFIG_PATH = previous_provider_path
             runtime_server.embedding_deployment_manager = previous_manager
+
+    def test_memory_embedding_backfill_indexes_memory_items_over_http(self) -> None:
+        previous_provider_factory = runtime_server.create_local_bge_m3_embedding_provider
+        try:
+            runtime_server.create_local_bge_m3_embedding_provider = lambda **_: FakeMemoryEmbeddingProvider()
+            runtime_server.memory_store.save_memory_item("project", "The deployment target is local.", confidence=0.8)
+
+            payload = self.post_json("/memory/embedding/backfill", {"sync": True, "limit": 10, "batchSize": 1})
+
+        finally:
+            runtime_server.create_local_bge_m3_embedding_provider = previous_provider_factory
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["backfillResult"]["embedded"], 1)
+        self.assertEqual(payload["backfillResult"]["coverage"]["ready"], 1)
 
     def test_runtime_feedback_records_desktop_capabilities_and_audio_state(self) -> None:
         main_capabilities = self.post_json("/runtime/feedback", {

@@ -7,18 +7,28 @@ agent:
 
 memory:
   # Runtime memory provider used for turn-time context assembly.
-    # mem0_like_runtime keeps the hybrid retrieval lanes and stores long-term
-    # memories as typed memory + metadata + history records. Set to
-    # hybrid_runtime for the previous provider, or builtin_runtime for the
-    # original local provider exactly as before.
+  # mem0_like_runtime keeps the hybrid retrieval lanes and stores long-term
+  # memories as typed memory + metadata + history records. Set to
+  # hybrid_runtime for the previous provider, or builtin_runtime for the
+  # original local provider exactly as before.
   # Env override: AMADEUS_MEMORY_PROVIDER.
-    provider: mem0_like_runtime
+  provider: mem0_like_runtime
 
   # When the current session has fewer FTS hits than the retrieval budget,
-    # mem0_like_runtime and hybrid_runtime may fill the remaining slots from
-    # global conversation FTS.
+  # mem0_like_runtime and hybrid_runtime may fill the remaining slots from
+  # global conversation FTS.
   # Env override: AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK.
   globalRetrievalFallback: true
+
+  # Enable semantic vector recall over typed long-term memory items when the
+  # local BGE-M3 embedding provider is configured and deployed. Falls back to
+  # SQL/FTS memory item search automatically when unavailable.
+  # Env override: AMADEUS_MEMORY_VECTOR_RETRIEVAL.
+  vectorRetrieval: true
+
+  # Number of durable memory items considered by hybrid vector/text ranking.
+  # Env override: AMADEUS_MEMORY_VECTOR_CANDIDATE_LIMIT.
+  vectorCandidateLimit: 80
 
 context:
   # Estimated maximum context budget before a provider call.

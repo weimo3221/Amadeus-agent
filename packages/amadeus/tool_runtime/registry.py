@@ -640,13 +640,13 @@ def normalize_search_memory_items_output(
         for key in (
             "memoryItemId",
             "scope",
-              "memoryType",
-              "metadata",
+            "memoryType",
+            "metadata",
             "confidence",
             "sourceSessionId",
             "sourceMessageId",
-              "lastAccessedAt",
-              "accessCount",
+            "lastAccessedAt",
+            "accessCount",
             "createdAt",
             "updatedAt",
         ):

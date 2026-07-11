@@ -497,6 +497,8 @@ class AgentRuntimeTests(unittest.TestCase):
                 "memory:",
                 "  provider: builtin_runtime",
                 "  globalRetrievalFallback: false",
+                "  vectorRetrieval: false",
+                "  vectorCandidateLimit: 42",
                 "summary:",
                 "  triggerMessageCount: 9",
                 "  keepRecentTurns: 5",
@@ -528,6 +530,8 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.context_diagnostics_limit, 6)
         self.assertEqual(runtime.memory_provider_name, "builtin_runtime")
         self.assertFalse(runtime.memory_global_retrieval_fallback)
+        self.assertFalse(runtime.memory_vector_retrieval_enabled)
+        self.assertEqual(runtime.memory_vector_candidate_limit, 42)
         self.assertEqual(runtime.summary_trigger_message_count, 9)
         self.assertEqual(runtime.summary_keep_recent_turns, 5)
         self.assertEqual(runtime.summary_min_keep_recent_turns, 2)
@@ -546,6 +550,8 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertEqual(runtime.memory_provider_name, "mem0_like_runtime")
         self.assertEqual(runtime.memory_manager.runtime_provider.name, "mem0_like_runtime")
+        self.assertTrue(runtime.memory_vector_retrieval_enabled)
+        self.assertEqual(runtime.memory_vector_candidate_limit, 80)
 
     def test_runtime_memory_provider_can_use_hybrid_and_reload_to_builtin(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime-memory.yaml"

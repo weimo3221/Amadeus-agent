@@ -29,6 +29,7 @@ import type {
 import { AgentRuntimeClient, type ConnectionPhase, type ToolPermissionPrompt } from '@/runtime/client'
 import { COMPANION_SESSION_ID, SESSION_ID } from '@/runtime/config'
 import {
+  backfillEmbeddingIndex,
   cancelTaskRequest,
   cancelEmbeddingDeploy,
   approveTaskRequest,
@@ -924,6 +925,13 @@ export function useRuntime() {
     return true
   }
 
+  async function backfillEmbedding(limit = 100, batchSize = 8): Promise<boolean> {
+    const result = await backfillEmbeddingIndex({ limit, batchSize })
+    if (!result) return false
+    state.embeddingConfig = result
+    return true
+  }
+
   async function refreshTasks(): Promise<void> {
     await refreshPlanAndTasks()
   }
@@ -1027,6 +1035,7 @@ export function useRuntime() {
     refreshEmbeddingConfig,
     deployEmbedding,
     cancelEmbedding,
+    backfillEmbedding,
     refreshTasks,
     createTaskFromPlan,
     loadTaskEvents,

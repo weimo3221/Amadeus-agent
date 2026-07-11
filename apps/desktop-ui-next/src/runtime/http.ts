@@ -335,11 +335,45 @@ export interface EmbeddingConfigPayload {
   deployment: EmbeddingDeploymentPayload
 }
 
+export interface EmbeddingIndexPayload {
+  provider: string
+  model: string
+  dimensions: number
+  total: number
+  ready: number
+  missing: number
+  stale: number
+  coverageRatio: number
+}
+
+export interface EmbeddingBackfillPayload {
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  active: boolean
+  startedAt: string
+  finishedAt: string
+  message: string
+  error: string
+  result?: {
+    provider: string
+    model: string
+    dimensions: number
+    scanned: number
+    embedded: number
+    skipped: number
+    error: string
+    coverage: EmbeddingIndexPayload
+  } | null
+  coverage?: EmbeddingIndexPayload
+}
+
 export interface EmbeddingConfigResult {
   embedding: EmbeddingConfigPayload
+  index: EmbeddingIndexPayload
+  backfill: EmbeddingBackfillPayload
   providerTypes: EmbeddingProviderType[]
   paths: { env: string; providersConfig: string; defaultModelDir: string; modelsRoot: string }
   cancelResult?: { cancelled: boolean; deployment: EmbeddingDeploymentPayload }
+  backfillResult?: EmbeddingBackfillPayload['result']
 }
 
 export async function fetchEmbeddingConfig(): Promise<EmbeddingConfigResult | null> {
@@ -354,6 +388,12 @@ export async function deployEmbeddingModel(
 
 export async function cancelEmbeddingDeploy(): Promise<EmbeddingConfigResult | null> {
   return postJson<EmbeddingConfigResult>('/memory/embedding/cancel', {})
+}
+
+export async function backfillEmbeddingIndex(
+  body: { limit?: number; batchSize?: number; sync?: boolean } = {},
+): Promise<EmbeddingConfigResult | null> {
+  return postJson<EmbeddingConfigResult>('/memory/embedding/backfill', body)
 }
 
 export interface ProviderPreset {

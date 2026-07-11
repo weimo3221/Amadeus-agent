@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import shutil
 import subprocess
@@ -279,6 +280,93 @@ class LocalEmbeddingDeploymentManager:
 
 def dependencies_installed() -> bool:
     return all(importlib.util.find_spec(module_name) is not None for module_name in EMBEDDING_DEPENDENCY_MODULES)
+
+
+class LocalBGEM3EmbeddingProvider:
+    name = BGE_M3_PROVIDER_ID
+
+    def __init__(self, config: LocalEmbeddingConfig) -> None:
+        self.config = config
+        self.provider = config.provider
+        self.model_id = config.model_id
+        self.dimensions = config.dimensions
+        self._lock = threading.Lock()
+        self._model: Any | None = None
+
+    def available(self) -> bool:
+        return self.config.provider == BGE_M3_PROVIDER_ID and dependencies_installed() and is_model_installed(self.config.local_dir)
+
+    def encode_texts(self, texts: list[str] | tuple[str, ...]) -> list[list[float]]:
+        normalized_texts = [str(text or "").strip() for text in texts]
+        if not normalized_texts:
+            return []
+        if not self.available():
+            raise RuntimeError("BGE-M3 embedding provider is not deployed")
+        model = self._load_model()
+        encoded = model.encode(
+            normalized_texts,
+            batch_size=max(1, int(self.config.batch_size)),
+            max_length=8192,
+        )
+        dense_vectors = encoded.get("dense_vecs") if isinstance(encoded, dict) else encoded
+        vectors = normalize_dense_vectors(dense_vectors)
+        if self.config.normalize_embeddings:
+            vectors = [l2_normalize_vector(vector) for vector in vectors]
+        if any(len(vector) != self.config.dimensions for vector in vectors):
+            dimensions = sorted({len(vector) for vector in vectors})
+            raise RuntimeError(f"BGE-M3 embedding dimension mismatch: expected {self.config.dimensions}, got {dimensions}")
+        return vectors
+
+    def _load_model(self) -> Any:
+        with self._lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from FlagEmbedding import BGEM3FlagModel  # type: ignore
+            except Exception as error:
+                raise RuntimeError("FlagEmbedding is not installed") from error
+            self._model = BGEM3FlagModel(str(self.config.local_dir), use_fp16=True)
+            return self._model
+
+
+def normalize_dense_vectors(raw_vectors: Any) -> list[list[float]]:
+    if hasattr(raw_vectors, "tolist"):
+        raw_vectors = raw_vectors.tolist()
+    if raw_vectors is None:
+        return []
+    if isinstance(raw_vectors, tuple):
+        raw_vectors = list(raw_vectors)
+    if not isinstance(raw_vectors, list):
+        raise RuntimeError("embedding provider returned an unsupported vector payload")
+    if raw_vectors and all(isinstance(value, (int, float)) for value in raw_vectors):
+        raw_vectors = [raw_vectors]
+
+    vectors: list[list[float]] = []
+    for raw_vector in raw_vectors:
+        if hasattr(raw_vector, "tolist"):
+            raw_vector = raw_vector.tolist()
+        if isinstance(raw_vector, tuple):
+            raw_vector = list(raw_vector)
+        if not isinstance(raw_vector, list):
+            raise RuntimeError("embedding provider returned a non-list vector")
+        vector: list[float] = []
+        for value in raw_vector:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError) as error:
+                raise RuntimeError("embedding provider returned a non-numeric vector value") from error
+            if not math.isfinite(parsed):
+                raise RuntimeError("embedding provider returned a non-finite vector value")
+            vector.append(parsed)
+        vectors.append(vector)
+    return vectors
+
+
+def l2_normalize_vector(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm <= 0:
+        return list(vector)
+    return [value / norm for value in vector]
 
 
 def dependency_status_payload() -> dict[str, Any]:

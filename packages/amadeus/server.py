@@ -25,6 +25,13 @@ from amadeus.agent import AgentRuntime, PermissionBroker, PermissionRequest
 from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime, AudioTranscriptCommand, AudioTranscriptFailure, AsrRuntime, LocalAudioLibrary, MacOsSayConfig, MacOsSayTtsProvider, create_asr_provider_from_config, create_tts_provider_from_config
 from amadeus.embeddings import BGE_M3_DIMENSIONS, BGE_M3_MODEL_ID, BGE_M3_PROVIDER_ID, LocalEmbeddingConfig, LocalEmbeddingDeploymentManager, default_bge_m3_model_dir, normalize_embedding_local_dir
 from amadeus.live2d import LocalLive2DModelLibrary
+from amadeus.memory_embeddings import (
+    MemoryEmbeddingBackfillRunner,
+    MemoryEmbeddingBackfillService,
+    create_local_bge_m3_embedding_provider,
+    current_local_bge_m3_embedding_config as resolve_local_bge_m3_embedding_config,
+    local_bge_m3_embedding_is_configured as resolve_local_bge_m3_embedding_is_configured,
+)
 from amadeus.mcp import McpServerConfig, list_mcp_tools
 from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_positive_int_value, parse_providers_config, parse_reasoning_effort, provider_profile
 from amadeus.runtime_events import RuntimeEventBus
@@ -101,6 +108,7 @@ embedding_deployment_manager = LocalEmbeddingDeploymentManager(
     repo_root=REPO_ROOT,
     default_model_dir=default_bge_m3_model_dir(REPO_ROOT),
 )
+memory_embedding_backfill_runner = MemoryEmbeddingBackfillRunner()
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
 runtime_event_bus = RuntimeEventBus()
@@ -640,6 +648,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/memory/embedding/deploy":
             self.handle_memory_embedding_deploy()
+            return
+
+        if self.path == "/memory/embedding/backfill":
+            self.handle_memory_embedding_backfill()
             return
 
         if self.path == "/memory/embedding/cancel":
@@ -1653,6 +1665,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             local_dir = normalize_embedding_local_dir(body.get("localDir"), repo_root=REPO_ROOT)
             force = parse_bool_value(body.get("force"), False)
             config = write_local_bge_m3_embedding_config(local_dir)
+            agent_runtime.reload_runtime_config()
             payload = embedding_deployment_manager.deploy(config, force=force)
             logger.info(
                 "Started memory embedding deploy provider=%s modelId=%s localDir=%s force=%s status=%s phase=%s",
@@ -1683,6 +1696,50 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, payload)
         except Exception as error:
             logger.info("Memory embedding cancel failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_memory_embedding_backfill(self) -> None:
+        try:
+            body = self.read_json_body()
+            limit = parse_int(body.get("limit", 50), 50, 1, 500)
+            batch_size = parse_int(body.get("batchSize", 8), 8, 1, 64)
+            sync = parse_bool_value(body.get("sync"), False)
+            embedding_provider = create_local_bge_m3_embedding_provider(
+                providers_config_path=PROVIDERS_CONFIG_PATH,
+                repo_root=REPO_ROOT,
+            )
+            if embedding_provider is None:
+                self.write_json(400, {"ok": False, "error": "local BGE-M3 embedding provider is not configured"})
+                return
+            service = MemoryEmbeddingBackfillService(memory_store, embedding_provider)
+            if not embedding_provider.available():
+                payload = build_embedding_config_payload()
+                payload["ok"] = False
+                payload["error"] = "local BGE-M3 embedding provider is not deployed"
+                self.write_json(409, payload)
+                return
+            if sync:
+                result = service.backfill(limit=limit, batch_size=batch_size)
+                payload = build_embedding_config_payload()
+                payload["backfillResult"] = result.to_payload()
+                self.write_json(200, payload)
+                return
+            status = memory_embedding_backfill_runner.start(service, limit=limit, batch_size=batch_size)
+            payload = build_embedding_config_payload()
+            payload["backfill"] = status
+            logger.info(
+                "Started memory embedding backfill provider=%s model=%s limit=%s batchSize=%s status=%s",
+                embedding_provider.provider,
+                embedding_provider.model_id,
+                limit,
+                batch_size,
+                status.get("status"),
+            )
+            self.write_json(202, payload)
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Memory embedding backfill failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_memory_review_candidate_save(self) -> None:
@@ -2447,6 +2504,12 @@ def build_embedding_config_payload() -> dict[str, Any]:
     config = current_local_bge_m3_embedding_config()
     status = embedding_deployment_manager.status(config)
     status["configured"] = local_bge_m3_embedding_is_configured()
+    index = memory_store.memory_item_embedding_coverage(
+        provider=config.provider,
+        model=config.model_id,
+        dimensions=config.dimensions,
+    )
+    backfill = memory_embedding_backfill_runner.status(index)
     provider_types = [
         {
             "id": BGE_M3_PROVIDER_ID,
@@ -2466,6 +2529,8 @@ def build_embedding_config_payload() -> dict[str, Any]:
     return {
         "ok": True,
         "embedding": status,
+        "index": index,
+        "backfill": backfill,
         "providerTypes": provider_types,
         "paths": {
             "env": str(ENV_CONFIG_PATH),
@@ -2477,40 +2542,11 @@ def build_embedding_config_payload() -> dict[str, Any]:
 
 
 def local_bge_m3_embedding_is_configured() -> bool:
-    config = parse_providers_config(PROVIDERS_CONFIG_PATH)
-    embedding = config.get("embedding") if isinstance(config.get("embedding"), dict) else {}
-    providers = embedding.get("providers") if isinstance(embedding.get("providers"), dict) else {}
-    env_provider = os.environ.get("AMADEUS_EMBEDDING_PROVIDER", "").strip()
-    return (
-        env_provider == BGE_M3_PROVIDER_ID
-        or str(embedding.get("default") or "") == BGE_M3_PROVIDER_ID
-        or isinstance(providers.get(BGE_M3_PROVIDER_ID), dict)
-    )
+    return resolve_local_bge_m3_embedding_is_configured(providers_config_path=PROVIDERS_CONFIG_PATH)
 
 
 def current_local_bge_m3_embedding_config() -> LocalEmbeddingConfig:
-    config = parse_providers_config(PROVIDERS_CONFIG_PATH)
-    embedding = config.get("embedding") if isinstance(config.get("embedding"), dict) else {}
-    providers = embedding.get("providers") if isinstance(embedding.get("providers"), dict) else {}
-    default_provider = str(os.environ.get("AMADEUS_EMBEDDING_PROVIDER") or embedding.get("default") or BGE_M3_PROVIDER_ID)
-    provider_entry = providers.get(default_provider) if isinstance(providers.get(default_provider), dict) else {}
-    model_id = str(provider_entry.get("model") or os.environ.get("AMADEUS_BGE_M3_MODEL_ID") or BGE_M3_MODEL_ID)
-    local_dir_value = (
-        provider_entry.get("localPath")
-        or os.environ.get("AMADEUS_BGE_M3_MODEL_DIR")
-        or str(default_bge_m3_model_dir(REPO_ROOT))
-    )
-    dimensions = parse_positive_int_value(provider_entry.get("dimensions")) or BGE_M3_DIMENSIONS
-    batch_size = parse_positive_int_value(provider_entry.get("batchSize")) or 8
-    return LocalEmbeddingConfig(
-        provider=default_provider,
-        model_id=model_id,
-        local_dir=normalize_embedding_local_dir(str(local_dir_value), repo_root=REPO_ROOT),
-        dimensions=dimensions,
-        normalize_embeddings=parse_bool_value(provider_entry.get("normalizeEmbeddings"), True),
-        batch_size=batch_size,
-        device=str(provider_entry.get("device") or "auto"),
-    )
+    return resolve_local_bge_m3_embedding_config(providers_config_path=PROVIDERS_CONFIG_PATH, repo_root=REPO_ROOT)
 
 
 def write_local_bge_m3_embedding_config(local_dir: Path) -> LocalEmbeddingConfig:

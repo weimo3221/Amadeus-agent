@@ -28,6 +28,7 @@ const {
   refreshEmbeddingConfig,
   deployEmbedding,
   cancelEmbedding,
+  backfillEmbedding,
 } =
   useRuntime()
 
@@ -149,13 +150,18 @@ const embeddingLocalDir = ref('')
 const embeddingDeploying = ref(false)
 const embeddingRefreshing = ref(false)
 const embeddingCancelling = ref(false)
+const embeddingBackfilling = ref(false)
 const embeddingFlash = ref(false)
 const embeddingError = ref('')
 let embeddingPollTimer: number | null = null
 
 const embedding = computed(() => state.embeddingConfig?.embedding ?? null)
+const embeddingIndex = computed(() => state.embeddingConfig?.index ?? null)
+const embeddingBackfill = computed(() => state.embeddingConfig?.backfill ?? null)
 const embeddingDeployment = computed(() => embedding.value?.deployment ?? null)
 const embeddingDeploymentActive = computed(() => embeddingDeployment.value?.active === true)
+const embeddingBackfillActive = computed(() => embeddingBackfill.value?.active === true)
+const embeddingIndexPercent = computed(() => Math.round((embeddingIndex.value?.coverageRatio ?? 0) * 100))
 const embeddingStatusTone = computed<ToolTone>(() => {
   if (embeddingDeploymentActive.value) return 'info'
   if (embeddingDeployment.value?.status === 'failed') return 'danger'
@@ -190,6 +196,17 @@ const embeddingPhaseLabel = computed(() => {
   return labels[phase] ?? phase
 })
 
+const embeddingBackfillLabel = computed(() => {
+  const status = embeddingBackfill.value?.status || 'idle'
+  const labels: Record<string, string> = {
+    idle: '未开始',
+    running: '回填中',
+    completed: '已完成',
+    failed: '失败',
+  }
+  return labels[status] ?? status
+})
+
 const embeddingDependencyRows = computed(() =>
   Object.entries(embedding.value?.dependencyModules ?? {}).map(([name, installed]) => ({
     name,
@@ -208,7 +225,7 @@ function loadEmbeddingForm() {
 watch(() => state.embeddingConfig, loadEmbeddingForm, { immediate: true })
 
 function syncEmbeddingPolling() {
-  if (activeTab.value === 'memory' && embeddingDeploymentActive.value) {
+  if (activeTab.value === 'memory' && (embeddingDeploymentActive.value || embeddingBackfillActive.value)) {
     startEmbeddingPolling()
     return
   }
@@ -217,6 +234,7 @@ function syncEmbeddingPolling() {
 
 watch(activeTab, syncEmbeddingPolling)
 watch(embeddingDeploymentActive, syncEmbeddingPolling)
+watch(embeddingBackfillActive, syncEmbeddingPolling)
 onUnmounted(stopEmbeddingPolling)
 
 function startEmbeddingPolling() {
@@ -261,6 +279,19 @@ async function cancelEmbeddingDeployAction() {
     return
   }
   await refreshEmbeddingConfig()
+}
+
+async function runEmbeddingBackfill() {
+  embeddingBackfilling.value = true
+  embeddingError.value = ''
+  const ok = await backfillEmbedding(100, 8)
+  embeddingBackfilling.value = false
+  if (!ok) {
+    embeddingError.value = '向量索引回填失败，请确认 BGE-M3 已部署。'
+    return
+  }
+  startEmbeddingPolling()
+  flash(embeddingFlash)
 }
 
 /* ---------------- 语音 TTS ---------------- */
@@ -694,9 +725,9 @@ async function refreshMcp() {
             </div>
 
             <p class="text-[11px] leading-relaxed text-ink-faint">
-              本地 BGE-M3 用于后续 memory vector / hybrid retrieval。部署会写入
+              本地 BGE-M3 为长期记忆提供 semantic vector / hybrid retrieval。部署会写入
               <code class="font-mono">.env</code> 和 <code class="font-mono">configs/providers.yaml</code>，
-              并在后台安装可选依赖、下载模型缓存；不会阻塞当前对话。
+              并在后台安装可选依赖、下载模型缓存；向量索引回填独立执行，不会阻塞当前对话。
             </p>
 
             <div class="grid gap-3 sm:grid-cols-4">
@@ -766,6 +797,37 @@ async function refreshMcp() {
               </p>
             </div>
 
+            <div class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p class="text-[11px] font-semibold text-ink-soft">长期记忆向量索引</p>
+                  <p class="mt-1 text-[11px] text-ink-faint">
+                    ready {{ embeddingIndex?.ready ?? 0 }} / total {{ embeddingIndex?.total ?? 0 }}
+                    · missing {{ embeddingIndex?.missing ?? 0 }}
+                    · stale {{ embeddingIndex?.stale ?? 0 }}
+                  </p>
+                </div>
+                <AmTag :tone="embeddingBackfillActive ? 'info' : embeddingIndexPercent >= 100 ? 'success' : 'warning'" size="sm" dot>
+                  {{ embeddingBackfillActive ? '回填中' : `${embeddingIndexPercent}%` }}
+                </AmTag>
+              </div>
+              <div class="mt-3 h-2 overflow-hidden rounded-full bg-surface">
+                <div
+                  class="h-full rounded-full bg-brand-500 transition-all"
+                  :style="{ width: `${Math.min(100, Math.max(0, embeddingIndexPercent))}%` }"
+                />
+              </div>
+              <p class="mt-2 text-[11px] text-ink-faint">
+                {{ embeddingBackfill?.message || `状态：${embeddingBackfillLabel}` }}
+                <span v-if="embeddingBackfill?.result">
+                  · 本轮 embedded {{ embeddingBackfill.result.embedded }}
+                </span>
+              </p>
+              <p v-if="embeddingBackfill?.error" class="mt-2 rounded-[var(--radius-xl2)] bg-danger/10 p-2 text-[11px] text-danger">
+                {{ embeddingBackfill.error }}
+              </p>
+            </div>
+
             <div v-if="embeddingDependencyRows.length" class="rounded-[var(--radius-xl2)] bg-surface-muted/50 p-3">
               <p class="text-[11px] font-semibold text-ink-soft">可选依赖</p>
               <div class="mt-2 flex flex-wrap gap-1.5">
@@ -795,7 +857,7 @@ async function refreshMcp() {
                 leave-to-class="opacity-0"
               >
                 <span v-if="embeddingFlash" class="mr-auto inline-flex items-center gap-1.5 text-[13px] font-medium text-success">
-                  <Icon icon="ph:check-circle-fill" :width="16" /> 部署任务已提交
+                  <Icon icon="ph:check-circle-fill" :width="16" /> 操作已提交
                 </span>
               </transition>
               <AmButton
@@ -818,7 +880,18 @@ async function refreshMcp() {
                 取消部署
               </AmButton>
               <AmButton
-                v-else
+                v-if="!embeddingDeploymentActive"
+                variant="secondary"
+                size="sm"
+                icon="ph:database-duotone"
+                :loading="embeddingBackfilling || embeddingBackfillActive"
+                :disabled="!embedding?.deployed"
+                @click="runEmbeddingBackfill"
+              >
+                回填向量索引
+              </AmButton>
+              <AmButton
+                v-if="!embeddingDeploymentActive"
                 variant="secondary"
                 size="sm"
                 icon="ph:download-simple-bold"
@@ -843,8 +916,7 @@ async function refreshMcp() {
           </div>
 
           <p class="px-1 text-[11px] leading-relaxed text-ink-faint">
-            当前只做本地 BGE-M3 的资源部署与配置观测，后续 hybrid retrieval 会复用这个 provider 边界接入
-            memory vector index。
+            `mem0_like_runtime` 会优先使用 typed long-term memory 的 hybrid vector/text ranking；当模型或索引不可用时自动回退到 SQL/FTS。
           </p>
         </template>
 

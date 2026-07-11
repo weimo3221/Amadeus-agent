@@ -147,10 +147,16 @@ class HybridRuntimeMemoryProvider:
         *,
         legacy_provider: LocalRuntimeMemoryProvider | None = None,
         global_retrieval_fallback: bool = True,
+        embedding_provider: Any | None = None,
+        vector_retrieval_enabled: bool = False,
+        vector_candidate_limit: int = 80,
     ) -> None:
         self.memory_store = memory_store
         self.legacy_provider = legacy_provider or LocalRuntimeMemoryProvider(memory_store)
         self.global_retrieval_fallback = bool(global_retrieval_fallback)
+        self.embedding_provider = embedding_provider
+        self.vector_retrieval_enabled = bool(vector_retrieval_enabled)
+        self.vector_candidate_limit = max(1, min(500, int(vector_candidate_limit)))
 
     def prefetch(
         self,
@@ -251,14 +257,54 @@ class Mem0LikeRuntimeMemoryProvider(HybridRuntimeMemoryProvider):
             memory_item_limit=memory_item_limit,
             retrieval_limit=retrieval_limit,
         )
+        memory_items = self._hybrid_memory_items(query, fallback_items=artifacts.memory_items, limit=memory_item_limit)
         memory_item_ids = [
             int(item["memoryItemId"])
-            for item in artifacts.memory_items
+            for item in memory_items
             if isinstance(item.get("memoryItemId"), int)
         ]
         if memory_item_ids:
             self.memory_store.record_memory_item_access(memory_item_ids)
-        return artifacts
+        return RuntimeMemoryArtifacts(
+            provider=self.name,
+            summary=artifacts.summary,
+            memory_items=tuple(memory_items),
+            retrievals=artifacts.retrievals,
+            covered_through_message_id=artifacts.covered_through_message_id,
+        )
+
+    def _hybrid_memory_items(
+        self,
+        query: str,
+        *,
+        fallback_items: tuple[dict[str, Any], ...],
+        limit: int,
+    ) -> tuple[dict[str, Any], ...]:
+        embedding_provider = self.embedding_provider
+        if (
+            not self.vector_retrieval_enabled
+            or embedding_provider is None
+            or not query.strip()
+            or not callable(getattr(embedding_provider, "encode_texts", None))
+        ):
+            return fallback_items
+        try:
+            if callable(getattr(embedding_provider, "available", None)) and not embedding_provider.available():
+                return fallback_items
+            query_vector = embedding_provider.encode_texts([query])[0]
+            items = self.memory_store.search_memory_items_hybrid(
+                query=query,
+                query_embedding=query_vector,
+                provider=str(getattr(embedding_provider, "provider", "")),
+                model=str(getattr(embedding_provider, "model_id", "")),
+                dimensions=int(getattr(embedding_provider, "dimensions", 0)),
+                limit=limit,
+                candidate_limit=self.vector_candidate_limit,
+            )
+        except Exception as error:
+            logger.info("Runtime memory vector retrieval failed; falling back to SQL/FTS memory items error=%s", error)
+            return fallback_items
+        return tuple(items) if items else fallback_items
 
 
 def normalize_runtime_memory_provider_name(value: str | None) -> str:
@@ -280,6 +326,9 @@ def create_runtime_memory_provider(
     *,
     provider_name: str | None = None,
     global_retrieval_fallback: bool = True,
+    embedding_provider: Any | None = None,
+    vector_retrieval_enabled: bool = False,
+    vector_candidate_limit: int = 80,
 ) -> RuntimeMemoryProvider:
     normalized = normalize_runtime_memory_provider_name(provider_name)
     if normalized == BUILTIN_RUNTIME_PROVIDER_NAME:
@@ -288,6 +337,9 @@ def create_runtime_memory_provider(
         return Mem0LikeRuntimeMemoryProvider(
             memory_store,
             global_retrieval_fallback=global_retrieval_fallback,
+            embedding_provider=embedding_provider,
+            vector_retrieval_enabled=vector_retrieval_enabled,
+            vector_candidate_limit=vector_candidate_limit,
         )
     return HybridRuntimeMemoryProvider(
         memory_store,

@@ -16,6 +16,7 @@ from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
 from amadeus.context import ContextAssembler, ContextAssemblerConfig, sanitize_context_markup
 from amadeus.harness import DEFAULT_HARNESSES_CONFIG_PATH, HarnessContext, HarnessFeedbackPolicy, HarnessRegistry
 from amadeus.memory import MessageMemoryStore
+from amadeus.memory_embeddings import create_local_bge_m3_embedding_provider
 from amadeus.memory_provider import (
     DEFAULT_RUNTIME_MEMORY_PROVIDER_NAME,
     ExternalMemoryProvider,
@@ -26,6 +27,7 @@ from amadeus.memory_provider import (
 from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.model import (
     ChatStreamDelta,
+    DEFAULT_PROVIDERS_CONFIG_PATH,
     OpenAICompatibleChatModel,
     OpenAICompatibleConfig,
     first_choice_message,
@@ -60,6 +62,8 @@ CONTEXT_MEMORY_ITEM_LIMIT = 8
 CONTEXT_MEMORY_ITEM_CHARS = 500
 CONTEXT_RETRIEVAL_LIMIT = 3
 CONTEXT_RETRIEVAL_SNIPPET_CHARS = 280
+MEMORY_VECTOR_RETRIEVAL = True
+MEMORY_VECTOR_CANDIDATE_LIMIT = 80
 CONTEXT_TASK_LIMIT = 5
 CONTEXT_RECENT_TASK_LIMIT = 3
 CONTEXT_TASK_RESULT_CHARS = 280
@@ -223,11 +227,20 @@ class AgentRuntime:
         initial_memory_config = parse_runtime_config(runtime_config_path).get("memory", {})
         self.memory_provider_name = configured_runtime_memory_provider_name(initial_memory_config)
         self.memory_global_retrieval_fallback = configured_runtime_memory_global_fallback(initial_memory_config)
+        self.memory_vector_retrieval_enabled = configured_runtime_memory_vector_retrieval(initial_memory_config)
+        self.memory_vector_candidate_limit = configured_runtime_memory_vector_candidate_limit(initial_memory_config)
+        self.memory_embedding_provider = create_local_bge_m3_embedding_provider(
+            providers_config_path=DEFAULT_PROVIDERS_CONFIG_PATH,
+            repo_root=REPO_ROOT,
+        ) if self.memory_vector_retrieval_enabled else None
         self.memory_manager = RuntimeMemoryManager(
             create_runtime_memory_provider(
                 self.memory_store,
                 provider_name=self.memory_provider_name,
                 global_retrieval_fallback=self.memory_global_retrieval_fallback,
+                embedding_provider=self.memory_embedding_provider,
+                vector_retrieval_enabled=self.memory_vector_retrieval_enabled,
+                vector_candidate_limit=self.memory_vector_candidate_limit,
             ),
             external_providers=self.external_memory_providers,
         )
@@ -394,9 +407,13 @@ class AgentRuntime:
         memory_review_config = runtime_config.get("memoryReview", {})
         desktop_config = runtime_config.get("desktop", {})
         agent_config = runtime_config.get("agent", {})
+        vector_retrieval_enabled = configured_runtime_memory_vector_retrieval(memory_config)
+        vector_candidate_limit = configured_runtime_memory_vector_candidate_limit(memory_config)
         self._configure_runtime_memory_provider(
             configured_runtime_memory_provider_name(memory_config),
             global_retrieval_fallback=configured_runtime_memory_global_fallback(memory_config),
+            vector_retrieval_enabled=vector_retrieval_enabled,
+            vector_candidate_limit=vector_candidate_limit,
         )
         self.agent_max_tool_iterations = parse_positive_int_env(
             "AMADEUS_AGENT_MAX_TOOL_ITERATIONS",
@@ -563,22 +580,46 @@ class AgentRuntime:
             audio_library=self.audio_runtime.library if self.audio_runtime is not None else None,
         )
 
-    def _configure_runtime_memory_provider(self, provider_name: str, *, global_retrieval_fallback: bool) -> None:
+    def _configure_runtime_memory_provider(
+        self,
+        provider_name: str,
+        *,
+        global_retrieval_fallback: bool,
+        vector_retrieval_enabled: bool,
+        vector_candidate_limit: int,
+    ) -> None:
         normalized = normalize_runtime_memory_provider_name(provider_name)
         fallback_enabled = bool(global_retrieval_fallback)
+        vector_enabled = bool(vector_retrieval_enabled)
+        bounded_vector_candidate_limit = max(1, min(500, int(vector_candidate_limit)))
+        embedding_provider = create_local_bge_m3_embedding_provider(
+            providers_config_path=DEFAULT_PROVIDERS_CONFIG_PATH,
+            repo_root=REPO_ROOT,
+        ) if vector_enabled else None
+        embedding_signature = runtime_embedding_provider_signature(embedding_provider)
         if (
             getattr(self, "memory_provider_name", None) == normalized
             and getattr(self, "memory_global_retrieval_fallback", None) == fallback_enabled
+            and getattr(self, "memory_vector_retrieval_enabled", None) == vector_enabled
+            and getattr(self, "memory_vector_candidate_limit", None) == bounded_vector_candidate_limit
+            and getattr(self, "memory_embedding_provider_signature", None) == embedding_signature
             and getattr(getattr(self, "memory_manager", None), "runtime_provider", None) is not None
         ):
             return
         self.memory_provider_name = normalized
         self.memory_global_retrieval_fallback = fallback_enabled
+        self.memory_vector_retrieval_enabled = vector_enabled
+        self.memory_vector_candidate_limit = bounded_vector_candidate_limit
+        self.memory_embedding_provider = embedding_provider
+        self.memory_embedding_provider_signature = embedding_signature
         self.memory_manager = RuntimeMemoryManager(
             create_runtime_memory_provider(
                 self.memory_store,
                 provider_name=normalized,
                 global_retrieval_fallback=fallback_enabled,
+                embedding_provider=embedding_provider,
+                vector_retrieval_enabled=vector_enabled,
+                vector_candidate_limit=bounded_vector_candidate_limit,
             ),
             external_providers=self.external_memory_providers,
         )
@@ -1167,6 +1208,10 @@ class AgentRuntime:
                 "provider": self.memory_provider_name,
                 "activeProvider": self.memory_manager.active_provider_name,
                 "globalRetrievalFallback": self.memory_global_retrieval_fallback,
+                "vectorRetrieval": self.memory_vector_retrieval_enabled,
+                "vectorCandidateLimit": self.memory_vector_candidate_limit,
+                "embeddingProvider": getattr(self.memory_embedding_provider, "provider", ""),
+                "embeddingModel": getattr(self.memory_embedding_provider, "model_id", ""),
             },
             "context": {
                 "maxTokens": self.context_max_tokens,
@@ -2823,6 +2868,32 @@ def configured_runtime_memory_global_fallback(config: dict[str, Any]) -> bool:
     return parse_bool_env(
         "AMADEUS_MEMORY_GLOBAL_RETRIEVAL_FALLBACK",
         parse_bool_value(config.get("globalRetrievalFallback"), True),
+    )
+
+
+def configured_runtime_memory_vector_retrieval(config: dict[str, Any]) -> bool:
+    return parse_bool_env(
+        "AMADEUS_MEMORY_VECTOR_RETRIEVAL",
+        parse_bool_value(config.get("vectorRetrieval"), MEMORY_VECTOR_RETRIEVAL),
+    )
+
+
+def configured_runtime_memory_vector_candidate_limit(config: dict[str, Any]) -> int:
+    return parse_positive_int_env(
+        "AMADEUS_MEMORY_VECTOR_CANDIDATE_LIMIT",
+        parse_positive_int_value(config.get("vectorCandidateLimit"), MEMORY_VECTOR_CANDIDATE_LIMIT),
+    )
+
+
+def runtime_embedding_provider_signature(provider: Any | None) -> tuple[str, str, str]:
+    if provider is None:
+        return ("", "", "")
+    config = getattr(provider, "config", None)
+    local_dir = getattr(config, "local_dir", "") if config is not None else ""
+    return (
+        str(getattr(provider, "provider", "")),
+        str(getattr(provider, "model_id", "")),
+        str(local_dir),
     )
 
 

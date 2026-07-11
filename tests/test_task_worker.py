@@ -226,8 +226,8 @@ class TaskWorkerTests(unittest.TestCase):
             old_heartbeat = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
             with memory.connect() as connection:
                 connection.execute(
-                    "UPDATE tasks SET last_heartbeat = ?, updated_at = ? WHERE id = ?",
-                    (old_heartbeat, old_heartbeat, str(task["id"])),
+                    "UPDATE tasks SET lease_expires_at = ?, last_heartbeat = ?, updated_at = ? WHERE id = ?",
+                    (old_heartbeat, old_heartbeat, old_heartbeat, str(task["id"])),
                 )
             published: list[tuple[str, str]] = []
             worker = TaskWorker(

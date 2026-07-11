@@ -13,6 +13,18 @@ from amadeus.memory import MessageMemoryStore
 from amadeus.memory_provider import ExternalMemoryResult, HybridRuntimeMemoryProvider, LocalRuntimeMemoryProvider, Mem0LikeRuntimeMemoryProvider, RuntimeMemoryManager
 
 
+class FakeTextEmbeddingProvider:
+    provider = "fake_embedding"
+    model_id = "fake-model"
+    dimensions = 2
+
+    def available(self) -> bool:
+        return True
+
+    def encode_texts(self, texts: list[str] | tuple[str, ...]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+
 class ContextAssemblerTests(unittest.TestCase):
     def test_assembles_summary_items_and_retrieval_without_persisting_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -122,6 +134,47 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual(artifacts.memory_items[0]["memoryItemId"], item["memoryItemId"])
         self.assertEqual(accessed["accessCount"], 1)
         self.assertTrue(accessed["lastAccessedAt"])
+
+    def test_mem0_like_runtime_provider_uses_vector_memory_items_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            target = memory.save_memory_item(
+                "project",
+                "The deployment target is a local desktop app.",
+                memory_type="project_fact",
+                confidence=0.8,
+            )
+            distractor = memory.save_memory_item(
+                "user",
+                "The user prefers concise updates.",
+                memory_type="preference",
+                confidence=0.8,
+            )
+            memory.upsert_memory_item_embedding(
+                int(target["memoryItemId"]),
+                provider="fake_embedding",
+                model="fake-model",
+                dimensions=2,
+                vector=[1.0, 0.0],
+            )
+            memory.upsert_memory_item_embedding(
+                int(distractor["memoryItemId"]),
+                provider="fake_embedding",
+                model="fake-model",
+                dimensions=2,
+                vector=[0.0, 1.0],
+            )
+            provider = Mem0LikeRuntimeMemoryProvider(
+                memory,
+                embedding_provider=FakeTextEmbeddingProvider(),
+                vector_retrieval_enabled=True,
+            )
+
+            artifacts = provider.prefetch("semantic deployment alias", session_id="session-1", memory_item_limit=2)
+
+        self.assertEqual(artifacts.provider, "mem0_like_runtime")
+        self.assertEqual(artifacts.memory_items[0]["memoryItemId"], target["memoryItemId"])
+        self.assertEqual(artifacts.memory_items[0]["retrievalProvider"], "memory_items_hybrid")
 
     def test_context_assembler_formats_external_memory_provider_results(self) -> None:
         class Provider:

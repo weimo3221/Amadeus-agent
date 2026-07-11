@@ -132,6 +132,7 @@ packages/amadeus
   |
   +--> agent
   +--> memory
+  +--> memory_embeddings
   +--> model
   +--> tools
   |      +--> concrete local tools
@@ -155,10 +156,11 @@ packages/amadeus
 `packages/amadeus` is the long-term agent brain. Current module status:
 
 - `agent.py`: active conversation loop, bounded Hermes-style tool-use policy, runtime memory manager wiring, response/event streaming, turn-id propagation for assistant/plan events, and cached per-session system prompt assembly.
-- `context.py`: active API-call-time context assembler for memory-provider output, active todos, task state, source budgets, and diagnostics. Stable Markdown memory stays in the prompt layer. With the default `mem0_like_runtime` provider active, SQLite/session-derived artifacts include conversation summaries, query-filtered typed long-term memories, and relevant FTS retrieval. Per-turn reference context such as active plans, todos, tasks, recent task outcomes, FTS snippets, and external memory is appended to the current user message as non-persistent reference data. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
-- `memory.py`: active SQLite-backed message history, roles/sessions, Mem0-like structured long-term memory, item history, task state, task events, task plan runs, scheduled messages, persistent todos, and audit records.
+- `context.py`: active API-call-time context assembler for memory-provider output, active todos, task state, source budgets, and diagnostics. Stable Markdown memory stays in the prompt layer. With the default `mem0_like_runtime` provider active, SQLite/session-derived artifacts include conversation summaries, query-filtered typed long-term memories, optional BGE-M3 vector-ranked memory items, and relevant FTS retrieval. Per-turn reference context such as active plans, todos, tasks, recent task outcomes, FTS snippets, and external memory is appended to the current user message as non-persistent reference data. `AgentRuntime` keeps recent context diagnostics per session in an in-memory ring buffer.
+- `memory.py`: active SQLite-backed message history, roles/sessions, Mem0-like structured long-term memory, item history, derived memory item embeddings, task state, task events, task plan runs, scheduled messages, persistent todos, and audit records.
+- `memory_embeddings.py`: active local embedding bridge for Memory v2. It resolves BGE-M3 configuration, creates the local FlagEmbedding provider, computes memory item embedding text, reports index coverage, and runs missing/stale vector backfill.
 - `memory_query.py`: active memory query tokenizer. It uses `jieba` plus bounded CJK n-grams to expand Chinese/mixed-language queries and FTS index content while keeping returned transcript text unchanged.
-- `memory_provider.py`: runtime memory provider layer. Exactly one provider is active at a time. The default `mem0_like_runtime` local provider exposes derived session memory artifacts, typed long-term memory items, and the SQLite memory tools; `hybrid_runtime` and `builtin_runtime` remain compatibility options. An external provider replaces that runtime prefetch/tool surface when configured. Raw session transcripts remain in `memory.py` and are read through explicit transcript tools/APIs.
+- `memory_provider.py`: runtime memory provider layer. Exactly one provider is active at a time. The default `mem0_like_runtime` local provider exposes derived session memory artifacts, typed long-term memory items, optional BGE-M3 vector/text hybrid recall, and the SQLite memory tools; `hybrid_runtime` and `builtin_runtime` remain compatibility options. An external provider replaces that runtime prefetch/tool surface when configured. Raw session transcripts remain in `memory.py` and are read through explicit transcript tools/APIs.
 - `scheduling.py`: active schedule parser plus in-process scheduled trigger worker. It supports one-shot durations/timestamps, recurring intervals, common daily/weekly/monthly cron shapes, repeat counts, lifecycle event publication, direct message delivery, and `agent_task` mode that creates tracked background tasks at fire time.
 - `tools/`: active concrete Python tool implementations and public registry entrypoint.
 - `tool_runtime`: active tool registry construction, permission/config overlays, execution dispatch, structured results, timeout/cancellation, audit persistence, result compaction, session workspace epoch propagation, and repeated-call guardrails.

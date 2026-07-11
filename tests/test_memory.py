@@ -10,6 +10,32 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.memory import MessageMemoryStore
+from amadeus.memory_embeddings import MemoryEmbeddingBackfillService
+
+
+class FakeTextEmbeddingProvider:
+    provider = "fake_embedding"
+    model_id = "fake-model"
+    dimensions = 2
+
+    def __init__(self, vectors: dict[str, list[float]] | None = None, *, available: bool = True) -> None:
+        self.vectors = dict(vectors or {})
+        self._available = available
+
+    def available(self) -> bool:
+        return self._available
+
+    def encode_texts(self, texts: list[str] | tuple[str, ...]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in texts:
+            normalized = str(text)
+            if "deployment target" in normalized or "semantic deployment" in normalized:
+                vectors.append([1.0, 0.0])
+            elif "concise updates" in normalized:
+                vectors.append([0.0, 1.0])
+            else:
+                vectors.append(self.vectors.get(normalized, [0.5, 0.5]))
+        return vectors
 
 
 class MessageMemoryStoreTests(unittest.TestCase):
@@ -260,6 +286,84 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(history[0]["actor"], "runtime")
         self.assertEqual(history[1]["actor"], "test")
         self.assertEqual(history[2]["newMetadata"], {"source": "explicit", "tags": ["status"]})
+
+    def test_memory_item_embeddings_track_coverage_and_stale_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            first = memory.save_memory_item("project", "The deployment target is local.", confidence=0.8)
+            second = memory.save_memory_item("user", "The user prefers concise updates.", confidence=0.9)
+
+            initial = memory.memory_item_embedding_coverage(provider="fake", model="fake-model", dimensions=2)
+            memory.upsert_memory_item_embedding(
+                int(first["memoryItemId"]),
+                provider="fake",
+                model="fake-model",
+                dimensions=2,
+                vector=[1.0, 0.0],
+            )
+            ready = memory.memory_item_embedding_coverage(provider="fake", model="fake-model", dimensions=2)
+            needing = memory.list_memory_items_needing_embeddings(provider="fake", model="fake-model", dimensions=2)
+            memory.replace_memory_item(int(first["memoryItemId"]), "The deployment target moved to desktop.")
+            stale = memory.memory_item_embedding_coverage(provider="fake", model="fake-model", dimensions=2)
+
+        self.assertEqual(initial["total"], 2)
+        self.assertEqual(initial["ready"], 0)
+        self.assertEqual(initial["missing"], 2)
+        self.assertEqual(ready["ready"], 1)
+        self.assertEqual(ready["missing"], 1)
+        self.assertEqual([item["memoryItemId"] for item in needing], [second["memoryItemId"]])
+        self.assertEqual(stale["ready"], 0)
+        self.assertEqual(stale["stale"], 1)
+        self.assertEqual(stale["missing"], 1)
+
+    def test_memory_embedding_backfill_service_indexes_stale_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save_memory_item("project", "The deployment target is local.", confidence=0.8)
+            memory.save_memory_item("user", "The user prefers concise updates.", confidence=0.9)
+            service = MemoryEmbeddingBackfillService(memory, FakeTextEmbeddingProvider())
+
+            result = service.backfill(limit=10, batch_size=1)
+            coverage = memory.memory_item_embedding_coverage(provider="fake_embedding", model="fake-model", dimensions=2)
+
+        self.assertEqual(result.error, "")
+        self.assertEqual(result.scanned, 2)
+        self.assertEqual(result.embedded, 2)
+        self.assertEqual(coverage["ready"], 2)
+        self.assertEqual(coverage["missing"], 0)
+
+    def test_memory_items_hybrid_search_uses_vector_similarity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            target = memory.save_memory_item("project", "The deployment target is a local desktop app.", confidence=0.8)
+            distractor = memory.save_memory_item("user", "The user prefers concise updates.", confidence=0.8)
+            memory.upsert_memory_item_embedding(
+                int(target["memoryItemId"]),
+                provider="fake",
+                model="fake-model",
+                dimensions=2,
+                vector=[1.0, 0.0],
+            )
+            memory.upsert_memory_item_embedding(
+                int(distractor["memoryItemId"]),
+                provider="fake",
+                model="fake-model",
+                dimensions=2,
+                vector=[0.0, 1.0],
+            )
+
+            results = memory.search_memory_items_hybrid(
+                query="semantic deployment alias",
+                query_embedding=[1.0, 0.0],
+                provider="fake",
+                model="fake-model",
+                dimensions=2,
+                limit=2,
+            )
+
+        self.assertEqual(results[0]["memoryItemId"], target["memoryItemId"])
+        self.assertEqual(results[0]["retrievalProvider"], "memory_items_hybrid")
+        self.assertGreater(results[0]["vectorScore"], results[1]["vectorScore"])
 
     def test_memory_item_migration_preserves_legacy_rows_and_backfills_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

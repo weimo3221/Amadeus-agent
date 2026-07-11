@@ -44,7 +44,7 @@ directly from the Python runtime over HTTP; endpoints in use include:
 
 - `GET /sessions`, `POST /sessions`, `DELETE /sessions/:id` (archive)
 - `GET /roles`, `PUT /roles/:id` (name / persona / style / provider / model)
-- `GET /memory/messages`, `GET /memory/items`, `GET /memory/items/history`, memory diagnostics/review APIs, and BGE-M3 embedding deployment controls
+- `GET /memory/messages`, `GET /memory/items`, `GET /memory/items/history`, memory diagnostics/review APIs, and BGE-M3 embedding deployment/index controls
 - `GET /tasks`, task event/action APIs, and `GET /sessions/:id/plan-runs`
 - `GET /scheduled-jobs` and scheduled-job action APIs
 - `GET /skills/list`, skill view/manage APIs
@@ -54,10 +54,11 @@ The Vue workbench is the production Main UI surface. The older vanilla
 `apps/desktop/src/renderer/main-ui` path is retained only as an explicit
 fallback and for older E2E compatibility.
 
-The Config Center includes a Memory tab for local BGE-M3 embedding status and
-deployment controls. Runtime memory provider selection itself remains Python
-runtime configuration in `configs/runtime.yaml`, so the UI observes deployment
-state without owning retrieval policy.
+The Config Center includes a Memory tab for local BGE-M3 embedding status,
+deployment controls, vector index coverage, and a manual backfill action for
+missing/stale long-term `memory_items`. Runtime memory provider selection itself
+remains Python runtime configuration in `configs/runtime.yaml`, so the UI
+observes deployment/index state without owning retrieval policy.
 
 ## Structure
 
