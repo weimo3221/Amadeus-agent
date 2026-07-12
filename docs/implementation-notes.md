@@ -74,7 +74,7 @@ The first runtime skill slice is intentionally narrow and modeled after the usef
 
 This is enough to establish a real skill boundary plus a narrow experience-save path without taking on bundles, marketplace sync, subagent orchestration, or a full skill editing/import UI yet.
 
-`workspace_epoch` is maintained by `AgentRuntime` per session. It is a monotonic runtime counter, not a content hash or filesystem scan. It starts at `0`, is passed into `ToolContext`, guardrail signatures, and `tool.audit` metadata, and advances after `patch` or `write_file` succeeds with `changed: true`. This lets the same `read_file` window or `search_files` query be blocked as no-progress within one epoch, then become allowed again after a real workspace mutation. Future shell/external mutation tools should advance the counter conservatively on successful mutation.
+`workspace_epoch` is maintained by `AgentRuntime` per session. It is a monotonic runtime counter, not a content hash or filesystem scan. It starts at `0`, is passed into `ToolContext`, guardrail signatures, and `tool.audit` metadata, and advances after `patch` or `write_file` succeeds with `changed: true`. Successful `terminal` and `execute_code` runs also advance it conservatively because arbitrary shell/Python code can mutate workspace files without returning a structured diff. This lets the same `read_file` window or `search_files` query be blocked as no-progress within one epoch, then become allowed again after a real workspace mutation.
 
 ### Tool Inventory And Extension Path
 
@@ -82,6 +82,16 @@ Current active Python tools:
 
 - `get_current_time`: `allow`; returns formatted current time for an IANA timezone.
 - `roll_dice`: `ask`; rolls bounded dice counts/sides and returns rolls plus total.
+- `terminal`: `ask`; runs bounded foreground shell commands inside the workspace, captures stdout/stderr, enforces cwd containment, and conservatively advances `workspace_epoch` after successful execution.
+- `process`: `ask`; lists local processes, checks status for a pid, or sends a signal to a known pid.
+- `web_search`: `allow`; searches the public web through a lightweight DuckDuckGo HTML provider and returns bounded result titles/URLs.
+- `web_extract`: `ask`; fetches HTTP(S) pages and extracts bounded readable text from HTML/text responses.
+- `browser_navigate` / `browser_snapshot` / `browser_click` / `browser_type` / `browser_scroll` / `browser_back` / `browser_press` / `browser_get_images` / `browser_vision` / `browser_console` / `browser_cdp` / `browser_dialog`: registered but disabled by default; bridge to a configured HTTP browser backend (`AMADEUS_BROWSER_TOOLS_URL`) or MCP browser server (`AMADEUS_BROWSER_MCP_URL`) instead of embedding a second Playwright runtime.
+- `vision_analyze`: `ask`; extracts safe local image metadata without a provider, or sends image/prompt data to `AMADEUS_VISION_ENDPOINT` when configured.
+- `clarify`: `allow`; prepares structured user-facing clarification questions for ambiguous or irreversible work.
+- `execute_code`: `ask`; runs bounded Python code from a temporary script in a workspace-contained cwd, captures stdout/stderr, and conservatively advances `workspace_epoch` after execution.
+
+Smoke testing confirms the local handlers, HTML extraction, browser HTTP bridge, and vision HTTP bridge run correctly. Public web search still depends on external endpoint reachability; DuckDuckGo HTML and Jina search timed out from the current development network, so reliable web access should use a configured proxy/provider or an installed web-access skill.
 - `read_memory`: `allow`; reads current-role stable Markdown memory from `data/roles/<roleId>/memory/MEMORY.md` or `data/roles/<roleId>/memory/USER.md`.
 - `update_memory`: `ask`; performs controlled `add` / `replace` / `remove` updates to current-role stable Markdown memory, with exact-match replacement and size limits.
 - `update_current_role_identity`: `ask`; updates the current session role name and/or `data/roles/<roleId>/SOUL.md` after explicit user approval.
@@ -254,8 +264,10 @@ Examples:
 
 - current time: `allow`
 - searching or reading bounded project text files: `allow`
+- bounded public web search returning titles/URLs only: `allow`
+- fetching page contents or calling external action APIs: `ask`
 - patching or writing files: `ask`
-- running scripts, shell commands, installers, network actions, opening URLs, or touching workspace-external paths: `ask`
+- running scripts, shell commands, installers, opening URLs, or touching workspace-external paths: `ask`
 - deleting broad file trees or arbitrary shell execution without a stronger approval UI: `deny`
 
 ## Desktop Behavior States

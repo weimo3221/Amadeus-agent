@@ -1733,6 +1733,72 @@ class AgentRuntimeTests(unittest.TestCase):
         persisted_finished = [record for record in persisted if record.decision == "finished"]
         self.assertEqual(persisted_finished[2].metadata["workspaceEpochAfter"], 1)
 
+    def test_terminal_run_conservatively_advances_workspace_epoch(self) -> None:
+        tool_calls = [
+            {
+                "id": "call_read_0",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\",\"startLine\":1,\"lineLimit\":5}"},
+            },
+            {
+                "id": "call_read_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\",\"startLine\":1,\"lineLimit\":5}"},
+            },
+            {
+                "id": "call_terminal",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{\"command\":\"python -c 'print(1)'\"}"},
+            },
+            {
+                "id": "call_read_2",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\",\"startLine\":1,\"lineLimit\":5}"},
+            },
+        ]
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={"role": "assistant", "content": "", "tool_calls": tool_calls},
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="read_file",
+                    display_name="Read File",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "read_file"}},
+                    handler=lambda args: {
+                        "path": args["path"],
+                        "content": "current",
+                        "startLine": args["startLine"],
+                        "lineLimit": args["lineLimit"],
+                    },
+                ),
+                ToolSpec(
+                    name="terminal",
+                    display_name="Terminal",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "terminal"}},
+                    handler=lambda _args: {"command": "python -c 'print(1)'", "exitCode": 0, "stdout": "1\n", "stderr": ""},
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+
+        events = list(runtime.run_turn("default", "read then terminal then read", lambda _request: False))
+
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual([entry["ok"] for entry in tool_finished], [True, True, True, True])
+        self.assertEqual(runtime.workspace_epoch("default"), 1)
+
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        finished_audit = [entry for entry in tool_audit if entry["decision"] == "finished"]
+        self.assertEqual([entry["metadata"]["workspaceEpoch"] for entry in finished_audit], [0, 0, 0, 1])
+        self.assertEqual(finished_audit[2]["metadata"]["workspaceEpochAfter"], 1)
+        self.assertTrue(finished_audit[2]["metadata"]["workspaceMutated"])
+
 
 class PermissionBrokerTests(unittest.TestCase):
     def test_resolve_unknown_request_returns_false(self) -> None:

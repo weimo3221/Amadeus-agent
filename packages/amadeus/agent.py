@@ -86,6 +86,7 @@ DESKTOP_COMPANION_LIVE2D_OFFSET_X = 0
 DESKTOP_COMPANION_LIVE2D_OFFSET_Y = 0
 AGENT_MAX_TOOL_ITERATIONS = 90
 WORKSPACE_MUTATING_TOOLS = {"patch", "write_file"}
+POTENTIALLY_WORKSPACE_MUTATING_TOOLS = {"terminal", "execute_code"}
 logger = logging.getLogger(__name__)
 
 
@@ -2730,7 +2731,11 @@ class AgentRuntime:
 
     @staticmethod
     def _tool_result_mutated_workspace(tool_name: str, output: dict[str, Any], ok: bool) -> bool:
-        return tool_name in WORKSPACE_MUTATING_TOOLS and ok and output.get("changed") is True
+        if tool_name in WORKSPACE_MUTATING_TOOLS:
+            return ok and output.get("changed") is True
+        if tool_name in POTENTIALLY_WORKSPACE_MUTATING_TOOLS:
+            return ok and "error" not in output and "exitCode" in output
+        return False
 
     def _audit_tool(
         self,

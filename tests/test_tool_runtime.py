@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import threading
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import sys
 
@@ -125,6 +127,25 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(tool_state["delegate_task"]["permission"], "allow")
         self.assertIn("delegate_task", schema_names)
 
+        for tool_name, permission in {
+            "terminal": "ask",
+            "process": "ask",
+            "web_search": "allow",
+            "web_extract": "ask",
+            "vision_analyze": "ask",
+            "clarify": "allow",
+            "execute_code": "ask",
+        }.items():
+            self.assertIn(tool_name, list_tools())
+            self.assertIn(tool_name, tool_state)
+            self.assertEqual(tool_state[tool_name]["permission"], permission)
+            self.assertIn(tool_name, schema_names)
+
+        self.assertIn("browser_navigate", list_tools())
+        self.assertIn("browser_navigate", tool_state)
+        self.assertFalse(tool_state["browser_navigate"]["enabled"])
+        self.assertNotIn("browser_navigate", schema_names)
+
     def test_config_alias_updates_effective_tool_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "tools.yaml"
@@ -146,6 +167,153 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(tool_state["get_current_time"]["enabled"])
         self.assertEqual(tool_state["get_current_time"]["permission"], "deny")
         self.assertNotIn("get_current_time", schema_names)
+
+    def test_terminal_tool_runs_command_inside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "terminal",
+                {"command": "printf hello", "cwd": ".", "timeoutSeconds": 5},
+                ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["exitCode"], 0)
+        self.assertEqual(result.output["stdout"], "hello")
+
+    def test_terminal_tool_rejects_cwd_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "terminal",
+                {"command": "pwd", "cwd": ".."},
+                ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("cwd must be inside", result.output["error"])
+
+    def test_process_tool_checks_current_process_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "process",
+                {"action": "status", "pid": os.getpid()},
+                ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.output["exists"])
+        self.assertTrue(result.output["accessible"])
+
+    def test_execute_code_runs_python_inside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "execute_code",
+                {"code": "from pathlib import Path\nprint(Path.cwd().name)\n", "cwd": "."},
+                ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["exitCode"], 0)
+        self.assertIn(Path(tmpdir).name, result.output["stdout"])
+
+    def test_clarify_tool_returns_structured_question(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "clarify",
+                {
+                    "question": "Which backend should browser tools use?",
+                    "options": [{"label": "MCP", "description": "Use a configured MCP server."}],
+                },
+                ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.output["clarificationRequired"])
+        self.assertEqual(result.output["options"][0]["label"], "MCP")
+
+    def test_vision_analyze_extracts_local_png_metadata_without_endpoint(self) -> None:
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x02"
+            b"\x00\x00\x00\x03"
+            b"\x08\x02\x00\x00\x00"
+            b"\x00\x00\x00\x00"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "tiny.png"
+            image_path.write_bytes(png)
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "vision_analyze",
+                {"path": "tiny.png"},
+                ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertFalse(result.output["analysisAvailable"])
+        self.assertEqual(result.output["metadata"]["format"], "png")
+        self.assertEqual(result.output["metadata"]["width"], 2)
+        self.assertEqual(result.output["metadata"]["height"], 3)
+
+    def test_web_search_parses_mocked_duckduckgo_results(self) -> None:
+        import amadeus.tools.web as web_module
+
+        html = '<a rel="nofollow" class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com">Example Result</a>'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            with mock.patch.object(web_module, "_fetch_url", return_value={"text": html}):
+                result = registry.execute(
+                    "web_search",
+                    {"query": "example", "maxResults": 3},
+                    ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+                )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["resultCount"], 1)
+        self.assertEqual(result.output["results"][0]["url"], "https://example.com")
+
+    def test_web_extract_parses_mocked_html(self) -> None:
+        import amadeus.tools.web as web_module
+
+        html = "<html><head><title>Example</title></head><body><script>bad()</script><h1>Hello</h1><p>World</p></body></html>"
+        fetched = {
+            "url": "https://example.com",
+            "finalUrl": "https://example.com",
+            "status": 200,
+            "contentType": "text/html",
+            "text": html,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            with mock.patch.object(web_module, "_fetch_url", return_value=fetched):
+                result = registry.execute(
+                    "web_extract",
+                    {"url": "https://example.com", "maxChars": 1000},
+                    ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+                )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["fetchedCount"], 1)
+        self.assertEqual(result.output["pages"][0]["title"], "Example")
+        self.assertIn("Hello", result.output["pages"][0]["text"])
+        self.assertNotIn("bad()", result.output["pages"][0]["text"])
+
+    def test_browser_tool_reports_missing_backend_when_directly_called(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "browser_snapshot",
+                {},
+                ToolContext(session_id="session-1", cwd=Path(tmpdir)),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("browser backend is not configured", result.output["error"])
 
     def test_parse_tools_config_reads_mcp_servers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from amadeus.tools.browser import BROWSER_TOOL_SPECS
 from amadeus.tools.base import ToolHandler, ToolPermission, ToolSpec, normalize_positive_int
+from amadeus.tools.clarify import CLARIFY_TOOL_SPEC, clarify
 from amadeus.tools.delegate import DELEGATE_TASK_TOOL_SPEC, delegate_task
 from amadeus.tools.dice import DICE_TOOL_SPEC, roll_dice
+from amadeus.tools.execute_code import EXECUTE_CODE_TOOL_SPEC, execute_code
 from amadeus.tools.identity import UPDATE_CURRENT_ROLE_IDENTITY_TOOL_SPEC, update_current_role_identity
 from amadeus.tools.search_files import SEARCH_FILES_TOOL_SPEC, search_files
 from amadeus.tools.patch import PATCH_TOOL_SPEC, patch
@@ -33,8 +36,11 @@ from amadeus.tools.tasks import (
     create_task,
     list_tasks,
 )
+from amadeus.tools.terminal import PROCESS_TOOL_SPEC, TERMINAL_TOOL_SPEC, process, terminal
 from amadeus.tools.time import TIME_TOOL_SPEC, get_current_time
 from amadeus.tools.todo import TODO_TOOL_SPEC, todo
+from amadeus.tools.vision import VISION_ANALYZE_TOOL_SPEC, vision_analyze
+from amadeus.tools.web import WEB_EXTRACT_TOOL_SPEC, WEB_SEARCH_TOOL_SPEC, web_extract, web_search
 from amadeus.tools.write_file import WRITE_FILE_TOOL_SPEC, write_file
 
 
@@ -43,6 +49,13 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
     for spec in (
         TIME_TOOL_SPEC,
         DICE_TOOL_SPEC,
+        TERMINAL_TOOL_SPEC,
+        PROCESS_TOOL_SPEC,
+        WEB_SEARCH_TOOL_SPEC,
+        WEB_EXTRACT_TOOL_SPEC,
+        VISION_ANALYZE_TOOL_SPEC,
+        CLARIFY_TOOL_SPEC,
+        EXECUTE_CODE_TOOL_SPEC,
         DELEGATE_TASK_TOOL_SPEC,
         CREATE_TASK_TOOL_SPEC,
         LIST_TASKS_TOOL_SPEC,
@@ -64,6 +77,7 @@ DEFAULT_TOOL_SPECS: dict[str, ToolSpec] = {
         MEMORY_ADD_TOOL_SPEC,
         MEMORY_REPLACE_TOOL_SPEC,
         MEMORY_FORGET_TOOL_SPEC,
+        *BROWSER_TOOL_SPECS,
         PATCH_TOOL_SPEC,
         WRITE_FILE_TOOL_SPEC,
     )
@@ -98,9 +112,12 @@ __all__ = [
     "ToolHandler",
     "ToolPermission",
     "ToolSpec",
+    "BROWSER_TOOL_SPECS",
     "cancel_task",
+    "clarify",
     "create_task",
     "execute_tool",
+    "execute_code",
     "delegate_task",
     "get_current_time",
     "get_tool_spec",
@@ -112,6 +129,7 @@ __all__ = [
     "memory_replace",
     "normalize_positive_int",
     "patch",
+    "process",
     "read_file",
     "read_memory",
     "read_session_messages",
@@ -124,8 +142,12 @@ __all__ = [
     "skill_manage",
     "skills_list",
     "todo",
+    "terminal",
     "update_current_role_identity",
     "update_memory",
     "update_plan",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
     "write_file",
 ]

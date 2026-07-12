@@ -138,10 +138,18 @@ Current tool baseline already delivered:
 - `skills_list`
 - `skill_view`
 - `delegate_task`
+- `terminal`
+- `process`
+- `web_search`
+- `web_extract`
+- `vision_analyze`
+- `clarify`
+- `execute_code`
+- disabled-by-default `browser_*` bridge tools
 
 Planned follow-up tools:
 
-- `web_search`
+- provider-backed web access via an internal proxy or dedicated web-access skill
 - `open_url`
 - richer safe desktop/user-action tools after the core companion workflows stabilize
 

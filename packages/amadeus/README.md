@@ -48,6 +48,16 @@ The Python runtime reads this file on startup. After editing it, call `POST /run
 | --- | --- | --- |
 | `get_current_time` | `allow` | Returns the current date/time for a requested IANA timezone. It defaults to `Asia/Shanghai` and falls back to UTC for invalid timezones. |
 | `roll_dice` | `ask` | Rolls one or more dice with bounded `sides` and `count`, returning individual rolls and the total. |
+| `terminal` | `ask` | Runs a bounded foreground shell command inside the workspace, captures stdout/stderr, and conservatively advances the session workspace epoch after successful execution. |
+| `process` | `ask` | Lists local processes, checks a process by pid, or sends a signal to a known pid. |
+| `web_search` | `allow` | Searches the public web through a lightweight DuckDuckGo HTML provider and returns bounded titles/URLs. |
+| `web_extract` | `ask` | Fetches one or more HTTP(S) URLs and extracts bounded readable text from HTML or text responses. |
+| `browser_*` | disabled by default | Registers Hermes-compatible browser automation tool names as an HTTP/MCP bridge surface. Enable only after configuring `AMADEUS_BROWSER_TOOLS_URL` or `AMADEUS_BROWSER_MCP_URL`. |
+| `vision_analyze` | `ask` | Reads local image metadata safely, or sends image/prompt data to `AMADEUS_VISION_ENDPOINT` when configured. |
+| `clarify` | `allow` | Returns a structured user-facing clarification request for ambiguous or irreversible work. |
+| `execute_code` | `ask` | Runs bounded Python code from a temporary script with workspace-contained cwd, captures stdout/stderr, and conservatively advances the workspace epoch after execution. |
+
+Runtime smoke testing confirmed the local tool handlers and mocked parsing path work. In the current development network, direct public search endpoints such as DuckDuckGo HTML and Jina search can time out, so production-grade web access should prefer a configured internal proxy/provider or a dedicated web-access skill rather than relying only on the default public endpoint.
 | `read_memory` | `allow` | Reads stable Markdown memory for agent facts (`MEMORY.md`) or user preferences (`USER.md`). |
 | `update_memory` | `ask` | Adds, replaces, or removes bounded stable memory entries without allowing whole-file rewrites. |
 | `search_memory` | `allow` | Searches prior SQLite conversation memory for earlier messages, remembered preferences, past decisions, or conversation history. |
@@ -88,7 +98,7 @@ The runtime layer around these tools adds behavior that tool handlers do not nee
 - `patch` follows the Hermes-style edit path: exact `oldText` / `newText`, unique-match default, optional `replaceAll`, restricted generated directories, UTF-8 text-only writes, and diff output for review.
 - `write_file` is the whole-file write path: new UTF-8 text files by default, explicit `overwrite=true` for replacement, restricted generated directories, text-extension checks, size limits, parent directory creation inside the workspace, and diff output for review.
 
-`workspace_epoch` is a session-local monotonic counter, not a filesystem hash. It starts at `0` for each runtime session and advances after `patch` or `write_file` succeeds with `changed: true`. The current purpose is guardrail invalidation and diagnostics: repeated file reads/searches are only considered no-progress repeats within the same epoch. Future shell or external mutation tools should conservatively advance the same counter when they can change workspace files.
+`workspace_epoch` is a session-local monotonic counter, not a filesystem hash. It starts at `0` for each runtime session and advances after `patch` or `write_file` succeeds with `changed: true`. Because arbitrary shell/Python code can mutate files without a structured diff, successful `terminal` and `execute_code` runs conservatively advance the same counter. The current purpose is guardrail invalidation and diagnostics: repeated file reads/searches are only considered no-progress repeats within the same epoch.
 
 `search_files` is the only project file search tool exposed by the Python registry.
 
@@ -111,7 +121,7 @@ Adding a simple local tool is intentionally lightweight:
    - Return a JSON-serializable `dict`. Return `{"error": "..."}` for expected tool-level failures.
 2. Add a `ToolSpec` next to the handler and register it from `tools/__init__.py`.
    - `name` must match the function schema name.
-   - `permission` should usually be `allow` for safe read-only low-risk tools, `ask` for persistent mutations, workspace-external access, script/shell execution, network or user-visible external actions, and `deny` only when disabled by default.
+   - `permission` should usually be `allow` for safe read-only low-risk tools, `ask` for persistent mutations, workspace-external access, script/shell execution, page-content fetches or user-visible external actions, and `deny` only when disabled by default. Bounded web search that returns titles/URLs only may be `allow`.
    - `schema` should be OpenAI-compatible function metadata with clear parameter descriptions.
 3. Add or update the matching entry in `../../configs/tools.yaml`.
    - `enabled: true|false`

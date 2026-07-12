@@ -7,6 +7,34 @@ tools:
     enabled: true
     permission: ask
 
+  terminal:
+    enabled: true
+    permission: ask
+
+  process:
+    enabled: true
+    permission: ask
+
+  web_search:
+    enabled: true
+    permission: allow
+
+  web_extract:
+    enabled: true
+    permission: ask
+
+  vision_analyze:
+    enabled: true
+    permission: ask
+
+  clarify:
+    enabled: true
+    permission: allow
+
+  execute_code:
+    enabled: true
+    permission: ask
+
   update_plan:
     enabled: true
     permission: allow
@@ -91,7 +119,51 @@ tools:
     enabled: true
     permission: ask
 
-  web_search:
+  browser_navigate:
+    enabled: false
+    permission: ask
+
+  browser_snapshot:
+    enabled: false
+    permission: allow
+
+  browser_click:
+    enabled: false
+    permission: ask
+
+  browser_type:
+    enabled: false
+    permission: ask
+
+  browser_scroll:
+    enabled: false
+    permission: ask
+
+  browser_back:
+    enabled: false
+    permission: ask
+
+  browser_press:
+    enabled: false
+    permission: ask
+
+  browser_get_images:
+    enabled: false
+    permission: allow
+
+  browser_vision:
+    enabled: false
+    permission: ask
+
+  browser_console:
+    enabled: false
+    permission: allow
+
+  browser_cdp:
+    enabled: false
+    permission: ask
+
+  browser_dialog:
     enabled: false
     permission: ask
 

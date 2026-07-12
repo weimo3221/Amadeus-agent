@@ -61,6 +61,15 @@ Fallback path today:
 - Tool execution now goes through a formal registry with `allow`, `ask`, and `deny` metadata.
 - `get_current_time` is registered as an `allow` tool.
 - `roll_dice` is registered as an `ask` tool.
+- `terminal` is registered as an `ask` tool for bounded foreground shell commands inside the workspace.
+- `process` is registered as an `ask` tool for local process listing/status/signaling.
+- `web_search` is registered as an `allow` tool for lightweight public web search.
+- `web_extract` is registered as an `ask` tool for fetching and extracting bounded HTTP(S) page text.
+- Hermes-compatible `browser_*` tool names are registered but disabled by default, bridging to a configured HTTP browser backend or browser MCP server rather than embedding a second browser runtime.
+- `vision_analyze` is registered as an `ask` tool; without a configured endpoint it returns safe local image metadata and setup guidance.
+- `clarify` is registered as an `allow` tool for structured clarification requests.
+- `execute_code` is registered as an `ask` tool for bounded Python code execution inside a workspace-contained cwd.
+- Tool smoke tests confirm the local execution, extraction, browser bridge, and vision bridge paths work. Direct public search providers timed out from the current development network, so reliable web access should use an internal/provider-backed path or a dedicated web-access skill.
 - `read_memory` is registered as an `allow` tool for stable Markdown memory reads.
 - `update_memory` is registered as an `ask` tool for controlled role-scoped stable memory updates.
 - `update_current_role_identity` is registered as an `ask` tool for explicit current-role name/persona/style updates through role `SOUL.md`.
@@ -213,7 +222,7 @@ Fallback path today:
 - Keep improving lipsync from the current provider-native plus phoneme-planned path, especially broader provider cue compatibility and better non-Latin mapping, while keeping desktop playback/rendering as the adapter and routing policy through harness events.
 - Continue shrinking TypeScript bridge scaffolding now that the legacy turn loop is gone. `apps/server` should remain a transport/proxy layer, not an owner of agent, model-library, tool, memory, or audio turn logic.
 - `tool.permission.response` is now always forwarded through the bridge to Python; the old “maybe a local TypeScript tool loop owns this request” branch has been removed from the production server path.
-- Add more practical tools only where they fit the desktop companion product boundary, such as safe URL opening, web search, or user-approved desktop actions.
+- Harden newly added practical tools only where real usage exposes gaps, such as richer browser backend integration, provider-backed web access, safe URL opening, or user-approved desktop actions.
 - Finish late ToolRuntime hardening only where real usage exposes gaps, such as richer context propagation, more diagnostic surfaces, or additional no-progress policies for new tools.
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
 - After the UI pass, the next product step for skills should be a real import/install/editing flow that runs `scripts/validate_skills.py` during add/import, then refreshes runtime discovery without forcing a full manual restart. The current `skill_manage` path only covers approved local experience-skill saves.
@@ -393,8 +402,8 @@ In progress.
 
 Notes:
 
-- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, semantic no-progress guardrails, session workspace epoch invalidation for file-observing tools, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression and reports unsupported non-text file kinds; `patch` and `write_file` provide targeted-edit and whole-file write paths.
-- The remaining work is the mature runtime layer: richer context propagation, additional per-tool result policies for future high-volume tools, and continued tuning of semantic no-progress policies as new tools land.
+- The first Python `tool_runtime` slice exists with registry/config loading, permission-aware schema selection, dispatch, cooperative cancellation, audit persistence, result compaction, repeated-failure guardrails, semantic no-progress guardrails, session workspace epoch invalidation for file-observing tools, and a `search_files` result policy. `read_file` uses explicit line-windowing instead of hidden compression and reports unsupported non-text file kinds; `patch` and `write_file` provide targeted-edit and whole-file write paths. Hermes-parity practical tools now cover terminal/process, web search/extract, browser bridge surface, vision endpoint bridge, clarify, and Python `execute_code`.
+- The remaining work is mature runtime hardening: richer context propagation, additional per-tool result policies for high-volume outputs if needed, and continued tuning of semantic no-progress policies as real usage of the new tools lands.
 
 ### Phase 8: Agent Memory Optimization
 
