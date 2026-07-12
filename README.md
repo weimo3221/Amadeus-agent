@@ -32,6 +32,7 @@ Amadeus Agent is not just a chat window. The character reacts through facial exp
 | 🗣️ | **Voice in & out** | Local `faster-whisper` ASR for microphone input and `auto`-selected TTS (GPT-SoVITS or macOS `say`) with hybrid lipsync. |
 | 🧠 | **Memory v2** | SQLite-backed history, FTS retrieval, Mem0-like typed long-term memories, automatic safe memory promotion, and API-call-time context assembly. |
 | 🛠️ | **ToolRuntime** | Formal registry with `allow` / `ask` / `deny` permissions, audit trail, timeouts, cancellation, and repeated-call guardrails. |
+| 🌐 | **Web access skill** | Project-local `skills/web-access` can be activated with `skill_view` and uses a CDP proxy for real browser-backed web access. |
 | 💭 | **Reasoning-aware** | DeepSeek V4 thinking mode handled through a provider-aware reasoning layer that replays `reasoning_content` only where required. |
 | ⏰ | **Proactive agent** | Scheduled companion messages, persistent session todos, and in-process task workers with retry and stale-run recovery. |
 | 🔌 | **MCP bridge** | Discover and execute remote HTTP JSON-RPC MCP tools with full permission and audit coverage. |
@@ -135,6 +136,16 @@ npm test          # Python unittest + server + desktop tests
 npm run test:e2e  # Electron end-to-end smoke and flows
 npm run typecheck # typecheck all TS/Vue workspaces + Python
 ```
+
+Real browser-backed web access checks are opt-in because they require Chrome/Edge CDP and live network access:
+
+```bash
+AMADEUS_RUN_WEB_ACCESS_SMOKE=1 python -m unittest \
+  tests.test_python_agent_runtime.AgentRuntimeTests.test_web_access_skill_smoke_task_uses_project_cdp_proxy \
+  tests.test_python_agent_runtime.AgentRuntimeTests.test_web_access_skill_smoke_task_finds_attention_paper_on_arxiv
+```
+
+The paper smoke test finds `Attention Is All You Need`, verifies `arXiv:1706.03762`, opens the arXiv abstract page through the project `web-access` skill's CDP proxy, and checks the browser DOM before summarizing.
 
 ## Local runtime
 

@@ -3,9 +3,13 @@ from __future__ import annotations
 import os
 import json
 import tempfile
+import threading
+import urllib.parse
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Iterable
+from unittest import mock
 
 import sys
 
@@ -303,6 +307,255 @@ class AgentRuntimeTests(unittest.TestCase):
             "ok": True,
             "source": "skill_view",
         }])
+
+    @unittest.skipUnless(
+        os.environ.get("AMADEUS_RUN_WEB_ACCESS_SMOKE") == "1",
+        "Set AMADEUS_RUN_WEB_ACCESS_SMOKE=1 to run the browser/CDP web-access smoke test.",
+    )
+    def test_web_access_skill_smoke_task_uses_project_cdp_proxy(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        command = "\n".join([
+            'set -e',
+            'export CLAUDE_SKILL_DIR="$PWD/skills/web-access"',
+            'node "$CLAUDE_SKILL_DIR/scripts/check-deps.mjs"',
+            "python - <<'PY'",
+            r'''
+import json
+import subprocess
+
+
+def curl(args):
+    completed = subprocess.run(
+        ["curl", "-sS", *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(completed.stderr or f"curl failed: {completed.returncode}")
+    return completed.stdout
+
+
+def load_json(raw):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"invalid JSON from proxy: {raw}") from error
+
+
+created = load_json(curl([
+    "-m",
+    "30",
+    "-X",
+    "POST",
+    "--data-raw",
+    "https://example.com",
+    "http://localhost:3456/new",
+]))
+target = created.get("targetId") or created.get("id")
+if not target:
+    raise SystemExit(f"missing target id: {created}")
+
+try:
+    title = load_json(curl([
+        "-m",
+        "30",
+        "-X",
+        "POST",
+        "--data-raw",
+        "document.title",
+        f"http://localhost:3456/eval?target={target}",
+    ]))
+    body = load_json(curl([
+        "-m",
+        "30",
+        "-X",
+        "POST",
+        "--data-raw",
+        "document.body ? document.body.innerText : ''",
+        f"http://localhost:3456/eval?target={target}",
+    ]))
+    title_value = title.get("value")
+    body_text = body.get("value") or ""
+    if title_value != "Example Domain":
+        raise SystemExit(f"unexpected title: {title_value!r}")
+    if "This domain is for use in illustrative examples" not in body_text:
+        raise SystemExit("example.com body text missing")
+    print("AMADEUS_WEB_ACCESS_RESULT=" + json.dumps({
+        "targetId": target,
+        "title": title_value,
+        "bodyPreview": body_text[:120],
+    }, ensure_ascii=False))
+finally:
+    curl(["-m", "20", f"http://localhost:3456/close?target={target}"])
+'''.strip(),
+            "PY",
+        ])
+        final_summary = (
+            "web-access smoke task passed: Amadeus loaded the project skill, "
+            "used CDP proxy to read example.com, and closed the browser tab."
+        )
+        runtime = FakeAgentRuntime(
+            self.memory,
+            skills_root=repo_root / "skills",
+            workspace_root=repo_root,
+            tool_decisions=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_web_access_skill",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": json.dumps({"name": "web-access"}),
+                        },
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_web_access_smoke",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": json.dumps({
+                                "command": command,
+                                "timeoutSeconds": 120,
+                                "maxOutputChars": 20000,
+                            }),
+                        },
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": final_summary,
+                    "tool_calls": [],
+                },
+            ],
+        )
+        permission_requests: list[PermissionRequest] = []
+
+        events = list(runtime.run_turn(
+            "default",
+            "使用 web-access skill 打开 example.com，读取标题和正文，并总结结果。",
+            lambda request: permission_requests.append(request) or True,
+            active_skills=["web-access"],
+        ))
+
+        self.assertEqual([request.tool_name for request in permission_requests], ["terminal"])
+        skill_finished = [event.payload for event in events if event.type == "skill.finished"]
+        self.assertEqual(skill_finished[0]["identifier"], "web-access")
+        self.assertTrue(skill_finished[0]["ok"])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual([entry["toolName"] for entry in tool_finished], ["skill_view", "terminal"])
+        self.assertTrue(all(entry["ok"] for entry in tool_finished))
+
+        second_decision_history = runtime.decision_messages[1]
+        self.assertTrue(any(
+            message.get("role") == "system"
+            and "<active-skills source=\"skill_view\">" in message.get("content", "")
+            and "浏览器 CDP 模式" in message.get("content", "")
+            for message in second_decision_history
+        ))
+
+        third_decision_history = runtime.decision_messages[2]
+        self.assertTrue(any(
+            message.get("role") == "tool"
+            and message.get("tool_call_id") == "call_web_access_smoke"
+            and "AMADEUS_WEB_ACCESS_RESULT=" in message.get("content", "")
+            and "Example Domain" in message.get("content", "")
+            for message in third_decision_history
+        ))
+        assistant_messages = [event.payload["text"] for event in events if event.type == "assistant.message"]
+        self.assertEqual(assistant_messages[-1], final_summary)
+
+    @unittest.skipUnless(
+        os.environ.get("AMADEUS_RUN_WEB_ACCESS_SMOKE") == "1",
+        "Set AMADEUS_RUN_WEB_ACCESS_SMOKE=1 to run the browser/CDP web-access smoke test.",
+    )
+    def test_web_access_skill_smoke_task_finds_attention_paper_on_arxiv(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        command = "\n".join([
+            'set -e',
+            'export CLAUDE_SKILL_DIR="$PWD/skills/web-access"',
+            'node "$CLAUDE_SKILL_DIR/scripts/check-deps.mjs"',
+            "python tests/fixtures/web_access_paper_lookup_smoke.py",
+        ])
+        final_summary = (
+            "已找到论文 Attention Is All You Need：arXiv:1706.03762，"
+            "并通过 arXiv abstract 页面交叉验证了标题和作者。"
+        )
+        runtime = FakeAgentRuntime(
+            self.memory,
+            skills_root=repo_root / "skills",
+            workspace_root=repo_root,
+            tool_decisions=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_web_access_skill",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": json.dumps({"name": "web-access"}),
+                        },
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_arxiv_paper_lookup",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": json.dumps({
+                                "command": command,
+                                "timeoutSeconds": 120,
+                                "maxOutputChars": 20000,
+                            }),
+                        },
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": final_summary,
+                    "tool_calls": [],
+                },
+            ],
+        )
+        permission_requests: list[PermissionRequest] = []
+
+        events = list(runtime.run_turn(
+            "default",
+            "请用 web-access skill 找到论文 Attention Is All You Need，核实 arXiv 条目并总结。",
+            lambda request: permission_requests.append(request) or True,
+            active_skills=["web-access"],
+        ))
+
+        self.assertEqual([request.tool_name for request in permission_requests], ["terminal"])
+        skill_finished = [event.payload for event in events if event.type == "skill.finished"]
+        self.assertEqual(skill_finished[0]["identifier"], "web-access")
+        self.assertTrue(skill_finished[0]["ok"])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual([entry["toolName"] for entry in tool_finished], ["skill_view", "terminal"])
+        self.assertTrue(all(entry["ok"] for entry in tool_finished))
+
+        third_decision_history = runtime.decision_messages[2]
+        self.assertTrue(any(
+            message.get("role") == "tool"
+            and message.get("tool_call_id") == "call_arxiv_paper_lookup"
+            and "AMADEUS_PAPER_LOOKUP_RESULT=" in message.get("content", "")
+            and "1706.03762" in message.get("content", "")
+            and "Ashish Vaswani" in message.get("content", "")
+            for message in third_decision_history
+        ))
+        assistant_messages = [event.payload["text"] for event in events if event.type == "assistant.message"]
+        self.assertEqual(assistant_messages[-1], final_summary)
 
     def test_skill_view_tool_emits_failed_activation_for_missing_skill(self) -> None:
         runtime = FakeAgentRuntime(
@@ -1216,6 +1469,163 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(assistant_messages[-1], "I used both tools.")
         second_decision_history = runtime.decision_messages[1]
         self.assertTrue(any(message.get("role") == "tool" and message.get("tool_call_id") == "call_time" for message in second_decision_history))
+
+    def test_web_research_summary_flow_searches_extracts_and_summarizes_sources(self) -> None:
+        import amadeus.tools.web as web_module
+
+        pages = {
+            "/source-a": (
+                "<html><head><title>Primary Source A</title></head><body>"
+                "<h1>CDP Browser Access</h1>"
+                "<p>CDP proxy can use a real browser session for dynamic pages and logged-in context.</p>"
+                "<p>Risk control requires keeping automation scoped to background tabs.</p>"
+                "</body></html>"
+            ),
+            "/source-b": (
+                "<html><head><title>Primary Source B</title></head><body>"
+                "<h1>Tool Runtime Web Access</h1>"
+                "<p>Static extraction should handle known URLs and preserve source metadata.</p>"
+                "<p>Reliable search should fall back to a provider-backed or browser-backed path.</p>"
+                "</body></html>"
+            ),
+        }
+
+        class ResearchPageHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                body = pages.get(self.path)
+                if body is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                data = body.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), ResearchPageHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        source_a = f"{base_url}/source-a"
+        source_b = f"{base_url}/source-b"
+
+        search_html = "\n".join([
+            (
+                f'<a rel="nofollow" class="result__a" '
+                f'href="/l/?uddg={urllib.parse.quote(source_a, safe="")}">Primary Source A</a>'
+            ),
+            (
+                f'<a rel="nofollow" class="result__a" '
+                f'href="/l/?uddg={urllib.parse.quote(source_b, safe="")}">Primary Source B</a>'
+            ),
+        ])
+        original_fetch_url = web_module._fetch_url
+
+        def fake_fetch_url(
+            url: str,
+            *,
+            timeout_seconds: int,
+            max_bytes: int = web_module.MAX_FETCH_BYTES,
+        ) -> dict[str, Any]:
+            if "duckduckgo.com/html/" in url:
+                return {
+                    "url": url,
+                    "finalUrl": url,
+                    "status": 200,
+                    "contentType": "text/html",
+                    "bytesRead": len(search_html),
+                    "truncatedByBytes": False,
+                    "text": search_html,
+                }
+            return original_fetch_url(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+
+        final_summary = (
+            "调研结论：web-access 应同时保留静态抽取和浏览器 CDP 路径。"
+            "静态抽取适合已知 URL，CDP 适合动态页面和登录态；"
+            "搜索入口需要 provider-backed 或 browser-backed fallback。"
+        )
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decisions=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({
+                                "query": "web access cdp extraction reliability",
+                                "maxResults": 2,
+                            }),
+                        },
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_extract",
+                        "type": "function",
+                        "function": {
+                            "name": "web_extract",
+                            "arguments": json.dumps({"urls": [source_a, source_b], "maxChars": 4000}),
+                        },
+                    }],
+                },
+                {
+                    "role": "assistant",
+                    "content": final_summary,
+                    "tool_calls": [],
+                },
+            ],
+        )
+        permission_requests: list[PermissionRequest] = []
+
+        try:
+            with mock.patch.object(web_module, "_fetch_url", side_effect=fake_fetch_url):
+                events = list(runtime.run_turn(
+                    "default",
+                    "联网调研 web-access 的两类资料，提炼适合 Amadeus 的结论。",
+                    lambda request: permission_requests.append(request) or True,
+                ))
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        self.assertEqual([request.tool_name for request in permission_requests], ["web_extract"])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual([entry["toolName"] for entry in tool_finished], ["web_search", "web_extract"])
+        self.assertTrue(all(entry["ok"] for entry in tool_finished))
+
+        second_decision_history = runtime.decision_messages[1]
+        self.assertTrue(any(
+            message.get("role") == "tool"
+            and message.get("tool_call_id") == "call_search"
+            and "Primary Source A" in message.get("content", "")
+            and "Primary Source B" in message.get("content", "")
+            for message in second_decision_history
+        ))
+
+        third_decision_history = runtime.decision_messages[2]
+        self.assertTrue(any(
+            message.get("role") == "tool"
+            and message.get("tool_call_id") == "call_extract"
+            and "CDP proxy can use a real browser session" in message.get("content", "")
+            and "Reliable search should fall back" in message.get("content", "")
+            for message in third_decision_history
+        ))
+
+        assistant_messages = [event.payload["text"] for event in events if event.type == "assistant.message"]
+        self.assertEqual(assistant_messages[-1], final_summary)
+        self.assertEqual(runtime.final_messages, [])
 
     def test_deepseek_tool_loop_replays_reasoning_content_on_next_tool_turn(self) -> None:
         runtime = FakeAgentRuntime(

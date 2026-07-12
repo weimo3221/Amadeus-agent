@@ -29,6 +29,7 @@ These files are active boundaries, but some still need more depth:
 - `agent.py` contains the real preferred turn logic today.
 - The runtime loads recent SQLite history, saves user and assistant messages, runs a bounded Hermes-style tool loop with OpenAI-compatible `tool_calls`, executes Python tools until the model stops requesting tools or reaches the configured iteration budget, emits streamed `assistant.delta` / `assistant.message`, and may emit `audio.tts-ready`.
 - Skills now live under `../../skills/<category>/<skill-name>/SKILL.md`. The runtime exposes them through `/skills/list`, `/skills/view`, `skills_list`, and `skill_view`. The system prompt now carries an always-on compact skills catalog, and the model is expected to call `skill_view` before relying on a relevant installed skill. `POST /agent/turn` still accepts optional `skills: string[]`, but those are treated as user-suggested skills rather than mandatory full-skill injection. `name` and `description` are the main frontmatter fields; `preferred_tools` and `allowed_tools` are optional. The loader also accepts richer skill-creator / Hermes-style YAML such as `platforms`, `compatibility`, nested `metadata`, and bundled `scripts/`, `references/`, `assets/`, `agents/`, or `evals/` directories.
+- `../../skills/web-access` is bundled as a project skill for real browser-backed web access. It is activated through the same `skill_view` path as other skills and then uses existing tools such as `terminal` to run its CDP helper scripts under normal permission and audit controls.
 - Successful or failed skill activation attempts now emit streamed `skill.started` / `skill.finished` events, parallel to the existing tool execution status events, so the desktop UI can show when a `skill_view` result actually became active for the turn.
 - Run `python scripts/validate_skills.py skills` to validate the current skill tree, or point it at one skill directory such as `python scripts/validate_skills.py skills/skill-creator --json`.
 - Tool permission requests are brokered through streamed `tool.permission.request` events plus `POST /tools/permission`.
@@ -56,8 +57,6 @@ The Python runtime reads this file on startup. After editing it, call `POST /run
 | `vision_analyze` | `ask` | Reads local image metadata safely, or sends image/prompt data to `AMADEUS_VISION_ENDPOINT` when configured. |
 | `clarify` | `allow` | Returns a structured user-facing clarification request for ambiguous or irreversible work. |
 | `execute_code` | `ask` | Runs bounded Python code from a temporary script with workspace-contained cwd, captures stdout/stderr, and conservatively advances the workspace epoch after execution. |
-
-Runtime smoke testing confirmed the local tool handlers and mocked parsing path work. In the current development network, direct public search endpoints such as DuckDuckGo HTML and Jina search can time out, so production-grade web access should prefer a configured internal proxy/provider or a dedicated web-access skill rather than relying only on the default public endpoint.
 | `read_memory` | `allow` | Reads stable Markdown memory for agent facts (`MEMORY.md`) or user preferences (`USER.md`). |
 | `update_memory` | `ask` | Adds, replaces, or removes bounded stable memory entries without allowing whole-file rewrites. |
 | `search_memory` | `allow` | Searches prior SQLite conversation memory for earlier messages, remembered preferences, past decisions, or conversation history. |
@@ -72,6 +71,14 @@ Runtime smoke testing confirmed the local tool handlers and mocked parsing path 
 | `skill_view` | `allow` | Loads the full instructions for one installed runtime skill by identifier or unique skill name. |
 | `patch` | `ask` | Applies a safe single-file text replacement inside the workspace, requiring a unique `oldText` match unless `replaceAll=true`, and returns a unified diff preview. |
 | `write_file` | `ask` | Creates or fully overwrites a workspace-relative UTF-8 text file, refusing accidental overwrites unless `overwrite=true`, and returns size/line metadata plus a diff preview. |
+
+Runtime smoke testing confirmed the local tool handlers, mocked parsing path, and project `web-access` skill activation path work. In the current development network, direct public search endpoints such as DuckDuckGo HTML and Jina search can time out, so production-grade web access should prefer a configured internal proxy/provider or the bundled `web-access` skill rather than relying only on the default public endpoint. Real browser/CDP smoke checks are opt-in:
+
+```bash
+AMADEUS_RUN_WEB_ACCESS_SMOKE=1 python -m unittest \
+  tests.test_python_agent_runtime.AgentRuntimeTests.test_web_access_skill_smoke_task_uses_project_cdp_proxy \
+  tests.test_python_agent_runtime.AgentRuntimeTests.test_web_access_skill_smoke_task_finds_attention_paper_on_arxiv
+```
 
 The runtime layer around these tools adds behavior that tool handlers do not need to reimplement:
 

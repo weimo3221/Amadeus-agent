@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.skills import SkillCatalog, parse_frontmatter, validate_skill_dir
+from amadeus.skills import DEFAULT_SKILLS_ROOT, SkillCatalog, parse_frontmatter, validate_skill_dir
 
 
 class SkillsCatalogTests(unittest.TestCase):
@@ -275,6 +275,31 @@ class SkillsToolTests(unittest.TestCase):
         result = skill_view({})
 
         self.assertEqual(result, {"error": "name must be a non-empty string"})
+
+
+class ProjectSkillsIntegrationTests(unittest.TestCase):
+    def test_project_web_access_skill_is_installed_and_viewable(self) -> None:
+        from amadeus.tools.skills import skill_view, skills_list
+
+        skill_dir = DEFAULT_SKILLS_ROOT / "web-access"
+        validation = validate_skill_dir(skill_dir, root=DEFAULT_SKILLS_ROOT)
+        self.assertTrue(validation.ok, validation.errors)
+
+        catalog = SkillCatalog(DEFAULT_SKILLS_ROOT)
+        viewed = catalog.view_skill("web-access")
+        self.assertIsNotNone(viewed)
+        assert viewed is not None
+        self.assertEqual(viewed["identifier"], "web-access")
+        self.assertIn("scripts/check-deps.mjs", viewed["instructions"])
+        self.assertIn("CDP Proxy", viewed["instructions"])
+
+        listed = skills_list({})
+        identifiers = {skill["identifier"] for skill in listed["skills"]}
+        self.assertIn("web-access", identifiers)
+
+        loaded = skill_view({"name": "web-access"})
+        self.assertEqual(loaded["name"], "web-access")
+        self.assertIn("浏览器 CDP 模式", loaded["instructions"])
 
 
 class ValidateSkillsScriptTests(unittest.TestCase):

@@ -147,9 +147,9 @@ Current tool baseline already delivered:
 - `execute_code`
 - disabled-by-default `browser_*` bridge tools
 
-Planned follow-up tools:
+Planned follow-up tool work:
 
-- provider-backed web access via an internal proxy or dedicated web-access skill
+- automatic fallback from built-in `web_search` / `web_extract` to a provider-backed or `web-access` path
 - `open_url`
 - richer safe desktop/user-action tools after the core companion workflows stabilize
 
@@ -249,7 +249,7 @@ Target deliverables:
 Current status:
 
 - V1 is now in place for `skills/<category>/<skill-name>/SKILL.md` discovery, simple frontmatter parsing, read-only `skills_list` / `skill_view`, an always-on system-prompt skills catalog, `skill_view`-driven turn-local full activation, bridge passthrough for `/skills/list` and `/skills/view`, and a desktop suggested-skills picker with local search/filtering, a short inline summary, and persisted selection state.
-- Two seed skills exist under `skills/development/`: `runtime-debug` and `desktop-e2e`.
+- Seed/project skills now include `skills/development/runtime-debug`, `skills/development/desktop-e2e`, `skills/skill-creator`, and `skills/web-access`. `web-access` is the current project-local path for CDP-backed browser web access, with opt-in smoke tests for both a basic page read and a realistic arXiv paper lookup.
 - Current priority is not to add more skill-management UI yet. The desktop surface should first be visually consolidated so future features do not keep adding one more panel or status row.
 - Remaining work after that UI pass is a real import/install flow, validate-on-import, runtime refresh, optional enable/disable management, and only later heavier orchestration such as `skill_run`.
 

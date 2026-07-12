@@ -74,6 +74,8 @@ The first runtime skill slice is intentionally narrow and modeled after the usef
 
 This is enough to establish a real skill boundary plus a narrow experience-save path without taking on bundles, marketplace sync, subagent orchestration, or a full skill editing/import UI yet.
 
+`skills/web-access` is installed as a project skill for real web access. It keeps the downloaded skill resources (`SKILL.md`, `scripts/`, `references/`, templates, and plugin metadata) inside the Amadeus skill tree, while local `config.env` remains ignored. Runtime activation follows the same progressive path as other skills: the model sees the compact catalog, calls `skill_view("web-access")`, receives the full CDP workflow instructions as a turn-local active skill, and then uses existing tools such as `terminal` under normal permission and audit control. This is deliberately separate from the built-in `web_search` implementation: `web_search` still uses the lightweight DuckDuckGo HTML provider, while `web-access` is a procedural fallback for real browser access.
+
 `workspace_epoch` is maintained by `AgentRuntime` per session. It is a monotonic runtime counter, not a content hash or filesystem scan. It starts at `0`, is passed into `ToolContext`, guardrail signatures, and `tool.audit` metadata, and advances after `patch` or `write_file` succeeds with `changed: true`. Successful `terminal` and `execute_code` runs also advance it conservatively because arbitrary shell/Python code can mutate workspace files without returning a structured diff. This lets the same `read_file` window or `search_files` query be blocked as no-progress within one epoch, then become allowed again after a real workspace mutation.
 
 ### Tool Inventory And Extension Path
@@ -91,7 +93,15 @@ Current active Python tools:
 - `clarify`: `allow`; prepares structured user-facing clarification questions for ambiguous or irreversible work.
 - `execute_code`: `ask`; runs bounded Python code from a temporary script in a workspace-contained cwd, captures stdout/stderr, and conservatively advances `workspace_epoch` after execution.
 
-Smoke testing confirms the local handlers, HTML extraction, browser HTTP bridge, and vision HTTP bridge run correctly. Public web search still depends on external endpoint reachability; DuckDuckGo HTML and Jina search timed out from the current development network, so reliable web access should use a configured proxy/provider or an installed web-access skill.
+Smoke testing confirms the local handlers, HTML extraction, browser HTTP bridge, vision HTTP bridge, and project skill activation path run correctly. Public web search still depends on external endpoint reachability; DuckDuckGo HTML and Jina search timed out from the current development network, so reliable web access should use a configured proxy/provider or the installed `web-access` skill. The real browser/CDP checks are intentionally opt-in:
+
+```bash
+AMADEUS_RUN_WEB_ACCESS_SMOKE=1 python -m unittest \
+  tests.test_python_agent_runtime.AgentRuntimeTests.test_web_access_skill_smoke_task_uses_project_cdp_proxy \
+  tests.test_python_agent_runtime.AgentRuntimeTests.test_web_access_skill_smoke_task_finds_attention_paper_on_arxiv
+```
+
+The paper smoke test searches arXiv for `Attention Is All You Need`, verifies `arXiv:1706.03762` and `Ashish Vaswani` through the arXiv API, then opens the abstract page through the CDP proxy and checks the browser DOM before returning a compact `AMADEUS_PAPER_LOOKUP_RESULT` to the model context.
 - `read_memory`: `allow`; reads current-role stable Markdown memory from `data/roles/<roleId>/memory/MEMORY.md` or `data/roles/<roleId>/memory/USER.md`.
 - `update_memory`: `ask`; performs controlled `add` / `replace` / `remove` updates to current-role stable Markdown memory, with exact-match replacement and size limits.
 - `update_current_role_identity`: `ask`; updates the current session role name and/or `data/roles/<roleId>/SOUL.md` after explicit user approval.
