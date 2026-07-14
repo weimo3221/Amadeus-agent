@@ -1,0 +1,33 @@
+AGENT.md
+  s_80fee7171b51b9::t_0055b623813818 11-12,31,149
+README.md
+  s_80fee7171b51b9::t_53a89b1d50231c 78-79
+apps/desktop-ui-next/README.md
+  s_80fee7171b51b9::t_0f7256acf0142a 57-60
+docs/architecture.md
+  s_80fee7171b51b9::t_ec7d6e7d9cb5d2 78,187,198-199
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_509d9f510851fc 26
+docs/project-status.md
+  s_80fee7171b51b9::t_45259e4071fe29 217,222
+docs/roadmap.md
+  s_80fee7171b51b9::t_fc1b828a93b43f 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "06f84754933d1d070d2bf8da69358e468f03322c",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
