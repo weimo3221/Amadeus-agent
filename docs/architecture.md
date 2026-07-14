@@ -75,7 +75,7 @@ User
 apps/desktop
   |
   +--> companion renderer (Live2D, transient bubbles, lightweight input)
-  +--> desktop-ui-next     (larger Vue chat/workbench, no Live2D)
+  +--> desktop-ui-next     (larger Vue chat/workbench renderer hosted by Electron, no Live2D)
   |
   | WebSocket / local IPC events
   v
@@ -184,7 +184,7 @@ Desktop app responsibilities:
 - Create separate Electron surfaces for Companion and Main UI.
 - Render Live2D only in Companion.
 - Keep Companion as a transparent frameless always-on-top desktop presence with lightweight input and transient streaming reply bubbles.
-- Keep Main UI as the larger chat/workbench surface without Live2D.
+- Host Main UI as the larger chat/workbench surface without Live2D. The production renderer for that window is `apps/desktop-ui-next`.
 - Accept voice input from Companion through a microphone orb, local `MediaRecorder`, bridge `/audio/transcribe`, and Python ASR.
 - Show inline tool permission prompts.
 - Play runtime audio when available and otherwise fall back to browser/Electron `speechSynthesis`.
@@ -195,7 +195,8 @@ Desktop app responsibilities:
 Current note:
 
 - The actual Companion Live2D and lightweight renderer behavior logic currently lives in `apps/desktop/src/renderer/companion/main.ts`.
-- The larger chat/workbench renderer is `apps/desktop-ui-next`; Electron loads it by default and keeps the legacy Main UI available behind `AMADEUS_MAIN_UI_LEGACY`.
+- The larger chat/workbench renderer is `apps/desktop-ui-next`; Electron loads it by default and keeps the legacy vanilla `apps/desktop/src/renderer/main-ui` path available only behind `AMADEUS_MAIN_UI_LEGACY` and older E2E compatibility paths.
+- `apps/desktop-ui-next` replaces the legacy Main UI renderer, not the whole `apps/desktop` package. `apps/desktop` remains necessary for Electron `BrowserWindow` creation, IPC/preload wiring, Companion, global cursor tracking, desktop audio playback, and native window behavior.
 - Companion panel visibility is not DOM hover-driven. The renderer shows the panel only when the global cursor point is inside the Companion window bounds and hides it 1.5 seconds after the cursor leaves.
 - Live2D model fit is configured from `configs/runtime.yaml` through `/live2d/config` (`desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, `desktop.companionLive2dOffsetY`).
 - `packages/live2d-stage` is still an intended package boundary, not the active implementation.

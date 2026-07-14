@@ -214,10 +214,12 @@ Fallback path today:
 - Provider config tests now isolate `AMADEUS_LLM_PROVIDER` and provider-specific environment variables, so local `.env` credentials no longer break `tests.test_model`.
 - Current validation passes: `python -m unittest tests.test_model`, `python -m py_compile scripts/dev_stack.py`, `npm run typecheck`, `npm test`, `npm run test:e2e`, and `python scripts/eval_runtime_contracts.py`. The supervised no-desktop stack was also verified on temporary ports `8890` / `8888`, with both health checks passing and ports released after shutdown.
 - `apps/desktop-ui-next` is the production Main UI workbench. Electron loads it by default for Main UI, while the legacy vanilla renderer remains only behind `AMADEUS_MAIN_UI_LEGACY` and older E2E compatibility paths. The Vue workbench connects to the live WebSocket bridge and Python HTTP runtime for chat, session switching and Companion attach/view, turn-scoped plans, task details, timed messages, skills, memory diagnostics, MCP diagnostics, role-scoped runtime selection, and model/Live2D/TTS configuration.
+- `apps/desktop-ui-next` replaces the legacy vanilla Main UI renderer, not the entire `apps/desktop` package. `apps/desktop` is still the Electron shell and owns Companion, native window lifecycle, IPC/preload wiring, global cursor tracking, desktop playback, and packaged Electron E2E entrypoints.
 
 ### Still Needed
 
 - Continue consolidating the desktop UI now that Main UI and Companion are split. Companion should stay lightweight and Live2D/voice-focused; the Vue Main UI should remain the single production workbench for richer context, session switching, Companion attach/view, task details, permissions, memory, MCP, and configuration. Avoid adding parallel panels or reviving the legacy vanilla Main UI except as an explicit fallback.
+- Migrate remaining Electron E2E assumptions off the legacy vanilla Main UI renderer, then remove `apps/desktop/src/renderer/main-ui` and its Vite entry. Keep `apps/desktop` itself as the Electron shell and Companion host.
 - Implement the real CLI entry as an independent session client, defaulting to its own session ID unless explicitly attached elsewhere.
 - Keep improving Main UI session switching and the explicit attach/view flow for Companion sessions now that current-session history restore is in place.
 - Keep Electron end-to-end coverage aligned with that UI pass so layout and interaction regressions are caught while the surface is being simplified.

@@ -8,7 +8,8 @@ Use this file as the first stop when another coding agent or human contributor o
 
 Amadeus is now a Python-first desktop agent runtime, not just an initial MVP:
 
-- `apps/desktop` has two renderer surfaces: `companion` for the transparent Live2D desktop presence and `main-ui` for the larger chat/workbench.
+- `apps/desktop` owns the Electron shell, native windows, IPC, global cursor tracking, and the `companion` renderer for the transparent Live2D desktop presence. It also hosts the production Main UI window.
+- `apps/desktop-ui-next` owns the production Main UI renderer for the larger chat/workbench. It replaces the legacy vanilla `apps/desktop/src/renderer/main-ui` renderer, but it does not replace the Electron shell or Companion.
 - `apps/server` is a thin Node/TypeScript bridge. It owns WebSocket/session transport and proxies Python HTTP/runtime event APIs; it should not regain model, memory, or tool-loop ownership.
 - `packages/amadeus` owns the agent loop, OpenAI-compatible model boundary, memory, tool runtime, skills, task worker, Live2D model library, and audio/TTS path.
 - Python `/agent/turn` is the preferred and only active turn path. The older TypeScript model/tool fallback loop has been removed.
@@ -27,7 +28,7 @@ For the latest detailed progress, read `docs/project-status.md`.
 
 ## Repository Map
 
-- `apps/desktop`: Electron shell, renderer UI, Live2D stage, speech synthesis, lipsync MVP, runtime WebSocket client.
+- `apps/desktop`: Electron shell, Companion renderer, native window orchestration, IPC/preload bridge, global cursor tracking, Live2D stage, speech synthesis fallback, lipsync adapter, and runtime WebSocket client. Keep this package; only the legacy vanilla Main UI renderer inside it is replaceable by `apps/desktop-ui-next`.
 - `apps/server`: Thin Node/TypeScript WebSocket and HTTP bridge to the Python runtime.
 - `packages/amadeus`: Python-owned agent brain plus TypeScript bridge exports for event protocol and runtime helper clients.
 - `packages/live2d-stage`: Intended desktop-side Live2D rendering adapter boundary; current renderer logic still lives in the desktop app.
@@ -145,6 +146,7 @@ Keep event payloads serializable and small.
 Focus on desktop/runtime stabilization rather than rebuilding MVP pieces:
 
 - Continue Main UI workbench hardening. The current workbench now keeps runtime status, task creation/cancel, skills, memory review, and MCP HTTP server management visible from the Main Console.
+- Retire the legacy vanilla `apps/desktop/src/renderer/main-ui` path only after all Electron E2E coverage has moved to the Vue Main UI. Do not remove `apps/desktop` itself; it remains the Electron shell and Companion host.
 - Add richer task UI for attempts, next retry time, task history, and terminal task results.
 - Improve persisted MCP diagnostics/audit surfaces now that the deterministic local HTTP MCP example server and Main UI discovery test path are in place. Defer stdio/SSE MCP lifecycle work until HTTP MCP is stable in daily use.
 - Decide whether task completion should create a user-visible notification only, or also trigger a model-authored follow-up message.

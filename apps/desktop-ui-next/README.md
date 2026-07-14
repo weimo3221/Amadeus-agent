@@ -54,6 +54,10 @@ The Vue workbench is the production Main UI surface. The older vanilla
 `apps/desktop/src/renderer/main-ui` path is retained only as an explicit
 fallback and for older E2E compatibility.
 
+This package is a renderer, not the native desktop shell. Electron window
+lifecycle, IPC/preload wiring, Companion, global cursor tracking, desktop audio
+playback, and packaged E2E entrypoints still live in `apps/desktop`.
+
 The Config Center includes a Memory tab for local BGE-M3 embedding status,
 deployment controls, vector index coverage, and a manual backfill action for
 missing/stale long-term `memory_items`. Runtime memory provider selection itself
