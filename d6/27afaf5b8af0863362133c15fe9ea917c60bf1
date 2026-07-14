@@ -1,0 +1,27 @@
+CLAUDE.md
+  s_80fee7171b51b9::t_db88ca8bea6a49 11-12,14-16,31-34,36-37,39-44,53-54,57,61,64-66,76-78,90-91,93,96,101,110-112,117,124-126,130,135-137,139,141,143-151
+apps/desktop/README.md
+  s_80fee7171b51b9::t_47912297e4d926 3,5,7-9,11,13-37
+apps/desktop/src/main/index.ts
+  s_80fee7171b51b9::t_003dfcbbf18784 411-414,440,490-493,519,630-633,659,687,738-743
+docs/project-status.md
+  s_80fee7171b51b9::t_1d5302ea3368a6 3,215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d627afaf5b8af0863362133c15fe9ea917c60bf1",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
