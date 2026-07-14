@@ -1,0 +1,45 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_c0e55792833960 3,694-1106
+docs/architecture.md
+  s_80fee7171b51b9::t_f72c961429023e 240-241
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_df34c45220eddd 136,138-140
+docs/project-status.md
+  s_80fee7171b51b9::t_c7ee19a20fa314 89,459,462,465,470-473,511
+packages/amadeus/memory.py
+  s_80fee7171b51b9::t_f582a3ba79a4fd 29,31,33,35-36,271,277,280,283-289,293,312-362,706,710,713,716-722,724,744-828,2064,2066,2069-2076,2080,2090,2092,2095-2110,2113,2117-2118,2124-2129,2131,2136,2142,2145,2147-2153,2156,2173,2177,2216-2219,2260-2263,2282-2285,2305-2670,3225,3235-3240,3568-3571,3581-3586,3590-3611,5427-5448,5966-5975,6017-6039,6043-6081
+packages/amadeus/orchestrator.py
+  s_80fee7171b51b9::t_49c78e5acbdbd7 1-302
+packages/amadeus/server.py
+  s_80fee7171b51b9::t_373cc7fe8bcf03 230-244,1094-1139
+packages/amadeus/tasks.py
+  s_80fee7171b51b9::t_ca31626441272a 20-21,155-196
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_e109289a568d4b 6,21-25,47-217,309,315,321-330,355-361,367-373,380-386,390-396,399-405,415-428,435-441,453-459,467-472
+tests/test_memory.py
+  s_80fee7171b51b9::t_5c5ea185a562b9 889-973
+tests/test_orchestrator.py
+  s_80fee7171b51b9::t_a8a45f735fb5a8 1-128
+tests/test_python_runtime_http.py
+  s_80fee7171b51b9::t_418ab73f026e75 670-699
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_9cbd7c51801a04 17,122-124,191,325-382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "45be391519522fa95411d02fd2ac9da4ecd3884b",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
