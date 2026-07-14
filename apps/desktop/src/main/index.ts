@@ -408,6 +408,10 @@ async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> 
         const expectAllow = ${expectAllow};
         const deadline = Date.now() + 8000;
         const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+        const connectionState = () => {
+          const label = document.querySelector('#connection-label');
+          return label?.getAttribute('aria-label') || label?.getAttribute('title') || label?.dataset?.state || label?.textContent || '';
+        };
         const waitFor = (predicate, label) => {
           return new Promise((waitResolve, waitReject) => {
             const tick = () => {
@@ -433,7 +437,7 @@ async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> 
         };
 
         (async () => {
-          await waitFor(() => text('#connection-label') === 'Connected', 'runtime connection');
+          await waitFor(() => connectionState() === 'Connected' || connectionState() === 'connected', 'runtime connection');
           const input = document.querySelector('#chat-input');
           const form = document.querySelector('#chat-form');
           const prompt = document.querySelector('#tool-permission');
@@ -483,6 +487,10 @@ async function runAudioFeedbackE2E(mainWindow: BrowserWindow): Promise<void> {
         const expectAudioError = ${expectAudioError};
         const deadline = Date.now() + 8000;
         const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+        const connectionState = () => {
+          const label = document.querySelector('#connection-label');
+          return label?.getAttribute('aria-label') || label?.getAttribute('title') || label?.dataset?.state || label?.textContent || '';
+        };
         const waitFor = (predicate, label) => {
           return new Promise((waitResolve, waitReject) => {
             const tick = () => {
@@ -508,7 +516,7 @@ async function runAudioFeedbackE2E(mainWindow: BrowserWindow): Promise<void> {
         };
 
         (async () => {
-          await waitFor(() => text('#connection-label') === 'Connected', 'runtime connection');
+          await waitFor(() => connectionState() === 'Connected' || connectionState() === 'connected', 'runtime connection');
           const input = document.querySelector('#chat-input');
           const form = document.querySelector('#chat-form');
           if (!input || !form) {
@@ -619,6 +627,10 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
         const enableMultiSkillSelect = ${enableMultiSkillSelect};
         const deadline = Date.now() + 8000;
         const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+        const connectionState = () => {
+          const label = document.querySelector('#connection-label');
+          return label?.getAttribute('aria-label') || label?.getAttribute('title') || label?.dataset?.state || label?.textContent || '';
+        };
         const waitFor = (predicate, label) => {
           return new Promise((waitResolve, waitReject) => {
             const tick = () => {
@@ -644,7 +656,7 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
         };
 
         (async () => {
-          await waitFor(() => text('#connection-label') === 'Connected', 'runtime connection');
+          await waitFor(() => connectionState() === 'Connected' || connectionState() === 'connected', 'runtime connection');
           const input = document.querySelector('#chat-input');
           const form = document.querySelector('#chat-form');
           const skillsList = document.querySelector('#skills-list');
@@ -672,7 +684,7 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
           }, 'assistant reply');
 
           resolve({
-            connection: text('#connection-label'),
+            connection: connectionState(),
             memory: text('#memory-status'),
             skills: text('#skills-status'),
             skillDetailTitle: text('#skill-detail-title'),
@@ -723,7 +735,12 @@ async function runOpenMainUiE2E(window: BrowserWindow): Promise<void> {
         await new Promise((resolveWait) => setTimeout(resolveWait, 100))
       }
       await new Promise((resolveWait) => setTimeout(resolveWait, 1500))
-      const connection = await mainUiWindow.webContents.executeJavaScript('document.querySelector("#connection-label")?.textContent ?? ""')
+      const connection = await mainUiWindow.webContents.executeJavaScript(`
+        (() => {
+          const label = document.querySelector('#connection-label');
+          return label?.getAttribute('aria-label') || label?.getAttribute('title') || label?.dataset?.state || label?.textContent || '';
+        })()
+      `)
 
       console.log(`AMADEUS_E2E_OPEN_MAIN_UI ${JSON.stringify({ ...result, windowCount: BrowserWindow.getAllWindows().length, url, connection })}`)
       setTimeout(() => app.quit(), 100)

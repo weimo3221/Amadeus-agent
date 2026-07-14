@@ -8,11 +8,12 @@ This file gives Claude and Claude-like coding agents the working context for thi
 
 - Electron + Vite desktop UI.
 - Live2D character rendering and behavior control.
-- Local Node/TypeScript agent runtime.
+- A thin Node/TypeScript desktop bridge.
+- A Python-first agent runtime.
 - OpenAI-compatible LLM provider calls.
-- SQLite message memory.
-- Model-triggered local tools.
-- Permission-aware tool execution.
+- SQLite-backed sessions, memory, tasks, schedules, audit records, and summaries.
+- Model-triggered Python tools through ToolRuntime.
+- Permission-aware tool execution, runtime skills, local ASR/TTS, and Live2D/audio harnesses.
 
 The product direction is a desktop character agent, not a generic chatbot page. Keep user-visible work focused on an interactive desktop companion.
 
@@ -27,17 +28,20 @@ Before making changes, read:
 
 ## Important Current Facts
 
-- Desktop app: `apps/desktop`.
-- Server runtime: `apps/server`.
+- Desktop shell: `apps/desktop`.
+- Production Main UI workbench: `apps/desktop-ui-next`.
+- TypeScript bridge: `apps/server`.
+- Python runtime: `packages/amadeus`.
 - Shared events: `packages/amadeus/events.ts`.
-- Tool registry currently lives in `apps/server/src/index.ts`.
+- Tool bridge types and Python helper clients: `packages/amadeus/tools.ts`.
+- Concrete tool specs, permissions, config loading, execution, audit, timeout, and guardrails live in Python under `packages/amadeus/tools` and `packages/amadeus/tool_runtime`.
 - SQLite database path: `data/amadeus.sqlite`.
-- Current session id is stable: `default`.
-- Current tools:
-  - `get_current_time`: `allow`.
-  - `roll_dice`: `ask`.
-- `configs/tools.yaml` mirrors intended settings but is not loaded by the server yet.
-- The next recommended task is the Tool Config Loader.
+- Default Companion session id is `companion:default`.
+- Python `/agent/turn` is the preferred and only active turn path. If Python is unavailable, `apps/server` reports a runtime error instead of running a TypeScript fallback loop.
+- `configs/tools.yaml` is loaded by Python ToolRuntime and controls effective tool enabled/permission state.
+- `configs/runtime.yaml` controls memory/context, summary compaction, review, and desktop/Live2D runtime tuning.
+- `apps/server` should keep shrinking toward transport/proxy/feedback responsibilities.
+- The current recommended work is desktop/runtime stabilization, not rebuilding MVP pieces.
 
 ## Common Commands
 
@@ -46,17 +50,20 @@ Run from repo root:
 ```bash
 npm install
 npm run typecheck
+npm test
+npm run test:e2e
 npm --workspace apps/server run dev
 npm --workspace apps/desktop run dev
-npm --workspace apps/desktop run build
+npm --workspace apps/desktop-ui-next run build
 npm run dev
 ```
 
-Server:
+Local endpoints:
 
 ```text
-http://127.0.0.1:8788/health
-ws://127.0.0.1:8788/ws
+TypeScript bridge: http://127.0.0.1:8788/health
+Bridge WebSocket: ws://127.0.0.1:8788/ws
+Python runtime: http://127.0.0.1:8790/runtime/health
 ```
 
 ## Environment
@@ -66,11 +73,10 @@ Use `.env` locally. Never print or commit API keys.
 Expected variables:
 
 ```text
-OPENAI_BASE_URL
-OPENAI_API_KEY
-OPENAI_MODEL
+AMADEUS_LLM_PROVIDER
+DEEPSEEK_API_KEY
+DEEPSEEK_MODEL
 VITE_AGENT_WS_URL
-VITE_LIVE2D_MODEL_URL
 ```
 
 `VITE_AGENT_WS_URL` usually points to:
@@ -81,16 +87,18 @@ ws://127.0.0.1:8788/ws
 
 ## Boundaries To Preserve
 
-- Desktop renders and interacts; server thinks, remembers, and executes tools.
+- Desktop renders and interacts; Python thinks, remembers, executes tools, manages skills, and plans audio/Live2D behavior.
+- `apps/server` transports WebSocket/HTTP events and proxies Python runtime surfaces.
 - Do not put provider-specific LLM logic in `apps/desktop`.
+- Do not put provider-specific LLM logic, tool execution, memory semantics, or audio/model-library ownership in `apps/server`.
 - Do not execute tools from `apps/desktop`; desktop only asks the user for permission and sends responses.
 - Keep all shared event type changes in `packages/amadeus/events.ts`.
-- Keep tool permission checks on the server even if the desktop also shows UI.
+- Keep tool permission checks in Python ToolRuntime even if the desktop also shows UI.
 - Use explicit WebSocket events instead of ad hoc JSON shapes.
 
 ## Tool Design Rules
 
-All tools should go through the registry.
+All tools should go through Python ToolRuntime.
 
 Tool entries should have:
 
@@ -99,50 +107,48 @@ Tool entries should have:
 - `enabled`
 - `permission`
 - OpenAI-compatible `schema`
-- `execute`
-- optional `describeRequest`
+- execution handler
+- optional `prompt_hint`
+- optional permission request description
 
 Permission policy:
 
 - `allow`: safe, non-sensitive tools such as current time.
-- `ask`: anything that reads local data, opens external resources, uses network, mutates state, schedules actions, or may surprise the user.
+- `ask`: persistent writes, shell/process execution, external apps/URLs, page-content fetches, sensitive local exposure, or surprising side effects.
 - `deny`: visible to config but unavailable at runtime.
 
 Do not reintroduce keyword-matching tool execution. Tool use should be model-triggered through `tool_calls`.
 
 ## Desktop UI Notes
 
-- The app is a compact desktop companion window, not a landing page.
+- The product has two desktop surfaces: Companion and Main UI.
+- Companion is a compact transparent Live2D/voice presence with lightweight input and transient bubbles.
+- `apps/desktop-ui-next` is the production Main UI workbench for chat history, sessions, tasks, timed messages, skills, memory, MCP, permissions, diagnostics, and configuration.
 - Avoid large marketing UI, hero sections, or decorative cards.
 - Keep controls dense and useful.
 - Text must fit in the compact window.
-- Keep titlebar controls functional: Pin/Unpin, Minimize, Voice On/Off, Close.
+- Keep Companion controls functional: Pin/Unpin, Minimize, Voice On/Off, Close.
 - The inline tool permission prompt is part of the runtime safety model; keep it visible and direct.
 
 ## Server Notes
 
-- `apps/server/src/index.ts` is currently doing too much, but do not split it without a concrete reason.
-- The next extraction candidates are tool registry/config loading, memory, and provider adapter.
-- `node:sqlite` currently prints an experimental warning. That is known.
-- Keep the final assistant reply persisted, not raw tool messages.
+- `apps/server` is a bridge, not an agent owner.
+- It may validate WebSocket clients, manage session rooms, proxy runtime HTTP surfaces, relay Python NDJSON events, and forward desktop feedback/permission responses.
+- It should not regain model calls, memory writes, tool execution, Live2D model-library ownership, or audio provider decisions.
 
-## Next Task: Tool Config Loader
+## Next Recommended Work
 
-Implement this before adding more powerful tools:
+Focus on desktop/runtime stabilization:
 
-1. Read `configs/tools.yaml` at server startup.
-2. Validate `enabled` and `permission` values.
-3. Warn or error clearly on unknown tool names.
-4. Apply loaded settings to registry entries.
-5. Keep secure defaults if config is missing or invalid.
-6. Expose loaded tool status to desktop diagnostics if useful.
-7. Update `docs/project-status.md`.
-8. Verify with:
-
-```bash
-npm run typecheck
-npm --workspace apps/desktop run build
-```
+- Continue hardening the Vue Main UI as the single production workbench.
+- Keep Companion lightweight, Live2D/voice-focused, and transient.
+- Improve session switching and explicit Companion attach/view flows.
+- Add richer task execution UX only on top of the existing task model: attempts, retry timing, task history, terminal results, review/approval, artifacts, and notifications.
+- Move toward a process-backed runner behind the existing `TaskRunner` contract if long-running work becomes important.
+- Improve MCP HTTP diagnostics and role-scoped visibility before taking on stdio/SSE lifecycle management.
+- Keep ToolRuntime and Memory v2 in consolidation mode: diagnostics, ranking quality, review quality, summary/profile policy, overflow behavior, and per-tool output policy.
+- Expand deterministic Electron E2E coverage around real desktop/runtime interactions.
+- Fix documentation drift when implementation boundaries move.
 
 ## Documentation Rules
 
