@@ -1,6 +1,6 @@
 # Amadeus 成熟 Agent 升级计划
 
-Last updated: 2026-06-22
+Last updated: 2026-07-14
 
 ## 目标判断
 
@@ -691,31 +691,419 @@ config_schema: {}
 
 不要先做 MCP、复杂 subagent swarm、复杂 UI 或 Hermes Kanban。当前最大架构债已经从 runtime ownership 转移到 task/job/subagent/control plane：先把当前 session/turn/task 状态做成可见、可保存、可恢复，再做长期自动化。
 
-## 近期 2 周可执行计划
+## 长任务深度规划完整设计
 
-### Week 1
+Amadeus 不应把深度规划做成另一个轻量 `update_plan` 工具。`update_plan` 继续负责用户可见的 turn-local intent/progress；真正的长任务能力要落在 durable task graph、orchestrator、worker isolation、artifact handoff 和 checkpoint/resume 上。这样后续即使从 in-process runner 升级到 process runner，也不需要推翻数据模型和 UI 语义。
 
-- 建 `packages/amadeus/agent/runtime.py`。
-- 把 server 中 LLM 请求迁到 Python。
-- 新增 `/agent/turn`，先返回 event batch，后续再做真正 streaming。
-- Python runtime 负责保存 user/assistant messages。
-- server 只转发 `user.message` 和 relay events。
-- 写单元测试：
-  - missing API key。
-  - simple text answer。
-  - time tool call。
-  - ask tool permission request。
-  - permission denied tool result。
+### 核心概念
 
-### Week 2
+- `PlanRun`：一次用户目标或根任务的规划快照，面向 UI 展示和对话恢复。它可以绑定 `userMessageId`、`rootTaskId`、`turnId`。
+- `Task`：持久执行单元。已有 `tasks` 表继续作为主表，状态、重试、lease、review、artifact 都属于 task。
+- `TaskEdge`：任务依赖边。表达 `parent -> child`、`blocks`、`requires_artifact`、`review_after` 等关系。
+- `TaskAttempt`：一次 worker 执行尝试。当前 `attempt_count` 可以保留为汇总字段，但完整能力需要独立 attempt/run 表。
+- `Artifact`：子任务交接物。不要只把结果塞进 `result` 文本，代码 diff、文件路径、命令输出、链接、摘要、结构化 JSON 都应有 typed artifact。
+- `WorkerContext`：子 Agent 的隔离上下文，不继承父会话完整历史，只接收任务规格、验收标准、相关记忆、依赖 artifact、局部文件上下文和自身 attempt 历史。
+- `Orchestrator`：负责任务分解、依赖调度、结果验收、失败重试策略、blocked/review 决策。它是 runtime 内部角色，不应先暴露成模型可随意调用的工具。
 
-- 建 Python `tools/registry.py`、`permissions.py`、`executor.py`。
-- 工具配置改 Python 加载。
-- `packages/amadeus/tools.ts` 已从硬编码 registry 过渡为 `/tools/list` bridge。
-- 加 `ToolCallGuardrailController`。
-- 建 `harness/base.py` 和 `harness/live2d.py`，先迁移 `assistant.state -> character.behavior`。
-- 新增 `configs/harnesses.yaml`。
-- desktop 增加 `character.capabilities` 上报。
+### 数据模型目标
+
+保留现有 `tasks` 表，并向完整 task graph 演进。新增字段应向后兼容，避免引入第二套任务系统。
+
+`tasks` 目标字段：
+
+```text
+id
+session_id
+root_task_id
+parent_task_id
+plan_run_id
+plan_item_id
+title
+body
+kind
+source
+worker_type
+worker_profile
+status
+priority
+due_at
+ready_at
+blocked_reason
+review_required
+acceptance_criteria_json
+context_hints_json
+allowed_toolsets_json
+disallowed_tools_json
+depends_on_policy
+checkpoint_json
+handoff_summary
+result
+error
+artifacts_json
+attempt_count
+max_attempts
+next_run_at
+claim_lock
+lease_owner
+lease_expires_at
+last_heartbeat
+runner_kind
+created_at
+updated_at
+finished_at
+```
+
+新增表：
+
+```text
+task_edges(
+  id,
+  from_task_id,
+  to_task_id,
+  edge_type,
+  required_status,
+  metadata_json,
+  created_at
+)
+
+task_attempts(
+  id,
+  task_id,
+  run_id,
+  worker_id,
+  worker_profile,
+  status,
+  started_at,
+  heartbeat_at,
+  finished_at,
+  input_context_json,
+  checkpoint_json,
+  result,
+  error,
+  token_usage_json,
+  tool_usage_json
+)
+
+task_artifacts(
+  id,
+  task_id,
+  attempt_id,
+  type,
+  title,
+  path,
+  url,
+  content,
+  metadata_json,
+  created_at
+)
+```
+
+现有 `artifacts_json` 可以继续作为 API/UI 的 denormalized summary；真正的长任务执行应逐步写入 `task_artifacts`，再由 response layer 聚合成兼容旧字段。
+
+### 内部 API
+
+这些 API 首先是 runtime 内部服务，不急着做成模型工具。模型可以创建普通 background task，但深度分解、调度和 worker 上下文裁剪应该由 orchestrator 控制。
+
+```python
+class TaskGraphService:
+    def decompose_task(self, root_task_id: str, *, strategy: str = "deep") -> TaskGraph: ...
+    def add_dependency(self, from_task_id: str, to_task_id: str, edge_type: str) -> None: ...
+    def list_ready_tasks(self, *, limit: int) -> list[TaskRecord]: ...
+    def mark_artifact(self, task_id: str, artifact: TaskArtifact) -> TaskArtifact: ...
+    def build_worker_context(self, task_id: str, *, token_budget: int) -> WorkerContext: ...
+    def synthesize_parent(self, parent_task_id: str) -> TaskReview: ...
+```
+
+```python
+class OrchestratorService:
+    def create_root_goal(self, session_id: str, title: str, body: str, options: PlanningOptions) -> TaskRecord: ...
+    def plan_root(self, root_task_id: str) -> TaskGraph: ...
+    def dispatch_ready(self, root_task_id: str | None = None) -> list[str]: ...
+    def review_completed_child(self, task_id: str) -> ReviewDecision: ...
+    def wake_dependents(self, task_id: str) -> list[str]: ...
+```
+
+`decompose_task` 的输出必须是结构化 graph，而不是自由文本：
+
+```json
+{
+  "rootTaskId": "task-root",
+  "strategy": "deep",
+  "tasks": [
+    {
+      "tempId": "research-runtime",
+      "title": "梳理现有任务系统",
+      "body": "读取 tasks/workers/memory/server 相关实现，输出可复用边界。",
+      "workerProfile": "researcher",
+      "acceptanceCriteria": [
+        "列出现有状态机和缺口",
+        "标明需要保留的兼容字段"
+      ],
+      "allowedToolsets": ["file_read", "search"],
+      "dependsOn": []
+    }
+  ],
+  "edges": [
+    {
+      "from": "research-runtime",
+      "to": "design-schema",
+      "type": "blocks",
+      "requiredStatus": "succeeded"
+    }
+  ]
+}
+```
+
+### Worker 隔离模型
+
+子 Agent 不应共享父 Agent 的完整上下文。每个 worker 运行时只拿到经过裁剪的 `WorkerContext`：
+
+- task title/body/kind/source。
+- acceptance criteria 和 out-of-scope。
+- workspace path 和 role runtime scope。
+- root task 摘要，而不是完整父对话。
+- 已完成 dependency artifacts。
+- 当前 task 过去 attempts、失败原因、checkpoint。
+- 相关 memory/search/file snippets。
+- allowed/disallowed toolsets。
+- 输出 schema 和 handoff 要求。
+
+worker 的结果也不直接污染主会话 raw history。它写入：
+
+- `task_attempts.result/error/checkpoint_json`
+- `task_artifacts`
+- `tasks.handoff_summary`
+- `task_events`
+
+父 Agent 或 orchestrator 只读取 summary/artifacts/review decision。
+
+### Runner 设计
+
+当前 `TaskRunner`/`InProcessTaskRunner` 是正确扩展点。完整设计需要至少三种 runner，但对上层保持同一个 contract：
+
+- `InProcessTaskRunner`：当前默认 runner，用于测试、短任务和轻量 background task。
+- `ThreadedChildAgentRunner`：在当前 Python 进程里创建 isolated `AgentRuntime`/child loop，适合受限 delegate 和中等任务。
+- `ProcessTaskRunner`：长期目标，用 subprocess 启动 worker，使用 env/CLI/API 绑定 `AMADEUS_TASK_ID`、`AMADEUS_TASK_RUN_ID`、`AMADEUS_WORKSPACE`、`AMADEUS_WORKER_PROFILE`。
+
+runner contract 不应只接受 `run_task(task_id)`，应演进为：
+
+```python
+class TaskRunner(Protocol):
+    def submit(self, task_id: str, *, reason: str = "ready") -> str: ...
+    def cancel(self, run_id: str, *, reason: str) -> None: ...
+    def shutdown(self, *, wait: bool = True) -> None: ...
+```
+
+`TaskWorker` 继续负责状态机、claim、lease、heartbeat、retry；runner 只负责把一次 attempt 交给执行环境。
+
+### 调度状态机
+
+任务状态保持现有语义并补齐 graph 行为：
+
+```text
+queued -> ready -> running -> succeeded
+queued -> blocked
+running -> blocked
+running -> failed -> queued(retry)
+running -> failed
+queued/running/blocked -> cancelled
+```
+
+如果不想立刻引入 `ready` 状态，可以先让 `queued` 同时表示等待依赖和可运行，但必须在 scheduler 查询里区分：
+
+- dependencies incomplete：不返回给 runner。
+- due/nextRunAt 未到：不返回给 runner。
+- lease 未过期：不返回给 runner。
+- review blocked：不返回给 runner。
+
+调度器循环：
+
+1. recover expired running leases。
+2. resolve completed child dependencies。
+3. wake dependents whose dependencies are satisfied。
+4. dispatch ready queued tasks。
+5. publish `task.updated` / `task.graph.updated`。
+
+### Orchestrator 策略
+
+Orchestrator 不是普通聊天 Agent 的自由发挥，而是 runtime 受控流程：
+
+1. `specify`：把用户目标转成 Goal / Approach / Acceptance / Out of scope。
+2. `decompose`：生成 2-8 个可并行/串行子任务，带依赖和 profile。
+3. `validate_graph`：检查循环依赖、空验收标准、危险工具、过宽任务、成本上限。
+4. `dispatch`：只派发 ready tasks。
+5. `review_child`：检查 artifact 是否满足 acceptance criteria。
+6. `repair`：失败时决定 retry、拆小、改 profile、blocked 等。
+7. `synthesize`：所有子任务完成后生成父任务 handoff/result。
+
+第一版可以用当前主模型做 `specify/decompose/review`，但调用点应在内部 service，输入输出 JSON schema 固定，失败时保守降级为单任务执行。
+
+### 权限与工具边界
+
+长任务不能默认继承全部工具。建议 profile 化：
+
+```yaml
+worker_profiles:
+  researcher:
+    toolsets: ["search", "read", "memory_read"]
+    write: false
+  coder:
+    toolsets: ["search", "read", "patch", "terminal"]
+    write: true
+    requires_review: true
+  reviewer:
+    toolsets: ["read", "diff", "test"]
+    write: false
+  synthesizer:
+    toolsets: ["read", "memory_read"]
+    write: false
+```
+
+默认规则：
+
+- 子 Agent 不能递归 delegation，除非 profile 是 `orchestrator` 且 depth 未超限。
+- 子 Agent 默认不能控制 Live2D/audio。
+- mutating tools 仍走 ToolRuntime permission/audit。
+- process runner 必须继承 role `workspacePath` 限制。
+- worker 只能更新自己的 task/attempt/artifact，不能任意改 sibling/root。
+
+### API 与事件
+
+HTTP API 应围绕现有 `/tasks` 扩展：
+
+```text
+POST /tasks
+GET /tasks
+GET /tasks/{id}
+GET /tasks/{id}/events
+GET /tasks/{id}/graph
+POST /tasks/{id}/decompose
+POST /tasks/{id}/dispatch
+POST /tasks/{id}/cancel
+POST /tasks/{id}/approve
+POST /tasks/{id}/retry
+GET /tasks/{id}/artifacts
+GET /tasks/{id}/attempts
+```
+
+Runtime events：
+
+```text
+task.updated
+task.graph.updated
+task.attempt.started
+task.attempt.heartbeat
+task.attempt.finished
+task.artifact.created
+task.review.required
+task.dependency.satisfied
+task.dependency.blocked
+```
+
+UI 不需要知道 runner 细节，但需要能展示：
+
+- root task tree。
+- dependency blocked/ready/running/completed。
+- active attempts。
+- artifacts。
+- review gate。
+- retry/error timeline。
+
+### 与 `update_plan` 的关系
+
+`update_plan` 保持轻量，负责当前 turn 的可见计划。长任务 graph 创建后，runtime 可以自动生成或同步 plan items：
+
+- root task 创建：创建 `PlanRun`。
+- child task queued：可选生成 plan item。
+- child task running/succeeded/blocked/cancelled：同步 linked plan item。
+- plan panel 只展示用户可理解的摘要；task graph view 展示完整执行细节。
+
+不要让模型通过 `update_plan` 改 task graph。graph 只能通过 task/orchestrator API 修改。
+
+### 实施顺序
+
+虽然目标按完整功能设计，但实现应按不破坏现有系统的顺序推进：
+
+1. Schema migration：补 `root_task_id`、`plan_run_id`、`worker_profile`、`acceptance_criteria_json`、`context_hints_json`、`checkpoint_json`、`handoff_summary`，新增 `task_edges`、`task_attempts`、`task_artifacts`。
+2. Store layer：实现 task graph CRUD、dependency query、attempt/artifact 写入；保持旧 `/tasks` response 兼容。
+3. Internal graph service：实现 `decompose_task` schema、graph validation、ready task query。
+4. WorkerContext builder：先用于 in-process runner，验证上下文隔离和 artifact handoff。
+5. Orchestrator service：实现 specify/decompose/dispatch/review/synthesize 的内部流程。
+6. Scheduler loop：从简单 submit 升级为 dependency-aware dispatch。
+7. Child agent runner：把现有受限 `delegate_task` 从启发式 search/read 升级为 isolated child loop。
+8. Process runner：在 `TaskRunner` contract 后接 subprocess，实现真正长期任务和重启恢复。
+9. UI graph view：在 Main UI TasksView 增加 graph、attempt、artifact、review。
+10. Eval：增加 decomposition JSON validity、dependency dispatch、worker isolation、artifact handoff、cancel/retry/recover 回归测试。
+
+### 不做的事情
+
+- 不把 `decompose_task` 直接暴露成模型工具作为第一版入口。
+- 不复制一套 Hermes Kanban 数据库；Amadeus 已经有 `tasks`，应增强现有表。
+- 不让 worker 继承父对话完整历史。
+- 不让子 Agent 默认拥有写文件、shell、audio/Live2D 控制或递归 delegation。
+- 不把完成子任务的全文结果长期塞进 active context。
+
+## 下一轮实现切片
+
+目标按完整长任务能力设计，但代码落地要先从不会破坏现有 `/tasks` API 的基础设施开始。
+
+### Slice 1：Task graph schema
+
+- Status: implemented as the first persistence slice.
+- `tasks` now has graph/worker/context compatibility fields including `root_task_id`, `plan_run_id`, `worker_profile`, `acceptance_criteria_json`, `context_hints_json`, `allowed_toolsets_json`, `disallowed_tools_json`, `checkpoint_json`, and `handoff_summary`.
+- `task_edges`, `task_attempts`, and `task_artifacts` now exist with store CRUD and read-only HTTP surfaces.
+- Store layer keeps old `artifacts_json`, `parentTaskId`, and `planItemId` responses compatible while exposing graph fields.
+- Unit coverage includes migration, task response, edge validation, attempt/artifact round trip, and HTTP graph/attempt/artifact reads.
+
+### Slice 2：Dependency-aware scheduler
+
+- Status: first in-store dependency-aware runnable selection is implemented.
+- `list_runnable_tasks()` and `start_task()` now skip queued tasks whose incoming `task_edges` have not reached their required status.
+- `TaskWorker.recover()` already uses `list_runnable_tasks()`, so recovered submissions inherit the dependency filter.
+- Remaining work: explicit `TaskGraphService`, dependent wake events, root cancel cascading, and richer graph event publication.
+
+### Slice 3：WorkerContext builder
+
+- Status: implemented for the current in-process worker.
+- Added `WorkerContext` and `build_worker_context(...)` in the worker layer.
+- Context now contains task spec, acceptance criteria, root summary, dependency artifacts, attempt history, context hints, and allowed/disallowed tool metadata.
+- Current in-process workers use this prompt instead of directly passing task title/body.
+- Worker execution now records `task_attempts`, heartbeats the active attempt, finishes attempts with result/error/checkpoint state, and writes successful worker results as summary artifacts.
+- Remaining work: memory/file snippet retrieval, token-budget-aware trimming, and reuse from child-agent/process runners.
+
+### Slice 4：Internal orchestrator
+
+- Status: deterministic internal skeleton is implemented; model-backed graph generation is not.
+- Added internal `OrchestratorService` with root goal creation, structured graph validation, child task/edge persistence, ready child dispatch, and terminal child review.
+- Graph validation rejects duplicate task ids, unknown dependencies, unknown edge endpoints, excessive child counts, and dependency cycles.
+- `decompose_task` is still not exposed as a model tool. The current service accepts already-structured graph payloads so orchestration state transitions can be tested before model generation is added.
+- Remaining work: `specify`, model-backed `decompose`, graph repair, `synthesize`, controlled HTTP entrypoints, dangerous profile validation, and broader graph event publication.
+
+### Slice 5：Isolated child runner
+
+- 在 `TaskRunner` 合同后接 `ThreadedChildAgentRunner`，创建隔离 child runtime。
+- worker profile 决定 tool visibility 和 permission policy。
+- 子 Agent 只写自己的 attempt/artifacts/task events，不写父会话 raw history。
+- 将现有 `delegate_task` 的启发式 search/read 实现迁到 child runner 背后，保持 depth=1、summary-only parent result。
+
+### Slice 6：Process runner
+
+- 实现 `ProcessTaskRunner`，subprocess 通过 env 绑定 `AMADEUS_TASK_ID`、`AMADEUS_TASK_RUN_ID`、`AMADEUS_WORKSPACE`、`AMADEUS_WORKER_PROFILE`。
+- task attempt heartbeat 独立于父 turn 生命周期。
+- 重启后 expired lease 可 reclaim，未完成 attempt 可标记 abandoned/retry。
+- 增加 CLI/HTTP worker entrypoint，但仍复用同一个 store、ToolRuntime 和 WorkerContext builder。
+
+### Slice 7：Main UI graph view
+
+- TasksView 增加 tree/dependency 状态、attempt timeline、artifact list、review gate。
+- PlanPanel 继续展示可读计划，不承担完整 graph 调试职责。
+- 新增 task graph event handling：`task.graph.updated`、`task.attempt.*`、`task.artifact.created`。
+
+### Slice 8：Eval and regression
+
+- 增加 long-task eval：decomposition JSON validity、dependency dispatch、worker isolation、artifact handoff、cancel/retry/recover、review gate。
+- 每个 runner 至少有一组相同 task graph contract test。
+- 长任务相关 prompt/schema 改动必须跑这些 eval。
 
 ## 关键工程原则
 

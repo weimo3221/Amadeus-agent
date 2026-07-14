@@ -86,7 +86,7 @@ Fallback path today:
 - `patch` is implemented as an `ask` tool for safe single-file UTF-8 text replacement.
 - `write_file` is implemented as an `ask` tool for creating or fully overwriting UTF-8 workspace text files.
 - `delegate_task` is implemented as a first restricted research/search delegate: max depth 1, max concurrency 2, memory search, file search, explicit bounded file reads, no write tools, no shell, no recursive delegation, and summary-only results to the parent agent.
-- `create_task` / `list_tasks` / `cancel_task` are implemented as tracked background-task tools. Task records now carry execution metadata such as `kind`, `source`, `parentTaskId`, `planItemId`, `workerType`, review state, and artifacts so tasks can become the durable execution unit for heavier workflows. `planItemId` links a task to a visible plan step and lets task worker state transitions update the plan.
+- `create_task` / `list_tasks` / `cancel_task` are implemented as tracked background-task tools. Task records now carry execution metadata such as `kind`, `source`, `parentTaskId`, `rootTaskId`, `planRunId`, `planItemId`, `workerType`, `workerProfile`, acceptance criteria, context hints, toolset allow/deny metadata, checkpoint, handoff summary, review state, and artifacts so tasks can become the durable execution unit for heavier workflows. `planItemId` links a task to a visible plan step and lets task worker state transitions update the plan.
 - `schedule_message` is implemented as an `allow` tool for reminders, alarms, countdowns, recurring check-ins, proactive companion messages, and scheduled background execution. Scheduled jobs are persisted in SQLite, emit `scheduled.updated` lifecycle events, default to `mode="message"` for timed assistant-message delivery, and support `mode="agent_task"` to create and submit a tracked background task at fire time.
 - `todo` is implemented as an `allow` tool for persistent user-facing session todo lists. Active todos are injected into API-call-time context through `<active-todos>`.
 - `AgentRuntime` maintains a per-session `workspace_epoch` for file-observing tool guardrails; successful `patch` / `write_file` mutations advance the epoch so repeated reads/searches after an edit are not treated as stale duplicates.
@@ -456,15 +456,21 @@ Started.
 
 ### Phase 11: Proactive Agent
 
-Started: the first storage/API/UI foundation and in-process worker for session-scoped tasks are in place, with first-pass worker retry and stale-running recovery. Autonomous scheduling is not done.
+Started: the storage/API/UI foundation and in-process worker for session-scoped tasks are in place, with first-pass worker retry, stale-running recovery, the first task-graph persistence layer, dependency-aware runnable selection, isolated WorkerContext prompts, and the first deterministic internal orchestrator skeleton. Autonomous scheduling and model-driven multi-worker decomposition are not done.
 
 - Added SQLite-backed `tasks` and `task_events`.
+- Added the first long-task graph persistence slice: task rows now have optional root/plan-run/profile/acceptance/context/toolset/checkpoint/handoff fields, and SQLite stores `task_edges`, `task_attempts`, and normalized `task_artifacts` as first-class records while keeping existing task responses backward-compatible.
 - Task statuses now use `queued`, `running`, `blocked`, `succeeded`, `failed`, and `cancelled`; legacy `done` rows are normalized to `succeeded`.
 - Added Python runtime HTTP APIs: `GET /tasks`, `POST /tasks`, `GET /tasks/{id}/events`, and `POST /tasks/{id}/cancel`.
+- Added read-only task graph HTTP APIs: `GET /tasks/{id}/graph`, `GET /tasks/{id}/attempts`, and `GET /tasks/{id}/artifacts`.
 - Added task review/control APIs: `POST /tasks/{id}/resume` and `POST /tasks/{id}/approve`.
 - Added model-facing `create_task`, `list_tasks`, and `cancel_task` tools for explicit session background work.
 - Added a lightweight in-process task worker that claims queued tasks, runs the existing agent turn loop, writes `succeeded` / `failed` results, and cooperatively cancels running backing turns.
 - Added Hermes-inspired reliability fields and transitions: `attemptCount`, `maxAttempts`, `nextRunAt`, retry scheduling back to `queued`, final failure after the attempt cap, and startup recovery of stale `running` tasks back to `queued`.
+- Task runnable selection is now dependency-aware: queued tasks with unsatisfied incoming `task_edges` are not claimed by the worker until their dependencies reach the required status.
+- Added the first isolated `WorkerContext` builder: in-process task workers now prompt the agent with task spec, acceptance criteria, root task summary, dependency artifacts, context hints, toolset bounds, and previous attempt history instead of using only task title/body or replaying the parent conversation.
+- Task worker executions now create `task_attempts`, heartbeat the active attempt, finish attempts with result/error/checkpoint state, and write successful worker results as summary artifacts for downstream dependency handoff.
+- Added the first internal `OrchestratorService` skeleton. It can create root goals, validate structured task graphs, reject dependency cycles, apply child tasks and edges into the existing task store, dispatch ready child tasks while respecting dependencies, and review terminal child status. It does not yet call a model to generate task graphs.
 - Added `/runtime/events` NDJSON streaming plus TypeScript bridge subscription so worker `running` / `succeeded` / `failed` / `cancelled` updates are pushed to same-session WebSocket clients.
 - Added TypeScript bridge proxying for task HTTP APIs.
 - Main UI can restore and render active queued/running/blocked tasks.
@@ -502,7 +508,7 @@ Started: the first restricted `delegate_task` research/search tool, session task
 - Added supervised dev-stack startup through `scripts/dev_stack.py`, restoring the local P0 health signal and replacing the default raw concurrent `npm run dev` path with ordered startup plus health checks.
 - Add full sub-agent orchestration abstraction.
 - Add context compression.
-- Add long-task planning.
+- Add model-backed long-task decomposition, child-agent runners, and process-backed task execution on top of the new task graph store, WorkerContext builder, and internal orchestrator service.
 - Add human approval checkpoints for destructive, sensitive, or low-confidence actions.
 - Add provider/harness profiles.
 - Add eval coverage for tool choice, permissions, memory, Live2D, audio, and guardrails.

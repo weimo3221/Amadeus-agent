@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.workers import TaskCallable, TaskWorker
+from amadeus.workers import TaskCallable, TaskWorker, build_worker_context
 
 
 class SuccessfulRuntime:
@@ -119,7 +119,9 @@ class TaskWorkerTests(unittest.TestCase):
             worker.shutdown()
             events = memory.list_task_events(str(task["id"]))
 
-        self.assertEqual(finished["result"], "completed: Summarize\n\nUse the body.")
+        self.assertIn("<task>", str(finished["result"]))
+        self.assertIn("title: Summarize", str(finished["result"]))
+        self.assertIn("Use the body.", str(finished["result"]))
         self.assertEqual([event["type"] for event in events], ["created", "running", "succeeded"])
         self.assertEqual(published, [("running", "running"), ("succeeded", "succeeded")])
 
@@ -186,7 +188,7 @@ class TaskWorkerTests(unittest.TestCase):
             worker.shutdown()
             events = memory.list_task_events(str(task["id"]))
 
-        self.assertEqual(finished["result"], "completed: Review")
+        self.assertIn("title: Review", str(finished["result"]))
         self.assertEqual(finished["blockedReason"], "Review required before marking this task complete.")
         self.assertEqual([event["type"] for event in events], ["created", "running", "blocked"])
         self.assertIn(("blocked", "blocked"), published)
@@ -319,6 +321,64 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertNotIn("extra", task["artifacts"][0])
         self.assertEqual(task["artifacts"][1]["type"], "summary")
         self.assertEqual(task["artifacts"][1]["content"], "{\"nested\": true}")
+
+    def test_worker_context_includes_dependency_artifacts_and_attempt_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            root = memory.create_task(session_id="session-1", title="Root")
+            dependency = memory.create_task(session_id="session-1", title="Dependency", root_task_id=str(root["id"]))
+            child = memory.create_task(
+                session_id="session-1",
+                title="Child",
+                body="Use dependency findings.",
+                root_task_id=str(root["id"]),
+                parent_task_id=str(root["id"]),
+                acceptance_criteria=["Summarize the dependency"],
+                context_hints={"workspace": "/tmp/project"},
+                allowed_toolsets=["read"],
+                disallowed_tools=["terminal"],
+            )
+            memory.add_task_edge(from_task_id=str(dependency["id"]), to_task_id=str(child["id"]))
+            attempt = memory.create_task_attempt(str(child["id"]), worker_id="worker-old")
+            memory.finish_task_attempt(str(attempt["id"]), status="failed", error="missing dependency summary")
+            memory.add_task_artifact(
+                str(dependency["id"]),
+                {"type": "summary", "title": "Dependency summary", "content": "Dependency completed."},
+            )
+
+            context = build_worker_context(memory, str(child["id"]))
+            prompt = context.to_prompt()
+
+        self.assertIn("title: Child", prompt)
+        self.assertIn("Summarize the dependency", prompt)
+        self.assertIn("<dependency-tasks>", prompt)
+        self.assertIn("title=Dependency", prompt)
+        self.assertIn("<dependency-artifacts>", prompt)
+        self.assertIn("Dependency completed.", prompt)
+        self.assertIn("<previous-attempts>", prompt)
+        self.assertIn("missing dependency summary", prompt)
+        self.assertIn('"workspace": "/tmp/project"', prompt)
+        self.assertIn('"read"', prompt)
+        self.assertIn('"terminal"', prompt)
+
+    def test_worker_records_attempt_and_result_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = SuccessfulRuntime()
+            runner = ImmediateTaskRunner()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
+            task = memory.create_task(session_id="session-1", title="Attempted")
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+            attempts = memory.list_task_attempts(str(task["id"]))
+            artifacts = memory.list_task_artifacts(str(task["id"]))
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["status"], "succeeded")
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["type"], "summary")
+        self.assertIn("title: Attempted", str(artifacts[0]["content"]))
 
     def test_worker_cancel_marks_running_task_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

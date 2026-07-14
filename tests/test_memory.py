@@ -886,6 +886,91 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(approved["status"], "succeeded")
         self.assertIn("review_approved", [event["type"] for event in events])
 
+    def test_task_graph_fields_edges_attempts_and_artifacts_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            root = memory.create_task(
+                session_id="session-1",
+                title="Root goal",
+                worker_profile="orchestrator",
+                acceptance_criteria=["All children complete"],
+                context_hints={"workspace": "/tmp/project"},
+                allowed_toolsets=["search"],
+                disallowed_tools=["terminal"],
+            )
+            child = memory.create_task(
+                session_id="session-1",
+                title="Child work",
+                parent_task_id=str(root["id"]),
+                root_task_id=str(root["id"]),
+                worker_profile="researcher",
+                acceptance_criteria=["Find current task schema"],
+            )
+            edge = memory.add_task_edge(
+                from_task_id=str(root["id"]),
+                to_task_id=str(child["id"]),
+                edge_type="blocks",
+                metadata={"reason": "child waits for root in this test"},
+            )
+            attempt = memory.create_task_attempt(
+                str(child["id"]),
+                worker_id="worker-1",
+                worker_profile="researcher",
+                input_context={"task": "Child work"},
+            )
+            artifact = memory.add_task_artifact(
+                str(child["id"]),
+                {"type": "summary", "title": "Findings", "content": "Task graph storage works."},
+                attempt_id=str(attempt["id"]),
+                metadata={"source": "test"},
+            )
+            finished_attempt = memory.finish_task_attempt(
+                str(attempt["id"]),
+                status="succeeded",
+                result="Done",
+                token_usage={"total": 12},
+            )
+            graph = memory.get_task_graph(str(root["id"]))
+
+        self.assertEqual(root["rootTaskId"], root["id"])
+        self.assertEqual(root["workerProfile"], "orchestrator")
+        self.assertEqual(root["acceptanceCriteria"], ["All children complete"])
+        self.assertEqual(root["contextHints"], {"workspace": "/tmp/project"})
+        self.assertEqual(root["allowedToolsets"], ["search"])
+        self.assertEqual(root["disallowedTools"], ["terminal"])
+        self.assertEqual(child["rootTaskId"], root["id"])
+        self.assertEqual(edge["fromTaskId"], root["id"])
+        self.assertEqual(edge["toTaskId"], child["id"])
+        self.assertEqual(edge["metadata"], {"reason": "child waits for root in this test"})
+        self.assertEqual(attempt["status"], "running")
+        self.assertEqual(finished_attempt["status"], "succeeded")
+        self.assertEqual(finished_attempt["tokenUsage"], {"total": 12})
+        self.assertEqual(artifact["attemptId"], attempt["id"])
+        self.assertEqual(artifact["content"], "Task graph storage works.")
+        self.assertEqual(len(graph["tasks"]), 2)
+        self.assertEqual(len(graph["edges"]), 1)
+
+    def test_runnable_tasks_wait_for_dependency_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            dependency = memory.create_task(session_id="session-1", title="Dependency")
+            child = memory.create_task(
+                session_id="session-1",
+                title="Dependent",
+                parent_task_id=str(dependency["id"]),
+                root_task_id=str(dependency["id"]),
+            )
+            independent = memory.create_task(session_id="session-1", title="Independent")
+            memory.add_task_edge(from_task_id=str(dependency["id"]), to_task_id=str(child["id"]))
+
+            before = memory.list_runnable_tasks(limit=10)
+            memory.start_task(str(dependency["id"]), claim_lock="worker-1")
+            memory.complete_task(str(dependency["id"]), claim_lock="worker-1", result="Ready")
+            after = memory.list_runnable_tasks(limit=10)
+
+        self.assertEqual({task["id"] for task in before}, {dependency["id"], independent["id"]})
+        self.assertEqual({task["id"] for task in after}, {child["id"], independent["id"]})
+
     def test_task_worker_state_transitions_can_succeed_fail_and_ignore_finished_cancels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

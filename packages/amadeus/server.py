@@ -227,6 +227,21 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_task_events_list(task_id, parsed)
             return
 
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/graph"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/graph")).strip()
+            self.handle_task_graph_get(task_id)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/attempts"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/attempts")).strip()
+            self.handle_task_attempts_list(task_id, parsed)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/artifacts"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/artifacts")).strip()
+            self.handle_task_artifacts_list(task_id, parsed)
+            return
+
         if parsed.path.startswith("/sessions/") and parsed.path.endswith("/plan"):
             session_id = unquote(parsed.path.removeprefix("/sessions/").removesuffix("/plan")).strip()
             self.handle_session_plan_get(session_id)
@@ -1074,6 +1089,52 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Task events list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_graph_get(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            graph = memory_store.get_task_graph(task_id)
+            logger.info("Loaded task graph taskId=%s taskCount=%s edgeCount=%s", task_id, len(graph["tasks"]), len(graph["edges"]))
+            self.write_json(200, {"ok": True, **graph})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task graph load failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_attempts_list(self, task_id: str, parsed: Any) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            query = parse_qs(parsed.query)
+            limit = parse_int(query.get("limit", ["50"])[0], 50, 1, 200)
+            attempts = memory_store.list_task_attempts(task_id, limit=limit)
+            logger.info("Listed task attempts taskId=%s count=%s", task_id, len(attempts))
+            self.write_json(200, {"ok": True, "taskId": task_id, "attempts": attempts, "attemptCount": len(attempts)})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task attempts list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_artifacts_list(self, task_id: str, parsed: Any) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            query = parse_qs(parsed.query)
+            limit = parse_int(query.get("limit", ["100"])[0], 100, 1, 200)
+            artifacts = memory_store.list_task_artifacts(task_id, limit=limit)
+            logger.info("Listed task artifacts taskId=%s count=%s", task_id, len(artifacts))
+            self.write_json(200, {"ok": True, "taskId": task_id, "artifacts": artifacts, "artifactCount": len(artifacts)})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task artifacts list failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_task_create(self) -> None:

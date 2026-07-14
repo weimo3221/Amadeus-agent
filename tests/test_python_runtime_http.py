@@ -667,6 +667,36 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(events["eventCount"], 2)
         self.assertEqual(events["events"][1]["type"], "cancelled")
 
+    def test_tasks_http_graph_attempts_and_artifacts(self) -> None:
+        root = runtime_server.memory_store.create_task(session_id="http-test", title="Root task")
+        child = runtime_server.memory_store.create_task(
+            session_id="http-test",
+            title="Child task",
+            parent_task_id=str(root["id"]),
+            root_task_id=str(root["id"]),
+            worker_profile="researcher",
+        )
+        runtime_server.memory_store.add_task_edge(from_task_id=str(root["id"]), to_task_id=str(child["id"]))
+        attempt = runtime_server.memory_store.create_task_attempt(str(child["id"]), worker_id="worker-http")
+        runtime_server.memory_store.add_task_artifact(
+            str(child["id"]),
+            {"type": "summary", "title": "HTTP artifact", "content": "Graph endpoint works."},
+            attempt_id=str(attempt["id"]),
+        )
+
+        graph = self.get_json(f"/tasks/{root['id']}/graph")
+        attempts = self.get_json(f"/tasks/{child['id']}/attempts")
+        artifacts = self.get_json(f"/tasks/{child['id']}/artifacts")
+
+        self.assertTrue(graph["ok"])
+        self.assertEqual(graph["rootTaskId"], root["id"])
+        self.assertEqual(len(graph["tasks"]), 2)
+        self.assertEqual(len(graph["edges"]), 1)
+        self.assertEqual(attempts["attemptCount"], 1)
+        self.assertEqual(attempts["attempts"][0]["workerId"], "worker-http")
+        self.assertEqual(artifacts["artifactCount"], 1)
+        self.assertEqual(artifacts["artifacts"][0]["content"], "Graph endpoint works.")
+
     def test_tasks_http_resume_and_approve_blocked_review(self) -> None:
         task = runtime_server.memory_store.create_task(
             session_id="http-test",

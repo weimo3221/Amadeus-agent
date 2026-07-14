@@ -17,6 +17,8 @@ DEFAULT_TASK_MAX_ATTEMPTS = 3
 MAX_TASK_MAX_ATTEMPTS = 10
 TRUNCATION_MARKER = "... [truncated]"
 TASK_ARTIFACT_TYPES = {"file", "diff", "command_output", "summary", "link"}
+TASK_EDGE_TYPES = {"parent_child", "blocks", "requires_artifact", "review_after"}
+TASK_ATTEMPT_STATUSES = {"running", "succeeded", "failed", "cancelled", "abandoned"}
 
 
 def normalize_task_status(status: Any, *, default: str = "queued") -> str:
@@ -150,3 +152,45 @@ def default_artifact_title(artifact_type: str) -> str:
         "summary": "Summary",
         "link": "Link",
     }.get(artifact_type, "Artifact")
+
+
+def normalize_task_json_array(value: object, *, field_name: str, max_items: int = 50, max_chars: int = 12000) -> str:
+    if value is None:
+        return "[]"
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be an array")
+    normalized: list[object] = []
+    for item in value[:max_items]:
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            normalized.append(truncate_text(item, max_chars) if isinstance(item, str) else item)
+        elif isinstance(item, dict):
+            encoded = json.dumps(item, ensure_ascii=False)
+            normalized.append(item if len(encoded) <= max_chars else {"content": truncate_text(encoded, max_chars)})
+        else:
+            normalized.append(truncate_text(str(item), max_chars))
+    return json.dumps(normalized, ensure_ascii=False)
+
+
+def normalize_task_json_object(value: object, *, field_name: str, max_chars: int = 12000) -> str:
+    if value is None:
+        return "{}"
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be an object")
+    encoded = json.dumps(value, ensure_ascii=False)
+    if len(encoded) <= max_chars:
+        return encoded
+    return json.dumps({"content": truncate_text(encoded, max_chars)}, ensure_ascii=False)
+
+
+def normalize_task_edge_type(edge_type: object) -> str:
+    normalized = str(edge_type or "blocks").strip().lower()
+    if normalized not in TASK_EDGE_TYPES:
+        raise ValueError(f"invalid task edge type: {normalized}")
+    return normalized
+
+
+def normalize_task_attempt_status(status: object, *, default: str = "running") -> str:
+    normalized = str(status or default).strip().lower()
+    if normalized not in TASK_ATTEMPT_STATUSES:
+        raise ValueError(f"invalid task attempt status: {normalized}")
+    return normalized

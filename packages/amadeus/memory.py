@@ -26,9 +26,14 @@ from amadeus.tasks import (
     MAX_TASK_ERROR_CHARS,
     MAX_TASK_EVENT_MESSAGE_CHARS,
     MAX_TASK_RESULT_CHARS,
+    normalize_task_artifact,
     normalize_optional_text,
+    normalize_task_attempt_status,
     normalize_task_body,
+    normalize_task_edge_type,
     normalize_task_artifacts,
+    normalize_task_json_array,
+    normalize_task_json_object,
     normalize_task_max_attempts,
     normalize_task_event_type,
     normalize_task_priority,
@@ -263,18 +268,29 @@ class MessageMemoryStore:
                   CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
+                    root_task_id TEXT,
                     title TEXT NOT NULL,
                     body TEXT NOT NULL DEFAULT '',
                     kind TEXT NOT NULL DEFAULT 'agent_turn',
                     source TEXT NOT NULL DEFAULT 'manual',
                     parent_task_id TEXT,
+                    plan_run_id TEXT,
                     plan_item_id TEXT,
                     worker_type TEXT NOT NULL DEFAULT 'agent',
+                    worker_profile TEXT,
                     blocked_reason TEXT,
                     review_required INTEGER NOT NULL DEFAULT 0,
+                    acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+                    context_hints_json TEXT NOT NULL DEFAULT '{}',
+                    allowed_toolsets_json TEXT NOT NULL DEFAULT '[]',
+                    disallowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                    depends_on_policy TEXT NOT NULL DEFAULT 'all_succeeded',
+                    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                    handoff_summary TEXT,
                     artifacts_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'succeeded', 'failed', 'cancelled')),
                     priority INTEGER NOT NULL DEFAULT 0,
+                    ready_at TEXT,
                     due_at TEXT,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     max_attempts INTEGER NOT NULL DEFAULT 3,
@@ -293,6 +309,57 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_tasks_session_status_updated
                   ON tasks(session_id, status, updated_at);
+                  CREATE TABLE IF NOT EXISTS task_edges (
+                    id TEXT PRIMARY KEY,
+                    from_task_id TEXT NOT NULL,
+                    to_task_id TEXT NOT NULL,
+                    edge_type TEXT NOT NULL DEFAULT 'blocks',
+                    required_status TEXT NOT NULL DEFAULT 'succeeded',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(from_task_id) REFERENCES tasks(id),
+                    FOREIGN KEY(to_task_id) REFERENCES tasks(id)
+                  );
+                  CREATE UNIQUE INDEX IF NOT EXISTS idx_task_edges_unique
+                  ON task_edges(from_task_id, to_task_id, edge_type);
+                  CREATE INDEX IF NOT EXISTS idx_task_edges_to
+                  ON task_edges(to_task_id, edge_type);
+                  CREATE TABLE IF NOT EXISTS task_attempts (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    worker_id TEXT,
+                    worker_profile TEXT,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT,
+                    finished_at TEXT,
+                    input_context_json TEXT NOT NULL DEFAULT '{}',
+                    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                    result TEXT,
+                    error TEXT,
+                    token_usage_json TEXT NOT NULL DEFAULT '{}',
+                    tool_usage_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_task_attempts_task_started
+                  ON task_attempts(task_id, started_at);
+                  CREATE TABLE IF NOT EXISTS task_artifacts (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    attempt_id TEXT,
+                    type TEXT NOT NULL DEFAULT 'summary',
+                    title TEXT NOT NULL,
+                    path TEXT,
+                    url TEXT,
+                    content TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id),
+                    FOREIGN KEY(attempt_id) REFERENCES task_attempts(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_created
+                  ON task_artifacts(task_id, created_at);
                   CREATE TABLE IF NOT EXISTS task_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL,
@@ -636,14 +703,25 @@ class MessageMemoryStore:
         if "next_run_at" not in columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN next_run_at TEXT")
         task_defaults = {
+            "root_task_id": "TEXT",
             "kind": "TEXT NOT NULL DEFAULT 'agent_turn'",
             "source": "TEXT NOT NULL DEFAULT 'manual'",
             "parent_task_id": "TEXT",
+            "plan_run_id": "TEXT",
             "plan_item_id": "TEXT",
             "worker_type": "TEXT NOT NULL DEFAULT 'agent'",
+            "worker_profile": "TEXT",
             "blocked_reason": "TEXT",
             "review_required": "INTEGER NOT NULL DEFAULT 0",
+            "acceptance_criteria_json": "TEXT NOT NULL DEFAULT '[]'",
+            "context_hints_json": "TEXT NOT NULL DEFAULT '{}'",
+            "allowed_toolsets_json": "TEXT NOT NULL DEFAULT '[]'",
+            "disallowed_tools_json": "TEXT NOT NULL DEFAULT '[]'",
+            "depends_on_policy": "TEXT NOT NULL DEFAULT 'all_succeeded'",
+            "checkpoint_json": "TEXT NOT NULL DEFAULT '{}'",
+            "handoff_summary": "TEXT",
             "artifacts_json": "TEXT NOT NULL DEFAULT '[]'",
+            "ready_at": "TEXT",
             "lease_owner": "TEXT",
             "lease_expires_at": "TEXT",
             "runner_kind": "TEXT NOT NULL DEFAULT 'in_process'",
@@ -661,6 +739,91 @@ class MessageMemoryStore:
             """
             CREATE INDEX IF NOT EXISTS idx_tasks_plan_item
             ON tasks(session_id, plan_item_id, status)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tasks_root_status_updated
+            ON tasks(root_task_id, status, updated_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_edges (
+              id TEXT PRIMARY KEY,
+              from_task_id TEXT NOT NULL,
+              to_task_id TEXT NOT NULL,
+              edge_type TEXT NOT NULL DEFAULT 'blocks',
+              required_status TEXT NOT NULL DEFAULT 'succeeded',
+              metadata_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(from_task_id) REFERENCES tasks(id),
+              FOREIGN KEY(to_task_id) REFERENCES tasks(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_task_edges_unique
+            ON task_edges(from_task_id, to_task_id, edge_type)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_task_edges_to
+            ON task_edges(to_task_id, edge_type)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_attempts (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              worker_id TEXT,
+              worker_profile TEXT,
+              status TEXT NOT NULL DEFAULT 'running',
+              started_at TEXT NOT NULL,
+              heartbeat_at TEXT,
+              finished_at TEXT,
+              input_context_json TEXT NOT NULL DEFAULT '{}',
+              checkpoint_json TEXT NOT NULL DEFAULT '{}',
+              result TEXT,
+              error TEXT,
+              token_usage_json TEXT NOT NULL DEFAULT '{}',
+              tool_usage_json TEXT NOT NULL DEFAULT '{}',
+              FOREIGN KEY(task_id) REFERENCES tasks(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_task_attempts_task_started
+            ON task_attempts(task_id, started_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_artifacts (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              attempt_id TEXT,
+              type TEXT NOT NULL DEFAULT 'summary',
+              title TEXT NOT NULL,
+              path TEXT,
+              url TEXT,
+              content TEXT,
+              metadata_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(task_id) REFERENCES tasks(id),
+              FOREIGN KEY(attempt_id) REFERENCES task_attempts(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_created
+            ON task_artifacts(task_id, created_at)
             """
         )
 
@@ -1898,12 +2061,23 @@ class MessageMemoryStore:
         body: str | None = None,
         kind: str | None = None,
         source: str | None = None,
+        root_task_id: str | None = None,
         parent_task_id: str | None = None,
+        plan_run_id: str | None = None,
         plan_item_id: str | None = None,
         worker_type: str | None = None,
+        worker_profile: str | None = None,
+        acceptance_criteria: list[object] | None = None,
+        context_hints: dict[str, object] | None = None,
+        allowed_toolsets: list[object] | None = None,
+        disallowed_tools: list[object] | None = None,
+        depends_on_policy: str | None = None,
+        checkpoint: dict[str, object] | None = None,
+        handoff_summary: str | None = None,
         review_required: bool = False,
         artifacts: list[dict[str, object]] | None = None,
         priority: int | None = None,
+        ready_at: str | None = None,
         due_at: str | None = None,
         max_attempts: int | None = None,
     ) -> dict[str, object]:
@@ -1913,38 +2087,73 @@ class MessageMemoryStore:
         normalized_body = normalize_task_body(body)
         normalized_kind = normalize_task_kind(kind)
         normalized_source = normalize_task_source(source)
+        normalized_root_task_id = normalize_optional_text(root_task_id, max_chars=80, field_name="root_task_id")
         normalized_parent_task_id = normalize_optional_text(parent_task_id, max_chars=80, field_name="parent_task_id")
+        normalized_plan_run_id = normalize_optional_text(plan_run_id, max_chars=120, field_name="plan_run_id")
         normalized_plan_item_id = normalize_optional_text(plan_item_id, max_chars=120, field_name="plan_item_id")
         normalized_worker_type = normalize_task_worker_type(worker_type)
+        normalized_worker_profile = normalize_optional_text(worker_profile, max_chars=120, field_name="worker_profile")
+        acceptance_criteria_json = normalize_task_json_array(acceptance_criteria, field_name="acceptance_criteria")
+        context_hints_json = normalize_task_json_object(context_hints, field_name="context_hints")
+        allowed_toolsets_json = normalize_task_json_array(allowed_toolsets, field_name="allowed_toolsets")
+        disallowed_tools_json = normalize_task_json_array(disallowed_tools, field_name="disallowed_tools")
+        normalized_depends_on_policy = normalize_optional_text(
+            depends_on_policy or "all_succeeded",
+            max_chars=80,
+            field_name="depends_on_policy",
+        ) or "all_succeeded"
+        checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint")
+        normalized_handoff_summary = normalize_optional_text(
+            handoff_summary,
+            max_chars=MAX_TASK_RESULT_CHARS,
+            field_name="handoff_summary",
+        )
         artifacts_json = normalize_task_artifacts(artifacts)
         normalized_priority = normalize_task_priority(priority)
+        normalized_ready_at = normalize_optional_text(ready_at, max_chars=80, field_name="ready_at")
         normalized_due_at = normalize_optional_text(due_at, max_chars=80, field_name="due_at")
         normalized_max_attempts = normalize_task_max_attempts(max_attempts)
         task_id = uuid4().hex
+        if normalized_root_task_id is None:
+            normalized_root_task_id = normalized_parent_task_id or task_id
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO tasks (
-                  id, session_id, title, body, kind, source, parent_task_id, plan_item_id,
-                  worker_type, review_required, artifacts_json, status, priority, due_at,
-                  max_attempts, created_at, updated_at
+                  id, session_id, root_task_id, title, body, kind, source, parent_task_id,
+                  plan_run_id, plan_item_id, worker_type, worker_profile, review_required,
+                  acceptance_criteria_json, context_hints_json, allowed_toolsets_json,
+                  disallowed_tools_json, depends_on_policy, checkpoint_json, handoff_summary,
+                  artifacts_json, status, priority, ready_at, due_at, max_attempts,
+                  created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     normalized_session_id,
+                    normalized_root_task_id,
                     normalized_title,
                     normalized_body,
                     normalized_kind,
                     normalized_source,
                     normalized_parent_task_id,
+                    normalized_plan_run_id,
                     normalized_plan_item_id,
                     normalized_worker_type,
+                    normalized_worker_profile,
                     1 if review_required else 0,
+                    acceptance_criteria_json,
+                    context_hints_json,
+                    allowed_toolsets_json,
+                    disallowed_tools_json,
+                    normalized_depends_on_policy,
+                    checkpoint_json,
+                    normalized_handoff_summary,
                     artifacts_json,
                     normalized_priority,
+                    normalized_ready_at,
                     normalized_due_at,
                     normalized_max_attempts,
                     now,
@@ -1961,9 +2170,11 @@ class MessageMemoryStore:
                 metadata={
                     "kind": normalized_kind,
                     "source": normalized_source,
+                    "rootTaskId": normalized_root_task_id,
                     "planItemId": normalized_plan_item_id,
                     "parentTaskId": normalized_parent_task_id,
                     "workerType": normalized_worker_type,
+                    "workerProfile": normalized_worker_profile,
                 },
                 created_at=now,
             )
@@ -2002,7 +2213,10 @@ class MessageMemoryStore:
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
                        plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
-                       lease_owner, lease_expires_at, runner_kind
+                       lease_owner, lease_expires_at, runner_kind, root_task_id, plan_run_id,
+                       worker_profile, acceptance_criteria_json, context_hints_json,
+                       allowed_toolsets_json, disallowed_tools_json, depends_on_policy,
+                       checkpoint_json, handoff_summary, ready_at
                 FROM tasks
                 {where}
                 ORDER BY
@@ -2043,7 +2257,10 @@ class MessageMemoryStore:
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
                        plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
-                       lease_owner, lease_expires_at, runner_kind
+                       lease_owner, lease_expires_at, runner_kind, root_task_id, plan_run_id,
+                       worker_profile, acceptance_criteria_json, context_hints_json,
+                       allowed_toolsets_json, disallowed_tools_json, depends_on_policy,
+                       checkpoint_json, handoff_summary, ready_at
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -2062,7 +2279,10 @@ class MessageMemoryStore:
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
                        plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
-                       lease_owner, lease_expires_at, runner_kind
+                       lease_owner, lease_expires_at, runner_kind, root_task_id, plan_run_id,
+                       worker_profile, acceptance_criteria_json, context_hints_json,
+                       allowed_toolsets_json, disallowed_tools_json, depends_on_policy,
+                       checkpoint_json, handoff_summary, ready_at
                 FROM tasks
                 WHERE session_id = ? AND status IN ('succeeded', 'failed', 'cancelled')
                 ORDER BY COALESCE(finished_at, updated_at) DESC
@@ -2080,6 +2300,372 @@ class MessageMemoryStore:
                 "terminalOnly": True,
                 "limit": normalized_limit,
             },
+        }
+
+    def add_task_edge(
+        self,
+        *,
+        from_task_id: str,
+        to_task_id: str,
+        edge_type: str | None = None,
+        required_status: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        normalized_from_task_id = normalize_task_id(from_task_id)
+        normalized_to_task_id = normalize_task_id(to_task_id)
+        if normalized_from_task_id == normalized_to_task_id:
+            raise ValueError("task edge cannot point to itself")
+        normalized_edge_type = normalize_task_edge_type(edge_type)
+        normalized_required_status = normalize_task_status(required_status or "succeeded")
+        metadata_json = normalize_task_json_object(metadata, field_name="metadata")
+        edge_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            from_row = connection.execute("SELECT id FROM tasks WHERE id = ?", (normalized_from_task_id,)).fetchone()
+            to_row = connection.execute("SELECT id FROM tasks WHERE id = ?", (normalized_to_task_id,)).fetchone()
+            if not from_row or not to_row:
+                raise ValueError("task not found")
+            connection.execute(
+                """
+                INSERT INTO task_edges (
+                  id, from_task_id, to_task_id, edge_type, required_status, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(from_task_id, to_task_id, edge_type) DO UPDATE SET
+                  required_status = excluded.required_status,
+                  metadata_json = excluded.metadata_json
+                """,
+                (
+                    edge_id,
+                    normalized_from_task_id,
+                    normalized_to_task_id,
+                    normalized_edge_type,
+                    normalized_required_status,
+                    metadata_json,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, from_task_id, to_task_id, edge_type, required_status, metadata_json, created_at
+                FROM task_edges
+                WHERE from_task_id = ? AND to_task_id = ? AND edge_type = ?
+                """,
+                (normalized_from_task_id, normalized_to_task_id, normalized_edge_type),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("task edge could not be loaded")
+        return task_edge_response(row)
+
+    def list_task_edges(self, task_id: str | None = None, *, direction: str = "both") -> list[dict[str, object]]:
+        normalized_task_id = normalize_task_id(task_id) if task_id else None
+        normalized_direction = str(direction or "both").strip().lower()
+        clauses: list[str] = []
+        params: list[object] = []
+        if normalized_task_id:
+            if normalized_direction == "incoming":
+                clauses.append("to_task_id = ?")
+                params.append(normalized_task_id)
+            elif normalized_direction == "outgoing":
+                clauses.append("from_task_id = ?")
+                params.append(normalized_task_id)
+            else:
+                clauses.append("(from_task_id = ? OR to_task_id = ?)")
+                params.extend([normalized_task_id, normalized_task_id])
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, from_task_id, to_task_id, edge_type, required_status, metadata_json, created_at
+                FROM task_edges
+                {where}
+                ORDER BY created_at ASC
+                """,
+                params,
+            ).fetchall()
+        return [task_edge_response(row) for row in rows]
+
+    def create_task_attempt(
+        self,
+        task_id: str,
+        *,
+        run_id: str | None = None,
+        worker_id: str | None = None,
+        worker_profile: str | None = None,
+        input_context: dict[str, object] | None = None,
+        checkpoint: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_run_id = normalize_optional_text(run_id or uuid4().hex, max_chars=120, field_name="run_id") or uuid4().hex
+        normalized_worker_id = normalize_optional_text(worker_id, max_chars=120, field_name="worker_id")
+        normalized_worker_profile = normalize_optional_text(worker_profile, max_chars=120, field_name="worker_profile")
+        input_context_json = normalize_task_json_object(input_context, field_name="input_context")
+        checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint")
+        attempt_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            if not connection.execute("SELECT id FROM tasks WHERE id = ?", (normalized_task_id,)).fetchone():
+                raise ValueError("task not found")
+            connection.execute(
+                """
+                INSERT INTO task_attempts (
+                  id, task_id, run_id, worker_id, worker_profile, status, started_at,
+                  heartbeat_at, input_context_json, checkpoint_json
+                )
+                VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    normalized_task_id,
+                    normalized_run_id,
+                    normalized_worker_id,
+                    normalized_worker_profile,
+                    now,
+                    now,
+                    input_context_json,
+                    checkpoint_json,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, task_id, run_id, worker_id, worker_profile, status, started_at,
+                       heartbeat_at, finished_at, input_context_json, checkpoint_json,
+                       result, error, token_usage_json, tool_usage_json
+                FROM task_attempts
+                WHERE id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("task attempt could not be loaded")
+        return task_attempt_response(row)
+
+    def heartbeat_task_attempt(self, attempt_id: str, *, checkpoint: dict[str, object] | None = None) -> dict[str, object]:
+        normalized_attempt_id = normalize_task_id(attempt_id)
+        checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint") if checkpoint is not None else None
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute("SELECT id FROM task_attempts WHERE id = ?", (normalized_attempt_id,)).fetchone()
+            if not row:
+                raise ValueError("task attempt not found")
+            if checkpoint_json is None:
+                connection.execute(
+                    "UPDATE task_attempts SET heartbeat_at = ? WHERE id = ?",
+                    (now, normalized_attempt_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE task_attempts SET heartbeat_at = ?, checkpoint_json = ? WHERE id = ?",
+                    (now, checkpoint_json, normalized_attempt_id),
+                )
+        attempt = self.get_task_attempt(normalized_attempt_id)
+        if attempt is None:
+            raise ValueError("task attempt not found")
+        return attempt
+
+    def finish_task_attempt(
+        self,
+        attempt_id: str,
+        *,
+        status: str,
+        result: str | None = None,
+        error: str | None = None,
+        checkpoint: dict[str, object] | None = None,
+        token_usage: dict[str, object] | None = None,
+        tool_usage: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        normalized_attempt_id = normalize_task_id(attempt_id)
+        normalized_status = normalize_task_attempt_status(status)
+        if normalized_status == "running":
+            raise ValueError("finished attempt status cannot be running")
+        normalized_result = normalize_optional_text(result, max_chars=MAX_TASK_RESULT_CHARS, field_name="result")
+        normalized_error = normalize_optional_text(error, max_chars=MAX_TASK_ERROR_CHARS, field_name="error")
+        checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint") if checkpoint is not None else None
+        token_usage_json = normalize_task_json_object(token_usage, field_name="token_usage")
+        tool_usage_json = normalize_task_json_object(tool_usage, field_name="tool_usage")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute("SELECT id FROM task_attempts WHERE id = ?", (normalized_attempt_id,)).fetchone()
+            if not row:
+                raise ValueError("task attempt not found")
+            if checkpoint_json is None:
+                connection.execute(
+                    """
+                    UPDATE task_attempts
+                    SET status = ?, finished_at = ?, result = ?, error = ?,
+                        token_usage_json = ?, tool_usage_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalized_status,
+                        now,
+                        normalized_result,
+                        normalized_error,
+                        token_usage_json,
+                        tool_usage_json,
+                        normalized_attempt_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE task_attempts
+                    SET status = ?, finished_at = ?, result = ?, error = ?,
+                        checkpoint_json = ?, token_usage_json = ?, tool_usage_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalized_status,
+                        now,
+                        normalized_result,
+                        normalized_error,
+                        checkpoint_json,
+                        token_usage_json,
+                        tool_usage_json,
+                        normalized_attempt_id,
+                    ),
+                )
+        attempt = self.get_task_attempt(normalized_attempt_id)
+        if attempt is None:
+            raise ValueError("task attempt not found")
+        return attempt
+
+    def get_task_attempt(self, attempt_id: str) -> dict[str, object] | None:
+        normalized_attempt_id = normalize_task_id(attempt_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, task_id, run_id, worker_id, worker_profile, status, started_at,
+                       heartbeat_at, finished_at, input_context_json, checkpoint_json,
+                       result, error, token_usage_json, tool_usage_json
+                FROM task_attempts
+                WHERE id = ?
+                """,
+                (normalized_attempt_id,),
+            ).fetchone()
+        return task_attempt_response(row) if row else None
+
+    def list_task_attempts(self, task_id: str, *, limit: int = 50) -> list[dict[str, object]]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_limit = max(1, min(200, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, run_id, worker_id, worker_profile, status, started_at,
+                       heartbeat_at, finished_at, input_context_json, checkpoint_json,
+                       result, error, token_usage_json, tool_usage_json
+                FROM task_attempts
+                WHERE task_id = ?
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (normalized_task_id, normalized_limit),
+            ).fetchall()
+        return [task_attempt_response(row) for row in rows]
+
+    def add_task_artifact(
+        self,
+        task_id: str,
+        artifact: dict[str, object],
+        *,
+        attempt_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_attempt_id = normalize_task_id(attempt_id) if attempt_id else None
+        normalized_artifact = normalize_task_artifact(artifact)
+        metadata_json = normalize_task_json_object(metadata, field_name="metadata")
+        artifact_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            if not connection.execute("SELECT id FROM tasks WHERE id = ?", (normalized_task_id,)).fetchone():
+                raise ValueError("task not found")
+            if normalized_attempt_id and not connection.execute(
+                "SELECT id FROM task_attempts WHERE id = ? AND task_id = ?",
+                (normalized_attempt_id, normalized_task_id),
+            ).fetchone():
+                raise ValueError("task attempt not found")
+            connection.execute(
+                """
+                INSERT INTO task_artifacts (
+                  id, task_id, attempt_id, type, title, path, url, content, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    normalized_task_id,
+                    normalized_attempt_id,
+                    str(normalized_artifact.get("type") or "summary"),
+                    str(normalized_artifact.get("title") or "Artifact"),
+                    normalized_artifact.get("path") if isinstance(normalized_artifact.get("path"), str) else None,
+                    normalized_artifact.get("url") if isinstance(normalized_artifact.get("url"), str) else None,
+                    normalized_artifact.get("content") if isinstance(normalized_artifact.get("content"), str) else normalized_artifact.get("summary") if isinstance(normalized_artifact.get("summary"), str) else None,
+                    metadata_json,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, task_id, attempt_id, type, title, path, url, content, metadata_json, created_at
+                FROM task_artifacts
+                WHERE id = ?
+                """,
+                (artifact_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("task artifact could not be loaded")
+        return task_artifact_response(row)
+
+    def list_task_artifacts(self, task_id: str, *, limit: int = 100) -> list[dict[str, object]]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_limit = max(1, min(200, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, attempt_id, type, title, path, url, content, metadata_json, created_at
+                FROM task_artifacts
+                WHERE task_id = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (normalized_task_id, normalized_limit),
+            ).fetchall()
+        return [task_artifact_response(row) for row in rows]
+
+    def get_task_graph(self, task_id: str) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        root = self.get_task(normalized_task_id)
+        if root is None:
+            raise ValueError("task not found")
+        root_task_id = str(root.get("rootTaskId") or root.get("id"))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, title, body, status, priority, due_at, claim_lock,
+                       last_heartbeat, result, error, created_at, updated_at, finished_at,
+                       attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
+                       plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
+                       lease_owner, lease_expires_at, runner_kind, root_task_id, plan_run_id,
+                       worker_profile, acceptance_criteria_json, context_hints_json,
+                       allowed_toolsets_json, disallowed_tools_json, depends_on_policy,
+                       checkpoint_json, handoff_summary, ready_at
+                FROM tasks
+                WHERE id = ? OR root_task_id = ?
+                ORDER BY created_at ASC
+                """,
+                (root_task_id, root_task_id),
+            ).fetchall()
+        task_ids = {str(row[0]) for row in rows}
+        edges = [
+            edge
+            for edge in self.list_task_edges()
+            if str(edge.get("fromTaskId")) in task_ids or str(edge.get("toTaskId")) in task_ids
+        ]
+        return {
+            "rootTaskId": root_task_id,
+            "tasks": [task_response(row) for row in rows],
+            "edges": edges,
         }
 
     def list_todos(
@@ -2636,7 +3222,7 @@ class MessageMemoryStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, session_id, status, due_at, next_run_at
+                SELECT id, session_id, status, due_at, next_run_at, ready_at
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -2646,7 +3232,12 @@ class MessageMemoryStore:
                 raise ValueError("task not found")
             if str(row[2]) != "queued":
                 return self.get_task(normalized_task_id)
-            if not task_time_is_due(str(row[3] or ""), now_dt) or not task_time_is_due(str(row[4] or ""), now_dt):
+            if (
+                not task_time_is_due(str(row[3] or ""), now_dt)
+                or not task_time_is_due(str(row[4] or ""), now_dt)
+                or not task_time_is_due(str(row[5] or ""), now_dt)
+                or self._task_has_unsatisfied_dependencies(connection, normalized_task_id)
+            ):
                 return self.get_task(normalized_task_id)
             cursor = connection.execute(
                 """
@@ -2974,7 +3565,10 @@ class MessageMemoryStore:
                        last_heartbeat, result, error, created_at, updated_at, finished_at,
                        attempt_count, max_attempts, next_run_at, kind, source, parent_task_id,
                        plan_item_id, worker_type, blocked_reason, review_required, artifacts_json,
-                       lease_owner, lease_expires_at, runner_kind
+                       lease_owner, lease_expires_at, runner_kind, root_task_id, plan_run_id,
+                       worker_profile, acceptance_criteria_json, context_hints_json,
+                       allowed_toolsets_json, disallowed_tools_json, depends_on_policy,
+                       checkpoint_json, handoff_summary, ready_at
                 FROM tasks
                 WHERE status = 'queued'
                 ORDER BY priority DESC, updated_at ASC
@@ -2984,9 +3578,36 @@ class MessageMemoryStore:
         runnable = [
             task_response(row)
             for row in rows
-            if task_time_is_due(str(row[6] or ""), now_dt) and task_time_is_due(str(row[16] or ""), now_dt)
+            if (
+                task_time_is_due(str(row[6] or ""), now_dt)
+                and task_time_is_due(str(row[16] or ""), now_dt)
+                and task_time_is_due(str(row[38] or ""), now_dt)
+                and not self._task_has_unsatisfied_dependencies(None, str(row[0]))
+            )
         ]
         return runnable[:normalized_limit]
+
+    def _task_has_unsatisfied_dependencies(self, connection: sqlite3.Connection | None, task_id: str) -> bool:
+        normalized_task_id = normalize_task_id(task_id)
+
+        def _query(active_connection: sqlite3.Connection) -> bool:
+            row = active_connection.execute(
+                """
+                SELECT 1
+                FROM task_edges edge
+                LEFT JOIN tasks dependency ON dependency.id = edge.from_task_id
+                WHERE edge.to_task_id = ?
+                  AND COALESCE(dependency.status, '') != edge.required_status
+                LIMIT 1
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            return row is not None
+
+        if connection is not None:
+            return _query(connection)
+        with self.connect() as new_connection:
+            return _query(new_connection)
 
     def recover_stale_running_tasks(self, *, stale_after_seconds: float = 300.0, limit: int = 50) -> list[dict[str, object]]:
         normalized_limit = max(1, min(200, int(limit)))
@@ -4805,6 +5426,28 @@ class MessageMemoryStore:
             )
             connection.execute(
                 """
+                DELETE FROM task_artifacts
+                WHERE task_id IN (SELECT id FROM tasks WHERE session_id = ?)
+                """,
+                (session_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM task_attempts
+                WHERE task_id IN (SELECT id FROM tasks WHERE session_id = ?)
+                """,
+                (session_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM task_edges
+                WHERE from_task_id IN (SELECT id FROM tasks WHERE session_id = ?)
+                   OR to_task_id IN (SELECT id FROM tasks WHERE session_id = ?)
+                """,
+                (session_id, session_id),
+            )
+            connection.execute(
+                """
                 DELETE FROM tasks
                 WHERE session_id = ?
                 """,
@@ -5320,6 +5963,16 @@ def plan_run_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object
     }
 
 
+def json_payload(value: object, *, default: object) -> object:
+    if value is None:
+        return default
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return default
+    return parsed
+
+
 def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
     attempt_count = int(row[14] or 0) if len(row) > 14 else 0
     max_attempts = int(row[15] or 3) if len(row) > 15 else 3
@@ -5361,7 +6014,69 @@ def task_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
         "leaseOwner": str(row[25]) if len(row) > 25 and row[25] else None,
         "leaseExpiresAt": str(row[26]) if len(row) > 26 and row[26] else None,
         "runnerKind": str(row[27]) if len(row) > 27 and row[27] else "in_process",
+        "rootTaskId": str(row[28]) if len(row) > 28 and row[28] else None,
+        "planRunId": str(row[29]) if len(row) > 29 and row[29] else None,
+        "workerProfile": str(row[30]) if len(row) > 30 and row[30] else None,
+        "acceptanceCriteria": json_payload(row[31], default=[]) if len(row) > 31 else [],
+        "contextHints": json_payload(row[32], default={}) if len(row) > 32 else {},
+        "allowedToolsets": json_payload(row[33], default=[]) if len(row) > 33 else [],
+        "disallowedTools": json_payload(row[34], default=[]) if len(row) > 34 else [],
+        "dependsOnPolicy": str(row[35]) if len(row) > 35 and row[35] else "all_succeeded",
+        "checkpoint": json_payload(row[36], default={}) if len(row) > 36 else {},
+        "handoffSummary": normalize_optional_text(row[37], max_chars=MAX_TASK_RESULT_CHARS, field_name="handoff_summary") if len(row) > 37 else None,
+        "readyAt": str(row[38]) if len(row) > 38 and row[38] else None,
     }
+
+
+def task_edge_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    return {
+        "id": str(row[0]),
+        "fromTaskId": str(row[1]),
+        "toTaskId": str(row[2]),
+        "edgeType": normalize_task_edge_type(row[3]),
+        "requiredStatus": normalize_task_status(row[4] or "succeeded"),
+        "metadata": json_payload(row[5], default={}),
+        "createdAt": str(row[6]),
+    }
+
+
+def task_attempt_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    return {
+        "id": str(row[0]),
+        "taskId": str(row[1]),
+        "runId": str(row[2]),
+        "workerId": str(row[3]) if row[3] else None,
+        "workerProfile": str(row[4]) if row[4] else None,
+        "status": normalize_task_attempt_status(row[5]),
+        "startedAt": str(row[6]),
+        "heartbeatAt": str(row[7]) if row[7] else None,
+        "finishedAt": str(row[8]) if row[8] else None,
+        "inputContext": json_payload(row[9], default={}),
+        "checkpoint": json_payload(row[10], default={}),
+        "result": normalize_optional_text(row[11], max_chars=MAX_TASK_RESULT_CHARS, field_name="result"),
+        "error": normalize_optional_text(row[12], max_chars=MAX_TASK_ERROR_CHARS, field_name="error"),
+        "tokenUsage": json_payload(row[13], default={}),
+        "toolUsage": json_payload(row[14], default={}),
+    }
+
+
+def task_artifact_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": str(row[0]),
+        "taskId": str(row[1]),
+        "attemptId": str(row[2]) if row[2] else None,
+        "type": str(row[3] or "summary"),
+        "title": str(row[4] or "Artifact"),
+        "metadata": json_payload(row[8], default={}),
+        "createdAt": str(row[9]),
+    }
+    if row[5]:
+        payload["path"] = str(row[5])
+    if row[6]:
+        payload["url"] = str(row[6])
+    if row[7]:
+        payload["content"] = str(row[7])
+    return payload
 
 
 def task_event_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
