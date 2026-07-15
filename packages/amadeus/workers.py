@@ -598,7 +598,20 @@ class TaskWorker:
             attempt_id = str(attempt["id"])
             prompt = worker_context.to_prompt()
             runtime = self._agent_runtime_provider()
-            worker_scope = self._worker_runtime_scope(runtime, build_worker_runtime_scope(task))
+            scope = build_worker_runtime_scope(task)
+            validation_error = self._validate_worker_runtime_scope(runtime, session_id, scope)
+            if validation_error:
+                memory_store.finish_task_attempt(
+                    attempt_id,
+                    status="failed",
+                    error=validation_error,
+                    checkpoint={"status": "failed", "reason": "worker_scope_invalid"},
+                )
+                failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=validation_error)
+                self._sync_plan_item(memory_store, failed, "pending")
+                self._publish_task_update(failed, "failed")
+                return
+            worker_scope = self._worker_runtime_scope(runtime, scope)
             with worker_scope:
                 events = runtime.run_turn(session_id, prompt, self._deny_permission)
                 for event in events:
@@ -754,6 +767,16 @@ class TaskWorker:
         if callable(scope_factory):
             return scope_factory(set(scope.allowed_tool_names))
         return contextlib.nullcontext()
+
+    @staticmethod
+    def _validate_worker_runtime_scope(runtime: Any, session_id: str, scope: WorkerRuntimeScope) -> str | None:
+        validator = getattr(runtime, "validate_worker_runtime_scope", None)
+        if not callable(validator):
+            return None
+        result = validator(session_id, scope)
+        if result is None:
+            return None
+        return str(result or "Invalid worker runtime scope")
 
     @staticmethod
     def _task_prompt(task: dict[str, object]) -> str:

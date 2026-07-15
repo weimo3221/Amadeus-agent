@@ -1101,6 +1101,20 @@ class AgentRuntime:
         finally:
             _WORKER_RUNTIME_SCOPE.reset(token)
 
+    def validate_worker_runtime_scope(self, session_id: str | None, scope: WorkerRuntimeScope) -> str | None:
+        if not scope.workspace_path:
+            return None
+        worker_root = self._resolve_workspace_root(scope.workspace_path)
+        if worker_root is None:
+            return f"Worker workspace is not an existing directory: {scope.workspace_path}"
+        session_root = self._role_workspace_root_for_session(session_id)
+        if not self._path_is_inside(worker_root, session_root):
+            return (
+                "Worker workspace must be inside the session workspace: "
+                f"{worker_root} is outside {session_root}"
+            )
+        return None
+
     def _role_runtime_scope(self, session_id: str | None = None) -> RoleRuntimeScope:
         return normalize_role_runtime_scope(self.memory_store.role_runtime_scope_for_session(session_id))
 
@@ -2528,8 +2542,11 @@ class AgentRuntime:
         worker_workspace_path = self._current_worker_workspace_path()
         if worker_workspace_path:
             worker_root = self._resolve_workspace_root(worker_workspace_path)
-            if worker_root is not None:
+            if worker_root is not None and self._path_is_inside(worker_root, self._role_workspace_root_for_session(session_id)):
                 return worker_root
+        return self._role_workspace_root_for_session(session_id)
+
+    def _role_workspace_root_for_session(self, session_id: str | None = None) -> Path:
         if not session_id:
             return self.workspace_root
         workspace_path = self.memory_store.role_workspace_path_for_session(session_id)
@@ -2547,6 +2564,14 @@ class AgentRuntime:
         except OSError:
             return None
         return resolved if resolved.is_dir() else None
+
+    @staticmethod
+    def _path_is_inside(path: Path, parent: Path) -> bool:
+        try:
+            path.resolve().relative_to(parent.resolve())
+            return True
+        except ValueError:
+            return False
 
     def _current_worker_scope(self) -> WorkerRuntimeScope | None:
         return _WORKER_RUNTIME_SCOPE.get()

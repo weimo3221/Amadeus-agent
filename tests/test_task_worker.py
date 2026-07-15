@@ -91,6 +91,19 @@ class ScopedRuntime(SuccessfulRuntime):
         yield
 
 
+class RejectingScopeRuntime(SuccessfulRuntime):
+    def __init__(self, error: str) -> None:
+        self.error = error
+        self.calls = 0
+
+    def validate_worker_runtime_scope(self, session_id: str, scope: WorkerRuntimeScope) -> str | None:
+        return self.error
+
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        self.calls += 1
+        yield from super().run_turn(session_id, user_text, request_permission)
+
+
 class ImmediateTaskRunner:
     def __init__(self) -> None:
         self.submitted: list[str] = []
@@ -200,9 +213,11 @@ class TaskWorkerTests(unittest.TestCase):
 
     def test_agent_runtime_worker_runtime_scope_overrides_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir) / "worker-workspace"
+            role_workspace = Path(tmpdir) / "role-workspace"
+            role_workspace.mkdir()
+            workspace = role_workspace / "worker-workspace"
             workspace.mkdir()
-            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite", default_workspace_path=Path(tmpdir) / "role-workspace")
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite", default_workspace_path=role_workspace)
             runtime = AgentRuntime(memory, audio_runtime=None)
             scope = WorkerRuntimeScope(
                 worker_profile="coder",
@@ -216,6 +231,53 @@ class TaskWorkerTests(unittest.TestCase):
                 schemas = runtime.enabled_tool_schemas("session-1")
                 names = {schema["function"]["name"] for schema in schemas}
                 self.assertEqual(names, {"read_file", "patch"})
+
+    def test_agent_runtime_rejects_worker_workspace_outside_session_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            role_workspace = Path(tmpdir) / "role-workspace"
+            role_workspace.mkdir()
+            outside_workspace = Path(tmpdir) / "outside-workspace"
+            outside_workspace.mkdir()
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite", default_workspace_path=role_workspace)
+            runtime = AgentRuntime(memory, audio_runtime=None)
+            scope = WorkerRuntimeScope(
+                worker_profile="coder",
+                allowed_toolsets=("read",),
+                allowed_tool_names=frozenset({"read_file"}),
+                workspace_path=str(outside_workspace),
+            )
+
+            error = runtime.validate_worker_runtime_scope("session-1", scope)
+
+        self.assertIsNotNone(error)
+        self.assertIn("outside", str(error))
+        self.assertIn("session workspace", str(error))
+
+    def test_worker_fails_invalid_runtime_scope_without_running_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = RejectingScopeRuntime("Worker workspace must be inside the session workspace")
+            runner = ImmediateTaskRunner()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
+            task = memory.create_task(
+                session_id="session-1",
+                title="Invalid worker scope",
+                context_hints={"workspacePath": "/tmp/outside"},
+                max_attempts=3,
+            )
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+            finished = memory.get_task(str(task["id"]))
+            attempts = memory.list_task_attempts(str(task["id"]))
+
+        self.assertEqual(runtime.calls, 0)
+        self.assertIsNotNone(finished)
+        self.assertEqual(finished["status"], "failed")
+        self.assertEqual(finished["attemptCount"], 1)
+        self.assertIn("session workspace", str(finished["error"]))
+        self.assertEqual(attempts[0]["status"], "failed")
+        self.assertEqual(attempts[0]["checkpoint"]["reason"], "worker_scope_invalid")
 
     def test_subprocess_task_runner_launches_entrypoint_with_task_env(self) -> None:
         launches: list[dict[str, object]] = []
