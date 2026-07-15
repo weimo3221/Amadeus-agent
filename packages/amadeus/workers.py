@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import subprocess
+import sys
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
@@ -21,6 +24,7 @@ MemoryStoreProvider = Callable[[], MessageMemoryStore]
 AgentRuntimeProvider = Callable[[], Any]
 TaskEventPublisher = Callable[[dict[str, object], str], None]
 TaskCallable = Callable[[str], None]
+ProcessFactory = Callable[..., subprocess.Popen[Any]]
 WORKER_CONTEXT_DEPENDENCY_LIMIT = 8
 WORKER_CONTEXT_ARTIFACT_LIMIT = 8
 WORKER_CONTEXT_ATTEMPT_LIMIT = 5
@@ -139,7 +143,114 @@ class ProcessTaskRunner:
             self._semaphore.release()
 
 
-def build_task_runner(kind: str | None, *, max_workers: int = 2) -> TaskRunner:
+class SubprocessTaskRunner:
+    def __init__(
+        self,
+        *,
+        database_path: str | Path,
+        max_workers: int = 2,
+        python_executable: str | None = None,
+        workspace_path: str | Path | None = None,
+        process_factory: ProcessFactory | None = None,
+    ) -> None:
+        database = Path(database_path).expanduser()
+        if not str(database):
+            raise ValueError("SubprocessTaskRunner requires a database path")
+        self._database_path = database
+        self._python_executable = python_executable or sys.executable
+        self._workspace_path = Path(workspace_path).expanduser() if workspace_path else None
+        self._process_factory = process_factory or subprocess.Popen
+        self._semaphore = threading.BoundedSemaphore(max(1, int(max_workers)))
+        self._lock = threading.Lock()
+        self._supervisors: list[threading.Thread] = []
+        self._processes: dict[str, subprocess.Popen[Any]] = {}
+        self._closed = False
+
+    def submit(self, task_id: str, run_task: TaskCallable) -> None:
+        del run_task
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("task runner is shut down")
+        self._semaphore.acquire()
+        try:
+            process = self._start_process(task_id)
+        except BaseException:
+            self._semaphore.release()
+            raise
+        with self._lock:
+            self._processes[task_id] = process
+        supervisor = threading.Thread(
+            target=self._join_process,
+            args=(task_id, process),
+            name=f"amadeus-task-subprocess-supervisor-{task_id[:8]}",
+            daemon=True,
+        )
+        with self._lock:
+            self._supervisors.append(supervisor)
+        supervisor.start()
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        with self._lock:
+            self._closed = True
+            processes = list(self._processes.values())
+        if wait:
+            for process in processes:
+                process.wait()
+            seen: set[int] = set()
+            while True:
+                with self._lock:
+                    supervisors = [supervisor for supervisor in self._supervisors if id(supervisor) not in seen]
+                if not supervisors:
+                    break
+                for supervisor in supervisors:
+                    seen.add(id(supervisor))
+                    supervisor.join()
+        else:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+
+    def _start_process(self, task_id: str) -> subprocess.Popen[Any]:
+        env = dict(os.environ)
+        env["AMADEUS_TASK_ID"] = task_id
+        env["AMADEUS_MEMORY_DB"] = str(self._database_path)
+        env["AMADEUS_TASK_RUNNER"] = "sync"
+        if self._workspace_path is not None:
+            env["AMADEUS_WORKSPACE"] = str(self._workspace_path)
+        packages_dir = str(Path(__file__).resolve().parents[1])
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = packages_dir if not existing_pythonpath else os.pathsep.join([packages_dir, existing_pythonpath])
+        command = [
+            self._python_executable,
+            "-m",
+            "amadeus.task_worker_entrypoint",
+            "--task-id",
+            task_id,
+            "--database",
+            str(self._database_path),
+        ]
+        return self._process_factory(command, env=env, cwd=str(self._workspace_path) if self._workspace_path else None)
+
+    def _join_process(self, task_id: str, process: subprocess.Popen[Any]) -> None:
+        try:
+            return_code = process.wait()
+            if return_code != 0:
+                logger.info("Task subprocess exited non-zero taskId=%s pid=%s returnCode=%s", task_id, process.pid, return_code)
+        finally:
+            with self._lock:
+                current = self._processes.get(task_id)
+                if current is process:
+                    self._processes.pop(task_id, None)
+            self._semaphore.release()
+
+
+def build_task_runner(
+    kind: str | None,
+    *,
+    max_workers: int = 2,
+    database_path: str | Path | None = None,
+    workspace_path: str | Path | None = None,
+) -> TaskRunner:
     normalized = str(kind or "in_process").strip().lower().replace("-", "_")
     if normalized in {"sync", "synchronous", "inline"}:
         return SynchronousTaskRunner()
@@ -147,7 +258,11 @@ def build_task_runner(kind: str | None, *, max_workers: int = 2) -> TaskRunner:
         return InProcessTaskRunner(max_workers=max_workers)
     if normalized in {"process", "processes", "fork", "process_backed"}:
         return ProcessTaskRunner(max_workers=max_workers)
-    raise ValueError("task runner kind must be one of sync, in_process, or process")
+    if normalized in {"subprocess", "external_process", "external", "process_entrypoint"}:
+        if database_path is None:
+            raise ValueError("subprocess task runner requires database_path")
+        return SubprocessTaskRunner(database_path=database_path, max_workers=max_workers, workspace_path=workspace_path)
+    raise ValueError("task runner kind must be one of sync, in_process, process, or subprocess")
 
 
 @dataclass(frozen=True)

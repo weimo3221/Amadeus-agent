@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
 from amadeus.task_worker_entrypoint import main as task_worker_entrypoint_main, run_task_once
-from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
+from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
 
 
 class SuccessfulRuntime:
@@ -87,6 +87,22 @@ class ImmediateTaskRunner:
         self.shutdown_called = True
 
 
+class FakeProcess:
+    def __init__(self, return_code: int = 0) -> None:
+        self.pid = 12345
+        self.return_code = return_code
+        self.terminated = False
+
+    def wait(self) -> int:
+        return self.return_code
+
+    def poll(self) -> int | None:
+        return self.return_code
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
 class TaskWorkerTests(unittest.TestCase):
     def test_build_task_runner_selects_supported_runner_kinds(self) -> None:
         synchronous = build_task_runner("sync", max_workers=1)
@@ -101,6 +117,11 @@ class TaskWorkerTests(unittest.TestCase):
             process = build_task_runner("process", max_workers=1)
             self.assertIsInstance(process, ProcessTaskRunner)
             process.shutdown()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess_runner = build_task_runner("subprocess", max_workers=1, database_path=Path(tmpdir) / "amadeus.sqlite")
+            self.assertIsInstance(subprocess_runner, SubprocessTaskRunner)
+            subprocess_runner.shutdown()
 
     def test_worker_uses_injected_task_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -118,6 +139,40 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertTrue(runner.shutdown_called)
         self.assertIsNotNone(finished)
         self.assertEqual(finished["status"], "succeeded")
+
+    def test_subprocess_task_runner_launches_entrypoint_with_task_env(self) -> None:
+        launches: list[dict[str, object]] = []
+
+        def fake_process_factory(command: list[str], **kwargs: object) -> FakeProcess:
+            launches.append({"command": command, **kwargs})
+            return FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            workspace = Path(tmpdir) / "workspace"
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                workspace_path=workspace,
+                python_executable="/usr/bin/python-test",
+                process_factory=fake_process_factory,
+            )
+
+            runner.submit("task-123", lambda task_id: None)
+            runner.shutdown()
+
+        self.assertEqual(len(launches), 1)
+        command = launches[0]["command"]
+        self.assertEqual(command[:3], ["/usr/bin/python-test", "-m", "amadeus.task_worker_entrypoint"])
+        self.assertIn("--task-id", command)
+        self.assertIn("task-123", command)
+        env = launches[0]["env"]
+        self.assertIsInstance(env, dict)
+        self.assertEqual(env["AMADEUS_TASK_ID"], "task-123")
+        self.assertEqual(env["AMADEUS_MEMORY_DB"], str(database))
+        self.assertEqual(env["AMADEUS_TASK_RUNNER"], "sync")
+        self.assertEqual(env["AMADEUS_WORKSPACE"], str(workspace))
+        self.assertIn(str(Path(__file__).resolve().parents[1] / "packages"), env["PYTHONPATH"].split(os.pathsep))
+        self.assertEqual(launches[0]["cwd"], str(workspace))
 
     def test_task_worker_entrypoint_runs_one_task_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

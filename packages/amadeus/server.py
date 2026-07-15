@@ -158,7 +158,12 @@ task_worker = TaskWorker(
     publish_task_event=publish_task_update,
     max_workers=TASK_MAX_WORKERS,
     runner_kind=TASK_RUNNER_KIND,
-    runner=build_task_runner(TASK_RUNNER_KIND, max_workers=TASK_MAX_WORKERS),
+    runner=build_task_runner(
+        TASK_RUNNER_KIND,
+        max_workers=TASK_MAX_WORKERS,
+        database_path=DATABASE_PATH,
+        workspace_path=REPO_ROOT,
+    ),
 )
 agent_runtime.set_task_worker(task_worker)
 task_worker.recover()
