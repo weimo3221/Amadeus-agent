@@ -1,0 +1,37 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_30edb49e02c4e4 1092-1093,1107
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_6d62d679b9124e 136
+docs/project-status.md
+  s_80fee7171b51b9::t_468e9cda882e78 111,502,513-514
+docs/roadmap.md
+  s_80fee7171b51b9::t_197010a73555f5 17,285,287,290
+packages/amadeus/memory.py
+  s_80fee7171b51b9::t_138b4515891d61 3336-3337,3343-3348,3375-3376,3385,3394-3399,3412,3422-3427,3433,3442,3451,3474-3479,3486,3495,3504
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_3f76d5ab3e9751 890-898,918-919
+tests/test_memory.py
+  s_80fee7171b51b9::t_8516f95c9419ae 876-883,891-892,894,897
+tests/test_python_runtime_http.py
+  s_80fee7171b51b9::t_8bf384e9e9f8c8 885
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_54d3290c9ac2fd 503-506
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1fa0836b78b486198c7f108ad5d9a4d8aaef42ab",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
