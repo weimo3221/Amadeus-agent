@@ -423,6 +423,11 @@ class WorkerContext:
         if handoff_summary:
             lines.append("handoffSummary:")
             lines.append(_truncate(handoff_summary, WORKER_CONTEXT_FIELD_CHARS))
+        resume_strategy = _resume_strategy_for_checkpoint(checkpoint if isinstance(checkpoint, dict) else None)
+        if resume_strategy:
+            lines.extend(["", "<resume-strategy>"])
+            lines.extend(resume_strategy)
+            lines.append("</resume-strategy>")
         allowed = task.get("allowedToolsets")
         disallowed = task.get("disallowedTools")
         if allowed:
@@ -543,6 +548,51 @@ def _truncate(value: str, max_chars: int) -> str:
         return value
     marker = "... [truncated]"
     return value[: max(0, max_chars - len(marker))] + marker
+
+
+def _resume_strategy_for_checkpoint(checkpoint: dict[str, object] | None) -> list[str]:
+    if not checkpoint:
+        return []
+    resume_from = checkpoint.get("resumeFrom")
+    if not isinstance(resume_from, dict):
+        return []
+    phase = _text(resume_from.get("previousPhase") or resume_from.get("phase"))
+    last_event = _text(resume_from.get("lastEventType"))
+    reason = _text(checkpoint.get("reason"))
+    lines = [
+        f"reason: {reason or 'retry'}",
+        f"resumeFromPhase: {phase or 'unknown'}",
+    ]
+    if last_event:
+        lines.append(f"lastEventType: {last_event}")
+    result_preview = _text(resume_from.get("resultPreview"))
+    error_preview = _text(resume_from.get("errorPreview"))
+    if result_preview:
+        lines.append("priorResultPreview:")
+        lines.append(_truncate(result_preview, WORKER_CONTEXT_FIELD_CHARS))
+    if error_preview:
+        lines.append("priorErrorPreview:")
+        lines.append(_truncate(error_preview, WORKER_CONTEXT_FIELD_CHARS))
+    lines.append("instructions:")
+    if phase in {"assistant_message_received", "completed", "blocked_for_review"} or result_preview:
+        lines.append("- Treat the prior result preview as a partial draft or completed candidate.")
+        lines.append("- Verify it against the acceptance criteria and dependency artifacts before redoing work.")
+        lines.append("- If the draft is sufficient, return a concise final result that says what was verified.")
+        lines.append("- If artifacts or details are missing, only perform the missing follow-up work.")
+    elif phase in {"model_turn_started", "model_turn_starting", "scope_validated", "context_built"}:
+        lines.append("- The previous worker stopped before producing a usable final result.")
+        lines.append("- Continue from the task specification and available dependency context.")
+        lines.append("- Avoid repeating any completed dependency analysis already shown in handoffSummary or previous attempts.")
+    elif phase in {"error_received", "failed"} or error_preview:
+        lines.append("- Review the prior error before retrying.")
+        lines.append("- Change approach if the same error is likely to repeat.")
+        lines.append("- Return a blocker clearly if the error requires user input or unavailable capability.")
+    elif phase in {"cancelled", "turn_cancelled", "subprocess_exited"}:
+        lines.append("- Resume conservatively from the last durable context.")
+        lines.append("- Check whether any partial output or artifact can be reused before restarting work.")
+    else:
+        lines.append("- Use resumeFrom as recovery context and avoid unnecessary duplicate work.")
+    return lines
 
 
 def _json_preview(value: object, *, max_chars: int = WORKER_CONTEXT_FIELD_CHARS) -> str:

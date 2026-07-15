@@ -692,6 +692,37 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn('"read"', prompt)
         self.assertIn('"terminal"', prompt)
 
+    def test_worker_context_adds_resume_strategy_from_task_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(
+                session_id="session-1",
+                title="Resume draft",
+                acceptance_criteria=["Publish verified summary"],
+                checkpoint={
+                    "status": "queued",
+                    "phase": "retry_ready",
+                    "reason": "subprocess_exited",
+                    "resumeFrom": {
+                        "phase": "subprocess_exited",
+                        "previousPhase": "assistant_message_received",
+                        "lastEventType": "assistant.message",
+                        "resultPreview": "Draft summary from interrupted worker.",
+                    },
+                },
+                handoff_summary="Resume from previous worker phase=assistant_message_received.",
+            )
+
+            context = build_worker_context(memory, str(task["id"]))
+            prompt = context.to_prompt()
+
+        self.assertIn("<resume-strategy>", prompt)
+        self.assertIn("resumeFromPhase: assistant_message_received", prompt)
+        self.assertIn("priorResultPreview:", prompt)
+        self.assertIn("Draft summary from interrupted worker.", prompt)
+        self.assertIn("Verify it against the acceptance criteria", prompt)
+        self.assertIn("only perform the missing follow-up work", prompt)
+
     def test_worker_records_attempt_and_result_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
