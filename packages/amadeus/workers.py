@@ -505,6 +505,9 @@ class WorkerContext:
                     file_manifest_verification = metadata.get("fileManifestVerification")
                     if isinstance(file_manifest_verification, dict) and file_manifest_verification:
                         lines.append(f"  fileManifestVerification: {_json_preview(file_manifest_verification, max_chars=1200)}")
+                    file_resume_policy = metadata.get("fileResumePolicy")
+                    if isinstance(file_resume_policy, dict) and file_resume_policy:
+                        lines.append(f"  fileResumePolicy: {_json_preview(file_resume_policy, max_chars=1200)}")
                 content = _text(artifact.get("content"))
                 if content:
                     lines.append(f"  content: {_truncate(content, WORKER_CONTEXT_FIELD_CHARS)}")
@@ -903,6 +906,58 @@ def _verify_file_manifest(workspace_root: Path | None, saved_manifest: object) -
     }
 
 
+def _file_resume_policy(metadata: dict[str, object], verification: dict[str, object]) -> dict[str, object] | None:
+    status = _text(verification.get("status"))
+    resume_kind = _text(metadata.get("resumeKind"))
+    tool_name = _text(metadata.get("toolName"))
+    paths = _string_list(metadata.get("affectedFiles")) or _string_list(metadata.get("observedFiles"))
+    if not status or not paths:
+        return None
+    if resume_kind == "file_state" and tool_name in {"patch", "write_file"}:
+        if status == "unchanged":
+            return {
+                "action": "skip_redundant_mutation",
+                "reason": "The saved file mutation artifact still matches current workspace state.",
+                "paths": paths[:WORKER_FILE_MANIFEST_LIMIT],
+                "instructions": [
+                    "Do not repeat the same patch/write operation.",
+                    "Verify acceptance criteria from the saved artifact and continue with only missing follow-up work.",
+                    "Only mutate these files again if the task now requires a different change.",
+                ],
+            }
+        if status == "changed":
+            return {
+                "action": "reinspect_before_mutation",
+                "reason": "The saved file mutation artifact no longer matches current workspace state.",
+                "paths": paths[:WORKER_FILE_MANIFEST_LIMIT],
+                "instructions": [
+                    "Do not assume the previous patch/write is still present.",
+                    "Read or inspect the changed file before attempting another mutation.",
+                    "Re-apply only the missing intended change, not the whole prior sequence blindly.",
+                ],
+            }
+    if status == "unchanged" and resume_kind in {"file_observation", "file_search"}:
+        return {
+            "action": "reuse_observation",
+            "reason": "The saved file observation/search artifact still matches current workspace state.",
+            "paths": paths[:WORKER_FILE_MANIFEST_LIMIT],
+            "instructions": [
+                "Prefer the saved artifact over repeating the same read/search.",
+                "Read only if a narrower or different file window is needed.",
+            ],
+        }
+    if status == "changed":
+        return {
+            "action": "refresh_context",
+            "reason": "The saved file artifact no longer matches current workspace state.",
+            "paths": paths[:WORKER_FILE_MANIFEST_LIMIT],
+            "instructions": [
+                "Refresh the relevant file context before relying on this artifact.",
+            ],
+        }
+    return None
+
+
 def _enrich_artifacts_with_manifest_verification(
     memory_store: MessageMemoryStore,
     task: dict[str, object],
@@ -922,6 +977,9 @@ def _enrich_artifacts_with_manifest_verification(
         next_artifact = dict(artifact)
         next_metadata = dict(metadata)
         next_metadata["fileManifestVerification"] = verification
+        policy = _file_resume_policy(next_metadata, verification)
+        if policy is not None:
+            next_metadata["fileResumePolicy"] = policy
         next_artifact["metadata"] = next_metadata
         enriched.append(next_artifact)
     return enriched

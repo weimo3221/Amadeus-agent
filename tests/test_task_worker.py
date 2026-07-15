@@ -910,9 +910,16 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn(hashlib.sha256(file_content.encode("utf-8")).hexdigest(), prompt)
         self.assertIn("fileManifestVerification:", prompt)
         self.assertIn('"status": "unchanged"', prompt)
+        self.assertIn("fileResumePolicy:", prompt)
+        self.assertIn("skip_redundant_mutation", prompt)
+        self.assertIn("Do not repeat the same patch/write operation", prompt)
+        unchanged_metadata = context.task_artifacts[0]["metadata"]
+        self.assertEqual(unchanged_metadata["fileResumePolicy"]["action"], "skip_redundant_mutation")
         changed_metadata = changed_context.task_artifacts[0]["metadata"]
         self.assertEqual(changed_metadata["fileManifestVerification"]["status"], "changed")
+        self.assertEqual(changed_metadata["fileResumePolicy"]["action"], "reinspect_before_mutation")
         self.assertIn('"status": "changed"', changed_prompt)
+        self.assertIn("reinspect_before_mutation", changed_prompt)
         self.assertIn("idempotencyHint: Verify the affected file contents", prompt)
 
     def test_worker_records_attempt_and_result_artifact(self) -> None:
