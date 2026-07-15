@@ -1055,6 +1055,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["checks"]["memory"]["status"], "ok")
         self.assertEqual(payload["checks"]["memory"]["databasePath"], str(runtime_server.memory_store.database_path))
         self.assertEqual(payload["checks"]["memory"]["messageCount"], 0)
+        self.assertEqual(payload["checks"]["taskWorker"]["status"], "degraded")
+        self.assertFalse(payload["checks"]["taskWorker"]["diagnosticsAvailable"])
         self.assertIn(payload["checks"]["embedding"]["status"], {"ok", "degraded", "disabled"})
         self.assertEqual(payload["checks"]["embedding"]["modelId"], "BAAI/bge-m3")
         self.assertEqual(payload["checks"]["tools"]["status"], "ok")

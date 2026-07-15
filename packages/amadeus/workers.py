@@ -46,6 +46,9 @@ WORKER_TOOL_ARTIFACT_PREVIEW_CHARS = 2000
 WORKER_FILE_MANIFEST_LIMIT = 10
 WORKER_FILE_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
 WORKER_WORKSPACE_ISOLATION_MODES = {"none", "copy"}
+DEFAULT_TASK_RUNNER_KIND = "subprocess"
+DEFAULT_TASK_WORKSPACE_ISOLATION = "copy"
+DEFAULT_TASK_RECOVERY_INTERVAL_SECONDS = 15.0
 WORKER_WORKSPACE_COPY_IGNORE = {
     ".git",
     ".hg",
@@ -111,6 +114,9 @@ class TaskRunner(Protocol):
     def submit(self, task_id: str, run_task: TaskCallable) -> None:
         ...
 
+    def cancel(self, task_id: str) -> None:
+        ...
+
     def shutdown(self, *, wait: bool = True) -> None:
         ...
 
@@ -122,6 +128,9 @@ class InProcessTaskRunner:
     def submit(self, task_id: str, run_task: TaskCallable) -> None:
         self._executor.submit(run_task, task_id)
 
+    def cancel(self, task_id: str) -> None:
+        del task_id
+
     def shutdown(self, *, wait: bool = True) -> None:
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
@@ -129,6 +138,9 @@ class InProcessTaskRunner:
 class SynchronousTaskRunner:
     def submit(self, task_id: str, run_task: TaskCallable) -> None:
         run_task(task_id)
+
+    def cancel(self, task_id: str) -> None:
+        del task_id
 
     def shutdown(self, *, wait: bool = True) -> None:
         return None
@@ -201,6 +213,16 @@ class ProcessTaskRunner:
                     os.kill(pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+
+    def cancel(self, task_id: str) -> None:
+        with self._lock:
+            pid = self._processes.get(task_id)
+        if pid is None:
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
     def _join_process(self, task_id: str, pid: int) -> None:
         try:
@@ -326,6 +348,7 @@ class SubprocessTaskRunner:
         self._lock = threading.Lock()
         self._supervisors: list[threading.Thread] = []
         self._processes: dict[str, tuple[subprocess.Popen[Any], str]] = {}
+        self._pending_task_ids: set[str] = set()
         self._closed = False
 
     def submit(self, task_id: str, run_task: TaskCallable) -> None:
@@ -333,13 +356,22 @@ class SubprocessTaskRunner:
         with self._lock:
             if self._closed:
                 raise RuntimeError("task runner is shut down")
-        self._semaphore.acquire()
+            if task_id in self._pending_task_ids or task_id in self._processes:
+                return
+            self._pending_task_ids.add(task_id)
+        if not self._semaphore.acquire(blocking=False):
+            with self._lock:
+                self._pending_task_ids.discard(task_id)
+            return
         try:
             process, run_id = self._start_process(task_id)
         except BaseException:
+            with self._lock:
+                self._pending_task_ids.discard(task_id)
             self._semaphore.release()
             raise
         with self._lock:
+            self._pending_task_ids.discard(task_id)
             self._processes[task_id] = (process, run_id)
         supervisor = threading.Thread(
             target=self._join_process,
@@ -354,9 +386,9 @@ class SubprocessTaskRunner:
     def shutdown(self, *, wait: bool = True) -> None:
         with self._lock:
             self._closed = True
-            processes = [process for process, _ in self._processes.values()]
+            processes = list(self._processes.items())
         if wait:
-            for process in processes:
+            for _task_id, (process, _run_id) in processes:
                 process.wait()
             seen: set[int] = set()
             while True:
@@ -368,9 +400,39 @@ class SubprocessTaskRunner:
                     seen.add(id(supervisor))
                     supervisor.join()
         else:
-            for process in processes:
-                if process.poll() is None:
-                    process.terminate()
+            for task_id, (process, run_id) in processes:
+                self._request_termination(task_id, process, run_id, reason="runner_shutdown")
+
+    def cancel(self, task_id: str) -> None:
+        with self._lock:
+            active = self._processes.get(task_id)
+        if active is None:
+            return
+        process, run_id = active
+        self._request_termination(task_id, process, run_id, reason="task_cancelled")
+
+    def status(self) -> dict[str, object]:
+        with self._lock:
+            active = {
+                task_id: {
+                    "pid": process.pid,
+                    "runId": run_id,
+                }
+                for task_id, (process, run_id) in self._processes.items()
+            }
+            pending = sorted(self._pending_task_ids)
+            closed = self._closed
+            supervisor_count = sum(1 for supervisor in self._supervisors if supervisor.is_alive())
+        return {
+            "kind": "subprocess",
+            "closed": closed,
+            "workspaceIsolation": self._workspace_isolation,
+            "sandboxRoot": str(self._sandbox_root),
+            "activeProcessCount": len(active),
+            "activeProcesses": active,
+            "pendingTaskIds": pending,
+            "supervisorThreadCount": supervisor_count,
+        }
 
     def _start_process(self, task_id: str) -> tuple[subprocess.Popen[Any], str]:
         run_id = uuid4().hex
@@ -419,12 +481,35 @@ class SubprocessTaskRunner:
             "--database",
             str(self._database_path),
         ]
-        process = self._process_factory(command, env=env, cwd=str(effective_workspace) if effective_workspace else None)
+        process = self._process_factory(
+            command,
+            env=env,
+            cwd=str(effective_workspace) if effective_workspace else None,
+            start_new_session=os.name != "nt",
+        )
+        self._record_supervisor_event(
+            task_id,
+            event_type="subprocess_started",
+            message="Task subprocess started",
+            metadata={
+                "pid": process.pid,
+                "runId": run_id,
+                "workspaceIsolation": workspace_isolation,
+                "workspacePath": str(effective_workspace) if effective_workspace else None,
+                "workspaceSourcePath": str(workspace_source) if workspace_source else None,
+            },
+        )
         return process, run_id
 
     def _join_process(self, task_id: str, process: subprocess.Popen[Any], run_id: str) -> None:
         try:
             return_code = process.wait()
+            self._record_supervisor_event(
+                task_id,
+                event_type="subprocess_exited",
+                message=f"Task subprocess exited with code {return_code}",
+                metadata={"pid": process.pid, "runId": run_id, "returnCode": return_code},
+            )
             if return_code != 0:
                 logger.info("Task subprocess exited non-zero taskId=%s pid=%s returnCode=%s", task_id, process.pid, return_code)
                 self._recover_nonzero_exit(task_id, run_id=run_id, return_code=return_code)
@@ -434,6 +519,56 @@ class SubprocessTaskRunner:
                 if current and current[0] is process:
                     self._processes.pop(task_id, None)
             self._semaphore.release()
+
+    def _request_termination(
+        self,
+        task_id: str,
+        process: subprocess.Popen[Any],
+        run_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        if process.poll() is not None:
+            return
+        self._record_supervisor_event(
+            task_id,
+            event_type="subprocess_termination_requested",
+            message="Task subprocess termination requested",
+            metadata={"pid": process.pid, "runId": run_id, "reason": reason},
+        )
+        if os.name != "nt" and process.pid:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                return
+            except (OSError, ProcessLookupError):
+                pass
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+
+    def _record_supervisor_event(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        message: str,
+        metadata: dict[str, object],
+    ) -> None:
+        try:
+            MessageMemoryStore(self._database_path).record_task_event(
+                task_id,
+                event_type=event_type,
+                message=message,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.debug(
+                "Task subprocess supervisor event failed taskId=%s eventType=%s",
+                task_id,
+                event_type,
+                exc_info=True,
+            )
 
     def _recover_nonzero_exit(self, task_id: str, *, run_id: str, return_code: int) -> None:
         memory_store = MessageMemoryStore(self._database_path)
@@ -1193,6 +1328,7 @@ class TaskWorker:
         retry_max_delay_seconds: float = 30.0,
         stale_after_seconds: float = 300.0,
         lease_seconds: float | None = None,
+        recovery_interval_seconds: float = DEFAULT_TASK_RECOVERY_INTERVAL_SECONDS,
         runner_kind: str = "in_process",
         runner: TaskRunner | None = None,
         attempt_run_id: str | None = None,
@@ -1205,6 +1341,7 @@ class TaskWorker:
         self._stale_after_seconds = max(1.0, float(stale_after_seconds))
         self._lease_seconds = max(1.0, float(lease_seconds if lease_seconds is not None else stale_after_seconds))
         self._heartbeat_interval_seconds = max(0.5, min(30.0, self._lease_seconds / 3.0))
+        self._recovery_interval_seconds = max(0.25, float(recovery_interval_seconds))
         self._runner_kind = str(runner_kind or "in_process").strip() or "in_process"
         self._worker_id = f"{self._runner_kind}-{uuid4().hex[:12]}"
         self._attempt_run_id = str(attempt_run_id).strip() if attempt_run_id else None
@@ -1213,6 +1350,8 @@ class TaskWorker:
         self._running: dict[str, threading.Event] = {}
         self._turns: dict[str, tuple[str, str]] = {}
         self._timers: dict[str, threading.Timer] = {}
+        self._supervisor_stop = threading.Event()
+        self._supervisor_thread: threading.Thread | None = None
 
     def submit(self, task_id: str) -> None:
         self._runner.submit(task_id, self._run_task)
@@ -1227,13 +1366,51 @@ class TaskWorker:
             self.submit(str(task["id"]))
         return recovered
 
+    def start_supervisor(self) -> list[dict[str, object]]:
+        recovered = self.recover()
+        normalized_kind = self._runner_kind.lower().replace("-", "_")
+        if normalized_kind not in {"subprocess", "external_process", "external", "process_entrypoint"}:
+            return recovered
+        with self._lock:
+            if self._supervisor_thread and self._supervisor_thread.is_alive():
+                return recovered
+            self._supervisor_stop.clear()
+            self._supervisor_thread = threading.Thread(
+                target=self._supervisor_loop,
+                name="amadeus-task-recovery-supervisor",
+                daemon=True,
+            )
+            self._supervisor_thread.start()
+        return recovered
+
+    def status(self) -> dict[str, object]:
+        with self._lock:
+            supervisor_running = bool(self._supervisor_thread and self._supervisor_thread.is_alive())
+            local_running_count = len(self._running)
+            scheduled_retry_count = len(self._timers)
+        runner_status_factory = getattr(self._runner, "status", None)
+        runner_status = runner_status_factory() if callable(runner_status_factory) else {}
+        return {
+            "runnerKind": self._runner_kind,
+            "workerId": self._worker_id,
+            "supervisorRunning": supervisor_running,
+            "recoveryIntervalSeconds": self._recovery_interval_seconds,
+            "localRunningCount": local_running_count,
+            "scheduledRetryCount": scheduled_retry_count,
+            "runner": runner_status,
+        }
+
     def shutdown(self, *, wait: bool = True) -> None:
+        self._supervisor_stop.set()
         with self._lock:
             timers = list(self._timers.values())
             self._timers.clear()
+            supervisor_thread = self._supervisor_thread
         for timer in timers:
             timer.cancel()
         self._runner.shutdown(wait=wait)
+        if supervisor_thread and supervisor_thread.is_alive():
+            supervisor_thread.join(timeout=max(1.0, self._recovery_interval_seconds + 0.5))
 
     def cancel(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
         with self._lock:
@@ -1244,6 +1421,9 @@ class TaskWorker:
         self._publish_task_update(task, "cancelled")
         if cancel_event:
             cancel_event.set()
+        runner_cancel = getattr(self._runner, "cancel", None)
+        if callable(runner_cancel):
+            runner_cancel(task_id)
         if running_turn:
             session_id, turn_id = running_turn
             try:
@@ -1251,6 +1431,13 @@ class TaskWorker:
             except Exception as error:
                 logger.info("Task worker failed to cancel backing turn taskId=%s error=%s", task_id, error)
         return task
+
+    def _supervisor_loop(self) -> None:
+        while not self._supervisor_stop.wait(self._recovery_interval_seconds):
+            try:
+                self.recover()
+            except Exception:
+                logger.info("Task recovery supervisor tick failed", exc_info=True)
 
     def _run_task(self, task_id: str) -> None:
         memory_store = self._memory_store_provider()

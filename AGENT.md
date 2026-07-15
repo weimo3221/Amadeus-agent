@@ -20,7 +20,7 @@ Amadeus is now a Python-first desktop agent runtime, not just an initial MVP:
 - The runtime loads only `AGENT.md` from the active workspace as lower-priority project context: architecture, conventions, constraints, current status, and recommended next work.
 - Role `SOUL.md` under `data/roles/<roleId>/SOUL.md` is the primary agent identity/persona/style layer. User-specific preferences belong in role-scoped `USER.md` memory, not in `AGENT.md`.
 - Current Python tools include time, dice, role identity update, stable memory, structured memory, memory search, file search/read, patch/write, plan updates, session tasks, skill listing/viewing, and restricted delegation.
-- Session tasks are persisted in SQLite and executed by an in-process Python worker with `queued` / `running` / `succeeded` / `failed` / `cancelled` states, retry scheduling, and stale-running recovery.
+- Session tasks are persisted in SQLite and production execution defaults to dedicated subprocess workers with per-run workspace copies, leases, periodic recovery, retry scheduling, and `queued` / `running` / `succeeded` / `failed` / `cancelled` states.
 - Local Live2D model storage is active under `models/live2d`, with Python owning `/live2d/*` and the bridge proxying those endpoints back to the desktop origin.
 - Runtime audio can use GPT-SoVITS when configured or macOS `say` as a local fallback, and emits `audio.tts-ready` plus lipsync cues when available.
 
@@ -134,7 +134,7 @@ Keep event payloads serializable and small.
 
 ## Known Gaps
 
-- Task execution is still in-process. It has retries and stale-running recovery, but not durable multi-process workers, checkpoints, or resume.
+- Task execution has subprocess/copy isolation, attempt checkpoints, resume handoff, process-group cancellation, and periodic lease recovery. It is not yet an external independently deployed supervisor or a kernel-enforced sandbox.
 - Background task completion is pushed to UI as `task.updated`; it does not yet automatically wake the model to narrate completion.
 - Live2D/audio are practical but still need richer harness decisions, better non-Latin phoneme mapping, and deeper packaged-desktop coverage.
 - GPT-SoVITS requires an external configured service and model assets; macOS `say` remains the practical fallback.

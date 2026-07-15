@@ -144,7 +144,7 @@ Focus on desktop/runtime stabilization:
 - Keep Companion lightweight, Live2D/voice-focused, and transient.
 - Improve session switching and explicit Companion attach/view flows.
 - Add richer task execution UX only on top of the existing task model: attempts, retry timing, task history, terminal results, review/approval, artifacts, and notifications.
-- Move toward a process-backed runner behind the existing `TaskRunner` contract if long-running work becomes important.
+- Keep the subprocess/copy-isolated production runner stable; extend its supervisor, resource limits, and OS-native sandbox backends without creating a second task model.
 - Improve MCP HTTP diagnostics and role-scoped visibility before taking on stdio/SSE lifecycle management.
 - Keep ToolRuntime and Memory v2 in consolidation mode: diagnostics, ranking quality, review quality, summary/profile policy, overflow behavior, and per-tool output policy.
 - Expand deterministic Electron E2E coverage around real desktop/runtime interactions.

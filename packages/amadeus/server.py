@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import queue
+import signal
 import sys
 import yaml
 from datetime import datetime, timezone
@@ -39,7 +40,13 @@ from amadeus.runtime_events import RuntimeEventBus
 from amadeus.scheduling import ScheduledJobWorker
 from amadeus.tool_runtime import ToolContext
 from amadeus.tools import list_tools
-from amadeus.workers import TaskWorker, build_task_runner
+from amadeus.workers import (
+    DEFAULT_TASK_RECOVERY_INTERVAL_SECONDS,
+    DEFAULT_TASK_RUNNER_KIND,
+    DEFAULT_TASK_WORKSPACE_ISOLATION,
+    TaskWorker,
+    build_task_runner,
+)
 
 
 HOST = os.environ.get("AMADEUS_PYTHON_RUNTIME_HOST", os.environ.get("AMADEUS_PYTHON_TOOLS_HOST", "127.0.0.1"))
@@ -116,10 +123,13 @@ memory_embedding_backfill_runner = MemoryEmbeddingBackfillRunner()
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
 runtime_event_bus = RuntimeEventBus()
-TASK_RUNNER_KIND = os.environ.get("AMADEUS_TASK_RUNNER", "in_process")
+TASK_RUNNER_KIND = os.environ.get("AMADEUS_TASK_RUNNER", DEFAULT_TASK_RUNNER_KIND)
 TASK_MAX_WORKERS = int(os.environ.get("AMADEUS_TASK_MAX_WORKERS", "2"))
-TASK_WORKSPACE_ISOLATION = os.environ.get("AMADEUS_TASK_WORKSPACE_ISOLATION")
+TASK_WORKSPACE_ISOLATION = os.environ.get("AMADEUS_TASK_WORKSPACE_ISOLATION", DEFAULT_TASK_WORKSPACE_ISOLATION)
 TASK_WORKSPACE_SANDBOX_ROOT = os.environ.get("AMADEUS_TASK_WORKSPACE_SANDBOX_ROOT")
+TASK_RECOVERY_INTERVAL_SECONDS = float(
+    os.environ.get("AMADEUS_TASK_RECOVERY_INTERVAL_SECONDS", str(DEFAULT_TASK_RECOVERY_INTERVAL_SECONDS))
+)
 
 
 def publish_task_update(task: dict[str, object], action: str) -> None:
@@ -162,6 +172,7 @@ task_worker = TaskWorker(
     lambda: agent_runtime,
     publish_task_event=publish_task_update,
     max_workers=TASK_MAX_WORKERS,
+    recovery_interval_seconds=TASK_RECOVERY_INTERVAL_SECONDS,
     runner_kind=TASK_RUNNER_KIND,
     runner=build_task_runner(
         TASK_RUNNER_KIND,
@@ -173,14 +184,12 @@ task_worker = TaskWorker(
     ),
 )
 agent_runtime.set_task_worker(task_worker)
-task_worker.recover()
 orchestrator_service = OrchestratorService(memory_store, submit_task=task_worker.submit, model_client=agent_runtime.model_client)
 scheduled_job_worker = ScheduledJobWorker(
     lambda: memory_store,
     publish_job_event=publish_scheduled_job_update,
     submit_task=task_worker.submit,
 )
-scheduled_job_worker.start()
 
 
 class RuntimeRequestHandler(BaseHTTPRequestHandler):
@@ -2537,6 +2546,7 @@ def build_runtime_health() -> dict[str, Any]:
         "runtime": runtime_health_check(),
         "model": model_health_check(),
         "memory": memory_health_check(),
+        "taskWorker": task_worker_health_check(),
         "embedding": embedding_health_check(),
         "tools": tools_health_check(),
         "live2d": live2d_health_check(),
@@ -2586,6 +2596,31 @@ def model_health_check() -> dict[str, Any]:
         "reasoningEffort": agent_runtime.model_client.config.reasoning_effort,
         "apiKeyConfigured": api_key_configured,
     }
+
+
+def task_worker_health_check() -> dict[str, Any]:
+    try:
+        status_factory = getattr(task_worker, "status", None)
+        if not callable(status_factory):
+            return {
+                "status": "degraded",
+                "runnerKind": TASK_RUNNER_KIND,
+                "workspaceIsolation": TASK_WORKSPACE_ISOLATION,
+                "diagnosticsAvailable": False,
+            }
+        return {
+            "status": "ok",
+            "diagnosticsAvailable": True,
+            **status_factory(),
+        }
+    except Exception as error:
+        logger.info("Task worker health check failed error=%s", error)
+        return {
+            "status": "error",
+            "runnerKind": TASK_RUNNER_KIND,
+            "workspaceIsolation": TASK_WORKSPACE_ISOLATION,
+            "error": str(error),
+        }
 
 
 def memory_health_check() -> dict[str, Any]:
@@ -3635,9 +3670,26 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     server = ThreadingHTTPServer((HOST, PORT), RuntimeRequestHandler)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def request_shutdown(signum: int, _frame: object) -> None:
+        logger.info("Amadeus runtime received shutdown signal=%s", signal.Signals(signum).name)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    task_worker.start_supervisor()
+    scheduled_job_worker.start()
     logger.info("Amadeus runtime starting host=%s port=%s database=%s audioRoot=%s", HOST, PORT, DATABASE_PATH, AUDIO_ROOT)
     print(f"Amadeus runtime listening on http://{HOST}:{PORT}", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Amadeus runtime stopping")
+    finally:
+        server.server_close()
+        scheduled_job_worker.stop(timeout=5)
+        task_worker.shutdown(wait=False)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

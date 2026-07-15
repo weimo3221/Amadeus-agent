@@ -196,6 +196,32 @@ class FakeProcess:
         self.terminated = True
 
 
+class BlockingFakeProcess:
+    def __init__(self) -> None:
+        self.pid = 987654
+        self.return_code: int | None = None
+        self.terminated = False
+        self.killed = False
+        self._finished = threading.Event()
+
+    def wait(self) -> int:
+        self._finished.wait(timeout=2)
+        return self.return_code if self.return_code is not None else 0
+
+    def poll(self) -> int | None:
+        return self.return_code
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.return_code = -15
+        self._finished.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self.return_code = -9
+        self._finished.set()
+
+
 class TaskWorkerTests(unittest.TestCase):
     def test_build_task_runner_selects_supported_runner_kinds(self) -> None:
         synchronous = build_task_runner("sync", max_workers=1)
@@ -492,6 +518,7 @@ class TaskWorkerTests(unittest.TestCase):
 
             runner.submit(str(task["id"]), lambda task_id: None)
             runner.shutdown()
+            events = memory.list_task_events(str(task["id"]))
 
         self.assertEqual(len(launches), 1)
         command = launches[0]["command"]
@@ -509,6 +536,38 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(Path(str(env["AMADEUS_WORKSPACE"])).resolve(), workspace.resolve())
         self.assertIn(str(Path(__file__).resolve().parents[1] / "packages"), env["PYTHONPATH"].split(os.pathsep))
         self.assertEqual(Path(str(launches[0]["cwd"])).resolve(), workspace.resolve())
+        self.assertEqual(launches[0]["start_new_session"], os.name != "nt")
+        self.assertIn("subprocess_started", [event["type"] for event in events])
+        self.assertIn("subprocess_exited", [event["type"] for event in events])
+
+    def test_subprocess_task_runner_deduplicates_and_terminates_active_task(self) -> None:
+        launches: list[dict[str, object]] = []
+        process = BlockingFakeProcess()
+
+        def fake_process_factory(command: list[str], **kwargs: object) -> BlockingFakeProcess:
+            launches.append({"command": command, **kwargs})
+            return process
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Supervise subprocess")
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                process_factory=fake_process_factory,
+            )
+
+            runner.submit(str(task["id"]), lambda task_id: None)
+            runner.submit(str(task["id"]), lambda task_id: None)
+            status = runner.status()
+            runner.cancel(str(task["id"]))
+            runner.shutdown()
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual(len(launches), 1)
+        self.assertEqual(status["activeProcessCount"], 1)
+        self.assertTrue(process.terminated)
+        self.assertIn("subprocess_termination_requested", [event["type"] for event in events])
 
     def test_subprocess_task_runner_copies_workspace_for_isolated_child_runtime(self) -> None:
         launches: list[dict[str, object]] = []
@@ -991,6 +1050,27 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(finished["attemptCount"], 2)
         self.assertEqual([event["type"] for event in events], ["created", "running", "recovered", "running", "succeeded"])
         self.assertIn(("queued", "recovered"), published)
+
+    def test_subprocess_worker_supervisor_dispatches_tasks_created_after_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            worker = TaskWorker(
+                lambda: memory,
+                lambda: SuccessfulRuntime(),
+                runner=ImmediateTaskRunner(),
+                runner_kind="subprocess",
+                recovery_interval_seconds=0.05,
+            )
+
+            worker.start_supervisor()
+            task = memory.create_task(session_id="session-1", title="Periodic dispatch")
+            finished = self.wait_for_status(memory, str(task["id"]), "succeeded")
+            status = worker.status()
+            worker.shutdown()
+
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertTrue(status["supervisorRunning"])
+        self.assertEqual(status["runnerKind"], "subprocess")
 
     def test_worker_does_not_recover_running_task_with_active_lease(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

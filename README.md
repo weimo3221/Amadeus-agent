@@ -34,7 +34,7 @@ Amadeus Agent is not just a chat window. The character reacts through facial exp
 | 🛠️ | **ToolRuntime** | Formal registry with `allow` / `ask` / `deny` permissions, audit trail, timeouts, cancellation, and repeated-call guardrails. |
 | 🌐 | **Web access skill** | Project-local `skills/web-access` can be activated with `skill_view` and uses a CDP proxy for real browser-backed web access. |
 | 💭 | **Reasoning-aware** | DeepSeek V4 thinking mode handled through a provider-aware reasoning layer that replays `reasoning_content` only where required. |
-| ⏰ | **Proactive agent** | Scheduled companion messages, persistent session todos, and in-process task workers with retry and stale-run recovery. |
+| ⏰ | **Proactive agent** | Scheduled companion messages, persistent session todos, and subprocess task workers with workspace-copy isolation, leases, retry, and periodic recovery. |
 | 🔌 | **MCP bridge** | Discover and execute remote HTTP JSON-RPC MCP tools with full permission and audit coverage. |
 
 ## Architecture
