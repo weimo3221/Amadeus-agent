@@ -66,6 +66,7 @@ class WorkerRuntimeScope:
     allowed_tool_names: frozenset[str]
     workspace_path: str | None = None
     approved_ask_tool_names: frozenset[str] = frozenset()
+    file_resume_policies: tuple[dict[str, Any], ...] = ()
 
 
 def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
@@ -81,6 +82,26 @@ def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
             name for name in worker_approved_ask_tool_names_for_task(task) if name in allowed_tool_names
         ),
     )
+
+
+def worker_file_resume_policies_from_artifacts(artifacts: list[dict[str, object]]) -> tuple[dict[str, Any], ...]:
+    policies: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        policy = metadata.get("fileResumePolicy")
+        if not isinstance(policy, dict):
+            continue
+        normalized = dict(policy)
+        source_tool_name = str(metadata.get("toolName") or "").strip()
+        if source_tool_name:
+            normalized["sourceToolName"] = source_tool_name
+        artifact_id = str(artifact.get("id") or "").strip()
+        if artifact_id:
+            normalized["artifactId"] = artifact_id
+        policies.append(normalized)
+    return tuple(policies)
 
 
 def worker_profile_for_task(task: dict[str, object]) -> str:

@@ -233,6 +233,21 @@ class TaskWorkerTests(unittest.TestCase):
                 disallowed_tools=["web_extract"],
                 context_hints={"workspacePath": "research-workspace"},
             )
+            memory.add_task_artifact(
+                str(task["id"]),
+                {
+                    "type": "diff",
+                    "title": "Tool result: patch",
+                    "path": "src/app.py",
+                },
+                metadata={
+                    "toolName": "patch",
+                    "fileResumePolicy": {
+                        "action": "skip_redundant_mutation",
+                        "paths": ["src/app.py"],
+                    },
+                },
+            )
 
             worker.submit(str(task["id"]))
             worker.shutdown()
@@ -246,6 +261,8 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("web_search", scope.allowed_tool_names)
         self.assertNotIn("terminal", scope.allowed_tool_names)
         self.assertNotIn("web_extract", scope.allowed_tool_names)
+        self.assertEqual(scope.file_resume_policies[0]["action"], "skip_redundant_mutation")
+        self.assertEqual(scope.file_resume_policies[0]["sourceToolName"], "patch")
         self.assertEqual(runtime.scopes, [])
 
     def test_agent_runtime_worker_tool_scope_filters_schemas_and_execution(self) -> None:

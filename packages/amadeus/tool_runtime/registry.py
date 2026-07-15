@@ -56,6 +56,7 @@ class ToolContext:
     worker_profile: str | None = None
     worker_allowed_toolsets: tuple[str, ...] = ()
     worker_workspace_path: str | None = None
+    worker_file_resume_policies: tuple[dict[str, Any], ...] = ()
     permission_request_id: str | None = None
     permission_decision: str | None = None
     workspace_epoch: int | None = None

@@ -24,6 +24,7 @@ class ToolLoopGuardrail:
         self._semantic_failed_signatures: dict[str, int] = {}
         self._semantic_completed_signatures: dict[str, int] = {}
         self._semantic_reasons: dict[str, str] = {}
+        self._refreshed_file_paths: dict[str, int | None] = {}
 
     def before_call(
         self,
@@ -31,7 +32,17 @@ class ToolLoopGuardrail:
         args: dict[str, Any],
         *,
         workspace_epoch: int | None = None,
+        file_resume_policies: tuple[dict[str, Any], ...] = (),
     ) -> ToolGuardrailDecision:
+        resume_policy_decision = self._file_resume_policy_decision(
+            tool_name,
+            args,
+            file_resume_policies=file_resume_policies,
+            workspace_epoch=workspace_epoch,
+        )
+        if resume_policy_decision is not None:
+            return resume_policy_decision
+
         semantic_args_signature = self._semantic_args_signature(tool_name, args, workspace_epoch=workspace_epoch)
         semantic_failed_count = self._semantic_failed_signatures.get(semantic_args_signature, 0)
         if semantic_failed_count >= self.max_failed_repeats:
@@ -85,6 +96,7 @@ class ToolLoopGuardrail:
     ) -> None:
         signature = self._call_signature(tool_name, args, workspace_epoch=workspace_epoch)
         self._completed_signatures[signature] = self._completed_signatures.get(signature, 0) + 1
+        self._record_file_refresh(tool_name, args, result, ok, workspace_epoch=workspace_epoch)
         semantic_observation = self._semantic_observation(tool_name, args, result, ok, workspace_epoch=workspace_epoch)
         if semantic_observation:
             kind, semantic_signature, reason = semantic_observation
@@ -102,6 +114,109 @@ class ToolLoopGuardrail:
             return
 
         self._failed_signatures[signature] = self._failed_signatures.get(signature, 0) + 1
+
+    def _file_resume_policy_decision(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        file_resume_policies: tuple[dict[str, Any], ...],
+        workspace_epoch: int | None = None,
+    ) -> ToolGuardrailDecision | None:
+        if tool_name not in {"patch", "write_file"}:
+            return None
+        requested_path = self._arg_path(args)
+        if not requested_path:
+            return None
+        for policy in file_resume_policies:
+            if not isinstance(policy, dict):
+                continue
+            policy_paths = self._policy_paths(policy)
+            if requested_path not in policy_paths:
+                continue
+            action = str(policy.get("action") or "").strip()
+            source_tool_name = str(policy.get("sourceToolName") or "").strip()
+            if action == "skip_redundant_mutation" and (not source_tool_name or source_tool_name == tool_name):
+                return ToolGuardrailDecision(
+                    allowed=False,
+                    reason=(
+                        "Blocked worker file mutation because a saved artifact verifies that "
+                        f"{requested_path} already matches the previous {tool_name} result. "
+                        "Use the saved artifact or perform only a different follow-up step."
+                    ),
+                    failure_code="file_resume_policy_blocked",
+                )
+            if action == "reinspect_before_mutation" and not self._path_was_refreshed(
+                requested_path,
+                workspace_epoch=workspace_epoch,
+            ):
+                return ToolGuardrailDecision(
+                    allowed=False,
+                    reason=(
+                        "Blocked worker file mutation because the saved file artifact no longer matches "
+                        f"current workspace state for {requested_path}. Read the file first, then apply only "
+                        "the missing intended change."
+                    ),
+                    failure_code="file_resume_policy_reinspect_required",
+                )
+        return None
+
+    def _record_file_refresh(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+        ok: bool,
+        *,
+        workspace_epoch: int | None,
+    ) -> None:
+        if not ok or tool_name != "read_file":
+            return
+        path = self._arg_path(args) or self._result_path(result)
+        if path:
+            self._refreshed_file_paths[path] = workspace_epoch
+
+    def _path_was_refreshed(self, path: str, *, workspace_epoch: int | None) -> bool:
+        if path not in self._refreshed_file_paths:
+            return False
+        refreshed_epoch = self._refreshed_file_paths[path]
+        return workspace_epoch is None or refreshed_epoch is None or refreshed_epoch == workspace_epoch
+
+    @staticmethod
+    def _arg_path(args: dict[str, Any]) -> str | None:
+        path = args.get("path")
+        if not isinstance(path, str):
+            return None
+        normalized = path.strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized or None
+
+    @staticmethod
+    def _result_path(result: dict[str, Any]) -> str | None:
+        path = result.get("path")
+        if not isinstance(path, str):
+            return None
+        normalized = path.strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized or None
+
+    @staticmethod
+    def _policy_paths(policy: dict[str, Any]) -> set[str]:
+        value = policy.get("paths")
+        if not isinstance(value, list):
+            return set()
+        paths: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            normalized = item.strip().replace("\\", "/")
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
+            if normalized:
+                paths.add(normalized)
+        return paths
 
     def _semantic_observation(
         self,

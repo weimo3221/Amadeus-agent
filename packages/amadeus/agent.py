@@ -2014,7 +2014,12 @@ class AgentRuntime:
             },
         )
 
-        guardrail_decision = guardrail.before_call(tool_name, args, workspace_epoch=workspace_epoch)
+        guardrail_decision = guardrail.before_call(
+            tool_name,
+            args,
+            workspace_epoch=workspace_epoch,
+            file_resume_policies=self._current_worker_file_resume_policies(),
+        )
         if not guardrail_decision.allowed:
             logger.info(
                 "Tool call blocked by guardrail sessionId=%s turnId=%s toolCallId=%s toolName=%s failureCode=%s",
@@ -2270,6 +2275,7 @@ class AgentRuntime:
                 worker_profile=self._current_worker_profile(),
                 worker_allowed_toolsets=self._current_worker_allowed_toolsets(),
                 worker_workspace_path=self._current_worker_workspace_path(),
+                worker_file_resume_policies=self._current_worker_file_resume_policies(),
                 workspace_epoch=workspace_epoch,
                 cancel_event=cancel_event,
                 permission_request_id=permission_request_id,
@@ -2283,6 +2289,7 @@ class AgentRuntime:
                     "workerProfile": self._current_worker_profile(),
                     "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
                     "workerWorkspacePath": self._current_worker_workspace_path(),
+                    "workerFileResumePolicyCount": len(self._current_worker_file_resume_policies()),
                 },
             ),
         )
@@ -2636,6 +2643,10 @@ class AgentRuntime:
     def _current_worker_workspace_path(self) -> str | None:
         scope = self._current_worker_scope()
         return scope.workspace_path if scope else None
+
+    def _current_worker_file_resume_policies(self) -> tuple[dict[str, Any], ...]:
+        scope = self._current_worker_scope()
+        return scope.file_resume_policies if scope else ()
 
     def _build_system_prompt(self, *, session_id: str | None = None) -> str:
         workspace_root = self._workspace_root_for_session(session_id)

@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.worker_policy import WorkerRuntimeScope, build_worker_runtime_scope
+from amadeus.worker_policy import WorkerRuntimeScope, build_worker_runtime_scope, worker_file_resume_policies_from_artifacts
 
 
 logger = logging.getLogger(__name__)
@@ -1176,7 +1176,15 @@ class TaskWorker:
         heartbeat_thread.start()
         try:
             worker_context = build_worker_context(memory_store, task_id)
-            scope = build_worker_runtime_scope(task)
+            base_scope = build_worker_runtime_scope(task)
+            scope = WorkerRuntimeScope(
+                worker_profile=base_scope.worker_profile,
+                allowed_toolsets=base_scope.allowed_toolsets,
+                allowed_tool_names=base_scope.allowed_tool_names,
+                workspace_path=base_scope.workspace_path,
+                approved_ask_tool_names=base_scope.approved_ask_tool_names,
+                file_resume_policies=worker_file_resume_policies_from_artifacts(worker_context.task_artifacts),
+            )
             attempt = memory_store.create_task_attempt(
                 task_id,
                 run_id=self._attempt_run_id,

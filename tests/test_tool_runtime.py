@@ -1857,6 +1857,63 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         self.assertEqual(decision.failure_code, "guardrail_blocked")
         self.assertIn("overwrite", decision.reason or "")
 
+    def test_blocks_worker_redundant_mutation_from_resume_policy(self) -> None:
+        guardrail = ToolLoopGuardrail()
+        policies = ({
+            "action": "skip_redundant_mutation",
+            "sourceToolName": "patch",
+            "paths": ["src/app.py"],
+        },)
+
+        decision = guardrail.before_call(
+            "patch",
+            {"path": "./src/app.py", "oldText": "old", "newText": "new"},
+            file_resume_policies=policies,
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.failure_code, "file_resume_policy_blocked")
+        self.assertIn("already matches", decision.reason or "")
+
+    def test_requires_read_before_mutating_changed_resume_policy_path(self) -> None:
+        guardrail = ToolLoopGuardrail()
+        policies = ({
+            "action": "reinspect_before_mutation",
+            "sourceToolName": "patch",
+            "paths": ["src/app.py"],
+        },)
+        args = {"path": "src/app.py", "oldText": "old", "newText": "new"}
+
+        blocked = guardrail.before_call("patch", args, file_resume_policies=policies)
+        guardrail.after_call("read_file", {"path": "src/app.py"}, {"path": "src/app.py", "content": "old"}, ok=True)
+        allowed = guardrail.before_call("patch", args, file_resume_policies=policies)
+
+        self.assertFalse(blocked.allowed)
+        self.assertEqual(blocked.failure_code, "file_resume_policy_reinspect_required")
+        self.assertTrue(allowed.allowed)
+
+    def test_reinspect_resume_policy_read_is_bound_to_workspace_epoch(self) -> None:
+        guardrail = ToolLoopGuardrail()
+        policies = ({
+            "action": "reinspect_before_mutation",
+            "paths": ["src/app.py"],
+        },)
+        args = {"path": "src/app.py", "oldText": "old", "newText": "new"}
+
+        guardrail.after_call(
+            "read_file",
+            {"path": "src/app.py"},
+            {"path": "src/app.py", "content": "old"},
+            ok=True,
+            workspace_epoch=1,
+        )
+        same_epoch = guardrail.before_call("patch", args, workspace_epoch=1, file_resume_policies=policies)
+        changed_epoch = guardrail.before_call("patch", args, workspace_epoch=2, file_resume_policies=policies)
+
+        self.assertTrue(same_epoch.allowed)
+        self.assertFalse(changed_epoch.allowed)
+        self.assertEqual(changed_epoch.failure_code, "file_resume_policy_reinspect_required")
+
 
 class ToolAuditStoreTests(unittest.TestCase):
     def test_saves_and_loads_audit_records(self) -> None:

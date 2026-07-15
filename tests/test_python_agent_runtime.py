@@ -2053,6 +2053,62 @@ finally:
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]
         self.assertTrue(tool_finished[0]["ok"])
 
+    def test_worker_file_resume_policy_blocks_redundant_patch_before_execution(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def patch_handler(args: dict[str, Any], _context: ToolContext) -> dict[str, Any]:
+            calls.append(args)
+            return {"changed": True}
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {
+                        "name": "patch",
+                        "arguments": "{\"path\":\"src/app.py\",\"oldText\":\"old\",\"newText\":\"new\"}",
+                    },
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="patch",
+                    display_name="Patch",
+                    permission="ask",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "patch"}},
+                    handler=patch_handler,
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("patch",),
+            allowed_tool_names=frozenset({"patch"}),
+            file_resume_policies=({
+                "action": "skip_redundant_mutation",
+                "sourceToolName": "patch",
+                "paths": ["src/app.py"],
+            },),
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            events = list(runtime.run_turn("worker-session", "patch file", lambda _request: False))
+
+        self.assertEqual(calls, [])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(tool_finished[0]["failureCode"], "file_resume_policy_blocked")
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual(tool_audit[1]["decision"], "blocked")
+        self.assertEqual(tool_audit[1]["failureCode"], "file_resume_policy_blocked")
+
     def test_tool_config_overrides_enabled_and_permission(self) -> None:
         config_path = Path(self.tmpdir.name) / "tools.yaml"
         config_path.write_text(
