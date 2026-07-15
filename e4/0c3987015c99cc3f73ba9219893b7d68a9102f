@@ -1,0 +1,25 @@
+apps/desktop-ui-next/src/composables/useRuntime.ts
+  s_80fee7171b51b9::t_ff2f95ce0b961f 492-493
+apps/desktop-ui-next/src/types.ts
+  s_80fee7171b51b9::t_96a804c2458dd1 94-95
+packages/amadeus/events.ts
+  s_80fee7171b51b9::t_9608553e7b2d34 312-313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e40c3987015c99cc3f73ba9219893b7d68a9102f",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
