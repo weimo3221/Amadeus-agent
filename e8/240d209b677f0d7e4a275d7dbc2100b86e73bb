@@ -1,0 +1,31 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_01d2da8642d345 1077-1078,1080,1085
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_773ff1a0827b66 140
+docs/project-status.md
+  s_80fee7171b51b9::t_3a215479feddd9 459,473,511
+packages/amadeus/orchestrator.py
+  s_80fee7171b51b9::t_2dee467bd1d7ed 32-37,185,191-208,214,243,247-293,302-303
+tests/test_orchestrator.py
+  s_80fee7171b51b9::t_adf2cbbc488a26 160-180,195-214
+tests/test_python_runtime_http.py
+  s_80fee7171b51b9::t_e893f50aa4979e 765-781
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e8240d209b677f0d7e4a275d7dbc2100b86e73bb",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
