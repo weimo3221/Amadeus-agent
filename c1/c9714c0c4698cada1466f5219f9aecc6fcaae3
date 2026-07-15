@@ -1,0 +1,29 @@
+apps/desktop-ui-next/src/components/workspace/TasksView.vue
+  s_80fee7171b51b9::t_f01b6f03f9b3b0 166-178,188-250,539-577
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_193039c77ecbc3 1094,1109
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_965dd05ea57c52 142
+docs/project-status.md
+  s_80fee7171b51b9::t_ffcc6c46bd391b 111,503,516
+docs/roadmap.md
+  s_80fee7171b51b9::t_75780045e20cfa 17,288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c1c9714c0c4698cada1466f5219f9aecc6fcaae3",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
