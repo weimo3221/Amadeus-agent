@@ -56,6 +56,46 @@ class OrchestratorServiceTests(unittest.TestCase):
                     ],
                 })
 
+    def test_validate_graph_rejects_unknown_worker_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = OrchestratorService(MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite"))
+
+            with self.assertRaisesRegex(ValueError, "unsupported workerProfile"):
+                service.validate_graph({
+                    "tasks": [
+                        {"tempId": "rogue", "title": "Rogue", "workerProfile": "admin"},
+                    ],
+                })
+
+    def test_validate_graph_rejects_profile_toolset_escalation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = OrchestratorService(MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite"))
+
+            with self.assertRaisesRegex(ValueError, "cannot allow toolsets: terminal"):
+                service.validate_graph({
+                    "tasks": [
+                        {
+                            "tempId": "research",
+                            "title": "Research",
+                            "workerProfile": "researcher",
+                            "allowedToolsets": ["read", "terminal"],
+                        },
+                    ],
+                })
+
+    def test_validate_graph_adds_profile_default_toolsets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = OrchestratorService(MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite"))
+
+            validated = service.validate_graph({
+                "tasks": [
+                    {"tempId": "review", "title": "Review", "workerProfile": "reviewer"},
+                ],
+            })
+
+        self.assertEqual(validated["tasks"][0]["worker_profile"], "reviewer")
+        self.assertEqual(validated["tasks"][0]["allowed_toolsets"], ["read", "search", "memory"])
+
     def test_apply_task_graph_creates_children_and_edges(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

@@ -12,6 +12,24 @@ from amadeus.model import first_choice_message, parse_json_object_from_text
 TaskSubmitter = Callable[[str], None]
 logger = logging.getLogger(__name__)
 
+DEFAULT_WORKER_PROFILE = "planner"
+ALLOWED_WORKER_PROFILES = {"researcher", "planner", "coder", "reviewer", "synthesizer"}
+KNOWN_TOOLSETS = {"read", "search", "memory", "web", "plan", "task", "skills", "patch", "write", "terminal", "code", "browser", "vision"}
+PROFILE_TOOLSET_POLICY: dict[str, set[str]] = {
+    "researcher": {"read", "search", "memory", "web"},
+    "planner": {"read", "search", "memory", "plan", "task", "skills"},
+    "coder": {"read", "search", "memory", "web", "skills", "patch", "write", "terminal", "code", "browser", "vision"},
+    "reviewer": {"read", "search", "memory"},
+    "synthesizer": {"read", "memory"},
+}
+DEFAULT_PROFILE_TOOLSETS: dict[str, list[str]] = {
+    "researcher": ["read", "search", "memory", "web"],
+    "planner": ["read", "search", "memory", "plan"],
+    "coder": ["read", "search", "memory", "patch"],
+    "reviewer": ["read", "search", "memory"],
+    "synthesizer": ["read", "memory"],
+}
+
 
 class PlanningModel(Protocol):
     @property
@@ -85,6 +103,7 @@ class OrchestratorService:
 
     def validate_graph(self, graph: dict[str, object], *, max_children: int = 8) -> dict[str, object]:
         tasks = _parse_tasks(graph.get("tasks"), max_children=max_children)
+        tasks = _normalize_and_validate_task_policies(tasks)
         edges = _parse_edges(graph.get("edges"), tasks)
         _validate_acyclic(tasks, edges)
         return {
@@ -516,12 +535,46 @@ def _parse_tasks(raw_tasks: object, *, max_children: int) -> list[GraphTaskSpec]
                 worker_profile=_optional_string(raw.get("workerProfile") or raw.get("worker_profile")),
                 acceptance_criteria=_list(raw.get("acceptanceCriteria") or raw.get("acceptance_criteria")),
                 context_hints=_dict(raw.get("contextHints") or raw.get("context_hints")),
-                allowed_toolsets=_list(raw.get("allowedToolsets") or raw.get("allowed_toolsets")),
-                disallowed_tools=_list(raw.get("disallowedTools") or raw.get("disallowed_tools")),
+                allowed_toolsets=_string_list(raw.get("allowedToolsets") or raw.get("allowed_toolsets")),
+                disallowed_tools=_string_list(raw.get("disallowedTools") or raw.get("disallowed_tools")),
                 depends_on=[str(item).strip() for item in _list(raw.get("dependsOn") or raw.get("depends_on")) if str(item).strip()],
             )
         )
     return tasks
+
+
+def _normalize_and_validate_task_policies(tasks: list[GraphTaskSpec]) -> list[GraphTaskSpec]:
+    normalized: list[GraphTaskSpec] = []
+    for task in tasks:
+        profile = (task.worker_profile or DEFAULT_WORKER_PROFILE).strip().lower()
+        if profile not in ALLOWED_WORKER_PROFILES:
+            raise ValueError(f"graph task {task.temp_id} has unsupported workerProfile: {task.worker_profile}")
+        allowed_toolsets = _dedupe_strings([str(item).strip().lower() for item in task.allowed_toolsets if str(item).strip()])
+        unknown_toolsets = [item for item in allowed_toolsets if item not in KNOWN_TOOLSETS]
+        if unknown_toolsets:
+            raise ValueError(f"graph task {task.temp_id} has unknown allowedToolsets: {', '.join(unknown_toolsets)}")
+        allowed_by_profile = PROFILE_TOOLSET_POLICY[profile]
+        forbidden_toolsets = [item for item in allowed_toolsets if item not in allowed_by_profile]
+        if forbidden_toolsets:
+            raise ValueError(
+                f"graph task {task.temp_id} workerProfile {profile} cannot allow toolsets: {', '.join(forbidden_toolsets)}"
+            )
+        if not allowed_toolsets:
+            allowed_toolsets = list(DEFAULT_PROFILE_TOOLSETS[profile])
+        normalized.append(
+            GraphTaskSpec(
+                temp_id=task.temp_id,
+                title=task.title,
+                body=task.body,
+                worker_profile=profile,
+                acceptance_criteria=task.acceptance_criteria,
+                context_hints=task.context_hints,
+                allowed_toolsets=allowed_toolsets,
+                disallowed_tools=_dedupe_strings(task.disallowed_tools),
+                depends_on=task.depends_on,
+            )
+        )
+    return normalized
 
 
 def _parse_edges(raw_edges: object, tasks: list[GraphTaskSpec]) -> list[GraphEdgeSpec]:
@@ -597,6 +650,24 @@ def _optional_string(value: object) -> str | None:
 
 def _list(value: object) -> list[object]:
     return value if isinstance(value, list) else []
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return _dedupe_strings([str(item).strip() for item in value if str(item).strip()])
+
+
+def _dedupe_strings(values: list[object]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
 
 
 def _dict(value: object) -> dict[str, object]:

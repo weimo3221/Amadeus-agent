@@ -804,6 +804,25 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertIn("cycle", response["error"])
 
+    def test_tasks_http_decompose_rejects_profile_toolset_escalation(self) -> None:
+        root = runtime_server.memory_store.create_task(session_id="http-test", title="Invalid toolset graph")
+
+        response = self.post_json_status(f"/tasks/{root['id']}/decompose", {
+            "graph": {
+                "tasks": [
+                    {
+                        "tempId": "research",
+                        "title": "Research",
+                        "workerProfile": "researcher",
+                        "allowedToolsets": ["read", "terminal"],
+                    },
+                ],
+            },
+        }, expected_status=400)
+
+        self.assertFalse(response["ok"])
+        self.assertIn("cannot allow toolsets", response["error"])
+
     def test_tasks_http_resume_and_approve_blocked_review(self) -> None:
         task = runtime_server.memory_store.create_task(
             session_id="http-test",
