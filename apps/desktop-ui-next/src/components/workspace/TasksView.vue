@@ -163,6 +163,19 @@ function checkpointPreview(task: TaskItem | null) {
   return typeof value === 'string' ? value : ''
 }
 
+function checkpointRecord(task: TaskItem | null) {
+  return asRecord(task?.checkpoint)
+}
+
+function checkpointOrResumeText(task: TaskItem | null, key: string) {
+  const checkpoint = checkpointRecord(task)
+  const checkpointValue = checkpoint?.[key]
+  if (typeof checkpointValue === 'string' || typeof checkpointValue === 'number') return String(checkpointValue)
+  const resumeFrom = checkpointResumeFrom(task)
+  const resumeValue = resumeFrom?.[key]
+  return typeof resumeValue === 'string' || typeof resumeValue === 'number' ? String(resumeValue) : ''
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
@@ -170,6 +183,69 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.map((item) => String(item || '').trim()).filter(Boolean)
+}
+
+function checkpointStringList(task: TaskItem | null, key: string) {
+  const checkpoint = checkpointRecord(task)
+  const direct = stringList(checkpoint?.[key])
+  if (direct.length) return direct
+  const resumeFrom = checkpointResumeFrom(task)
+  return stringList(resumeFrom?.[key])
+}
+
+function approvalToolName(task: TaskItem | null) {
+  return checkpointText(task, 'toolName') || checkpointText(task, 'approvedToolName') || resumeText(task, 'toolName')
+}
+
+function approvalActionKey(task: TaskItem | null) {
+  return checkpointText(task, 'approvalActionKey') || checkpointText(task, 'approvedToolAction') || resumeText(task, 'approvalActionKey')
+}
+
+function approvalActionLabel(task: TaskItem | null) {
+  return checkpointOrResumeText(task, 'approvalActionLabel') || approvalActionKey(task)
+}
+
+function approvalRiskLevel(task: TaskItem | null) {
+  return checkpointOrResumeText(task, 'approvalRiskLevel')
+}
+
+function approvalRiskLabels(task: TaskItem | null) {
+  return checkpointStringList(task, 'approvalRiskLabels')
+}
+
+function approvalExpiry(task: TaskItem | null) {
+  return checkpointText(task, 'approvedToolActionExpiresAt')
+}
+
+function approvalExpiryTone(task: TaskItem | null): ToolTone {
+  const expiry = approvalExpiry(task)
+  if (!expiry) return 'neutral'
+  const date = new Date(expiry)
+  if (Number.isNaN(date.getTime())) return 'neutral'
+  return date.getTime() <= Date.now() ? 'danger' : 'warning'
+}
+
+function approvalStateLabel(task: TaskItem | null) {
+  const phase = checkpointText(task, 'phase')
+  const expiry = approvalExpiry(task)
+  if (expiry) {
+    const date = new Date(expiry)
+    if (!Number.isNaN(date.getTime()) && date.getTime() <= Date.now()) return '授权已过期'
+  }
+  if (phase === 'approval_required') return '等待批准'
+  if (phase === 'approval_resume_requested') return '已批准本次动作'
+  return '审批动作'
+}
+
+function hasApprovalCheckpoint(task: TaskItem | null) {
+  return Boolean(
+    approvalToolName(task)
+      || approvalActionKey(task)
+      || approvalActionLabel(task)
+      || approvalRiskLevel(task)
+      || approvalRiskLabels(task).length
+      || approvalExpiry(task),
+  )
 }
 
 function artifactLabel(artifact: TaskArtifact) {
@@ -459,6 +535,45 @@ async function runRerun(task: TaskItem) {
             <p class="min-w-0 text-ink-faint">
               最后事件：<span class="font-mono text-ink">{{ resumeText(selectedTask, 'lastEventType') || '无' }}</span>
             </p>
+          </div>
+          <div
+            v-if="hasApprovalCheckpoint(selectedTask)"
+            class="mt-3 border-t border-warning/15 pt-3"
+          >
+            <div class="mb-2 flex flex-wrap items-center gap-2">
+              <AmTag tone="warning" size="sm">
+                <Icon icon="ph:shield-warning-duotone" :width="12" />
+                {{ approvalStateLabel(selectedTask) }}
+              </AmTag>
+              <AmTag v-if="approvalToolName(selectedTask)" tone="neutral" size="sm">
+                {{ approvalToolName(selectedTask) }}
+              </AmTag>
+              <AmTag v-if="approvalRiskLevel(selectedTask)" :tone="approvalRiskLevel(selectedTask) === 'high' ? 'danger' : 'warning'" size="sm">
+                {{ approvalRiskLevel(selectedTask) }}
+              </AmTag>
+              <AmTag v-if="approvalExpiry(selectedTask)" :tone="approvalExpiryTone(selectedTask)" size="sm">
+                {{ relativeFutureLabel(approvalExpiry(selectedTask)) }}
+              </AmTag>
+            </div>
+            <p v-if="approvalActionLabel(selectedTask)" class="text-ink-soft">
+              动作：<span class="font-mono text-ink">{{ approvalActionLabel(selectedTask) }}</span>
+            </p>
+            <p v-if="approvalActionKey(selectedTask)" class="mt-1 break-all text-ink-faint">
+              Key：<span class="font-mono text-ink-soft">{{ approvalActionKey(selectedTask) }}</span>
+            </p>
+            <p v-if="approvalExpiry(selectedTask)" class="mt-1 text-ink-faint">
+              有效期：<span class="font-mono text-ink-soft">{{ formatDateTime(approvalExpiry(selectedTask)) }}</span>
+            </p>
+            <div v-if="approvalRiskLabels(selectedTask).length" class="mt-2 flex flex-wrap gap-1">
+              <AmTag
+                v-for="label in approvalRiskLabels(selectedTask)"
+                :key="label"
+                tone="neutral"
+                size="sm"
+              >
+                {{ label }}
+              </AmTag>
+            </div>
           </div>
           <p v-if="selectedTask.handoffSummary" class="mt-2 whitespace-pre-wrap text-ink-soft">{{ selectedTask.handoffSummary }}</p>
           <p v-if="checkpointPreview(selectedTask)" class="mt-2 whitespace-pre-wrap rounded-[var(--radius-xl2)] bg-white/60 p-2 text-ink-soft">
