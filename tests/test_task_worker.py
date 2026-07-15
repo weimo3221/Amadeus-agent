@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 from amadeus.agent import AgentEvent, AgentRuntime, PermissionRequest
 from amadeus.memory import MessageMemoryStore
 from amadeus.task_worker_entrypoint import main as task_worker_entrypoint_main, run_task_once
-from amadeus.worker_policy import WorkerRuntimeScope
+from amadeus.worker_policy import WorkerRuntimeScope, build_worker_runtime_scope, worker_permission_decision
 from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
 
 
@@ -73,6 +73,16 @@ class SlowRuntime:
         self.started.set()
         self.release.wait(timeout=2)
         yield AgentEvent("assistant.message", {"text": "slow completed"})
+
+
+class WorkerPermissionDeniedRuntime:
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": "turn-permission", "startedAt": "now"})
+        yield AgentEvent("tool.finished", {
+            "toolName": "terminal",
+            "ok": False,
+            "failureCode": "worker_permission_denied",
+        })
 
 
 class ScopedRuntime(SuccessfulRuntime):
@@ -506,6 +516,37 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("title: Review", str(finished["handoffSummary"]))
         self.assertEqual([event["type"] for event in events], ["created", "running", "blocked"])
         self.assertIn(("blocked", "blocked"), published)
+
+    def test_worker_blocks_for_risky_tool_approval_and_resume_authorizes_tool_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = WorkerPermissionDeniedRuntime()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=ImmediateTaskRunner())
+            task = memory.create_task(
+                session_id="session-1",
+                title="Run risky command",
+                worker_profile="coder",
+                allowed_toolsets=["terminal"],
+            )
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+            blocked = memory.get_task(str(task["id"]))
+            attempts = memory.list_task_attempts(str(task["id"]))
+            resumed = memory.resume_blocked_task(str(task["id"]))
+            resumed_scope = build_worker_runtime_scope(resumed)
+
+        self.assertIsNotNone(blocked)
+        assert blocked is not None
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["checkpoint"]["phase"], "approval_required")
+        self.assertEqual(blocked["checkpoint"]["reason"], "worker_tool_permission_required")
+        self.assertEqual(blocked["checkpoint"]["toolName"], "terminal")
+        self.assertEqual(attempts[0]["status"], "blocked")
+        self.assertEqual(resumed["checkpoint"]["phase"], "approval_resume_requested")
+        self.assertEqual(resumed["checkpoint"]["approvedToolName"], "terminal")
+        self.assertEqual(resumed["checkpoint"]["resumeFrom"]["toolName"], "terminal")
+        self.assertEqual(worker_permission_decision(resumed_scope, "terminal", "ask"), "auto_approve")
 
     def test_worker_retries_transient_failure_then_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

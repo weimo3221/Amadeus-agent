@@ -3409,7 +3409,7 @@ class MessageMemoryStore:
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT session_id, status, review_required FROM tasks WHERE id = ?",
+                "SELECT session_id, status, review_required, checkpoint_json FROM tasks WHERE id = ?",
                 (normalized_task_id,),
             ).fetchone()
             if not row:
@@ -3419,11 +3419,29 @@ class MessageMemoryStore:
                 if task is None:
                     raise ValueError("task not found")
                 return task
+            previous_checkpoint: dict[str, object] = {}
+            try:
+                decoded_checkpoint = json.loads(str(row[3] or "{}"))
+                if isinstance(decoded_checkpoint, dict):
+                    previous_checkpoint = decoded_checkpoint
+            except json.JSONDecodeError:
+                previous_checkpoint = {}
+            was_approval_checkpoint = bool(row[2]) or str(previous_checkpoint.get("phase") or "") == "approval_required"
+            approved_tool_name = str(previous_checkpoint.get("toolName") or "").strip()
             checkpoint = {
                 "status": "queued",
-                "phase": "approval_resume_requested" if bool(row[2]) else "blocked_resume_requested",
-                "reason": "human_review_resumed" if bool(row[2]) else "blocked_task_resumed",
+                "phase": "approval_resume_requested" if was_approval_checkpoint else "blocked_resume_requested",
+                "reason": "human_approved_worker_action" if approved_tool_name else "human_review_resumed" if was_approval_checkpoint else "blocked_task_resumed",
             }
+            if approved_tool_name:
+                checkpoint["approvedToolName"] = approved_tool_name
+                checkpoint["approvedTools"] = [approved_tool_name]
+            if previous_checkpoint:
+                checkpoint["resumeFrom"] = {
+                    key: previous_checkpoint.get(key)
+                    for key in ("status", "phase", "reason", "toolName", "lastEventType", "resultPreview", "errorPreview")
+                    if previous_checkpoint.get(key) is not None
+                }
             checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint")
             connection.execute(
                 """

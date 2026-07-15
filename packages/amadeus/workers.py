@@ -701,6 +701,8 @@ class TaskWorker:
         attempt_id: str | None = None
         result_text: str | None = None
         error_text: str | None = None
+        permission_block_checkpoint: dict[str, object] | None = None
+        permission_block_tool_name: str | None = None
         checkpoint_state: dict[str, dict[str, object]] = {
             "value": {"status": "running", "phase": "claimed"},
         }
@@ -708,6 +710,25 @@ class TaskWorker:
         def set_checkpoint(checkpoint: dict[str, object]) -> dict[str, object]:
             checkpoint_state["value"] = checkpoint
             return checkpoint
+
+        def block_for_worker_tool_approval(checkpoint: dict[str, object], tool_name: str | None) -> None:
+            display_tool_name = tool_name or "unknown"
+            if attempt_id:
+                memory_store.finish_task_attempt(
+                    attempt_id,
+                    status="blocked",
+                    error=f"Worker requires approval for tool: {display_tool_name}",
+                    checkpoint=set_checkpoint(checkpoint),
+                )
+            blocked = memory_store.block_task(
+                task_id,
+                claim_lock=claim_lock,
+                reason=f"Worker requires approval for tool: {display_tool_name}",
+                checkpoint=checkpoint,
+                handoff_summary=f"Approve and resume to allow this worker to use ask-tool `{tool_name}` once." if tool_name else None,
+            )
+            self._sync_plan_item(memory_store, blocked, "pending")
+            self._publish_task_update(blocked, "blocked")
 
         heartbeat_stop = threading.Event()
         heartbeat_thread = threading.Thread(
@@ -854,7 +875,34 @@ class TaskWorker:
                                 error=error_text,
                             )),
                         )
+                    elif (
+                        event_type == "tool.finished"
+                        and not bool(payload.get("ok"))
+                        and str(payload.get("failureCode") or "") == "worker_permission_denied"
+                    ):
+                        tool_name = str(payload.get("toolName") or "").strip()
+                        permission_block_tool_name = tool_name
+                        permission_block_checkpoint = self._attempt_checkpoint(
+                            task,
+                            scope,
+                            status="blocked",
+                            phase="approval_required",
+                            reason="worker_tool_permission_required",
+                            last_event_type=event_type,
+                            tool_name=tool_name,
+                        )
+                        if attempt_id:
+                            memory_store.heartbeat_task_attempt(
+                                attempt_id,
+                                checkpoint=set_checkpoint(permission_block_checkpoint),
+                            )
+                    elif event_type == "tool.audit" and permission_block_checkpoint is not None:
+                        block_for_worker_tool_approval(permission_block_checkpoint, permission_block_tool_name)
+                        return
 
+            if permission_block_checkpoint is not None:
+                block_for_worker_tool_approval(permission_block_checkpoint, permission_block_tool_name)
+                return
             if cancel_event.is_set():
                 if attempt_id:
                     memory_store.finish_task_attempt(
@@ -1022,6 +1070,7 @@ class TaskWorker:
         reason: str | None = None,
         error: str | None = None,
         result_preview: str | None = None,
+        tool_name: str | None = None,
     ) -> dict[str, object]:
         checkpoint: dict[str, object] = {
             "status": status,
@@ -1045,6 +1094,8 @@ class TaskWorker:
             checkpoint["errorPreview"] = _truncate(error, WORKER_CHECKPOINT_PREVIEW_CHARS)
         if result_preview:
             checkpoint["resultPreview"] = _truncate(result_preview, WORKER_CHECKPOINT_PREVIEW_CHARS)
+        if tool_name:
+            checkpoint["toolName"] = tool_name
         return checkpoint
 
     @staticmethod

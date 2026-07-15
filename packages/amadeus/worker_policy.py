@@ -65,16 +65,21 @@ class WorkerRuntimeScope:
     allowed_toolsets: tuple[str, ...]
     allowed_tool_names: frozenset[str]
     workspace_path: str | None = None
+    approved_ask_tool_names: frozenset[str] = frozenset()
 
 
 def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
     profile = worker_profile_for_task(task)
     toolsets = tuple(worker_toolsets_for_task(task))
+    allowed_tool_names = frozenset(worker_tool_names_for_task(task))
     return WorkerRuntimeScope(
         worker_profile=profile,
         allowed_toolsets=toolsets,
-        allowed_tool_names=frozenset(worker_tool_names_for_task(task)),
+        allowed_tool_names=allowed_tool_names,
         workspace_path=worker_workspace_path_for_task(task),
+        approved_ask_tool_names=frozenset(
+            name for name in worker_approved_ask_tool_names_for_task(task) if name in allowed_tool_names
+        ),
     )
 
 
@@ -113,9 +118,24 @@ def worker_workspace_path_for_task(task: dict[str, object]) -> str | None:
     return None
 
 
+def worker_approved_ask_tool_names_for_task(task: dict[str, object]) -> set[str]:
+    checkpoint = task.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        return set()
+    if str(checkpoint.get("phase") or "") != "approval_resume_requested":
+        return set()
+    names = set(_string_list(checkpoint.get("approvedTools")))
+    single = str(checkpoint.get("approvedToolName") or "").strip()
+    if single:
+        names.add(single)
+    return names
+
+
 def worker_permission_decision(scope: WorkerRuntimeScope | None, tool_name: str, permission: str) -> str:
     if scope is None or permission != "ask":
         return "prompt"
+    if tool_name in scope.approved_ask_tool_names and tool_name in scope.allowed_tool_names:
+        return "auto_approve"
     if tool_name in PROFILE_AUTO_APPROVED_ASK_TOOLS.get(scope.worker_profile, set()) and tool_name in scope.allowed_tool_names:
         return "auto_approve"
     return "deny"

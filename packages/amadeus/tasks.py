@@ -18,7 +18,7 @@ MAX_TASK_MAX_ATTEMPTS = 10
 TRUNCATION_MARKER = "... [truncated]"
 TASK_ARTIFACT_TYPES = {"file", "diff", "command_output", "summary", "link"}
 TASK_EDGE_TYPES = {"parent_child", "blocks", "requires_artifact", "review_after"}
-TASK_ATTEMPT_STATUSES = {"running", "succeeded", "failed", "cancelled", "abandoned"}
+TASK_ATTEMPT_STATUSES = {"running", "succeeded", "failed", "cancelled", "abandoned", "blocked"}
 
 
 def normalize_task_status(status: Any, *, default: str = "queued") -> str:

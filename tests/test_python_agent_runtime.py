@@ -1953,6 +1953,55 @@ finally:
         self.assertEqual(tool_audit[1]["failureCode"], "worker_permission_denied")
         self.assertEqual(tool_audit[1]["metadata"]["workerProfile"], "coder")
 
+    def test_worker_scope_auto_approves_checkpoint_approved_ask_tool(self) -> None:
+        observed_contexts: list[ToolContext] = []
+
+        def inspect_terminal(_args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+            observed_contexts.append(context)
+            return {"permissionDecision": context.permission_decision}
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_terminal",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="terminal",
+                    display_name="Terminal",
+                    permission="ask",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "terminal"}},
+                    handler=inspect_terminal,
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+        permission_requests: list[PermissionRequest] = []
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("terminal",),
+            allowed_tool_names=frozenset({"terminal"}),
+            approved_ask_tool_names=frozenset({"terminal"}),
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            events = list(runtime.run_turn("worker-session", "run terminal", lambda request: permission_requests.append(request) or False))
+
+        self.assertEqual(permission_requests, [])
+        self.assertEqual(len(observed_contexts), 1)
+        self.assertEqual(observed_contexts[0].permission_decision, "worker_auto_approved")
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertTrue(tool_finished[0]["ok"])
+
     def test_worker_scope_auto_approves_profile_allowed_ask_tools(self) -> None:
         observed_contexts: list[ToolContext] = []
 
