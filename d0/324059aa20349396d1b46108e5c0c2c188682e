@@ -1,0 +1,21 @@
+AGENTS.md
+  s_125ba3cdcfb512::t_b90cea0707f8da 1-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d0324059aa20349396d1b46108e5c0c2c188682e",
+  "prompts": {},
+  "sessions": {
+    "s_125ba3cdcfb512": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f64c1-83fa-7481-ac80-06ad6f3b75b7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
