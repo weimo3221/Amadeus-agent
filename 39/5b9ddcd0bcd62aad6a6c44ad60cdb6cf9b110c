@@ -1,0 +1,41 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_4877148a8037c4 1093
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_61856af6612301 136-144
+docs/project-status.md
+  s_80fee7171b51b9::t_b955ef8b3fcfb4 111,474,503,516
+docs/roadmap.md
+  s_80fee7171b51b9::t_590a3c5df4156c 17,286,288
+packages/amadeus/agent.py
+  s_80fee7171b51b9::t_9ad8b378ec962a 52,2158-2173,2175,2181,2183,2190,2206-2209,2213,2216,2222
+packages/amadeus/memory.py
+  s_80fee7171b51b9::t_b2f2e048ef4de6 3431,3440-3442,3446-3458
+packages/amadeus/worker_policy.py
+  s_80fee7171b51b9::t_96baec71b5b24b 3-4,71,75-84,97,162-163,171-183,185-194,196-211,213-220,222-324,338-350
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_922b79aa6da2bc 619,623-626,641-652,667-669,704-716,1218,1371-1375,1384,1386-1394
+tests/test_memory.py
+  s_80fee7171b51b9::t_987509fe468728 900-929
+tests/test_python_agent_runtime.py
+  s_80fee7171b51b9::t_5d15b3f3776dc1 1948-1955,1959-1960,2009-2055
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_edc1c6bb56c51e 23-28,92-98,613-616,620,622-651
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "395b9ddcd0bcd62aad6a6c44ad60cdb6cf9b110c",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
