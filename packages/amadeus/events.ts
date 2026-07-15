@@ -309,6 +309,8 @@ export interface TaskRecord {
   leaseExpiresAt?: string | null
   runnerKind?: string | null
   lastHeartbeat?: string | null
+  checkpoint?: Record<string, unknown>
+  handoffSummary?: string | null
   result?: string | null
   error?: string | null
   createdAt: string

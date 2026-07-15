@@ -489,6 +489,8 @@ function tasksToItems(records: TaskRecord[]): TaskItem[] {
     runnerKind: task.runnerKind ?? null,
     lastHeartbeat: task.lastHeartbeat ?? null,
     finishedAt: task.finishedAt ?? null,
+    checkpoint: task.checkpoint && typeof task.checkpoint === 'object' ? task.checkpoint : {},
+    handoffSummary: task.handoffSummary ?? null,
     artifacts: (task.artifacts ?? []).map((artifact) => ({
       type: String(artifact.type ?? 'summary'),
       ...artifact,

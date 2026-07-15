@@ -91,6 +91,8 @@ export interface TaskItem {
   runnerKind?: string | null
   lastHeartbeat?: string | null
   finishedAt?: string | null
+  checkpoint: Record<string, unknown>
+  handoffSummary?: string | null
   artifacts: TaskArtifact[]
 }
 

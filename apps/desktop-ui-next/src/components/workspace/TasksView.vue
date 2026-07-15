@@ -135,6 +135,34 @@ function formatMetadata(value: unknown) {
   }
 }
 
+function checkpointText(task: TaskItem | null, key: string) {
+  if (!task?.checkpoint || typeof task.checkpoint !== 'object') return ''
+  const value = task.checkpoint[key]
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
+function checkpointResumeFrom(task: TaskItem | null): Record<string, unknown> | null {
+  const value = task?.checkpoint?.resumeFrom
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function resumeText(task: TaskItem | null, key: string) {
+  const resumeFrom = checkpointResumeFrom(task)
+  if (!resumeFrom) return ''
+  const value = resumeFrom[key]
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
+function hasCheckpoint(task: TaskItem | null) {
+  return Boolean(task && Object.keys(task.checkpoint ?? {}).length)
+}
+
+function checkpointPreview(task: TaskItem | null) {
+  const resumeFrom = checkpointResumeFrom(task)
+  const value = resumeFrom?.resultPreview ?? resumeFrom?.errorPreview
+  return typeof value === 'string' ? value : ''
+}
+
 function artifactLabel(artifact: TaskArtifact) {
   return artifactMeta[artifact.type]?.label ?? artifact.type
 }
@@ -333,6 +361,37 @@ async function runRerun(task: TaskItem) {
               Heartbeat：<span class="font-mono text-ink">{{ formatDateTime(selectedTask.lastHeartbeat) }}</span>
             </p>
           </div>
+        </div>
+
+        <div
+          v-if="hasCheckpoint(selectedTask) || selectedTask.handoffSummary"
+          class="rounded-[var(--radius-xl2)] border border-warning/25 bg-warning/5 p-3 text-xs"
+        >
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <p class="font-semibold text-ink">恢复 / Checkpoint</p>
+            <AmTag v-if="checkpointText(selectedTask, 'phase')" tone="warning" size="sm">
+              {{ checkpointText(selectedTask, 'phase') }}
+            </AmTag>
+          </div>
+          <div class="grid gap-2 sm:grid-cols-3">
+            <p class="min-w-0 text-ink-faint">
+              原因：<span class="font-mono text-ink">{{ checkpointText(selectedTask, 'reason') || '无' }}</span>
+            </p>
+            <p class="min-w-0 text-ink-faint">
+              恢复阶段：<span class="font-mono text-ink">{{ resumeText(selectedTask, 'previousPhase') || resumeText(selectedTask, 'phase') || '无' }}</span>
+            </p>
+            <p class="min-w-0 text-ink-faint">
+              最后事件：<span class="font-mono text-ink">{{ resumeText(selectedTask, 'lastEventType') || '无' }}</span>
+            </p>
+          </div>
+          <p v-if="selectedTask.handoffSummary" class="mt-2 whitespace-pre-wrap text-ink-soft">{{ selectedTask.handoffSummary }}</p>
+          <p v-if="checkpointPreview(selectedTask)" class="mt-2 whitespace-pre-wrap rounded-[var(--radius-xl2)] bg-white/60 p-2 text-ink-soft">
+            {{ checkpointPreview(selectedTask) }}
+          </p>
+          <pre
+            v-if="hasCheckpoint(selectedTask)"
+            class="mt-2 max-h-28 overflow-auto rounded-[var(--radius-xl2)] bg-white/60 p-2 text-[11px] text-ink-faint"
+          >{{ formatMetadata(selectedTask.checkpoint) }}</pre>
         </div>
 
         <div v-if="selectedTask.detail || selectedTask.result || selectedTask.error" class="space-y-2">
