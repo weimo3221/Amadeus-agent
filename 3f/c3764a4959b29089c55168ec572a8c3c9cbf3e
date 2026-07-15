@@ -1,0 +1,29 @@
+packages/amadeus/memory.py
+  s_80fee7171b51b9::t_88fd36ea072fdb 3412,3422-3430,3433-3434,3436-3444
+packages/amadeus/tasks.py
+  s_80fee7171b51b9::t_55ce0c9e70a6dd 21
+packages/amadeus/worker_policy.py
+  s_80fee7171b51b9::t_51d484285df68b 68,74,78,80-82,121-133,137-138
+tests/test_python_agent_runtime.py
+  s_80fee7171b51b9::t_f5f32c10d3c64d 1956-2004
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_addb60ef017264 21,78-87,520-550
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3fc3764a4959b29089c55168ec572a8c3c9cbf3e",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
