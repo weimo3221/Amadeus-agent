@@ -318,6 +318,12 @@ const resumePolicyMeta: Record<string, { label: string; tone: ToolTone; icon: st
   refresh_context: { label: '刷新上下文', tone: 'warning', icon: 'ph:arrows-clockwise-duotone' },
 }
 
+const resumePolicyOverrideMeta: Record<string, { label: string; tone: ToolTone }> = {
+  force_rerun: { label: '强制重做', tone: 'danger' },
+  ignore_artifact: { label: '忽略旧产物', tone: 'neutral' },
+  accept_current_state: { label: '接受当前状态', tone: 'warning' },
+}
+
 const manifestStatusMeta: Record<string, { label: string; tone: ToolTone }> = {
   unchanged: { label: '文件未变化', tone: 'success' },
   changed: { label: '文件已变化', tone: 'warning' },
@@ -339,6 +345,27 @@ function resumePolicyIcon(policy: Record<string, unknown> | null) {
 function resumePolicyLabel(policy: Record<string, unknown> | null) {
   const action = resumePolicyAction(policy)
   return resumePolicyMeta[action]?.label ?? action
+}
+
+function resumePolicyOverride(policy: Record<string, unknown> | null) {
+  return String(policy?.override ?? '')
+}
+
+function resumePolicyOverrideTone(policy: Record<string, unknown> | null): ToolTone {
+  return resumePolicyOverrideMeta[resumePolicyOverride(policy)]?.tone ?? 'neutral'
+}
+
+function resumePolicyOverrideLabel(policy: Record<string, unknown> | null) {
+  const override = resumePolicyOverride(policy)
+  return resumePolicyOverrideMeta[override]?.label ?? override
+}
+
+function resumePolicyOverrideDescription(policy: Record<string, unknown> | null) {
+  const override = resumePolicyOverride(policy)
+  if (override === 'force_rerun') return '本次恢复会允许 worker 重新执行同一路径的文件修改。'
+  if (override === 'ignore_artifact') return '本次恢复会忽略这条旧 artifact 的文件恢复策略。'
+  if (override === 'accept_current_state') return '本次恢复会接受当前文件状态，不再要求先重新读取该路径。'
+  return ''
 }
 
 function manifestStatus(verification: Record<string, unknown> | null) {
@@ -679,9 +706,19 @@ async function runRerun(task: TaskItem) {
                   >
                     {{ manifestStatusLabel(artifactManifestVerification(artifact)) }}
                   </AmTag>
+                  <AmTag
+                    v-if="resumePolicyOverride(artifactResumePolicy(artifact))"
+                    :tone="resumePolicyOverrideTone(artifactResumePolicy(artifact))"
+                    size="sm"
+                  >
+                    {{ resumePolicyOverrideLabel(artifactResumePolicy(artifact)) }}
+                  </AmTag>
                 </div>
                 <p v-if="resumePolicyReason(artifactResumePolicy(artifact))" class="text-ink-soft">
                   {{ resumePolicyReason(artifactResumePolicy(artifact)) }}
+                </p>
+                <p v-if="resumePolicyOverrideDescription(artifactResumePolicy(artifact))" class="mt-1 text-ink-soft">
+                  {{ resumePolicyOverrideDescription(artifactResumePolicy(artifact)) }}
                 </p>
                 <p v-if="resumePolicyPaths(artifactResumePolicy(artifact)).length" class="mt-1 font-mono text-ink-faint">
                   {{ resumePolicyPaths(artifactResumePolicy(artifact)).join(', ') }}

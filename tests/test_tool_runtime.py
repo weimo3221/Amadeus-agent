@@ -1875,6 +1875,40 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         self.assertEqual(decision.failure_code, "file_resume_policy_blocked")
         self.assertIn("already matches", decision.reason or "")
 
+    def test_file_resume_policy_force_rerun_override_allows_repeating_mutation(self) -> None:
+        guardrail = ToolLoopGuardrail()
+        policies = ({
+            "action": "skip_redundant_mutation",
+            "sourceToolName": "patch",
+            "paths": ["src/app.py"],
+            "override": "force_rerun",
+        },)
+
+        decision = guardrail.before_call(
+            "patch",
+            {"path": "src/app.py", "oldText": "old", "newText": "new"},
+            file_resume_policies=policies,
+        )
+
+        self.assertTrue(decision.allowed)
+
+    def test_file_resume_policy_ignore_artifact_override_skips_one_policy(self) -> None:
+        guardrail = ToolLoopGuardrail()
+        policies = ({
+            "action": "skip_redundant_mutation",
+            "sourceToolName": "patch",
+            "paths": ["src/app.py"],
+            "override": "ignore_artifact",
+        },)
+
+        decision = guardrail.before_call(
+            "patch",
+            {"path": "src/app.py", "oldText": "old", "newText": "new"},
+            file_resume_policies=policies,
+        )
+
+        self.assertTrue(decision.allowed)
+
     def test_requires_read_before_mutating_changed_resume_policy_path(self) -> None:
         guardrail = ToolLoopGuardrail()
         policies = ({
@@ -1891,6 +1925,23 @@ class ToolLoopGuardrailTests(unittest.TestCase):
         self.assertFalse(blocked.allowed)
         self.assertEqual(blocked.failure_code, "file_resume_policy_reinspect_required")
         self.assertTrue(allowed.allowed)
+
+    def test_file_resume_policy_accept_current_state_override_skips_reinspect_requirement(self) -> None:
+        guardrail = ToolLoopGuardrail()
+        policies = ({
+            "action": "reinspect_before_mutation",
+            "sourceToolName": "patch",
+            "paths": ["src/app.py"],
+            "override": "accept_current_state",
+        },)
+
+        decision = guardrail.before_call(
+            "patch",
+            {"path": "src/app.py", "oldText": "old", "newText": "new"},
+            file_resume_policies=policies,
+        )
+
+        self.assertTrue(decision.allowed)
 
     def test_reinspect_resume_policy_read_is_bound_to_workspace_epoch(self) -> None:
         guardrail = ToolLoopGuardrail()

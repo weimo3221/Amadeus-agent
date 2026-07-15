@@ -134,6 +134,11 @@ class ToolLoopGuardrail:
             policy_paths = self._policy_paths(policy)
             if requested_path not in policy_paths:
                 continue
+            override = str(policy.get("override") or "").strip()
+            if override == "force_rerun":
+                return None
+            if override == "ignore_artifact":
+                continue
             action = str(policy.get("action") or "").strip()
             source_tool_name = str(policy.get("sourceToolName") or "").strip()
             if action == "skip_redundant_mutation" and (not source_tool_name or source_tool_name == tool_name):
@@ -146,6 +151,8 @@ class ToolLoopGuardrail:
                     ),
                     failure_code="file_resume_policy_blocked",
                 )
+            if action == "reinspect_before_mutation" and override == "accept_current_state":
+                continue
             if action == "reinspect_before_mutation" and not self._path_was_refreshed(
                 requested_path,
                 workspace_epoch=workspace_epoch,
