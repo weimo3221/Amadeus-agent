@@ -738,6 +738,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.memory_store.complete_task(first_id, claim_lock="worker", result="done")
 
         dispatched = self.post_json(f"/tasks/{root['id']}/dispatch", {"limit": 10})
+        events = self.get_json(f"/tasks/{root['id']}/events")
 
         self.assertTrue(decomposed["ok"])
         self.assertEqual(decomposed["rootTaskId"], root["id"])
@@ -745,6 +746,9 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(len(decomposed["edges"]), 1)
         self.assertEqual(dispatched["rootTaskId"], root["id"])
         self.assertEqual(dispatched["dispatchedTaskIds"], [second_id])
+        event_types = [event["type"] for event in events["events"]]
+        self.assertIn("graph.applied", event_types)
+        self.assertIn("graph.dispatched", event_types)
 
     def test_tasks_http_auto_decompose_uses_planning_model(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Auto graph", body="Plan this.")
@@ -771,6 +775,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         ]
 
         decomposed = self.post_json(f"/tasks/{root['id']}/decompose", {"auto": True})
+        events = self.get_json(f"/tasks/{root['id']}/events")
 
         self.assertTrue(decomposed["ok"])
         self.assertFalse(decomposed["fallback"])
@@ -778,6 +783,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(decomposed["decompositionSource"], "model_repaired")
         self.assertIn("cannot allow toolsets", decomposed["repairReason"])
         self.assertEqual(decomposed["tasks"][0]["allowedToolsets"], ["read", "search"])
+        decomposed_event = next(event for event in events["events"] if event["type"] == "graph.decomposed")
+        self.assertTrue(decomposed_event["metadata"]["repaired"])
 
     def test_tasks_http_synthesize_completes_root(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Synthesize graph")

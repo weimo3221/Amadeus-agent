@@ -198,6 +198,19 @@ class OrchestratorService:
                     validation_error=str(validation_error),
                     max_children=max_children,
                 )
+                self._record_graph_event(
+                    root_task_id,
+                    "graph.decomposed",
+                    "Task graph decomposed after repair",
+                    {
+                        "source": "model_repaired",
+                        "fallback": False,
+                        "repaired": True,
+                        "repairReason": str(validation_error),
+                        "taskCount": len(repaired["graph"].get("tasks") or []),
+                        "edgeCount": len(repaired["graph"].get("edges") or []),
+                    },
+                )
                 return {
                     "source": "model_repaired",
                     "spec": spec,
@@ -206,6 +219,18 @@ class OrchestratorService:
                     "repaired": True,
                     "repairReason": str(validation_error),
                 }
+            self._record_graph_event(
+                root_task_id,
+                "graph.decomposed",
+                "Task graph decomposed",
+                {
+                    "source": "model",
+                    "fallback": False,
+                    "repaired": False,
+                    "taskCount": len(graph.get("tasks") or []),
+                    "edgeCount": len(graph.get("edges") or []),
+                },
+            )
             return {
                 "source": "model",
                 "spec": spec,
@@ -215,6 +240,19 @@ class OrchestratorService:
             }
         except Exception as error:
             logger.info("Model-backed task decomposition failed taskId=%s error=%s; using single-task fallback", root_task_id, error)
+            self._record_graph_event(
+                root_task_id,
+                "graph.decomposed",
+                "Task graph decomposition fell back to a single child",
+                {
+                    "source": "fallback",
+                    "fallback": True,
+                    "repaired": False,
+                    "error": str(error),
+                    "taskCount": 1,
+                    "edgeCount": 0,
+                },
+            )
             return {
                 "source": "fallback",
                 "spec": {
@@ -336,6 +374,16 @@ class OrchestratorService:
             if str(root.get("status") or "") not in {"succeeded", "failed", "cancelled"}:
                 self.memory_store.block_task(root_id, reason=reason, result=_fallback_child_summary(children))
                 root = self.memory_store.get_task(root_id) or root
+            self._record_graph_event(
+                root_id,
+                "graph.synthesized",
+                "Task graph synthesis blocked",
+                {
+                    "completed": False,
+                    "blocked": True,
+                    "failedTaskIds": [str(task.get("id")) for task in failed],
+                },
+            )
             return {
                 "rootTaskId": root_id,
                 "ready": True,
@@ -378,6 +426,15 @@ class OrchestratorService:
             ) or root
             current_status = str(root.get("status") or "")
         if current_status != "running" or str(root.get("claimLock") or "") != claim_lock:
+            self._record_graph_event(
+                root_id,
+                "graph.synthesized",
+                "Task graph synthesis could not claim root task",
+                {
+                    "completed": False,
+                    "reason": "root task is not claimable by the orchestrator",
+                },
+            )
             return {
                 "rootTaskId": root_id,
                 "ready": True,
@@ -388,6 +445,16 @@ class OrchestratorService:
                 "children": children,
             }
         completed = self.memory_store.complete_task(root_id, claim_lock=claim_lock, result=result)
+        self._record_graph_event(
+            root_id,
+            "graph.synthesized",
+            "Task graph synthesized into root task",
+            {
+                "completed": True,
+                "childTaskCount": len(children),
+                "artifactId": artifact.get("id"),
+            },
+        )
         return {
             "rootTaskId": root_id,
             "ready": True,
@@ -463,6 +530,17 @@ class OrchestratorService:
                 )
             )
 
+        self._record_graph_event(
+            root_id,
+            "graph.applied",
+            "Task graph applied",
+            {
+                "parentTaskId": str(root["id"]),
+                "taskCount": len(created_tasks),
+                "edgeCount": len(created_edges),
+                "childTaskIds": [str(task["id"]) for task in created_tasks],
+            },
+        )
         return {
             "rootTaskId": root_id,
             "tasks": created_tasks,
@@ -488,6 +566,16 @@ class OrchestratorService:
             dispatched.append(task_id)
             if len(dispatched) >= limit:
                 break
+        if root_task_id and dispatched:
+            self._record_graph_event(
+                root_task_id,
+                "graph.dispatched",
+                "Ready task graph children dispatched",
+                {
+                    "dispatchCount": len(dispatched),
+                    "dispatchedTaskIds": dispatched,
+                },
+            )
         return dispatched
 
     def review_completed_child(self, task_id: str) -> dict[str, object]:
@@ -537,6 +625,23 @@ class OrchestratorService:
             except Exception as error:
                 logger.info("Model-backed task synthesis failed taskId=%s error=%s; using fallback", root.get("id"), error)
         return _fallback_child_summary(children)
+
+    def _record_graph_event(
+        self,
+        root_task_id: str,
+        event_type: str,
+        message: str,
+        metadata: dict[str, object],
+    ) -> None:
+        try:
+            self.memory_store.record_task_event(
+                root_task_id,
+                event_type=event_type,
+                message=message,
+                metadata={"source": "orchestrator", **metadata},
+            )
+        except Exception as error:
+            logger.info("Failed to record graph event rootTaskId=%s type=%s error=%s", root_task_id, event_type, error)
 
     def _request_planning_json(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         if self.model_client is None:

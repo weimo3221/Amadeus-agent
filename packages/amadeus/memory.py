@@ -3831,6 +3831,48 @@ class MessageMemoryStore:
             ).fetchall()
         return [task_event_response(row) for row in rows]
 
+    def record_task_event(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        status: str | None = None,
+        message: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT session_id, status FROM tasks WHERE id = ?",
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[0]),
+                event_type=event_type,
+                status=status or str(row[1]),
+                message=message,
+                metadata=metadata,
+                created_at=now,
+            )
+            event_row = connection.execute(
+                """
+                SELECT id, task_id, session_id, type, status, message, metadata_json, created_at
+                FROM task_events
+                WHERE task_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+        if event_row is None:
+            raise RuntimeError("task event could not be loaded")
+        return task_event_response(event_row)
+
     def _insert_task_event(
         self,
         connection: sqlite3.Connection,

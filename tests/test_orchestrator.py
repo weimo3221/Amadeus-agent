@@ -169,6 +169,7 @@ class OrchestratorServiceTests(unittest.TestCase):
             root = service.create_root_goal(session_id="session-1", title="Build planning")
 
             planned = service.plan_root(str(root["id"]))
+            events = memory.list_task_events(str(root["id"]))
 
         self.assertFalse(planned["fallback"])
         self.assertTrue(planned["repaired"])
@@ -177,6 +178,12 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(len(planned["tasks"]), 1)
         self.assertEqual(planned["tasks"][0]["allowedToolsets"], ["read", "search"])
         self.assertEqual(len(model.payloads), 3)
+        event_types = [event["type"] for event in events]
+        self.assertIn("graph.decomposed", event_types)
+        self.assertIn("graph.applied", event_types)
+        decomposed_event = next(event for event in events if event["type"] == "graph.decomposed")
+        self.assertTrue(decomposed_event["metadata"]["repaired"])
+        self.assertEqual(decomposed_event["metadata"]["source"], "model_repaired")
 
     def test_plan_root_falls_back_to_single_child_when_model_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -204,6 +211,7 @@ class OrchestratorServiceTests(unittest.TestCase):
             root = service.create_root_goal(session_id="session-1", title="Fallback root", body="Do work")
 
             planned = service.plan_root(str(root["id"]))
+            events = memory.list_task_events(str(root["id"]))
 
         self.assertTrue(planned["fallback"])
         self.assertFalse(planned["repaired"])
@@ -211,6 +219,8 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(len(planned["tasks"]), 1)
         self.assertIn("unsupported workerProfile", planned["decompositionError"])
         self.assertEqual(len(model.payloads), 3)
+        decomposed_event = next(event for event in events if event["type"] == "graph.decomposed")
+        self.assertTrue(decomposed_event["metadata"]["fallback"])
 
     def test_dispatch_ready_respects_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -232,10 +242,14 @@ class OrchestratorServiceTests(unittest.TestCase):
             memory.complete_task(first_id, claim_lock="worker", result="done")
             submitted.clear()
             second_dispatch = service.dispatch_ready(str(root["id"]))
+            events = memory.list_task_events(str(root["id"]))
 
         self.assertEqual(first_dispatch, [first_id])
         self.assertEqual(second_dispatch, [second_id])
         self.assertEqual(submitted, [second_id])
+        dispatch_events = [event for event in events if event["type"] == "graph.dispatched"]
+        self.assertEqual(len(dispatch_events), 2)
+        self.assertEqual(dispatch_events[-1]["metadata"]["dispatchedTaskIds"], [second_id])
 
     def test_synthesize_root_completes_after_children_succeed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -260,6 +274,7 @@ class OrchestratorServiceTests(unittest.TestCase):
             repeated = service.synthesize_root(str(root["id"]))
             updated_root = memory.get_task(str(root["id"]))
             artifacts = memory.list_task_artifacts(str(root["id"]))
+            events = memory.list_task_events(str(root["id"]))
 
         self.assertTrue(synthesized["ready"])
         self.assertTrue(synthesized["completed"])
@@ -270,6 +285,9 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(artifacts[0]["title"], "Task graph synthesis")
         self.assertEqual(len(model.payloads), 1)
+        synthesis_events = [event for event in events if event["type"] == "graph.synthesized"]
+        self.assertEqual(len(synthesis_events), 1)
+        self.assertTrue(synthesis_events[0]["metadata"]["completed"])
 
     def test_synthesize_root_waits_for_active_children(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
