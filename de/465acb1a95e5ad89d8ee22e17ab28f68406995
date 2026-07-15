@@ -1,0 +1,31 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_0c65bb5d577ced 1092-1093,1107
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_447270d8415500 136
+docs/project-status.md
+  s_80fee7171b51b9::t_a3b66e8d4621c2 473,503,514
+docs/roadmap.md
+  s_80fee7171b51b9::t_3d49bbb58d4050 17,285,287
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_d1103d9b2ed90c 33,37,380,389,470-487,537,558,784-814,960-961,963,966-967,970-972,974-983,985-989,1165-1166,1192-1195
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_e1eb23192f2706 88-101,817-843
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "de465acb1a95e5ad89d8ee22e17ab28f68406995",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
