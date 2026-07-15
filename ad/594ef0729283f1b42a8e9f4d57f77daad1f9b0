@@ -1,0 +1,33 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_b89fde6b6e9e5c 1092,1103-1104
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_f3d85af3e4a2cc 136
+docs/project-status.md
+  s_80fee7171b51b9::t_21016627c9e1d8 473,512
+docs/roadmap.md
+  s_80fee7171b51b9::t_adb157f636ec52 17,285,287
+packages/amadeus/agent.py
+  s_80fee7171b51b9::t_f26c1a22d290d1 1104-1117,2545,2547-2549,2568-2575
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_32d28e556e1372 601-614,771-780
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_d49d0917571898 94-106,216-218,220,235-281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ad594ef0729283f1b42a8e9f4d57f77daad1f9b0",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
