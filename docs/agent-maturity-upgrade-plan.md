@@ -1084,7 +1084,7 @@ UI 不需要知道 runner 细节，但需要能展示：
 - Root tasks now record durable `task_events` for `graph.decomposed`, `graph.applied`, `graph.dispatched`, and `graph.synthesized`, including source/fallback/repair and child task metadata where relevant.
 - Controlled HTTP graph operations now also publish `task.updated` runtime events with `graph_decomposed`, `graph_dispatched`, and `graph_synthesized` actions for desktop/WebSocket subscribers.
 - `decompose_task` is still not exposed as a model tool; model generation is an internal service call and all writes still go through graph validation.
-- Remaining work: richer repair strategies, richer planning prompts/evals, richer graph UI semantics, and process-backed child-agent runners.
+- Remaining work: richer repair strategies, broader planning quality evals, richer graph UI semantics, and process-backed child-agent runners.
 
 ### Slice 5：Isolated child runner
 

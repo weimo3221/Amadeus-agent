@@ -504,11 +504,11 @@ Started: the first restricted `delegate_task` research/search tool, session task
 - Added prompt-surface hardening: system prompt assembly now separates stable runtime rules from contextual workspace/tool/memory/skill sections, advertises enabled tool capabilities, includes runtime environment metadata, sanitizes context-like markup, and caches per-session prompt variants until tool/runtime config changes.
 - Added first external memory provider boundary through `memory_provider.py`; a configured external provider becomes the active runtime memory provider for turn prefetch and memory tool exposure instead of stacking beside the built-in SQLite memory tools.
 - Added `skill_manage` as an approval-gated local experience-skill save path, plus skill catalog filtering by platform/tool availability and manifest-based cache invalidation.
-- Added deterministic runtime contract eval script at `scripts/eval_runtime_contracts.py` covering role identity, active/recent task context, task lifecycle, and MCP tool schema/execution contracts.
+- Added deterministic runtime contract eval script at `scripts/eval_runtime_contracts.py` covering role identity, active/recent task context, task lifecycle, orchestrator graph repair/dispatch/synthesis, and MCP tool schema/execution contracts.
 - Added supervised dev-stack startup through `scripts/dev_stack.py`, restoring the local P0 health signal and replacing the default raw concurrent `npm run dev` path with ordered startup plus health checks.
 - Add full sub-agent orchestration abstraction.
 - Add context compression.
-- Add deeper repair/eval loops, child-agent runners, and process-backed task execution on top of the new task graph store, WorkerContext builder, and internal orchestrator service.
+- Add richer planning quality evals, child-agent runners, and process-backed task execution on top of the new task graph store, WorkerContext builder, and internal orchestrator service.
 - Add human approval checkpoints for destructive, sensitive, or low-confidence actions.
 - Add provider/harness profiles.
 - Add eval coverage for tool choice, permissions, memory, Live2D, audio, and guardrails.

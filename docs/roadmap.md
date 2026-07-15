@@ -289,7 +289,7 @@ Target deliverables:
 - Long task plans.
 - Human approval checkpoints.
 - Provider and harness profiles.
-- First runtime contract eval complete for role identity, active/recent task context, task lifecycle, and MCP tool contracts. Broaden eval harness for tool choice, permission, memory, Live2D, audio, and guardrail behavior.
+- First runtime contract eval complete for role identity, active/recent task context, task lifecycle, orchestrator graph repair/dispatch/synthesis, and MCP tool contracts. Broaden eval harness for tool choice, permission, planning quality, memory, Live2D, audio, and guardrail behavior.
 
 Reference:
 
