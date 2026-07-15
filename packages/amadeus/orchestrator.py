@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from amadeus.memory import MessageMemoryStore
+from amadeus.model import first_choice_message, parse_json_object_from_text
 
 
 TaskSubmitter = Callable[[str], None]
+logger = logging.getLogger(__name__)
+
+
+class PlanningModel(Protocol):
+    @property
+    def model(self) -> str:
+        ...
+
+    def post_chat_completion(self, payload: dict[str, Any], *, timeout_seconds: int | None = None) -> dict[str, Any]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -44,9 +57,11 @@ class OrchestratorService:
         memory_store: MessageMemoryStore,
         *,
         submit_task: TaskSubmitter | None = None,
+        model_client: PlanningModel | None = None,
     ) -> None:
         self.memory_store = memory_store
         self.submit_task = submit_task
+        self.model_client = model_client
 
     def create_root_goal(
         self,
@@ -78,6 +93,216 @@ class OrchestratorService:
             "edges": [edge.__dict__ for edge in edges],
             "taskCount": len(tasks),
             "edgeCount": len(edges),
+        }
+
+    def specify_task(self, root_task_id: str) -> dict[str, object]:
+        root = self.memory_store.get_task(root_task_id)
+        if root is None:
+            raise ValueError("root task not found")
+        parsed = self._request_planning_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You turn a user goal into a precise execution spec for a long-running agent task. "
+                        "Return only JSON. Do not include markdown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Task:\n"
+                        f"title: {root.get('title')}\n"
+                        f"body: {root.get('body') or ''}\n\n"
+                        "Return JSON in this exact shape:\n"
+                        '{"goal":"clear goal","approach":"short approach","acceptanceCriteria":["criterion"],"outOfScope":["non-goal"]}'
+                    ),
+                },
+            ]
+        )
+        acceptance = parsed.get("acceptanceCriteria")
+        out_of_scope = parsed.get("outOfScope")
+        return {
+            "goal": str(parsed.get("goal") or root.get("title") or "").strip(),
+            "approach": str(parsed.get("approach") or "").strip(),
+            "acceptanceCriteria": acceptance if isinstance(acceptance, list) else [],
+            "outOfScope": out_of_scope if isinstance(out_of_scope, list) else [],
+        }
+
+    def decompose_task(self, root_task_id: str, *, max_children: int = 6) -> dict[str, object]:
+        root = self.memory_store.get_task(root_task_id)
+        if root is None:
+            raise ValueError("root task not found")
+        try:
+            spec = self.specify_task(root_task_id)
+            parsed = self._request_planning_json(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You decompose a long-running agent goal into a small dependency graph. "
+                            "Return only JSON. Do not include markdown. "
+                            "Prefer 2-6 tasks. Use dependencies only when one task needs another task's output."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Root task:\n"
+                            f"id: {root.get('id')}\n"
+                            f"title: {root.get('title')}\n"
+                            f"body: {root.get('body') or ''}\n\n"
+                            "Execution spec:\n"
+                            f"{json.dumps(spec, ensure_ascii=False)}\n\n"
+                            "Allowed worker profiles: researcher, planner, coder, reviewer, synthesizer.\n"
+                            "Use conservative tool bounds: researcher should use read/search, coder may request patch/terminal, reviewer should avoid writes.\n\n"
+                            "Return JSON in this exact shape:\n"
+                            '{"tasks":[{"tempId":"short-id","title":"task title","body":"worker instructions","workerProfile":"researcher|planner|coder|reviewer|synthesizer","acceptanceCriteria":["criterion"],"contextHints":{},"allowedToolsets":["read"],"disallowedTools":[],"dependsOn":["other-temp-id"]}],"edges":[]}'
+                        ),
+                    },
+                ]
+            )
+            graph = {"tasks": parsed.get("tasks"), "edges": parsed.get("edges")}
+            self.validate_graph(graph, max_children=max_children)
+            return {
+                "source": "model",
+                "spec": spec,
+                "graph": graph,
+                "fallback": False,
+            }
+        except Exception as error:
+            logger.info("Model-backed task decomposition failed taskId=%s error=%s; using single-task fallback", root_task_id, error)
+            return {
+                "source": "fallback",
+                "spec": {
+                    "goal": str(root.get("title") or "").strip(),
+                    "approach": str(root.get("body") or "").strip(),
+                    "acceptanceCriteria": root.get("acceptanceCriteria") if isinstance(root.get("acceptanceCriteria"), list) else [],
+                    "outOfScope": [],
+                },
+                "graph": {
+                    "tasks": [
+                        {
+                            "tempId": "work",
+                            "title": str(root.get("title") or "Work task"),
+                            "body": str(root.get("body") or ""),
+                            "workerProfile": "planner",
+                            "acceptanceCriteria": root.get("acceptanceCriteria") if isinstance(root.get("acceptanceCriteria"), list) else [],
+                            "contextHints": root.get("contextHints") if isinstance(root.get("contextHints"), dict) else {},
+                            "allowedToolsets": root.get("allowedToolsets") if isinstance(root.get("allowedToolsets"), list) else [],
+                            "disallowedTools": root.get("disallowedTools") if isinstance(root.get("disallowedTools"), list) else [],
+                            "dependsOn": [],
+                        }
+                    ],
+                    "edges": [],
+                },
+                "fallback": True,
+                "error": str(error),
+            }
+
+    def plan_root(self, root_task_id: str, *, max_children: int = 6) -> dict[str, object]:
+        decomposition = self.decompose_task(root_task_id, max_children=max_children)
+        applied = self.apply_task_graph(root_task_id, decomposition["graph"])  # type: ignore[arg-type]
+        return {
+            **applied,
+            "spec": decomposition.get("spec"),
+            "decompositionSource": decomposition.get("source"),
+            "fallback": bool(decomposition.get("fallback")),
+            "decompositionError": decomposition.get("error"),
+        }
+
+    def synthesize_root(self, root_task_id: str) -> dict[str, object]:
+        graph = self.memory_store.get_task_graph(root_task_id)
+        root_id = str(graph["rootTaskId"])
+        tasks = list(graph.get("tasks") or [])
+        root = next((task for task in tasks if str(task.get("id")) == root_id), None)
+        if root is None:
+            raise ValueError("root task not found")
+        children = [task for task in tasks if str(task.get("id")) != root_id]
+        if not children:
+            return {
+                "rootTaskId": root_id,
+                "ready": False,
+                "completed": False,
+                "reason": "root task has no child tasks to synthesize",
+                "children": [],
+            }
+        unfinished = [task for task in children if str(task.get("status") or "") not in {"succeeded", "failed", "cancelled"}]
+        if unfinished:
+            return {
+                "rootTaskId": root_id,
+                "ready": False,
+                "completed": False,
+                "reason": "child tasks are still active",
+                "pendingTaskIds": [str(task.get("id")) for task in unfinished],
+                "children": children,
+            }
+        failed = [task for task in children if str(task.get("status") or "") in {"failed", "cancelled"}]
+        if failed:
+            reason = "Cannot synthesize root task because one or more child tasks failed or were cancelled."
+            if str(root.get("status") or "") not in {"succeeded", "failed", "cancelled"}:
+                self.memory_store.block_task(root_id, reason=reason, result=_fallback_child_summary(children))
+                root = self.memory_store.get_task(root_id) or root
+            return {
+                "rootTaskId": root_id,
+                "ready": True,
+                "completed": False,
+                "blocked": True,
+                "reason": reason,
+                "failedTaskIds": [str(task.get("id")) for task in failed],
+                "rootTask": root,
+                "children": children,
+            }
+
+        current_status = str(root.get("status") or "")
+        if current_status == "succeeded":
+            return {
+                "rootTaskId": root_id,
+                "ready": True,
+                "completed": True,
+                "result": root.get("result"),
+                "rootTask": root,
+                "children": children,
+            }
+
+        result = self._synthesize_child_results(root, children)
+        artifact = self.memory_store.add_task_artifact(
+            root_id,
+            {
+                "type": "summary",
+                "title": "Task graph synthesis",
+                "content": result,
+            },
+            metadata={"source": "orchestrator", "childTaskCount": len(children)},
+        )
+        claim_lock = f"orchestrator:synthesize:{root_id}"
+        if current_status == "queued":
+            root = self.memory_store.start_task(
+                root_id,
+                claim_lock=claim_lock,
+                lease_owner="orchestrator",
+                runner_kind="orchestrator",
+            ) or root
+            current_status = str(root.get("status") or "")
+        if current_status != "running" or str(root.get("claimLock") or "") != claim_lock:
+            return {
+                "rootTaskId": root_id,
+                "ready": True,
+                "completed": False,
+                "reason": "root task is not claimable by the orchestrator",
+                "rootTask": root,
+                "artifact": artifact,
+                "children": children,
+            }
+        completed = self.memory_store.complete_task(root_id, claim_lock=claim_lock, result=result)
+        return {
+            "rootTaskId": root_id,
+            "ready": True,
+            "completed": True,
+            "result": result,
+            "artifact": artifact,
+            "rootTask": completed,
+            "children": children,
         }
 
     def apply_task_graph(self, root_task_id: str, graph: dict[str, object]) -> dict[str, object]:
@@ -186,6 +411,82 @@ class OrchestratorService:
             "result": task.get("result"),
             "error": task.get("error"),
         }
+
+    def _synthesize_child_results(self, root: dict[str, object], children: list[dict[str, object]]) -> str:
+        if self.model_client is not None:
+            try:
+                parsed = self._request_planning_json(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You synthesize completed child-agent task outputs into a concise final result. "
+                                "Return only JSON. Do not include markdown."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Root task:\n"
+                                f"title: {root.get('title')}\n"
+                                f"body: {root.get('body') or ''}\n\n"
+                                "Completed children:\n"
+                                f"{json.dumps(_child_synthesis_payload(children), ensure_ascii=False)}\n\n"
+                                "Return JSON in this exact shape:\n"
+                                '{"summary":"short synthesis","result":"final user-facing task result"}'
+                            ),
+                        },
+                    ]
+                )
+                result = str(parsed.get("result") or parsed.get("summary") or "").strip()
+                if result:
+                    return result
+            except Exception as error:
+                logger.info("Model-backed task synthesis failed taskId=%s error=%s; using fallback", root.get("id"), error)
+        return _fallback_child_summary(children)
+
+    def _request_planning_json(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        if self.model_client is None:
+            raise RuntimeError("planning model is not configured")
+        payload = {
+            "model": self.model_client.model,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0,
+        }
+        data = self.model_client.post_chat_completion(payload)
+        message = first_choice_message(data)
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("planning provider returned empty content")
+        return parse_json_object_from_text(content)
+
+
+def _child_synthesis_payload(children: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "id": child.get("id"),
+            "title": child.get("title"),
+            "workerProfile": child.get("workerProfile"),
+            "status": child.get("status"),
+            "result": child.get("result"),
+            "error": child.get("error"),
+        }
+        for child in children
+    ]
+
+
+def _fallback_child_summary(children: list[dict[str, object]]) -> str:
+    lines = ["Task graph child results:"]
+    for index, child in enumerate(children, start=1):
+        title = str(child.get("title") or child.get("id") or f"Task {index}").strip()
+        status = str(child.get("status") or "unknown")
+        result = str(child.get("result") or child.get("error") or "").strip()
+        if result:
+            lines.append(f"{index}. {title} [{status}]: {result}")
+        else:
+            lines.append(f"{index}. {title} [{status}]")
+    return "\n".join(lines)
 
 
 def _parse_tasks(raw_tasks: object, *, max_children: int) -> list[GraphTaskSpec]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from typing import Any
 from pathlib import Path
 
 import sys
@@ -10,6 +11,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.memory import MessageMemoryStore
 from amadeus.orchestrator import OrchestratorService, PlanningOptions
+
+
+class FakePlanningModel:
+    model = "fake-planner"
+
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.payloads: list[dict[str, Any]] = []
+
+    def post_chat_completion(self, payload: dict[str, Any], *, timeout_seconds: int | None = None) -> dict[str, Any]:
+        self.payloads.append(payload)
+        content = self.responses.pop(0)
+        return {"choices": [{"message": {"content": content}}]}
 
 
 class OrchestratorServiceTests(unittest.TestCase):
@@ -84,6 +98,39 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(graph["edges"][0]["fromTaskId"], temp_ids["research"])
         self.assertEqual(graph["edges"][0]["toTaskId"], temp_ids["design"])
 
+    def test_plan_root_uses_model_json_then_applies_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            model = FakePlanningModel([
+                '{"goal":"Build planning","approach":"Inspect then design","acceptanceCriteria":["graph created"],"outOfScope":[]}',
+                '{"tasks":[{"tempId":"inspect","title":"Inspect runtime","body":"Read code","workerProfile":"researcher","acceptanceCriteria":["notes"],"allowedToolsets":["read"]},{"tempId":"design","title":"Design changes","body":"Use notes","workerProfile":"planner","dependsOn":["inspect"]}],"edges":[]}',
+            ])
+            service = OrchestratorService(memory, model_client=model)
+            root = service.create_root_goal(session_id="session-1", title="Build planning")
+
+            planned = service.plan_root(str(root["id"]))
+
+        self.assertFalse(planned["fallback"])
+        self.assertEqual(planned["decompositionSource"], "model")
+        self.assertEqual(planned["spec"]["goal"], "Build planning")
+        self.assertEqual(len(planned["tasks"]), 2)
+        self.assertEqual(len(planned["edges"]), 1)
+        self.assertEqual(len(model.payloads), 2)
+
+    def test_plan_root_falls_back_to_single_child_when_model_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            model = FakePlanningModel(["not json"])
+            service = OrchestratorService(memory, model_client=model)
+            root = service.create_root_goal(session_id="session-1", title="Fallback root", body="Do work")
+
+            planned = service.plan_root(str(root["id"]))
+
+        self.assertTrue(planned["fallback"])
+        self.assertEqual(planned["decompositionSource"], "fallback")
+        self.assertEqual(len(planned["tasks"]), 1)
+        self.assertEqual(planned["tasks"][0]["title"], "Fallback root")
+
     def test_dispatch_ready_respects_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
@@ -108,6 +155,79 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(first_dispatch, [first_id])
         self.assertEqual(second_dispatch, [second_id])
         self.assertEqual(submitted, [second_id])
+
+    def test_synthesize_root_completes_after_children_succeed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            model = FakePlanningModel(['{"summary":"done","result":"Final synthesized result"}'])
+            service = OrchestratorService(memory, model_client=model)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(str(root["id"]), {
+                "tasks": [
+                    {"tempId": "first", "title": "First"},
+                    {"tempId": "second", "title": "Second"},
+                ],
+            })
+            first_id = str(applied["tempTaskIds"]["first"])
+            second_id = str(applied["tempTaskIds"]["second"])
+            memory.start_task(first_id, claim_lock="worker-1")
+            memory.complete_task(first_id, claim_lock="worker-1", result="first result")
+            memory.start_task(second_id, claim_lock="worker-2")
+            memory.complete_task(second_id, claim_lock="worker-2", result="second result")
+
+            synthesized = service.synthesize_root(str(root["id"]))
+            repeated = service.synthesize_root(str(root["id"]))
+            updated_root = memory.get_task(str(root["id"]))
+            artifacts = memory.list_task_artifacts(str(root["id"]))
+
+        self.assertTrue(synthesized["ready"])
+        self.assertTrue(synthesized["completed"])
+        self.assertTrue(repeated["completed"])
+        self.assertEqual(synthesized["result"], "Final synthesized result")
+        self.assertEqual(updated_root["status"], "succeeded")
+        self.assertEqual(updated_root["result"], "Final synthesized result")
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["title"], "Task graph synthesis")
+        self.assertEqual(len(model.payloads), 1)
+
+    def test_synthesize_root_waits_for_active_children(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(str(root["id"]), {
+                "tasks": [{"tempId": "first", "title": "First"}],
+            })
+            child_id = str(applied["tempTaskIds"]["first"])
+
+            synthesized = service.synthesize_root(str(root["id"]))
+            updated_root = memory.get_task(str(root["id"]))
+
+        self.assertFalse(synthesized["ready"])
+        self.assertFalse(synthesized["completed"])
+        self.assertEqual(synthesized["pendingTaskIds"], [child_id])
+        self.assertEqual(updated_root["status"], "queued")
+
+    def test_synthesize_root_blocks_when_child_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(str(root["id"]), {
+                "tasks": [{"tempId": "first", "title": "First"}],
+            })
+            child_id = str(applied["tempTaskIds"]["first"])
+            memory.start_task(child_id, claim_lock="worker")
+            memory.fail_task(child_id, claim_lock="worker", error="boom")
+
+            synthesized = service.synthesize_root(str(root["id"]))
+            updated_root = memory.get_task(str(root["id"]))
+
+        self.assertTrue(synthesized["ready"])
+        self.assertFalse(synthesized["completed"])
+        self.assertTrue(synthesized["blocked"])
+        self.assertEqual(synthesized["failedTaskIds"], [child_id])
+        self.assertEqual(updated_root["status"], "blocked")
 
     def test_review_completed_child_returns_terminal_decision(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

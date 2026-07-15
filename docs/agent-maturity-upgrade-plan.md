@@ -979,6 +979,7 @@ GET /tasks/{id}/events
 GET /tasks/{id}/graph
 POST /tasks/{id}/decompose
 POST /tasks/{id}/dispatch
+POST /tasks/{id}/synthesize
 POST /tasks/{id}/cancel
 POST /tasks/{id}/approve
 POST /tasks/{id}/retry
@@ -1073,12 +1074,14 @@ UI 不需要知道 runner 细节，但需要能展示：
 
 ### Slice 4：Internal orchestrator
 
-- Status: deterministic internal skeleton is implemented; model-backed graph generation is not.
-- Added internal `OrchestratorService` with root goal creation, structured graph validation, child task/edge persistence, ready child dispatch, and terminal child review.
-- Added controlled Python HTTP entrypoints: `POST /tasks/{id}/decompose` applies a validated structured graph, and `POST /tasks/{id}/dispatch` submits dependency-ready children through the existing task worker.
+- Status: first model-backed graph generation and root synthesis are implemented behind the internal orchestrator service.
+- Added internal `OrchestratorService` with root goal creation, structured graph validation, child task/edge persistence, ready child dispatch, terminal child review, and root synthesis.
+- Added controlled Python HTTP entrypoints: `POST /tasks/{id}/decompose` applies a validated structured graph, `POST /tasks/{id}/dispatch` submits dependency-ready children through the existing task worker, and `POST /tasks/{id}/synthesize` summarizes terminal child results into the root task.
+- `POST /tasks/{id}/decompose` can also run with `auto: true`, which asks the configured planning model for a fixed-shape JSON spec and task graph, validates it, applies it, and falls back to a single child task if model JSON generation fails.
+- `POST /tasks/{id}/synthesize` waits while children are still active, blocks the root when any child failed/cancelled, and completes the root with a summary artifact when all children succeeded. Model synthesis uses a fixed JSON response shape and falls back to deterministic child-result summarization.
 - Graph validation rejects duplicate task ids, unknown dependencies, unknown edge endpoints, excessive child counts, and dependency cycles.
-- `decompose_task` is still not exposed as a model tool. The current service accepts already-structured graph payloads so orchestration state transitions can be tested before model generation is added.
-- Remaining work: `specify`, model-backed `decompose`, graph repair, `synthesize`, dangerous profile validation, and broader graph event publication.
+- `decompose_task` is still not exposed as a model tool; model generation is an internal service call and all writes still go through graph validation.
+- Remaining work: graph repair, dangerous profile validation, richer planning prompts/evals, broader graph event publication, and process-backed child-agent runners.
 
 ### Slice 5：Isolated child runner
 

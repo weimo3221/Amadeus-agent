@@ -37,6 +37,17 @@ class NoopTaskWorker:
         return runtime_server.memory_store.cancel_task(task_id, reason=reason)
 
 
+class FakePlanningModel:
+    model = "fake-planner"
+
+    def __init__(self) -> None:
+        self.responses: list[str] = []
+
+    def post_chat_completion(self, payload: dict[str, Any], *, timeout_seconds: int | None = None) -> dict[str, Any]:
+        content = self.responses.pop(0)
+        return {"choices": [{"message": {"content": content}}]}
+
+
 class FakeEmbeddingDeploymentManager:
     def __init__(self) -> None:
         self.deploy_calls: list[tuple[Any, bool]] = []
@@ -260,6 +271,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             encoding="utf-8",
         )
         memory_store = MessageMemoryStore(database_path)
+        self.planning_model = FakePlanningModel()
         runtime_server.memory_store = memory_store
         runtime_server.runtime_event_bus = RuntimeEventBus()
         runtime_server.agent_runtime = TurnRuntime(
@@ -272,7 +284,11 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.permission_broker = PermissionBroker()
         runtime_server.live2d_library = LocalLive2DModelLibrary(live2d_root, "http://runtime", self.harnesses_config_path)
         runtime_server.task_worker = NoopTaskWorker()
-        runtime_server.orchestrator_service = OrchestratorService(memory_store, submit_task=runtime_server.task_worker.submit)
+        runtime_server.orchestrator_service = OrchestratorService(
+            memory_store,
+            submit_task=runtime_server.task_worker.submit,
+            model_client=self.planning_model,
+        )
         runtime_server.agent_runtime.set_task_worker(runtime_server.task_worker)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), runtime_server.RuntimeRequestHandler)
@@ -729,6 +745,49 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(len(decomposed["edges"]), 1)
         self.assertEqual(dispatched["rootTaskId"], root["id"])
         self.assertEqual(dispatched["dispatchedTaskIds"], [second_id])
+
+    def test_tasks_http_auto_decompose_uses_planning_model(self) -> None:
+        root = runtime_server.memory_store.create_task(session_id="http-test", title="Auto graph", body="Plan this.")
+        self.planning_model.responses = [
+            '{"goal":"Auto graph","approach":"Research then design","acceptanceCriteria":["children created"],"outOfScope":[]}',
+            '{"tasks":[{"tempId":"research","title":"Research","body":"Inspect context","workerProfile":"researcher"},{"tempId":"design","title":"Design","body":"Use research","workerProfile":"planner","dependsOn":["research"]}],"edges":[]}',
+        ]
+
+        decomposed = self.post_json(f"/tasks/{root['id']}/decompose", {"auto": True})
+
+        self.assertTrue(decomposed["ok"])
+        self.assertFalse(decomposed["fallback"])
+        self.assertEqual(decomposed["decompositionSource"], "model")
+        self.assertEqual(decomposed["spec"]["goal"], "Auto graph")
+        self.assertEqual(len(decomposed["tasks"]), 2)
+        self.assertEqual(len(decomposed["edges"]), 1)
+
+    def test_tasks_http_synthesize_completes_root(self) -> None:
+        root = runtime_server.memory_store.create_task(session_id="http-test", title="Synthesize graph")
+        self.planning_model.responses = ['{"summary":"merged","result":"Merged final result"}']
+        decomposed = self.post_json(f"/tasks/{root['id']}/decompose", {
+            "graph": {
+                "tasks": [
+                    {"tempId": "first", "title": "First child"},
+                    {"tempId": "second", "title": "Second child"},
+                ],
+            },
+        })
+        first_id = decomposed["tempTaskIds"]["first"]
+        second_id = decomposed["tempTaskIds"]["second"]
+        runtime_server.memory_store.start_task(first_id, claim_lock="worker-1")
+        runtime_server.memory_store.complete_task(first_id, claim_lock="worker-1", result="first done")
+        runtime_server.memory_store.start_task(second_id, claim_lock="worker-2")
+        runtime_server.memory_store.complete_task(second_id, claim_lock="worker-2", result="second done")
+
+        synthesized = self.post_json(f"/tasks/{root['id']}/synthesize", {})
+        updated_root = runtime_server.memory_store.get_task(str(root["id"]))
+
+        self.assertTrue(synthesized["ok"])
+        self.assertTrue(synthesized["ready"])
+        self.assertTrue(synthesized["completed"])
+        self.assertEqual(synthesized["result"], "Merged final result")
+        self.assertEqual(updated_root["status"], "succeeded")
 
     def test_tasks_http_decompose_rejects_invalid_graph(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Invalid graph")

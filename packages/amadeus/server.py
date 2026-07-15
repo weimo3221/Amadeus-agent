@@ -144,7 +144,7 @@ def publish_scheduled_job_update(job: dict[str, object], action: str) -> None:
 task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime, publish_task_event=publish_task_update)
 agent_runtime.set_task_worker(task_worker)
 task_worker.recover()
-orchestrator_service = OrchestratorService(memory_store, submit_task=task_worker.submit)
+orchestrator_service = OrchestratorService(memory_store, submit_task=task_worker.submit, model_client=agent_runtime.model_client)
 scheduled_job_worker = ScheduledJobWorker(
     lambda: memory_store,
     publish_job_event=publish_scheduled_job_update,
@@ -642,6 +642,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/tasks/") and parsed.path.endswith("/dispatch"):
             task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/dispatch")).strip()
             self.handle_task_dispatch(task_id)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/synthesize"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/synthesize")).strip()
+            self.handle_task_synthesize(task_id)
             return
 
         if self.path == "/runtime/feedback":
@@ -1155,11 +1160,19 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 self.write_json(400, {"ok": False, "error": "task id is required"})
                 return
             body = self.read_json_body()
-            graph = body.get("graph")
-            if not isinstance(graph, dict):
+            auto = bool(body.get("auto"))
+            if auto:
+                max_children = parse_int(str(body.get("maxChildren") or "6"), 6, 1, 12)
+                applied = orchestrator_service.plan_root(task_id, max_children=max_children)
+            else:
+                graph = body.get("graph")
+                if not isinstance(graph, dict):
+                    self.write_json(400, {"ok": False, "error": "graph is required"})
+                    return
+                applied = orchestrator_service.apply_task_graph(task_id, graph)
+            if not isinstance(applied, dict):
                 self.write_json(400, {"ok": False, "error": "graph is required"})
                 return
-            applied = orchestrator_service.apply_task_graph(task_id, graph)
             dispatched: list[str] = []
             if bool(body.get("dispatch")):
                 limit = int(body.get("dispatchLimit") or 20)
@@ -1197,6 +1210,25 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Task dispatch failed taskId=%s error=%s", task_id, error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_synthesize(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            result = orchestrator_service.synthesize_root(task_id)
+            logger.info(
+                "Synthesized task graph rootTaskId=%s ready=%s completed=%s",
+                result.get("rootTaskId"),
+                result.get("ready"),
+                result.get("completed"),
+            )
+            self.write_json(200, {"ok": True, **result})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task synthesize failed taskId=%s error=%s", task_id, error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_task_create(self) -> None:
