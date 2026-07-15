@@ -49,7 +49,12 @@ from amadeus.tool_runtime import (
     ToolLoopGuardrail,
     ToolRegistry,
 )
-from amadeus.worker_policy import WorkerRuntimeScope, worker_action_permission_decision
+from amadeus.worker_policy import (
+    WorkerRuntimeScope,
+    worker_action_permission_decision,
+    worker_sandbox_allows_tool,
+    worker_sandbox_denial_reason,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1143,7 +1148,10 @@ class AgentRuntime:
         worker_scope = _WORKER_RUNTIME_SCOPE.get()
         if worker_scope is None:
             return role_names
-        worker_names = worker_scope.allowed_tool_names
+        worker_names = {
+            name for name in worker_scope.allowed_tool_names
+            if worker_sandbox_allows_tool(worker_scope, name)
+        }
         if role_names is None:
             return set(worker_names)
         return set(role_names).intersection(worker_names)
@@ -2089,6 +2097,35 @@ class AgentRuntime:
             )
             return
 
+        worker_scope = self._current_worker_scope()
+        if not worker_sandbox_allows_tool(worker_scope, tool_name):
+            result = {"error": worker_sandbox_denial_reason(worker_scope, tool_name)}
+            guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
+            self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
+            yield AgentEvent("tool.finished", self._tool_finished_payload(
+                tool_name,
+                ok=False,
+                failure_code="worker_sandbox_denied",
+            ))
+            yield self._audit_tool(
+                session_id,
+                tool_name,
+                decision="denied",
+                ok=False,
+                failure_code="worker_sandbox_denied",
+                detail=result["error"],
+                metadata={
+                    "turnId": turn_id,
+                    "toolCallId": tool_call_id,
+                    "workspaceEpoch": workspace_epoch,
+                    "workerProfile": self._current_worker_profile(),
+                    "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
+                    "workerSandboxMode": self._current_worker_sandbox_mode(),
+                    "workerWorkspacePath": self._current_worker_workspace_path(),
+                },
+            )
+            return
+
         if not self.role_allows_tool(session_id, tool_name):
             logger.info("Tool call denied by role scope sessionId=%s turnId=%s toolCallId=%s toolName=%s", session_id, turn_id, tool_call_id, tool_name)
             result = {"error": f"Tool is not enabled for this role: {tool_name}"}
@@ -2214,6 +2251,7 @@ class AgentRuntime:
                         "workspaceEpoch": workspace_epoch,
                         "workerProfile": self._current_worker_profile(),
                         "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
+                        "workerSandboxMode": self._current_worker_sandbox_mode(),
                         "workerWorkspacePath": self._current_worker_workspace_path(),
                         "approvalActionKey": worker_permission.action_key,
                         "approvalActionLabel": worker_permission.action_label,
@@ -2307,6 +2345,7 @@ class AgentRuntime:
                 tool_name=tool_name,
                 worker_profile=self._current_worker_profile(),
                 worker_allowed_toolsets=self._current_worker_allowed_toolsets(),
+                worker_sandbox_mode=self._current_worker_sandbox_mode(),
                 worker_workspace_path=self._current_worker_workspace_path(),
                 worker_file_resume_policies=self._current_worker_file_resume_policies(),
                 workspace_epoch=workspace_epoch,
@@ -2321,6 +2360,7 @@ class AgentRuntime:
                     "workspaceEpoch": workspace_epoch,
                     "workerProfile": self._current_worker_profile(),
                     "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
+                    "workerSandboxMode": self._current_worker_sandbox_mode(),
                     "workerWorkspacePath": self._current_worker_workspace_path(),
                     "workerFileResumePolicyCount": len(self._current_worker_file_resume_policies()),
                 },
@@ -2672,6 +2712,10 @@ class AgentRuntime:
     def _current_worker_allowed_toolsets(self) -> tuple[str, ...]:
         scope = self._current_worker_scope()
         return scope.allowed_toolsets if scope else ()
+
+    def _current_worker_sandbox_mode(self) -> str | None:
+        scope = self._current_worker_scope()
+        return scope.sandbox_mode if scope else None
 
     def _current_worker_workspace_path(self) -> str | None:
         scope = self._current_worker_scope()

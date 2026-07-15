@@ -1969,6 +1969,7 @@ finally:
             worker_profile="coder",
             allowed_toolsets=("terminal",),
             allowed_tool_names=frozenset({"terminal"}),
+            sandbox_mode="workspace_execute",
         )
 
         with runtime.worker_runtime_scope(scope):
@@ -1987,8 +1988,68 @@ finally:
         tool_audit = [event.payload for event in events if event.type == "tool.audit"]
         self.assertEqual(tool_audit[1]["failureCode"], "worker_permission_denied")
         self.assertEqual(tool_audit[1]["metadata"]["workerProfile"], "coder")
+        self.assertEqual(tool_audit[1]["metadata"]["workerSandboxMode"], "workspace_execute")
         self.assertEqual(tool_audit[1]["metadata"]["approvalActionKey"], preview["approvalActionKey"])
         self.assertEqual(tool_audit[1]["metadata"]["approvalRiskLabels"], ["shell_command"])
+
+    def test_worker_read_only_sandbox_hides_and_denies_mutation_tools(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def inspect_patch(args: dict[str, Any], _context: ToolContext) -> dict[str, Any]:
+            calls.append(args)
+            return {"changed": True}
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {"name": "patch", "arguments": "{}"},
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="patch",
+                    display_name="Patch",
+                    permission="ask",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "patch"}},
+                    handler=inspect_patch,
+                ),
+                ToolSpec(
+                    name="read_file",
+                    display_name="Read file",
+                    permission="allow",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "read_file"}},
+                    handler=lambda _args, _context: {"content": ""},
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("read", "patch"),
+            allowed_tool_names=frozenset({"read_file", "patch"}),
+            sandbox_mode="read_only",
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            schemas = runtime.enabled_tool_schemas("worker-session")
+            events = list(runtime.run_turn("worker-session", "patch file", lambda _request: True))
+
+        self.assertEqual({schema["function"]["name"] for schema in schemas}, {"read_file"})
+        self.assertEqual(calls, [])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(tool_finished[0]["failureCode"], "worker_sandbox_denied")
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual(tool_audit[1]["failureCode"], "worker_sandbox_denied")
+        self.assertEqual(tool_audit[1]["metadata"]["workerSandboxMode"], "read_only")
 
     def test_worker_scope_auto_approves_checkpoint_approved_ask_tool(self) -> None:
         observed_contexts: list[ToolContext] = []
@@ -2027,6 +2088,7 @@ finally:
             worker_profile="coder",
             allowed_toolsets=("terminal",),
             allowed_tool_names=frozenset({"terminal"}),
+            sandbox_mode="workspace_execute",
             approved_ask_tool_names=frozenset({"terminal"}),
         )
 
@@ -2036,6 +2098,7 @@ finally:
         self.assertEqual(permission_requests, [])
         self.assertEqual(len(observed_contexts), 1)
         self.assertEqual(observed_contexts[0].permission_decision, "worker_auto_approved")
+        self.assertEqual(observed_contexts[0].worker_sandbox_mode, "workspace_execute")
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]
         self.assertTrue(tool_finished[0]["ok"])
 
@@ -2075,6 +2138,7 @@ finally:
             worker_profile="coder",
             allowed_toolsets=("terminal",),
             allowed_tool_names=frozenset({"process"}),
+            sandbox_mode="workspace_execute",
             approved_ask_tool_actions=frozenset({"process:kill"}),
         )
 

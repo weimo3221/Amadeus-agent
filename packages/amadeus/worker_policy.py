@@ -10,6 +10,16 @@ from typing import Any
 DEFAULT_WORKER_PROFILE = "planner"
 ALLOWED_WORKER_PROFILES = {"researcher", "planner", "coder", "reviewer", "synthesizer"}
 KNOWN_TOOLSETS = {"read", "search", "memory", "web", "plan", "task", "skills", "patch", "write", "terminal", "code", "browser", "vision"}
+WORKER_SANDBOX_MODES = {"read_only", "workspace_write", "workspace_execute"}
+PROFILE_DEFAULT_SANDBOX_MODE: dict[str, str] = {
+    "researcher": "read_only",
+    "planner": "read_only",
+    "coder": "workspace_write",
+    "reviewer": "read_only",
+    "synthesizer": "read_only",
+}
+WORKSPACE_MUTATION_TOOLS = {"patch", "write_file"}
+WORKSPACE_EXECUTION_TOOLS = {"terminal", "process", "execute_code"}
 PROFILE_TOOLSET_POLICY: dict[str, set[str]] = {
     "researcher": {"read", "search", "memory", "web"},
     "planner": {"read", "search", "memory", "plan", "task", "skills"},
@@ -67,6 +77,7 @@ class WorkerRuntimeScope:
     worker_profile: str
     allowed_toolsets: tuple[str, ...]
     allowed_tool_names: frozenset[str]
+    sandbox_mode: str = "workspace_write"
     workspace_path: str | None = None
     approved_ask_tool_names: frozenset[str] = frozenset()
     approved_ask_tool_actions: frozenset[str] = frozenset()
@@ -87,11 +98,13 @@ class WorkerActionPermissionDecision:
 def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
     profile = worker_profile_for_task(task)
     toolsets = tuple(worker_toolsets_for_task(task))
-    allowed_tool_names = frozenset(worker_tool_names_for_task(task))
+    sandbox_mode = worker_sandbox_mode_for_task(task, profile=profile)
+    allowed_tool_names = frozenset(worker_tool_names_for_sandbox(worker_tool_names_for_task(task), sandbox_mode))
     return WorkerRuntimeScope(
         worker_profile=profile,
         allowed_toolsets=toolsets,
         allowed_tool_names=allowed_tool_names,
+        sandbox_mode=sandbox_mode,
         workspace_path=worker_workspace_path_for_task(task),
         approved_ask_tool_names=frozenset(
             name for name in worker_approved_ask_tool_names_for_task(task) if name in allowed_tool_names
@@ -154,6 +167,66 @@ def worker_workspace_path_for_task(task: dict[str, object]) -> str | None:
         if value:
             return value
     return None
+
+
+def worker_sandbox_mode_for_task(task: dict[str, object], *, profile: str | None = None) -> str:
+    effective_profile = profile or worker_profile_for_task(task)
+    default_mode = PROFILE_DEFAULT_SANDBOX_MODE.get(effective_profile, "read_only")
+    hints = task.get("contextHints")
+    if not isinstance(hints, dict):
+        return default_mode
+    for key in ("sandboxMode", "workerSandboxMode", "sandbox"):
+        raw_value = hints.get(key)
+        value = normalize_worker_sandbox_mode(raw_value)
+        if value:
+            return value
+    return default_mode
+
+
+def normalize_worker_sandbox_mode(value: object) -> str | None:
+    text = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "readonly": "read_only",
+        "read": "read_only",
+        "read_only": "read_only",
+        "workspace_read": "read_only",
+        "write": "workspace_write",
+        "workspace_write": "workspace_write",
+        "workspace": "workspace_write",
+        "execute": "workspace_execute",
+        "workspace_execute": "workspace_execute",
+        "workspace_exec": "workspace_execute",
+    }
+    return aliases.get(text)
+
+
+def worker_tool_names_for_sandbox(tool_names: set[str], sandbox_mode: str) -> set[str]:
+    return {tool_name for tool_name in tool_names if worker_sandbox_allows_tool_name(sandbox_mode, tool_name)}
+
+
+def worker_sandbox_allows_tool(scope: WorkerRuntimeScope | None, tool_name: str) -> bool:
+    return scope is None or worker_sandbox_allows_tool_name(scope.sandbox_mode, tool_name)
+
+
+def worker_sandbox_denial_reason(scope: WorkerRuntimeScope | None, tool_name: str) -> str:
+    mode = scope.sandbox_mode if scope else "none"
+    if tool_name in WORKSPACE_MUTATION_TOOLS:
+        return f"Worker sandbox mode {mode} does not allow workspace mutation tool: {tool_name}"
+    if tool_name in WORKSPACE_EXECUTION_TOOLS:
+        return f"Worker sandbox mode {mode} does not allow command/code execution tool: {tool_name}"
+    return f"Worker sandbox mode {mode} does not allow tool: {tool_name}"
+
+
+def worker_sandbox_allows_tool_name(sandbox_mode: str, tool_name: str) -> bool:
+    if sandbox_mode == "workspace_execute":
+        return True
+    if sandbox_mode == "workspace_write":
+        return tool_name not in WORKSPACE_EXECUTION_TOOLS
+    if sandbox_mode == "read_only":
+        return tool_name not in WORKSPACE_MUTATION_TOOLS and tool_name not in WORKSPACE_EXECUTION_TOOLS
+    return tool_name not in WORKSPACE_MUTATION_TOOLS and tool_name not in WORKSPACE_EXECUTION_TOOLS
+
+
 
 
 def worker_approved_ask_tool_names_for_task(task: dict[str, object]) -> set[str]:

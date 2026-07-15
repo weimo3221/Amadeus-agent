@@ -269,6 +269,7 @@ class TaskWorkerTests(unittest.TestCase):
         scope = runtime.runtime_scopes[0]
         self.assertEqual(scope.worker_profile, "researcher")
         self.assertEqual(scope.allowed_toolsets, ("read", "web"))
+        self.assertEqual(scope.sandbox_mode, "read_only")
         self.assertEqual(scope.workspace_path, "research-workspace")
         self.assertIn("read_file", scope.allowed_tool_names)
         self.assertIn("web_search", scope.allowed_tool_names)
@@ -277,6 +278,31 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(scope.file_resume_policies[0]["action"], "skip_redundant_mutation")
         self.assertEqual(scope.file_resume_policies[0]["sourceToolName"], "patch")
         self.assertEqual(runtime.scopes, [])
+
+    def test_worker_sandbox_defaults_filter_execution_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            default_scope = build_worker_runtime_scope(memory.create_task(
+                session_id="session-1",
+                title="Default sandbox",
+                worker_profile="coder",
+                allowed_toolsets=["read", "patch", "terminal", "code"],
+            ))
+            execute_scope = build_worker_runtime_scope(memory.create_task(
+                session_id="session-1",
+                title="Execute sandbox",
+                worker_profile="coder",
+                allowed_toolsets=["read", "patch", "terminal", "code"],
+                context_hints={"sandboxMode": "workspace_execute"},
+            ))
+
+        self.assertEqual(default_scope.sandbox_mode, "workspace_write")
+        self.assertIn("patch", default_scope.allowed_tool_names)
+        self.assertNotIn("terminal", default_scope.allowed_tool_names)
+        self.assertNotIn("execute_code", default_scope.allowed_tool_names)
+        self.assertEqual(execute_scope.sandbox_mode, "workspace_execute")
+        self.assertIn("terminal", execute_scope.allowed_tool_names)
+        self.assertIn("execute_code", execute_scope.allowed_tool_names)
 
     def test_agent_runtime_worker_tool_scope_filters_schemas_and_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -302,6 +328,7 @@ class TaskWorkerTests(unittest.TestCase):
                 worker_profile="coder",
                 allowed_toolsets=("read", "patch"),
                 allowed_tool_names=frozenset({"read_file", "patch"}),
+                sandbox_mode="workspace_write",
                 workspace_path=str(workspace),
             )
 

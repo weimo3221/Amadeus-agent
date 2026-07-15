@@ -1216,6 +1216,7 @@ class TaskWorker:
                 worker_profile=base_scope.worker_profile,
                 allowed_toolsets=base_scope.allowed_toolsets,
                 allowed_tool_names=base_scope.allowed_tool_names,
+                sandbox_mode=base_scope.sandbox_mode,
                 workspace_path=base_scope.workspace_path,
                 approved_ask_tool_names=base_scope.approved_ask_tool_names,
                 approved_ask_tool_actions=base_scope.approved_ask_tool_actions,
@@ -1584,6 +1585,7 @@ class TaskWorker:
             "phase": phase,
             "workerProfile": scope.worker_profile,
             "allowedToolsets": list(scope.allowed_toolsets),
+            "sandboxMode": scope.sandbox_mode,
         }
         if scope.workspace_path:
             checkpoint["workspacePath"] = scope.workspace_path
