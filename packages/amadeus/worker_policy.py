@@ -22,6 +22,13 @@ DEFAULT_PROFILE_TOOLSETS: dict[str, list[str]] = {
     "synthesizer": ["read", "memory"],
 }
 BASE_WORKER_TOOLS = {"get_current_time", "clarify"}
+PROFILE_AUTO_APPROVED_ASK_TOOLS: dict[str, set[str]] = {
+    "researcher": {"web_extract"},
+    "planner": set(),
+    "coder": {"patch"},
+    "reviewer": set(),
+    "synthesizer": set(),
+}
 TOOLSET_TOOL_NAMES: dict[str, set[str]] = {
     "read": {"search_files", "read_file", "read_session_messages"},
     "search": {"search_files", "search_memory"},
@@ -104,6 +111,14 @@ def worker_workspace_path_for_task(task: dict[str, object]) -> str | None:
         if value:
             return value
     return None
+
+
+def worker_permission_decision(scope: WorkerRuntimeScope | None, tool_name: str, permission: str) -> str:
+    if scope is None or permission != "ask":
+        return "prompt"
+    if tool_name in PROFILE_AUTO_APPROVED_ASK_TOOLS.get(scope.worker_profile, set()) and tool_name in scope.allowed_tool_names:
+        return "auto_approve"
+    return "deny"
 
 
 def _string_list(value: Any) -> list[str]:

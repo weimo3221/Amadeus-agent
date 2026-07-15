@@ -49,7 +49,7 @@ from amadeus.tool_runtime import (
     ToolLoopGuardrail,
     ToolRegistry,
 )
-from amadeus.worker_policy import WorkerRuntimeScope
+from amadeus.worker_policy import WorkerRuntimeScope, worker_permission_decision
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2150,62 +2150,108 @@ class AgentRuntime:
         permission_request_id: str | None = None
         permission_decision = "allow"
         if spec.permission == "ask":
-            request = PermissionRequest(
-                request_id=str(uuid4()),
-                tool_name=spec.name,
-                display_name=spec.display_name,
-                reason=spec.describe_request(args),
-            )
-            permission_request_id = request.request_id
-            logger.info(
-                "Requesting tool permission sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
-                session_id,
-                turn_id,
-                tool_call_id,
-                permission_request_id,
-                tool_name,
-            )
-            approved = request_permission(request)
-            if not approved:
+            worker_permission = worker_permission_decision(self._current_worker_scope(), tool_name, spec.permission)
+            if worker_permission == "deny":
                 logger.info(
-                    "Tool permission denied sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
+                    "Tool permission denied by worker policy sessionId=%s turnId=%s toolCallId=%s toolName=%s workerProfile=%s",
                     session_id,
                     turn_id,
                     tool_call_id,
-                    permission_request_id,
                     tool_name,
+                    self._current_worker_profile(),
                 )
-                result = {"error": f"Permission denied for tool: {tool_name}"}
+                result = {"error": f"Worker profile cannot request interactive permission for tool: {tool_name}"}
                 guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
                 self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
                 yield AgentEvent("tool.finished", self._tool_finished_payload(
                     tool_name,
                     ok=False,
-                    failure_code="permission_denied",
+                    failure_code="worker_permission_denied",
                 ))
                 yield self._audit_tool(
                     session_id,
                     tool_name,
                     decision="denied",
                     ok=False,
-                    failure_code="permission_denied",
+                    failure_code="worker_permission_denied",
                     detail=result["error"],
                     metadata={
                         "turnId": turn_id,
                         "toolCallId": tool_call_id,
                         "workspaceEpoch": workspace_epoch,
+                        "workerProfile": self._current_worker_profile(),
+                        "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
+                        "workerWorkspacePath": self._current_worker_workspace_path(),
                     },
                 )
                 return
-            permission_decision = "approved"
-            logger.info(
-                "Tool permission approved sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
-                session_id,
-                turn_id,
-                tool_call_id,
-                permission_request_id,
-                tool_name,
-            )
+            if worker_permission == "auto_approve":
+                permission_decision = "worker_auto_approved"
+                logger.info(
+                    "Tool permission auto-approved by worker policy sessionId=%s turnId=%s toolCallId=%s toolName=%s workerProfile=%s",
+                    session_id,
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    self._current_worker_profile(),
+                )
+            else:
+                request = PermissionRequest(
+                    request_id=str(uuid4()),
+                    tool_name=spec.name,
+                    display_name=spec.display_name,
+                    reason=spec.describe_request(args),
+                )
+                permission_request_id = request.request_id
+                logger.info(
+                    "Requesting tool permission sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
+                    session_id,
+                    turn_id,
+                    tool_call_id,
+                    permission_request_id,
+                    tool_name,
+                )
+                approved = request_permission(request)
+                if not approved:
+                    logger.info(
+                        "Tool permission denied sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
+                        session_id,
+                        turn_id,
+                        tool_call_id,
+                        permission_request_id,
+                        tool_name,
+                    )
+                    result = {"error": f"Permission denied for tool: {tool_name}"}
+                    guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
+                    self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
+                    yield AgentEvent("tool.finished", self._tool_finished_payload(
+                        tool_name,
+                        ok=False,
+                        failure_code="permission_denied",
+                    ))
+                    yield self._audit_tool(
+                        session_id,
+                        tool_name,
+                        decision="denied",
+                        ok=False,
+                        failure_code="permission_denied",
+                        detail=result["error"],
+                        metadata={
+                            "turnId": turn_id,
+                            "toolCallId": tool_call_id,
+                            "workspaceEpoch": workspace_epoch,
+                        },
+                    )
+                    return
+                permission_decision = "approved"
+                logger.info(
+                    "Tool permission approved sessionId=%s turnId=%s toolCallId=%s requestId=%s toolName=%s",
+                    session_id,
+                    turn_id,
+                    tool_call_id,
+                    permission_request_id,
+                    tool_name,
+                )
 
         result = self.tool_registry.execute(
             tool_name,

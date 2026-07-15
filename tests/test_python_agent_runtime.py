@@ -22,6 +22,7 @@ from amadeus.memory_provider import ExternalMemoryResult
 from amadeus.model import OpenAICompatibleConfig
 from amadeus.tool_runtime import ToolContext, ToolRegistry
 from amadeus.tools import ToolSpec
+from amadeus.worker_policy import WorkerRuntimeScope
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -1917,6 +1918,90 @@ finally:
         final_history = runtime.final_messages[-1]
         tool_messages = [message for message in final_history if message["role"] == "tool"]
         self.assertIn("Permission denied", tool_messages[0]["content"])
+
+    def test_worker_scope_denies_non_auto_approved_ask_tools_without_prompt(self) -> None:
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_terminal",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                }],
+            },
+        )
+        permission_requests: list[PermissionRequest] = []
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("terminal",),
+            allowed_tool_names=frozenset({"terminal"}),
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            events = list(runtime.run_turn("worker-session", "run terminal", lambda request: permission_requests.append(request) or True))
+
+        self.assertEqual(permission_requests, [])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(tool_finished[0], {
+            "toolName": "terminal",
+            "ok": False,
+            "failureCode": "worker_permission_denied",
+        })
+        tool_audit = [event.payload for event in events if event.type == "tool.audit"]
+        self.assertEqual(tool_audit[1]["failureCode"], "worker_permission_denied")
+        self.assertEqual(tool_audit[1]["metadata"]["workerProfile"], "coder")
+
+    def test_worker_scope_auto_approves_profile_allowed_ask_tools(self) -> None:
+        observed_contexts: list[ToolContext] = []
+
+        def inspect_patch(_args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+            observed_contexts.append(context)
+            return {"changed": False, "permissionDecision": context.permission_decision}
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {"name": "patch", "arguments": "{}"},
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="patch",
+                    display_name="Patch",
+                    permission="ask",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "patch"}},
+                    handler=inspect_patch,
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+        permission_requests: list[PermissionRequest] = []
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("patch",),
+            allowed_tool_names=frozenset({"patch"}),
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            events = list(runtime.run_turn("worker-session", "patch file", lambda request: permission_requests.append(request) or False))
+
+        self.assertEqual(permission_requests, [])
+        self.assertEqual(len(observed_contexts), 1)
+        self.assertEqual(observed_contexts[0].permission_decision, "worker_auto_approved")
+        self.assertEqual(observed_contexts[0].worker_profile, "coder")
+        self.assertEqual(observed_contexts[0].worker_allowed_toolsets, ("patch",))
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertTrue(tool_finished[0]["ok"])
 
     def test_tool_config_overrides_enabled_and_permission(self) -> None:
         config_path = Path(self.tmpdir.name) / "tools.yaml"
