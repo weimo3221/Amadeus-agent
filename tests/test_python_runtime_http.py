@@ -723,22 +723,27 @@ class PythonRuntimeHttpTests(unittest.TestCase):
 
     def test_tasks_http_decompose_and_dispatch_graph(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Root graph")
+        subscriber_id, subscriber_queue = runtime_server.runtime_event_bus.subscribe()
 
-        decomposed = self.post_json(f"/tasks/{root['id']}/decompose", {
-            "graph": {
-                "tasks": [
-                    {"tempId": "first", "title": "First child"},
-                    {"tempId": "second", "title": "Second child", "dependsOn": ["first"]},
-                ],
-            },
-        })
-        first_id = decomposed["tempTaskIds"]["first"]
-        second_id = decomposed["tempTaskIds"]["second"]
-        runtime_server.memory_store.start_task(first_id, claim_lock="worker")
-        runtime_server.memory_store.complete_task(first_id, claim_lock="worker", result="done")
+        try:
+            decomposed = self.post_json(f"/tasks/{root['id']}/decompose", {
+                "graph": {
+                    "tasks": [
+                        {"tempId": "first", "title": "First child"},
+                        {"tempId": "second", "title": "Second child", "dependsOn": ["first"]},
+                    ],
+                },
+            })
+            first_id = decomposed["tempTaskIds"]["first"]
+            second_id = decomposed["tempTaskIds"]["second"]
+            runtime_server.memory_store.start_task(first_id, claim_lock="worker")
+            runtime_server.memory_store.complete_task(first_id, claim_lock="worker", result="done")
 
-        dispatched = self.post_json(f"/tasks/{root['id']}/dispatch", {"limit": 10})
-        events = self.get_json(f"/tasks/{root['id']}/events")
+            dispatched = self.post_json(f"/tasks/{root['id']}/dispatch", {"limit": 10})
+            events = self.get_json(f"/tasks/{root['id']}/events")
+            runtime_events = [subscriber_queue.get(timeout=1), subscriber_queue.get(timeout=1)]
+        finally:
+            runtime_server.runtime_event_bus.unsubscribe(subscriber_id)
 
         self.assertTrue(decomposed["ok"])
         self.assertEqual(decomposed["rootTaskId"], root["id"])
@@ -749,6 +754,9 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         event_types = [event["type"] for event in events["events"]]
         self.assertIn("graph.applied", event_types)
         self.assertIn("graph.dispatched", event_types)
+        runtime_actions = [event["payload"]["action"] for event in runtime_events]
+        self.assertEqual(runtime_actions, ["graph_decomposed", "graph_dispatched"])
+        self.assertEqual(runtime_events[0]["payload"]["task"]["id"], root["id"])
 
     def test_tasks_http_auto_decompose_uses_planning_model(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Auto graph", body="Plan this.")
@@ -803,8 +811,13 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.memory_store.complete_task(first_id, claim_lock="worker-1", result="first done")
         runtime_server.memory_store.start_task(second_id, claim_lock="worker-2")
         runtime_server.memory_store.complete_task(second_id, claim_lock="worker-2", result="second done")
+        subscriber_id, subscriber_queue = runtime_server.runtime_event_bus.subscribe()
 
-        synthesized = self.post_json(f"/tasks/{root['id']}/synthesize", {})
+        try:
+            synthesized = self.post_json(f"/tasks/{root['id']}/synthesize", {})
+            runtime_event = subscriber_queue.get(timeout=1)
+        finally:
+            runtime_server.runtime_event_bus.unsubscribe(subscriber_id)
         updated_root = runtime_server.memory_store.get_task(str(root["id"]))
 
         self.assertTrue(synthesized["ok"])
@@ -812,6 +825,8 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertTrue(synthesized["completed"])
         self.assertEqual(synthesized["result"], "Merged final result")
         self.assertEqual(updated_root["status"], "succeeded")
+        self.assertEqual(runtime_event["payload"]["action"], "graph_synthesized")
+        self.assertEqual(runtime_event["payload"]["task"]["id"], root["id"])
 
     def test_tasks_http_decompose_rejects_invalid_graph(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Invalid graph")

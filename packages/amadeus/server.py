@@ -126,6 +126,15 @@ def publish_task_update(task: dict[str, object], action: str) -> None:
     )
 
 
+def publish_task_graph_update(root_task_id: str, action: str) -> None:
+    try:
+        task = memory_store.get_task(root_task_id)
+        if task is not None:
+            publish_task_update(task, action)
+    except Exception as error:
+        logger.info("Failed to publish task graph update rootTaskId=%s action=%s error=%s", root_task_id, action, error)
+
+
 def publish_scheduled_job_update(job: dict[str, object], action: str) -> None:
     session_id = str(job.get("sessionId") or "companion:default")
     if action == "message":
@@ -1184,6 +1193,9 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 len(applied["edges"]),
                 len(dispatched),
             )
+            publish_task_graph_update(str(applied["rootTaskId"]), "graph_decomposed")
+            if dispatched:
+                publish_task_graph_update(str(applied["rootTaskId"]), "graph_dispatched")
             self.write_json(200, {"ok": True, **applied, "dispatchedTaskIds": dispatched})
         except ValueError as error:
             self.write_json(400, {"ok": False, "error": str(error)})
@@ -1205,6 +1217,8 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             root_task_id = str(task.get("rootTaskId") or task.get("id"))
             dispatched = orchestrator_service.dispatch_ready(root_task_id, limit=max(1, min(100, limit)))
             logger.info("Dispatched ready task graph children rootTaskId=%s dispatched=%s", root_task_id, len(dispatched))
+            if dispatched:
+                publish_task_graph_update(root_task_id, "graph_dispatched")
             self.write_json(200, {"ok": True, "rootTaskId": root_task_id, "dispatchedTaskIds": dispatched, "dispatchCount": len(dispatched)})
         except ValueError as error:
             self.write_json(400, {"ok": False, "error": str(error)})
@@ -1224,6 +1238,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 result.get("ready"),
                 result.get("completed"),
             )
+            publish_task_graph_update(str(result.get("rootTaskId") or task_id), "graph_synthesized")
             self.write_json(200, {"ok": True, **result})
         except ValueError as error:
             self.write_json(400, {"ok": False, "error": str(error)})
