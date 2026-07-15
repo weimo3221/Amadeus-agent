@@ -85,6 +85,20 @@ class WorkerPermissionDeniedRuntime:
         })
 
 
+class ToolResultRuntime:
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": "turn-tool", "startedAt": "now"})
+        yield AgentEvent("tool.finished", {
+            "toolName": "search_files",
+            "ok": True,
+            "durationMs": 5,
+            "resultPreview": "Found src/app.py and tests/test_app.py",
+            "outputTruncated": False,
+        })
+        yield AgentEvent("tool.audit", {"toolName": "search_files", "decision": "finished", "ok": True})
+        yield AgentEvent("assistant.message", {"text": "tool-backed result"})
+
+
 class ScopedRuntime(SuccessfulRuntime):
     def __init__(self) -> None:
         self.scopes: list[set[str]] = []
@@ -799,6 +813,33 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("approved the listed ask-tool", prompt)
         self.assertIn("only for the blocked step", prompt)
         self.assertIn("not treat it as broad or permanent permission", prompt)
+
+    def test_worker_records_tool_result_artifact_for_resume_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = ToolResultRuntime()
+            runner = ImmediateTaskRunner()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
+            task = memory.create_task(session_id="session-1", title="Use tool")
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+            artifacts = memory.list_task_artifacts(str(task["id"]))
+            attempts = memory.list_task_attempts(str(task["id"]))
+            context = build_worker_context(memory, str(task["id"]))
+            prompt = context.to_prompt()
+
+        tool_artifacts = [artifact for artifact in artifacts if artifact["title"] == "Tool result: search_files"]
+        self.assertEqual(len(tool_artifacts), 1)
+        self.assertEqual(tool_artifacts[0]["type"], "summary")
+        self.assertIn("Found src/app.py", str(tool_artifacts[0]["content"]))
+        self.assertEqual(tool_artifacts[0]["metadata"]["source"], "worker_tool")
+        self.assertEqual(tool_artifacts[0]["metadata"]["toolName"], "search_files")
+        self.assertTrue(tool_artifacts[0]["metadata"]["ok"])
+        self.assertEqual(attempts[0]["checkpoint"]["phase"], "completed")
+        self.assertIn("<task-artifacts>", prompt)
+        self.assertIn("Tool result: search_files", prompt)
+        self.assertIn("Found src/app.py", prompt)
 
     def test_worker_records_attempt_and_result_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

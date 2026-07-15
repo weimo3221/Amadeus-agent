@@ -30,9 +30,11 @@ ProcessFactory = Callable[..., subprocess.Popen[Any]]
 WORKER_CONTEXT_DEPENDENCY_LIMIT = 8
 WORKER_CONTEXT_ARTIFACT_LIMIT = 8
 WORKER_CONTEXT_ATTEMPT_LIMIT = 5
+WORKER_CONTEXT_TASK_ARTIFACT_LIMIT = 8
 WORKER_CONTEXT_FIELD_CHARS = 4000
 WORKER_CONTEXT_PROMPT_CHARS = 20000
 WORKER_CHECKPOINT_PREVIEW_CHARS = 1000
+WORKER_TOOL_ARTIFACT_PREVIEW_CHARS = 2000
 
 
 def _recovery_checkpoint_from_attempt(
@@ -375,6 +377,7 @@ class WorkerContext:
     task: dict[str, object]
     root_task: dict[str, object] | None
     dependencies: list[dict[str, object]]
+    task_artifacts: list[dict[str, object]]
     dependency_artifacts: list[dict[str, object]]
     previous_attempts: list[dict[str, object]]
 
@@ -383,6 +386,7 @@ class WorkerContext:
             "task": self.task,
             "rootTask": self.root_task,
             "dependencies": self.dependencies,
+            "taskArtifacts": self.task_artifacts,
             "dependencyArtifacts": self.dependency_artifacts,
             "previousAttempts": self.previous_attempts,
         }
@@ -463,6 +467,24 @@ class WorkerContext:
                     lines.append(f"  summary: {_truncate(summary, WORKER_CONTEXT_FIELD_CHARS)}")
             lines.append("</dependency-tasks>")
 
+        if self.task_artifacts:
+            lines.extend(["", "<task-artifacts>"])
+            for artifact in self.task_artifacts[:WORKER_CONTEXT_TASK_ARTIFACT_LIMIT]:
+                lines.append(
+                    f"- type={_text(artifact.get('type'))} title={_truncate(_text(artifact.get('title')), 300)}"
+                )
+                metadata = artifact.get("metadata")
+                if isinstance(metadata, dict):
+                    tool_name = _text(metadata.get("toolName"))
+                    if tool_name:
+                        ok = _text(metadata.get("ok"))
+                        failure_code = _text(metadata.get("failureCode"))
+                        lines.append(f"  tool: {tool_name} ok={ok or 'unknown'} failureCode={failure_code or 'none'}")
+                content = _text(artifact.get("content"))
+                if content:
+                    lines.append(f"  content: {_truncate(content, WORKER_CONTEXT_FIELD_CHARS)}")
+            lines.append("</task-artifacts>")
+
         if self.dependency_artifacts:
             lines.extend(["", "<dependency-artifacts>"])
             for artifact in self.dependency_artifacts[:WORKER_CONTEXT_ARTIFACT_LIMIT]:
@@ -512,6 +534,7 @@ def build_worker_context(memory_store: MessageMemoryStore, task_id: str) -> Work
 
     dependencies: list[dict[str, object]] = []
     dependency_artifacts: list[dict[str, object]] = []
+    task_artifacts = memory_store.list_task_artifacts(task_id, limit=WORKER_CONTEXT_TASK_ARTIFACT_LIMIT)
     for edge in memory_store.list_task_edges(task_id, direction="incoming")[:WORKER_CONTEXT_DEPENDENCY_LIMIT]:
         dependency = memory_store.get_task(str(edge.get("fromTaskId") or ""))
         if dependency is None:
@@ -532,6 +555,7 @@ def build_worker_context(memory_store: MessageMemoryStore, task_id: str) -> Work
         task=task,
         root_task=root_task,
         dependencies=dependencies,
+        task_artifacts=task_artifacts,
         dependency_artifacts=dependency_artifacts[:WORKER_CONTEXT_ARTIFACT_LIMIT],
         previous_attempts=previous_attempts,
     )
@@ -757,6 +781,37 @@ class TaskWorker:
             self._sync_plan_item(memory_store, blocked, "pending")
             self._publish_task_update(blocked, "blocked")
 
+        def record_tool_artifact(payload: dict[str, object]) -> None:
+            tool_name = str(payload.get("toolName") or "").strip()
+            if not tool_name:
+                return
+            result_preview = _text(payload.get("resultPreview"))
+            failure_code = _text(payload.get("failureCode"))
+            ok = bool(payload.get("ok"))
+            content = result_preview or (f"Tool failed with failureCode={failure_code}" if failure_code else "")
+            if not content:
+                return
+            artifact_type = "command_output" if tool_name in {"terminal", "process", "execute_code"} else "summary"
+            try:
+                memory_store.add_task_artifact(
+                    task_id,
+                    {
+                        "type": artifact_type,
+                        "title": f"Tool result: {tool_name}",
+                        "content": _truncate(content, WORKER_TOOL_ARTIFACT_PREVIEW_CHARS),
+                    },
+                    attempt_id=attempt_id,
+                    metadata={
+                        "source": "worker_tool",
+                        "toolName": tool_name,
+                        "ok": ok,
+                        "failureCode": failure_code or None,
+                        "outputTruncated": bool(payload.get("outputTruncated")),
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to record worker tool artifact taskId=%s toolName=%s", task_id, tool_name, exc_info=True)
+
         heartbeat_stop = threading.Event()
         heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
@@ -902,27 +957,36 @@ class TaskWorker:
                                 error=error_text,
                             )),
                         )
-                    elif (
-                        event_type == "tool.finished"
-                        and not bool(payload.get("ok"))
-                        and str(payload.get("failureCode") or "") == "worker_permission_denied"
-                    ):
+                    elif event_type == "tool.finished":
+                        record_tool_artifact(payload)
                         tool_name = str(payload.get("toolName") or "").strip()
-                        permission_block_tool_name = tool_name
-                        permission_block_checkpoint = self._attempt_checkpoint(
+                        tool_checkpoint = self._attempt_checkpoint(
                             task,
                             scope,
-                            status="blocked",
-                            phase="approval_required",
-                            reason="worker_tool_permission_required",
+                            status="running",
+                            phase="tool_finished",
                             last_event_type=event_type,
                             tool_name=tool_name,
+                            tool_ok=bool(payload.get("ok")),
+                            tool_result_preview=_text(payload.get("resultPreview")),
+                            reason=str(payload.get("failureCode") or "") or None,
                         )
-                        if attempt_id:
-                            memory_store.heartbeat_task_attempt(
-                                attempt_id,
-                                checkpoint=set_checkpoint(permission_block_checkpoint),
+                        if not bool(payload.get("ok")) and str(payload.get("failureCode") or "") == "worker_permission_denied":
+                            permission_block_tool_name = tool_name
+                            permission_block_checkpoint = self._attempt_checkpoint(
+                                task,
+                                scope,
+                                status="blocked",
+                                phase="approval_required",
+                                reason="worker_tool_permission_required",
+                                last_event_type=event_type,
+                                tool_name=tool_name,
                             )
+                            tool_checkpoint = permission_block_checkpoint
+                        memory_store.heartbeat_task_attempt(
+                            attempt_id,
+                            checkpoint=set_checkpoint(tool_checkpoint),
+                        )
                     elif event_type == "tool.audit" and permission_block_checkpoint is not None:
                         block_for_worker_tool_approval(permission_block_checkpoint, permission_block_tool_name)
                         return
@@ -1098,6 +1162,8 @@ class TaskWorker:
         error: str | None = None,
         result_preview: str | None = None,
         tool_name: str | None = None,
+        tool_ok: bool | None = None,
+        tool_result_preview: str | None = None,
     ) -> dict[str, object]:
         checkpoint: dict[str, object] = {
             "status": status,
@@ -1123,6 +1189,10 @@ class TaskWorker:
             checkpoint["resultPreview"] = _truncate(result_preview, WORKER_CHECKPOINT_PREVIEW_CHARS)
         if tool_name:
             checkpoint["toolName"] = tool_name
+        if tool_ok is not None:
+            checkpoint["toolOk"] = tool_ok
+        if tool_result_preview:
+            checkpoint["toolResultPreview"] = _truncate(tool_result_preview, WORKER_CHECKPOINT_PREVIEW_CHARS)
         return checkpoint
 
     @staticmethod
