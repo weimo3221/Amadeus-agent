@@ -34,6 +34,7 @@ from amadeus.memory_embeddings import (
 )
 from amadeus.mcp import McpServerConfig, list_mcp_tools
 from amadeus.model import PROVIDER_PRESETS, parse_bool_value, parse_positive_int_value, parse_providers_config, parse_reasoning_effort, provider_profile
+from amadeus.orchestrator import OrchestratorService
 from amadeus.runtime_events import RuntimeEventBus
 from amadeus.scheduling import ScheduledJobWorker
 from amadeus.tool_runtime import ToolContext
@@ -143,6 +144,7 @@ def publish_scheduled_job_update(job: dict[str, object], action: str) -> None:
 task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime, publish_task_event=publish_task_update)
 agent_runtime.set_task_worker(task_worker)
 task_worker.recover()
+orchestrator_service = OrchestratorService(memory_store, submit_task=task_worker.submit)
 scheduled_job_worker = ScheduledJobWorker(
     lambda: memory_store,
     publish_job_event=publish_scheduled_job_update,
@@ -630,6 +632,16 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/tasks/") and parsed.path.endswith("/approve"):
             task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/approve")).strip()
             self.handle_task_approve(task_id)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/decompose"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/decompose")).strip()
+            self.handle_task_decompose(task_id)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/dispatch"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/dispatch")).strip()
+            self.handle_task_dispatch(task_id)
             return
 
         if self.path == "/runtime/feedback":
@@ -1135,6 +1147,56 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Task artifacts list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_decompose(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            body = self.read_json_body()
+            graph = body.get("graph")
+            if not isinstance(graph, dict):
+                self.write_json(400, {"ok": False, "error": "graph is required"})
+                return
+            applied = orchestrator_service.apply_task_graph(task_id, graph)
+            dispatched: list[str] = []
+            if bool(body.get("dispatch")):
+                limit = int(body.get("dispatchLimit") or 20)
+                dispatched = orchestrator_service.dispatch_ready(str(applied["rootTaskId"]), limit=max(1, min(100, limit)))
+            logger.info(
+                "Applied task graph rootTaskId=%s taskCount=%s edgeCount=%s dispatched=%s",
+                applied["rootTaskId"],
+                len(applied["tasks"]),
+                len(applied["edges"]),
+                len(dispatched),
+            )
+            self.write_json(200, {"ok": True, **applied, "dispatchedTaskIds": dispatched})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task decompose failed taskId=%s error=%s", task_id, error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_dispatch(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            body = self.read_json_body()
+            limit = int(body.get("limit") or 20)
+            task = memory_store.get_task(task_id)
+            if task is None:
+                self.write_json(400, {"ok": False, "error": "task not found"})
+                return
+            root_task_id = str(task.get("rootTaskId") or task.get("id"))
+            dispatched = orchestrator_service.dispatch_ready(root_task_id, limit=max(1, min(100, limit)))
+            logger.info("Dispatched ready task graph children rootTaskId=%s dispatched=%s", root_task_id, len(dispatched))
+            self.write_json(200, {"ok": True, "rootTaskId": root_task_id, "dispatchedTaskIds": dispatched, "dispatchCount": len(dispatched)})
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task dispatch failed taskId=%s error=%s", task_id, error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_task_create(self) -> None:

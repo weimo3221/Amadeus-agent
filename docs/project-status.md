@@ -462,7 +462,7 @@ Started: the storage/API/UI foundation and in-process worker for session-scoped 
 - Added the first long-task graph persistence slice: task rows now have optional root/plan-run/profile/acceptance/context/toolset/checkpoint/handoff fields, and SQLite stores `task_edges`, `task_attempts`, and normalized `task_artifacts` as first-class records while keeping existing task responses backward-compatible.
 - Task statuses now use `queued`, `running`, `blocked`, `succeeded`, `failed`, and `cancelled`; legacy `done` rows are normalized to `succeeded`.
 - Added Python runtime HTTP APIs: `GET /tasks`, `POST /tasks`, `GET /tasks/{id}/events`, and `POST /tasks/{id}/cancel`.
-- Added read-only task graph HTTP APIs: `GET /tasks/{id}/graph`, `GET /tasks/{id}/attempts`, and `GET /tasks/{id}/artifacts`.
+- Added task graph HTTP APIs: `GET /tasks/{id}/graph`, `GET /tasks/{id}/attempts`, `GET /tasks/{id}/artifacts`, controlled `POST /tasks/{id}/decompose` for applying a validated structured graph, and `POST /tasks/{id}/dispatch` for submitting dependency-ready child tasks.
 - Added task review/control APIs: `POST /tasks/{id}/resume` and `POST /tasks/{id}/approve`.
 - Added model-facing `create_task`, `list_tasks`, and `cancel_task` tools for explicit session background work.
 - Added a lightweight in-process task worker that claims queued tasks, runs the existing agent turn loop, writes `succeeded` / `failed` results, and cooperatively cancels running backing turns.
@@ -470,7 +470,7 @@ Started: the storage/API/UI foundation and in-process worker for session-scoped 
 - Task runnable selection is now dependency-aware: queued tasks with unsatisfied incoming `task_edges` are not claimed by the worker until their dependencies reach the required status.
 - Added the first isolated `WorkerContext` builder: in-process task workers now prompt the agent with task spec, acceptance criteria, root task summary, dependency artifacts, context hints, toolset bounds, and previous attempt history instead of using only task title/body or replaying the parent conversation.
 - Task worker executions now create `task_attempts`, heartbeat the active attempt, finish attempts with result/error/checkpoint state, and write successful worker results as summary artifacts for downstream dependency handoff.
-- Added the first internal `OrchestratorService` skeleton. It can create root goals, validate structured task graphs, reject dependency cycles, apply child tasks and edges into the existing task store, dispatch ready child tasks while respecting dependencies, and review terminal child status. It does not yet call a model to generate task graphs.
+- Added the first internal `OrchestratorService` skeleton. It can create root goals, validate structured task graphs, reject dependency cycles, apply child tasks and edges into the existing task store, dispatch ready child tasks while respecting dependencies, and review terminal child status. Python HTTP now exposes controlled decompose/dispatch entrypoints that call this service. It does not yet call a model to generate task graphs.
 - Added `/runtime/events` NDJSON streaming plus TypeScript bridge subscription so worker `running` / `succeeded` / `failed` / `cancelled` updates are pushed to same-session WebSocket clients.
 - Added TypeScript bridge proxying for task HTTP APIs.
 - Main UI can restore and render active queued/running/blocked tasks.

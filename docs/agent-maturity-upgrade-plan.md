@@ -1075,9 +1075,10 @@ UI 不需要知道 runner 细节，但需要能展示：
 
 - Status: deterministic internal skeleton is implemented; model-backed graph generation is not.
 - Added internal `OrchestratorService` with root goal creation, structured graph validation, child task/edge persistence, ready child dispatch, and terminal child review.
+- Added controlled Python HTTP entrypoints: `POST /tasks/{id}/decompose` applies a validated structured graph, and `POST /tasks/{id}/dispatch` submits dependency-ready children through the existing task worker.
 - Graph validation rejects duplicate task ids, unknown dependencies, unknown edge endpoints, excessive child counts, and dependency cycles.
 - `decompose_task` is still not exposed as a model tool. The current service accepts already-structured graph payloads so orchestration state transitions can be tested before model generation is added.
-- Remaining work: `specify`, model-backed `decompose`, graph repair, `synthesize`, controlled HTTP entrypoints, dangerous profile validation, and broader graph event publication.
+- Remaining work: `specify`, model-backed `decompose`, graph repair, `synthesize`, dangerous profile validation, and broader graph event publication.
 
 ### Slice 5：Isolated child runner
 

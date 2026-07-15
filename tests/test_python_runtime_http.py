@@ -20,12 +20,17 @@ from amadeus import server as runtime_server
 from amadeus.agent import AgentRuntime, PermissionBroker
 from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.memory import MessageMemoryStore
+from amadeus.orchestrator import OrchestratorService
 from amadeus.runtime_events import RuntimeEventBus
 from scripts.dev_mcp_server import DevMcpHandler
 
 
 class NoopTaskWorker:
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
     def submit(self, task_id: str) -> None:
+        self.submitted.append(task_id)
         return None
 
     def cancel(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
@@ -212,6 +217,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.previous_permission_broker = runtime_server.permission_broker
         self.previous_live2d_library = runtime_server.live2d_library
         self.previous_task_worker = runtime_server.task_worker
+        self.previous_orchestrator_service = runtime_server.orchestrator_service
         self.previous_runtime_event_bus = runtime_server.runtime_event_bus
 
         database_path = Path(self.tmpdir.name) / "amadeus.sqlite"
@@ -266,6 +272,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.permission_broker = PermissionBroker()
         runtime_server.live2d_library = LocalLive2DModelLibrary(live2d_root, "http://runtime", self.harnesses_config_path)
         runtime_server.task_worker = NoopTaskWorker()
+        runtime_server.orchestrator_service = OrchestratorService(memory_store, submit_task=runtime_server.task_worker.submit)
         runtime_server.agent_runtime.set_task_worker(runtime_server.task_worker)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), runtime_server.RuntimeRequestHandler)
@@ -282,6 +289,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.permission_broker = self.previous_permission_broker
         runtime_server.live2d_library = self.previous_live2d_library
         runtime_server.task_worker = self.previous_task_worker
+        runtime_server.orchestrator_service = self.previous_orchestrator_service
         runtime_server.runtime_event_bus = self.previous_runtime_event_bus
 
         if self.previous_api_key is None:
@@ -696,6 +704,46 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(attempts["attempts"][0]["workerId"], "worker-http")
         self.assertEqual(artifacts["artifactCount"], 1)
         self.assertEqual(artifacts["artifacts"][0]["content"], "Graph endpoint works.")
+
+    def test_tasks_http_decompose_and_dispatch_graph(self) -> None:
+        root = runtime_server.memory_store.create_task(session_id="http-test", title="Root graph")
+
+        decomposed = self.post_json(f"/tasks/{root['id']}/decompose", {
+            "graph": {
+                "tasks": [
+                    {"tempId": "first", "title": "First child"},
+                    {"tempId": "second", "title": "Second child", "dependsOn": ["first"]},
+                ],
+            },
+        })
+        first_id = decomposed["tempTaskIds"]["first"]
+        second_id = decomposed["tempTaskIds"]["second"]
+        runtime_server.memory_store.start_task(first_id, claim_lock="worker")
+        runtime_server.memory_store.complete_task(first_id, claim_lock="worker", result="done")
+
+        dispatched = self.post_json(f"/tasks/{root['id']}/dispatch", {"limit": 10})
+
+        self.assertTrue(decomposed["ok"])
+        self.assertEqual(decomposed["rootTaskId"], root["id"])
+        self.assertEqual(len(decomposed["tasks"]), 2)
+        self.assertEqual(len(decomposed["edges"]), 1)
+        self.assertEqual(dispatched["rootTaskId"], root["id"])
+        self.assertEqual(dispatched["dispatchedTaskIds"], [second_id])
+
+    def test_tasks_http_decompose_rejects_invalid_graph(self) -> None:
+        root = runtime_server.memory_store.create_task(session_id="http-test", title="Invalid graph")
+
+        response = self.post_json_status(f"/tasks/{root['id']}/decompose", {
+            "graph": {
+                "tasks": [
+                    {"tempId": "a", "title": "A", "dependsOn": ["b"]},
+                    {"tempId": "b", "title": "B", "dependsOn": ["a"]},
+                ],
+            },
+        }, expected_status=400)
+
+        self.assertFalse(response["ok"])
+        self.assertIn("cycle", response["error"])
 
     def test_tasks_http_resume_and_approve_blocked_review(self) -> None:
         task = runtime_server.memory_store.create_task(
