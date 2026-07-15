@@ -277,7 +277,7 @@ def worker_action_policy(tool_name: str, args: dict[str, Any]) -> dict[str, Any]
         normalized = _normalize_command(command)
         key = f"terminal:command:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
         risk_labels = _terminal_risk_labels(normalized)
-        risk_level = "high" if any(label in risk_labels for label in ("destructive", "installer", "network_script")) else "medium"
+        risk_level = _risk_level_for_labels(risk_labels, default="medium")
         label = f"terminal command `{_truncate_label(normalized or '(empty command)', 120)}`"
         return {"key": key, "label": label, "riskLevel": risk_level, "riskLabels": risk_labels}
 
@@ -299,22 +299,26 @@ def worker_action_policy(tool_name: str, args: dict[str, Any]) -> dict[str, Any]
     if tool_name in {"patch", "write_file", "read_file", "vision_analyze"}:
         path = str(args.get("path") or "").strip()
         path_key = path.replace("\\", "/") or "*"
-        risk = "workspace_mutation" if tool_name in {"patch", "write_file"} else "local_file_exposure"
-        risk_level = "medium" if tool_name in {"patch", "write_file"} else "low"
+        risk_labels = _file_action_risk_labels(tool_name, path, args)
+        risk_level = _risk_level_for_labels(
+            risk_labels,
+            default="medium" if tool_name in {"patch", "write_file"} else "low",
+        )
         return {
             "key": f"{tool_name}:path:{path_key}",
             "label": f"{tool_name} {path_key}",
             "riskLevel": risk_level,
-            "riskLabels": [risk],
+            "riskLabels": risk_labels,
         }
 
     if tool_name == "web_extract":
         url = str(args.get("url") or "").strip()
+        risk_labels = _web_action_risk_labels(url)
         return {
             "key": f"web_extract:url:{url or '*'}",
             "label": f"web page extraction{f' from {url}' if url else ''}",
-            "riskLevel": "medium",
-            "riskLabels": ["external_content"],
+            "riskLevel": _risk_level_for_labels(risk_labels, default="medium"),
+            "riskLabels": risk_labels,
         }
 
     return {
@@ -331,11 +335,17 @@ def _normalize_command(command: str) -> str:
 
 def _terminal_risk_labels(command: str) -> list[str]:
     labels: list[str] = ["shell_command"]
+    if not command:
+        labels.append("unknown_target")
     destructive_patterns = [
         r"(^|[;&|]\s*)rm\s+",
+        r"(^|[;&|]\s*)sudo\s+rm\s+",
         r"(^|[;&|]\s*)rmdir\s+",
+        r"(^|[;&|]\s*)sudo\s+rmdir\s+",
         r"(^|[;&|]\s*)git\s+clean\b",
+        r"(^|[;&|]\s*)git\s+reset\s+--hard\b",
         r"(^|[;&|]\s*)find\b.*\s-delete\b",
+        r"\b(dropdb|truncate|docker\s+system\s+prune)\b",
     ]
     installer_patterns = [
         r"\b(npm|pnpm|yarn|pip|pip3|uv|brew|cargo|gem)\s+install\b",
@@ -345,13 +355,103 @@ def _terminal_risk_labels(command: str) -> list[str]:
         r"\b(curl|wget)\b.*\|\s*(sh|bash|zsh|python|python3)\b",
         r"\b(bash|sh|zsh)\s+<\s*\(",
     ]
+    network_patterns = [
+        r"\b(curl|wget|ssh|scp|rsync)\b",
+        r"\bhttps?://",
+    ]
+    privileged_patterns = [
+        r"(^|[;&|]\s*)sudo\b",
+        r"(^|[;&|]\s*)(chmod|chown)\s+(-R\s+)?",
+    ]
+    secret_patterns = [
+        r"\b(API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)\b",
+        r"(^|[;&|]\s*)(cat|grep|sed|awk|tail|head)\b.*(\.env|id_rsa|credentials|secret|token|\.pem)\b",
+        r"(^|[;&|]\s*)(env|printenv)\b",
+    ]
     if any(re.search(pattern, command) for pattern in destructive_patterns):
         labels.append("destructive")
     if any(re.search(pattern, command) for pattern in installer_patterns):
         labels.append("installer")
     if any(re.search(pattern, command) for pattern in network_script_patterns):
         labels.append("network_script")
-    return labels
+    if any(re.search(pattern, command, flags=re.IGNORECASE) for pattern in network_patterns):
+        labels.append("network_access")
+    if any(re.search(pattern, command, flags=re.IGNORECASE) for pattern in privileged_patterns):
+        labels.append("privileged")
+    if any(re.search(pattern, command, flags=re.IGNORECASE) for pattern in secret_patterns):
+        labels.append("sensitive_data")
+    return _dedupe_labels(labels)
+
+
+def _file_action_risk_labels(tool_name: str, path: str, args: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    if tool_name in {"patch", "write_file"}:
+        labels.append("workspace_mutation")
+    else:
+        labels.append("local_file_exposure")
+    normalized_path = path.replace("\\", "/").strip()
+    if not normalized_path:
+        labels.append("unknown_target")
+    if normalized_path.startswith("/") or normalized_path.startswith("../") or "/../" in normalized_path:
+        labels.append("workspace_external_path")
+    if _is_sensitive_path(normalized_path):
+        labels.append("sensitive_path")
+    if tool_name == "write_file":
+        labels.append("whole_file_write")
+    if tool_name == "patch" and bool(args.get("replaceAll")):
+        labels.append("bulk_replace")
+    return _dedupe_labels(labels)
+
+
+def _web_action_risk_labels(url: str) -> list[str]:
+    labels = ["external_content"]
+    normalized = url.strip().lower()
+    if not normalized:
+        labels.append("unknown_target")
+    if normalized.startswith("file:"):
+        labels.append("local_file_exposure")
+    if normalized.startswith("http://"):
+        labels.append("insecure_transport")
+    if re.search(r"(token|api_key|apikey|secret|password)=", normalized):
+        labels.append("sensitive_data")
+    return _dedupe_labels(labels)
+
+
+def _is_sensitive_path(path: str) -> bool:
+    normalized = path.lower()
+    sensitive_patterns = [
+        r"(^|/)\.env($|[./-])",
+        r"(^|/)\.ssh($|/)",
+        r"(^|/)id_rsa($|[./-])",
+        r"(^|/)(credentials|secrets?|tokens?)(\.|/|$)",
+        r"\.(pem|key|p12|pfx)$",
+    ]
+    return any(re.search(pattern, normalized) for pattern in sensitive_patterns)
+
+
+def _risk_level_for_labels(labels: list[str], *, default: str) -> str:
+    high_risk_labels = {
+        "destructive",
+        "installer",
+        "network_script",
+        "privileged",
+        "sensitive_data",
+        "sensitive_path",
+        "workspace_external_path",
+        "whole_file_write",
+        "bulk_replace",
+    }
+    return "high" if any(label in high_risk_labels for label in labels) else default
+
+
+def _dedupe_labels(labels: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for label in labels:
+        if label not in seen:
+            seen.add(label)
+            deduped.append(label)
+    return deduped
 
 
 def _truncate_label(value: str, max_chars: int) -> str:
