@@ -32,6 +32,7 @@ WORKER_CONTEXT_ARTIFACT_LIMIT = 8
 WORKER_CONTEXT_ATTEMPT_LIMIT = 5
 WORKER_CONTEXT_FIELD_CHARS = 4000
 WORKER_CONTEXT_PROMPT_CHARS = 20000
+WORKER_CHECKPOINT_PREVIEW_CHARS = 1000
 
 
 class TaskRunner(Protocol):
@@ -416,6 +417,12 @@ class WorkerContext:
                     lines.append(f"  result: {_truncate(result, WORKER_CONTEXT_FIELD_CHARS)}")
                 if error:
                     lines.append(f"  error: {_truncate(error, WORKER_CONTEXT_FIELD_CHARS)}")
+                checkpoint = attempt.get("checkpoint")
+                if isinstance(checkpoint, dict):
+                    phase = _text(checkpoint.get("phase"))
+                    last_event = _text(checkpoint.get("lastEventType"))
+                    if phase or last_event:
+                        lines.append(f"  checkpoint: phase={phase or 'unknown'} lastEventType={last_event or 'none'}")
             lines.append("</previous-attempts>")
 
         return _truncate("\n".join(lines), WORKER_CONTEXT_PROMPT_CHARS)
@@ -577,42 +584,65 @@ class TaskWorker:
         attempt_id: str | None = None
         result_text: str | None = None
         error_text: str | None = None
+        checkpoint_state: dict[str, dict[str, object]] = {
+            "value": {"status": "running", "phase": "claimed"},
+        }
+
+        def set_checkpoint(checkpoint: dict[str, object]) -> dict[str, object]:
+            checkpoint_state["value"] = checkpoint
+            return checkpoint
+
         heartbeat_stop = threading.Event()
         heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
-            args=(task_id, claim_lock, heartbeat_stop, lambda: attempt_id),
+            args=(task_id, claim_lock, heartbeat_stop, lambda: attempt_id, lambda: checkpoint_state["value"]),
             name=f"amadeus-task-heartbeat-{task_id[:8]}",
             daemon=True,
         )
         heartbeat_thread.start()
         try:
             worker_context = build_worker_context(memory_store, task_id)
+            scope = build_worker_runtime_scope(task)
             attempt = memory_store.create_task_attempt(
                 task_id,
                 run_id=self._attempt_run_id,
                 worker_id=self._worker_id,
                 worker_profile=str(task.get("workerProfile") or task.get("workerType") or ""),
                 input_context=worker_context.to_payload(),
-                checkpoint={"status": "started"},
+                checkpoint=set_checkpoint(self._attempt_checkpoint(task, scope, status="running", phase="context_built")),
             )
             attempt_id = str(attempt["id"])
             prompt = worker_context.to_prompt()
             runtime = self._agent_runtime_provider()
-            scope = build_worker_runtime_scope(task)
             validation_error = self._validate_worker_runtime_scope(runtime, session_id, scope)
             if validation_error:
                 memory_store.finish_task_attempt(
                     attempt_id,
                     status="failed",
                     error=validation_error,
-                    checkpoint={"status": "failed", "reason": "worker_scope_invalid"},
+                    checkpoint=set_checkpoint(self._attempt_checkpoint(
+                        task,
+                        scope,
+                        status="failed",
+                        phase="scope_validation",
+                        reason="worker_scope_invalid",
+                        error=validation_error,
+                    )),
                 )
                 failed = memory_store.fail_task(task_id, claim_lock=claim_lock, error=validation_error)
                 self._sync_plan_item(memory_store, failed, "pending")
                 self._publish_task_update(failed, "failed")
                 return
+            memory_store.heartbeat_task_attempt(
+                attempt_id,
+                checkpoint=set_checkpoint(self._attempt_checkpoint(task, scope, status="running", phase="scope_validated")),
+            )
             worker_scope = self._worker_runtime_scope(runtime, scope)
             with worker_scope:
+                memory_store.heartbeat_task_attempt(
+                    attempt_id,
+                    checkpoint=set_checkpoint(self._attempt_checkpoint(task, scope, status="running", phase="model_turn_starting")),
+                )
                 events = runtime.run_turn(session_id, prompt, self._deny_permission)
                 for event in events:
                     if isinstance(event, AgentEvent):
@@ -632,6 +662,17 @@ class TaskWorker:
                             logger.debug("Task heartbeat failed taskId=%s", task_id, exc_info=True)
                         turn_id = str(payload.get("turnId") or "")
                         if turn_id:
+                            memory_store.heartbeat_task_attempt(
+                                attempt_id,
+                                checkpoint=set_checkpoint(self._attempt_checkpoint(
+                                    task,
+                                    scope,
+                                    status="running",
+                                    phase="model_turn_started",
+                                    turn_id=turn_id,
+                                    last_event_type=event_type,
+                                )),
+                            )
                             with self._lock:
                                 self._turns[task_id] = (session_id, turn_id)
                             if cancel_event.is_set():
@@ -642,24 +683,60 @@ class TaskWorker:
                                 attempt_id,
                                 status="cancelled",
                                 error="Task worker cancelled",
-                                checkpoint={"status": "cancelled"},
+                                checkpoint=set_checkpoint(self._attempt_checkpoint(
+                                    task,
+                                    scope,
+                                    status="cancelled",
+                                    phase="cancelled",
+                                    reason="worker_cancelled",
+                                    last_event_type=event_type,
+                                )),
                             )
                         self._ensure_cancelled(task_id, reason="Task worker cancelled")
                         return
                     if event_type == "assistant.message":
                         result_text = str(payload.get("text") or "")
+                        memory_store.heartbeat_task_attempt(
+                            attempt_id,
+                            checkpoint=set_checkpoint(self._attempt_checkpoint(
+                                task,
+                                scope,
+                                status="running",
+                                phase="assistant_message_received",
+                                last_event_type=event_type,
+                                result_preview=result_text,
+                            )),
+                        )
                     elif event_type == "agent.turn.cancelled":
                         if attempt_id:
                             memory_store.finish_task_attempt(
                                 attempt_id,
                                 status="cancelled",
                                 error="Agent turn cancelled",
-                                checkpoint={"status": "cancelled"},
+                                checkpoint=set_checkpoint(self._attempt_checkpoint(
+                                    task,
+                                    scope,
+                                    status="cancelled",
+                                    phase="turn_cancelled",
+                                    reason="agent_turn_cancelled",
+                                    last_event_type=event_type,
+                                )),
                             )
                         self._ensure_cancelled(task_id, reason="Agent turn cancelled")
                         return
                     elif event_type == "error":
                         error_text = str(payload.get("message") or payload.get("code") or "Task failed")
+                        memory_store.heartbeat_task_attempt(
+                            attempt_id,
+                            checkpoint=set_checkpoint(self._attempt_checkpoint(
+                                task,
+                                scope,
+                                status="running",
+                                phase="error_received",
+                                last_event_type=event_type,
+                                error=error_text,
+                            )),
+                        )
 
             if cancel_event.is_set():
                 if attempt_id:
@@ -667,7 +744,13 @@ class TaskWorker:
                         attempt_id,
                         status="cancelled",
                         error="Task worker cancelled",
-                        checkpoint={"status": "cancelled"},
+                        checkpoint=set_checkpoint(self._attempt_checkpoint(
+                            task,
+                            scope,
+                            status="cancelled",
+                            phase="cancelled",
+                            reason="worker_cancelled",
+                        )),
                     )
                 self._ensure_cancelled(task_id, reason="Task worker cancelled")
                 return
@@ -677,7 +760,13 @@ class TaskWorker:
                         attempt_id,
                         status="failed",
                         error=error_text,
-                        checkpoint={"status": "failed"},
+                        checkpoint=set_checkpoint(self._attempt_checkpoint(
+                            task,
+                            scope,
+                            status="failed",
+                            phase="failed",
+                            error=error_text,
+                        )),
                     )
                 self._handle_failure(memory_store, task_id, claim_lock=claim_lock, task=task, error=error_text)
             elif bool(task.get("reviewRequired")):
@@ -686,7 +775,14 @@ class TaskWorker:
                         attempt_id,
                         status="succeeded",
                         result=result_text or "",
-                        checkpoint={"status": "blocked_for_review"},
+                        checkpoint=set_checkpoint(self._attempt_checkpoint(
+                            task,
+                            scope,
+                            status="succeeded",
+                            phase="blocked_for_review",
+                            last_event_type="assistant.message" if result_text else None,
+                            result_preview=result_text,
+                        )),
                     )
                 blocked = memory_store.block_task(
                     task_id,
@@ -702,7 +798,14 @@ class TaskWorker:
                         attempt_id,
                         status="succeeded",
                         result=result_text or "",
-                        checkpoint={"status": "succeeded"},
+                        checkpoint=set_checkpoint(self._attempt_checkpoint(
+                            task,
+                            scope,
+                            status="succeeded",
+                            phase="completed",
+                            last_event_type="assistant.message" if result_text else None,
+                            result_preview=result_text,
+                        )),
                     )
                     if result_text:
                         memory_store.add_task_artifact(
@@ -722,7 +825,7 @@ class TaskWorker:
                         attempt_id,
                         status="failed",
                         error=str(error),
-                        checkpoint={"status": "failed"},
+                        checkpoint=set_checkpoint({"status": "failed", "phase": "exception", "errorPreview": _truncate(str(error), WORKER_CHECKPOINT_PREVIEW_CHARS)}),
                     )
                 latest = memory_store.get_task(task_id) or task
                 self._handle_failure(memory_store, task_id, claim_lock=claim_lock, task=latest, error=str(error))
@@ -741,6 +844,7 @@ class TaskWorker:
         claim_lock: str,
         stop_event: threading.Event,
         attempt_id_provider: Callable[[], str | None] | None = None,
+        checkpoint_provider: Callable[[], dict[str, object] | None] | None = None,
     ) -> None:
         while not stop_event.wait(self._heartbeat_interval_seconds):
             try:
@@ -753,7 +857,7 @@ class TaskWorker:
                 if attempt_id:
                     self._memory_store_provider().heartbeat_task_attempt(
                         attempt_id,
-                        checkpoint={"status": "running"},
+                        checkpoint=checkpoint_provider() if checkpoint_provider is not None else {"status": "running"},
                     )
             except Exception:
                 logger.debug("Task lease heartbeat failed taskId=%s", task_id, exc_info=True)
@@ -777,6 +881,43 @@ class TaskWorker:
         if result is None:
             return None
         return str(result or "Invalid worker runtime scope")
+
+    @staticmethod
+    def _attempt_checkpoint(
+        task: dict[str, object],
+        scope: WorkerRuntimeScope,
+        *,
+        status: str,
+        phase: str,
+        turn_id: str | None = None,
+        last_event_type: str | None = None,
+        reason: str | None = None,
+        error: str | None = None,
+        result_preview: str | None = None,
+    ) -> dict[str, object]:
+        checkpoint: dict[str, object] = {
+            "status": status,
+            "phase": phase,
+            "workerProfile": scope.worker_profile,
+            "allowedToolsets": list(scope.allowed_toolsets),
+        }
+        if scope.workspace_path:
+            checkpoint["workspacePath"] = scope.workspace_path
+        if task.get("planRunId"):
+            checkpoint["planRunId"] = str(task.get("planRunId"))
+        if task.get("planItemId"):
+            checkpoint["planItemId"] = str(task.get("planItemId"))
+        if turn_id:
+            checkpoint["turnId"] = turn_id
+        if last_event_type:
+            checkpoint["lastEventType"] = last_event_type
+        if reason:
+            checkpoint["reason"] = reason
+        if error:
+            checkpoint["errorPreview"] = _truncate(error, WORKER_CHECKPOINT_PREVIEW_CHARS)
+        if result_preview:
+            checkpoint["resultPreview"] = _truncate(result_preview, WORKER_CHECKPOINT_PREVIEW_CHARS)
+        return checkpoint
 
     @staticmethod
     def _task_prompt(task: dict[str, object]) -> str:

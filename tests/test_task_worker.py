@@ -635,7 +635,12 @@ class TaskWorkerTests(unittest.TestCase):
             )
             memory.add_task_edge(from_task_id=str(dependency["id"]), to_task_id=str(child["id"]))
             attempt = memory.create_task_attempt(str(child["id"]), worker_id="worker-old")
-            memory.finish_task_attempt(str(attempt["id"]), status="failed", error="missing dependency summary")
+            memory.finish_task_attempt(
+                str(attempt["id"]),
+                status="failed",
+                error="missing dependency summary",
+                checkpoint={"status": "failed", "phase": "dependency_review", "lastEventType": "error"},
+            )
             memory.add_task_artifact(
                 str(dependency["id"]),
                 {"type": "summary", "title": "Dependency summary", "content": "Dependency completed."},
@@ -652,6 +657,7 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("Dependency completed.", prompt)
         self.assertIn("<previous-attempts>", prompt)
         self.assertIn("missing dependency summary", prompt)
+        self.assertIn("checkpoint: phase=dependency_review lastEventType=error", prompt)
         self.assertIn('"workspace": "/tmp/project"', prompt)
         self.assertIn('"read"', prompt)
         self.assertIn('"terminal"', prompt)
@@ -671,6 +677,12 @@ class TaskWorkerTests(unittest.TestCase):
 
         self.assertEqual(len(attempts), 1)
         self.assertEqual(attempts[0]["status"], "succeeded")
+        self.assertEqual(attempts[0]["checkpoint"]["status"], "succeeded")
+        self.assertEqual(attempts[0]["checkpoint"]["phase"], "completed")
+        self.assertEqual(attempts[0]["checkpoint"]["workerProfile"], "planner")
+        self.assertEqual(attempts[0]["checkpoint"]["allowedToolsets"], ["read", "search", "memory", "plan"])
+        self.assertEqual(attempts[0]["checkpoint"]["lastEventType"], "assistant.message")
+        self.assertIn("completed:", attempts[0]["checkpoint"]["resultPreview"])
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(artifacts[0]["type"], "summary")
         self.assertIn("title: Attempted", str(artifacts[0]["content"]))
