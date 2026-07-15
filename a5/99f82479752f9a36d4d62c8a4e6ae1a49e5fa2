@@ -1,0 +1,27 @@
+packages/amadeus/agent.py
+  s_80fee7171b51b9::t_6ed21c8ddfb986 2017-2022,2278,2292,2647-2650
+packages/amadeus/tool_runtime/registry.py
+  s_80fee7171b51b9::t_9956a74960d10a 59
+packages/amadeus/worker_policy.py
+  s_80fee7171b51b9::t_66c68ca1f5ba6d 69,87-106
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_08f0c44f650dbb 22,1179-1187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a599f82479752f9a36d4d62c8a4e6ae1a49e5fa2",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
