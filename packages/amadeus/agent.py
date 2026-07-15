@@ -2334,12 +2334,15 @@ class AgentRuntime:
             action = result.output.get("action")
             if isinstance(job, dict) and isinstance(action, str):
                 yield AgentEvent("scheduled.updated", {"job": job, "action": action})
+        result_preview = result.output_preview
+        if result_preview is None and result.ok:
+            result_preview = json.dumps(result.model_output, ensure_ascii=False, sort_keys=True)
         yield AgentEvent("tool.finished", self._tool_finished_payload(
             tool_name,
             ok=result.ok,
             duration_ms=result.duration_ms,
             failure_code=result.failure_code,
-            result_preview=result.output_preview,
+            result_preview=result_preview,
             output_truncated=result.output_truncated,
         ))
         yield self._audit_tool(

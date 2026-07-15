@@ -1883,6 +1883,7 @@ finally:
         self.assertEqual(context.audit_metadata["permissionDecision"], "allow")
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]
         self.assertTrue(tool_finished[0]["ok"])
+        self.assertIn('"permissionDecision": "allow"', str(tool_finished[0]["resultPreview"]))
 
     def test_ask_tool_denial_returns_tool_error_to_model(self) -> None:
         runtime = FakeAgentRuntime(
@@ -2183,14 +2184,11 @@ finally:
         events = list(runtime.run_turn("default", "search missing files", lambda _request: False))
 
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]
-        self.assertEqual(
-            tool_finished,
-            [
-                {"toolName": "search_files", "ok": True, "durationMs": tool_finished[0]["durationMs"]},
-                {"toolName": "search_files", "ok": True, "durationMs": tool_finished[1]["durationMs"]},
-                {"toolName": "search_files", "ok": False, "failureCode": "no_progress_loop"},
-            ],
-        )
+        self.assertEqual([entry["toolName"] for entry in tool_finished], ["search_files", "search_files", "search_files"])
+        self.assertEqual([entry["ok"] for entry in tool_finished], [True, True, False])
+        self.assertIn('"results": []', str(tool_finished[0]["resultPreview"]))
+        self.assertIn('"results": []', str(tool_finished[1]["resultPreview"]))
+        self.assertEqual(tool_finished[2]["failureCode"], "no_progress_loop")
         final_history = runtime.final_messages[-1]
         tool_results = [
             json.loads(message["content"])

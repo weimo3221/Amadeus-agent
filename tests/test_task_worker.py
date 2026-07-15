@@ -7,6 +7,7 @@ import unittest
 import os
 import contextlib
 import io
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -97,6 +98,29 @@ class ToolResultRuntime:
         })
         yield AgentEvent("tool.audit", {"toolName": "search_files", "decision": "finished", "ok": True})
         yield AgentEvent("assistant.message", {"text": "tool-backed result"})
+
+
+class PatchToolResultRuntime:
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        del user_text, request_permission
+        yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": "turn-patch", "startedAt": "now"})
+        yield AgentEvent("tool.finished", {
+            "toolName": "patch",
+            "ok": True,
+            "durationMs": 7,
+            "resultPreview": json.dumps({
+                "path": "src/app.py",
+                "changed": True,
+                "replacements": 1,
+                "replaceAll": False,
+                "sizeBytesBefore": 40,
+                "sizeBytesAfter": 44,
+                "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n",
+                "diffTruncated": False,
+            }, sort_keys=True),
+            "outputTruncated": False,
+        })
+        yield AgentEvent("assistant.message", {"text": "patched file"})
 
 
 class ScopedRuntime(SuccessfulRuntime):
@@ -840,6 +864,35 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("<task-artifacts>", prompt)
         self.assertIn("Tool result: search_files", prompt)
         self.assertIn("Found src/app.py", prompt)
+
+    def test_worker_records_file_state_resume_metadata_for_patch_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = PatchToolResultRuntime()
+            runner = ImmediateTaskRunner()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
+            task = memory.create_task(session_id="session-1", title="Patch file")
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+            artifacts = memory.list_task_artifacts(str(task["id"]))
+            context = build_worker_context(memory, str(task["id"]))
+            prompt = context.to_prompt()
+
+        patch_artifacts = [artifact for artifact in artifacts if artifact["title"] == "Tool result: patch"]
+        self.assertEqual(len(patch_artifacts), 1)
+        artifact = patch_artifacts[0]
+        self.assertEqual(artifact["type"], "diff")
+        self.assertEqual(artifact["path"], "src/app.py")
+        self.assertIn("--- a/src/app.py", str(artifact["content"]))
+        self.assertEqual(artifact["metadata"]["resumeKind"], "file_state")
+        self.assertEqual(artifact["metadata"]["affectedFiles"], ["src/app.py"])
+        self.assertTrue(artifact["metadata"]["changed"])
+        self.assertEqual(artifact["metadata"]["replacements"], 1)
+        self.assertIn("Verify the affected file contents", str(artifact["metadata"]["idempotencyHint"]))
+        self.assertIn("resumeKind: file_state", prompt)
+        self.assertIn("affectedFiles: src/app.py", prompt)
+        self.assertIn("idempotencyHint: Verify the affected file contents", prompt)
 
     def test_worker_records_attempt_and_result_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

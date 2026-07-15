@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import signal
 import subprocess
@@ -480,6 +481,21 @@ class WorkerContext:
                         ok = _text(metadata.get("ok"))
                         failure_code = _text(metadata.get("failureCode"))
                         lines.append(f"  tool: {tool_name} ok={ok or 'unknown'} failureCode={failure_code or 'none'}")
+                    resume_kind = _text(metadata.get("resumeKind"))
+                    if resume_kind:
+                        lines.append(f"  resumeKind: {resume_kind}")
+                    affected_files = _string_list(metadata.get("affectedFiles"))
+                    observed_files = _string_list(metadata.get("observedFiles"))
+                    if affected_files:
+                        lines.append(f"  affectedFiles: {', '.join(affected_files[:10])}")
+                    if observed_files:
+                        lines.append(f"  observedFiles: {', '.join(observed_files[:10])}")
+                    command = _text(metadata.get("command"))
+                    if command:
+                        lines.append(f"  command: {_truncate(command, 500)}")
+                    idempotency_hint = _text(metadata.get("idempotencyHint"))
+                    if idempotency_hint:
+                        lines.append(f"  idempotencyHint: {_truncate(idempotency_hint, 800)}")
                 content = _text(artifact.get("content"))
                 if content:
                     lines.append(f"  content: {_truncate(content, WORKER_CONTEXT_FIELD_CHARS)}")
@@ -656,6 +672,87 @@ def _json_preview(value: object, *, max_chars: int = WORKER_CONTEXT_FIELD_CHARS)
     return _truncate(encoded, max_chars)
 
 
+def _parse_tool_result_preview(value: str) -> dict[str, object] | None:
+    text = value.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _artifact_resume_metadata(tool_name: str, parsed_result: dict[str, object] | None) -> dict[str, object]:
+    if parsed_result is None:
+        return {}
+
+    metadata: dict[str, object] = {}
+    path = _text(parsed_result.get("path"))
+    if tool_name in {"patch", "write_file"} and path:
+        metadata["resumeKind"] = "file_state"
+        metadata["affectedFiles"] = [path]
+        metadata["changed"] = bool(parsed_result.get("changed"))
+        metadata["diffTruncated"] = bool(parsed_result.get("diffTruncated"))
+        for key in ("created", "overwritten", "replaceAll", "replacements", "sizeBytesBefore", "sizeBytesAfter", "lineCount"):
+            if key in parsed_result:
+                metadata[key] = parsed_result.get(key)
+        metadata["idempotencyHint"] = (
+            "Verify the affected file contents before repeating this tool. "
+            "If the intended change is already present, skip reapplying the patch/write and continue from the saved artifact."
+        )
+        return metadata
+
+    if tool_name == "read_file" and path:
+        metadata["resumeKind"] = "file_observation"
+        metadata["observedFiles"] = [path]
+        metadata["idempotencyHint"] = "Reuse this read result if the file has not changed; otherwise read only the needed window again."
+        return metadata
+
+    if tool_name == "search_files":
+        paths: list[str] = []
+        raw_results = parsed_result.get("results")
+        if isinstance(raw_results, list):
+            for item in raw_results:
+                if isinstance(item, dict):
+                    item_path = _text(item.get("path"))
+                    if item_path and item_path not in paths:
+                        paths.append(item_path)
+        if paths:
+            metadata["resumeKind"] = "file_search"
+            metadata["observedFiles"] = paths[:20]
+            metadata["idempotencyHint"] = "Reuse these search hits before repeating the same query; read specific files if more detail is needed."
+        return metadata
+
+    if tool_name in {"terminal", "execute_code"}:
+        command = _text(parsed_result.get("command"))
+        exit_code = parsed_result.get("exitCode")
+        metadata["resumeKind"] = "command_state"
+        if command:
+            metadata["command"] = command
+        if isinstance(exit_code, int):
+            metadata["exitCode"] = exit_code
+        metadata["idempotencyHint"] = (
+            "Inspect the saved command output before rerunning. "
+            "Rerun only if the command is read-only, explicitly requested, or needed to verify changed state."
+        )
+        return metadata
+
+    return metadata
+
+
+def _tool_artifact_type(tool_name: str, metadata: dict[str, object]) -> str:
+    if tool_name in {"terminal", "process", "execute_code"}:
+        return "command_output"
+    if tool_name == "patch":
+        return "diff"
+    if tool_name == "write_file":
+        return "file"
+    if metadata.get("resumeKind") in {"file_state", "file_observation", "file_search"}:
+        return "file"
+    return "summary"
+
+
 class TaskWorker:
     def __init__(
         self,
@@ -791,15 +888,23 @@ class TaskWorker:
             content = result_preview or (f"Tool failed with failureCode={failure_code}" if failure_code else "")
             if not content:
                 return
-            artifact_type = "command_output" if tool_name in {"terminal", "process", "execute_code"} else "summary"
+            parsed_result = _parse_tool_result_preview(result_preview)
+            resume_metadata = _artifact_resume_metadata(tool_name, parsed_result)
+            artifact_type = _tool_artifact_type(tool_name, resume_metadata)
+            artifact: dict[str, object] = {
+                "type": artifact_type,
+                "title": f"Tool result: {tool_name}",
+                "content": _truncate(content, WORKER_TOOL_ARTIFACT_PREVIEW_CHARS),
+            }
+            affected_files = _string_list(resume_metadata.get("affectedFiles"))
+            if artifact_type == "file" and affected_files:
+                artifact["path"] = affected_files[0]
+            if artifact_type == "diff" and affected_files:
+                artifact["path"] = affected_files[0]
             try:
                 memory_store.add_task_artifact(
                     task_id,
-                    {
-                        "type": artifact_type,
-                        "title": f"Tool result: {tool_name}",
-                        "content": _truncate(content, WORKER_TOOL_ARTIFACT_PREVIEW_CHARS),
-                    },
+                    artifact,
                     attempt_id=attempt_id,
                     metadata={
                         "source": "worker_tool",
@@ -807,6 +912,7 @@ class TaskWorker:
                         "ok": ok,
                         "failureCode": failure_code or None,
                         "outputTruncated": bool(payload.get("outputTruncated")),
+                        **resume_metadata,
                     },
                 )
             except Exception:
