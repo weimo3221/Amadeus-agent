@@ -163,6 +163,15 @@ function checkpointPreview(task: TaskItem | null) {
   return typeof value === 'string' ? value : ''
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item || '').trim()).filter(Boolean)
+}
+
 function artifactLabel(artifact: TaskArtifact) {
   return artifactMeta[artifact.type]?.label ?? artifact.type
 }
@@ -177,6 +186,73 @@ function artifactTone(artifact: TaskArtifact): ToolTone {
 
 function artifactBody(artifact: TaskArtifact) {
   return String(artifact.content ?? artifact.summary ?? artifact.path ?? artifact.url ?? '')
+}
+
+function artifactMetadata(artifact: TaskArtifact) {
+  return asRecord(artifact.metadata)
+}
+
+function artifactResumePolicy(artifact: TaskArtifact) {
+  return asRecord(artifactMetadata(artifact)?.fileResumePolicy)
+}
+
+function artifactManifestVerification(artifact: TaskArtifact) {
+  return asRecord(artifactMetadata(artifact)?.fileManifestVerification)
+}
+
+const resumePolicyMeta: Record<string, { label: string; tone: ToolTone; icon: string }> = {
+  skip_redundant_mutation: { label: '跳过重复修改', tone: 'success', icon: 'ph:skip-forward-circle-duotone' },
+  reinspect_before_mutation: { label: '先重新检查', tone: 'warning', icon: 'ph:magnifying-glass-duotone' },
+  reuse_observation: { label: '复用观察结果', tone: 'info', icon: 'ph:book-open-duotone' },
+  refresh_context: { label: '刷新上下文', tone: 'warning', icon: 'ph:arrows-clockwise-duotone' },
+}
+
+const manifestStatusMeta: Record<string, { label: string; tone: ToolTone }> = {
+  unchanged: { label: '文件未变化', tone: 'success' },
+  changed: { label: '文件已变化', tone: 'warning' },
+  unverifiable: { label: '无法校验', tone: 'neutral' },
+}
+
+function resumePolicyAction(policy: Record<string, unknown> | null) {
+  return String(policy?.action ?? '')
+}
+
+function resumePolicyTone(policy: Record<string, unknown> | null): ToolTone {
+  return resumePolicyMeta[resumePolicyAction(policy)]?.tone ?? 'neutral'
+}
+
+function resumePolicyIcon(policy: Record<string, unknown> | null) {
+  return resumePolicyMeta[resumePolicyAction(policy)]?.icon ?? 'ph:traffic-sign-duotone'
+}
+
+function resumePolicyLabel(policy: Record<string, unknown> | null) {
+  const action = resumePolicyAction(policy)
+  return resumePolicyMeta[action]?.label ?? action
+}
+
+function manifestStatus(verification: Record<string, unknown> | null) {
+  return String(verification?.status ?? '')
+}
+
+function manifestStatusTone(verification: Record<string, unknown> | null): ToolTone {
+  return manifestStatusMeta[manifestStatus(verification)]?.tone ?? 'neutral'
+}
+
+function manifestStatusLabel(verification: Record<string, unknown> | null) {
+  const status = manifestStatus(verification)
+  return manifestStatusMeta[status]?.label ?? status
+}
+
+function resumePolicyInstructions(policy: Record<string, unknown> | null) {
+  return stringList(policy?.instructions)
+}
+
+function resumePolicyPaths(policy: Record<string, unknown> | null) {
+  return stringList(policy?.paths)
+}
+
+function resumePolicyReason(policy: Record<string, unknown> | null) {
+  return typeof policy?.reason === 'string' ? policy.reason : ''
 }
 
 async function openTaskDetail(task: TaskItem) {
@@ -434,10 +510,46 @@ async function runRerun(task: TaskItem) {
                 {{ artifact.url }}
               </a>
               <p v-else-if="artifact.path" class="font-mono text-[11px] text-ink-soft">{{ artifact.path }}</p>
+              <div
+                v-if="artifactResumePolicy(artifact)"
+                class="mt-2 rounded-[var(--radius-xl2)] border border-brand-100 bg-white/70 p-2 text-[11px]"
+              >
+                <div class="mb-1 flex flex-wrap items-center gap-2">
+                  <AmTag :tone="resumePolicyTone(artifactResumePolicy(artifact))" size="sm">
+                    <Icon :icon="resumePolicyIcon(artifactResumePolicy(artifact))" :width="12" />
+                    {{ resumePolicyLabel(artifactResumePolicy(artifact)) }}
+                  </AmTag>
+                  <AmTag
+                    v-if="artifactManifestVerification(artifact)"
+                    :tone="manifestStatusTone(artifactManifestVerification(artifact))"
+                    size="sm"
+                  >
+                    {{ manifestStatusLabel(artifactManifestVerification(artifact)) }}
+                  </AmTag>
+                </div>
+                <p v-if="resumePolicyReason(artifactResumePolicy(artifact))" class="text-ink-soft">
+                  {{ resumePolicyReason(artifactResumePolicy(artifact)) }}
+                </p>
+                <p v-if="resumePolicyPaths(artifactResumePolicy(artifact)).length" class="mt-1 font-mono text-ink-faint">
+                  {{ resumePolicyPaths(artifactResumePolicy(artifact)).join(', ') }}
+                </p>
+                <ul v-if="resumePolicyInstructions(artifactResumePolicy(artifact)).length" class="mt-1 space-y-0.5 text-ink-faint">
+                  <li
+                    v-for="instruction in resumePolicyInstructions(artifactResumePolicy(artifact))"
+                    :key="instruction"
+                  >
+                    {{ instruction }}
+                  </li>
+                </ul>
+              </div>
               <pre
                 v-if="artifactBody(artifact)"
                 class="mt-1 max-h-28 overflow-auto whitespace-pre-wrap rounded-[var(--radius-xl2)] bg-white/60 p-2 text-[11px] text-ink-soft"
               >{{ artifactBody(artifact) }}</pre>
+              <pre
+                v-if="!artifactResumePolicy(artifact) && formatMetadata(artifact.metadata)"
+                class="mt-1 max-h-24 overflow-auto rounded-[var(--radius-xl2)] bg-white/60 p-2 text-[11px] text-ink-faint"
+              >{{ formatMetadata(artifact.metadata) }}</pre>
             </div>
           </div>
         </div>
