@@ -1945,14 +1945,19 @@ finally:
 
         self.assertEqual(permission_requests, [])
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]
-        self.assertEqual(tool_finished[0], {
-            "toolName": "terminal",
-            "ok": False,
-            "failureCode": "worker_permission_denied",
-        })
+        self.assertEqual(tool_finished[0]["toolName"], "terminal")
+        self.assertFalse(tool_finished[0]["ok"])
+        self.assertEqual(tool_finished[0]["failureCode"], "worker_permission_denied")
+        preview = json.loads(str(tool_finished[0]["resultPreview"]))
+        self.assertTrue(str(preview["approvalActionKey"]).startswith("terminal:command:"))
+        self.assertEqual(preview["approvalActionLabel"], "terminal command `pwd`")
+        self.assertEqual(preview["approvalRiskLevel"], "medium")
+        self.assertEqual(preview["approvalRiskLabels"], ["shell_command"])
         tool_audit = [event.payload for event in events if event.type == "tool.audit"]
         self.assertEqual(tool_audit[1]["failureCode"], "worker_permission_denied")
         self.assertEqual(tool_audit[1]["metadata"]["workerProfile"], "coder")
+        self.assertEqual(tool_audit[1]["metadata"]["approvalActionKey"], preview["approvalActionKey"])
+        self.assertEqual(tool_audit[1]["metadata"]["approvalRiskLabels"], ["shell_command"])
 
     def test_worker_scope_auto_approves_checkpoint_approved_ask_tool(self) -> None:
         observed_contexts: list[ToolContext] = []
@@ -1998,6 +2003,53 @@ finally:
             events = list(runtime.run_turn("worker-session", "run terminal", lambda request: permission_requests.append(request) or False))
 
         self.assertEqual(permission_requests, [])
+        self.assertEqual(len(observed_contexts), 1)
+        self.assertEqual(observed_contexts[0].permission_decision, "worker_auto_approved")
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertTrue(tool_finished[0]["ok"])
+
+    def test_worker_scope_auto_approves_checkpoint_approved_action_only(self) -> None:
+        observed_contexts: list[ToolContext] = []
+
+        def inspect_process(_args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+            observed_contexts.append(context)
+            return {"permissionDecision": context.permission_decision}
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_process",
+                    "type": "function",
+                    "function": {"name": "process", "arguments": "{\"action\":\"kill\",\"pid\":123}"},
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="process",
+                    display_name="Process",
+                    permission="ask",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "process"}},
+                    handler=inspect_process,
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("terminal",),
+            allowed_tool_names=frozenset({"process"}),
+            approved_ask_tool_actions=frozenset({"process:kill"}),
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            events = list(runtime.run_turn("worker-session", "kill process", lambda _request: False))
+
         self.assertEqual(len(observed_contexts), 1)
         self.assertEqual(observed_contexts[0].permission_decision, "worker_auto_approved")
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]

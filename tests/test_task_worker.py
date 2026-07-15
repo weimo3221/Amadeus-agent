@@ -20,7 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 from amadeus.agent import AgentEvent, AgentRuntime, PermissionRequest
 from amadeus.memory import MessageMemoryStore
 from amadeus.task_worker_entrypoint import main as task_worker_entrypoint_main, run_task_once
-from amadeus.worker_policy import WorkerRuntimeScope, build_worker_runtime_scope, worker_permission_decision
+from amadeus.worker_policy import (
+    WorkerRuntimeScope,
+    build_worker_runtime_scope,
+    worker_action_permission_decision,
+    worker_permission_decision,
+)
 from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
 
 
@@ -84,6 +89,13 @@ class WorkerPermissionDeniedRuntime:
             "toolName": "terminal",
             "ok": False,
             "failureCode": "worker_permission_denied",
+            "resultPreview": json.dumps({
+                "error": "Worker action requires approval: terminal command `npm install`",
+                "approvalActionKey": "terminal:command:fixture",
+                "approvalActionLabel": "terminal command `npm install`",
+                "approvalRiskLevel": "high",
+                "approvalRiskLabels": ["shell_command", "installer"],
+            }, sort_keys=True),
         })
 
 
@@ -598,11 +610,45 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(blocked["checkpoint"]["phase"], "approval_required")
         self.assertEqual(blocked["checkpoint"]["reason"], "worker_tool_permission_required")
         self.assertEqual(blocked["checkpoint"]["toolName"], "terminal")
+        self.assertEqual(blocked["checkpoint"]["approvalActionKey"], "terminal:command:fixture")
+        self.assertEqual(blocked["checkpoint"]["approvalActionLabel"], "terminal command `npm install`")
+        self.assertEqual(blocked["checkpoint"]["approvalRiskLevel"], "high")
+        self.assertEqual(blocked["checkpoint"]["approvalRiskLabels"], ["shell_command", "installer"])
         self.assertEqual(attempts[0]["status"], "blocked")
         self.assertEqual(resumed["checkpoint"]["phase"], "approval_resume_requested")
         self.assertEqual(resumed["checkpoint"]["approvedToolName"], "terminal")
+        self.assertEqual(resumed["checkpoint"]["approvedToolAction"], "terminal:command:fixture")
         self.assertEqual(resumed["checkpoint"]["resumeFrom"]["toolName"], "terminal")
-        self.assertEqual(worker_permission_decision(resumed_scope, "terminal", "ask"), "auto_approve")
+        self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalActionKey"], "terminal:command:fixture")
+        self.assertEqual(resumed_scope.approved_ask_tool_names, frozenset())
+        self.assertEqual(resumed_scope.approved_ask_tool_actions, frozenset({"terminal:command:fixture"}))
+        self.assertEqual(worker_permission_decision(resumed_scope, "terminal", "ask"), "deny")
+        self.assertEqual(
+            worker_action_permission_decision(
+                resumed_scope,
+                "terminal",
+                {"command": "different command"},
+                "ask",
+            ).decision,
+            "deny",
+        )
+
+    def test_worker_action_permission_approval_is_action_specific(self) -> None:
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("terminal",),
+            allowed_tool_names=frozenset({"process"}),
+            approved_ask_tool_actions=frozenset({"process:kill"}),
+        )
+
+        kill_decision = worker_action_permission_decision(scope, "process", {"action": "kill", "pid": 123}, "ask")
+        list_decision = worker_action_permission_decision(scope, "process", {"action": "list"}, "ask")
+
+        self.assertEqual(kill_decision.decision, "auto_approve")
+        self.assertEqual(kill_decision.action_key, "process:kill")
+        self.assertEqual(kill_decision.risk_level, "high")
+        self.assertEqual(list_decision.decision, "deny")
+        self.assertEqual(list_decision.action_key, "process:list")
 
     def test_worker_retries_transient_failure_then_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

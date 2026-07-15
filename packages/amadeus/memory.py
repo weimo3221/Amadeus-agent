@@ -3428,6 +3428,7 @@ class MessageMemoryStore:
                 previous_checkpoint = {}
             was_approval_checkpoint = bool(row[2]) or str(previous_checkpoint.get("phase") or "") == "approval_required"
             approved_tool_name = str(previous_checkpoint.get("toolName") or "").strip()
+            approved_action_key = str(previous_checkpoint.get("approvalActionKey") or "").strip()
             checkpoint = {
                 "status": "queued",
                 "phase": "approval_resume_requested" if was_approval_checkpoint else "blocked_resume_requested",
@@ -3436,10 +3437,25 @@ class MessageMemoryStore:
             if approved_tool_name:
                 checkpoint["approvedToolName"] = approved_tool_name
                 checkpoint["approvedTools"] = [approved_tool_name]
+            if approved_action_key:
+                checkpoint["approvedToolAction"] = approved_action_key
+                checkpoint["approvedToolActions"] = [approved_action_key]
             if previous_checkpoint:
                 checkpoint["resumeFrom"] = {
                     key: previous_checkpoint.get(key)
-                    for key in ("status", "phase", "reason", "toolName", "lastEventType", "resultPreview", "errorPreview")
+                    for key in (
+                        "status",
+                        "phase",
+                        "reason",
+                        "toolName",
+                        "approvalActionKey",
+                        "approvalActionLabel",
+                        "approvalRiskLevel",
+                        "approvalRiskLabels",
+                        "lastEventType",
+                        "resultPreview",
+                        "errorPreview",
+                    )
                     if previous_checkpoint.get(key) is not None
                 }
             checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint")

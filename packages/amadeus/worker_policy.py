@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,7 +68,18 @@ class WorkerRuntimeScope:
     allowed_tool_names: frozenset[str]
     workspace_path: str | None = None
     approved_ask_tool_names: frozenset[str] = frozenset()
+    approved_ask_tool_actions: frozenset[str] = frozenset()
     file_resume_policies: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class WorkerActionPermissionDecision:
+    decision: str
+    reason: str | None = None
+    action_key: str | None = None
+    action_label: str | None = None
+    risk_level: str | None = None
+    risk_labels: tuple[str, ...] = ()
 
 
 def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
@@ -81,6 +94,7 @@ def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
         approved_ask_tool_names=frozenset(
             name for name in worker_approved_ask_tool_names_for_task(task) if name in allowed_tool_names
         ),
+        approved_ask_tool_actions=frozenset(worker_approved_ask_tool_actions_for_task(task)),
     )
 
 
@@ -145,6 +159,8 @@ def worker_approved_ask_tool_names_for_task(task: dict[str, object]) -> set[str]
         return set()
     if str(checkpoint.get("phase") or "") != "approval_resume_requested":
         return set()
+    if _raw_string_list(checkpoint.get("approvedToolActions")) or str(checkpoint.get("approvedToolAction") or "").strip():
+        return set()
     names = set(_string_list(checkpoint.get("approvedTools")))
     single = str(checkpoint.get("approvedToolName") or "").strip()
     if single:
@@ -152,14 +168,160 @@ def worker_approved_ask_tool_names_for_task(task: dict[str, object]) -> set[str]
     return names
 
 
+def worker_approved_ask_tool_actions_for_task(task: dict[str, object]) -> set[str]:
+    checkpoint = task.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        return set()
+    if str(checkpoint.get("phase") or "") != "approval_resume_requested":
+        return set()
+    actions = set(_raw_string_list(checkpoint.get("approvedToolActions")))
+    single = str(checkpoint.get("approvedToolAction") or "").strip()
+    if single:
+        actions.add(single)
+    return actions
+
+
 def worker_permission_decision(scope: WorkerRuntimeScope | None, tool_name: str, permission: str) -> str:
+    return worker_action_permission_decision(scope, tool_name, {}, permission).decision
+
+
+def worker_action_permission_decision(
+    scope: WorkerRuntimeScope | None,
+    tool_name: str,
+    args: dict[str, Any],
+    permission: str,
+) -> WorkerActionPermissionDecision:
+    action = worker_action_policy(tool_name, args)
     if scope is None or permission != "ask":
-        return "prompt"
+        return WorkerActionPermissionDecision(
+            decision="prompt",
+            action_key=action["key"],
+            action_label=action["label"],
+            risk_level=action["riskLevel"],
+            risk_labels=tuple(action["riskLabels"]),
+        )
+    if action["key"] in scope.approved_ask_tool_actions and tool_name in scope.allowed_tool_names:
+        return WorkerActionPermissionDecision(
+            decision="auto_approve",
+            reason="Approved action checkpoint matches this worker tool action.",
+            action_key=action["key"],
+            action_label=action["label"],
+            risk_level=action["riskLevel"],
+            risk_labels=tuple(action["riskLabels"]),
+        )
     if tool_name in scope.approved_ask_tool_names and tool_name in scope.allowed_tool_names:
-        return "auto_approve"
+        return WorkerActionPermissionDecision(
+            decision="auto_approve",
+            reason="Legacy approved tool checkpoint matches this worker tool.",
+            action_key=action["key"],
+            action_label=action["label"],
+            risk_level=action["riskLevel"],
+            risk_labels=tuple(action["riskLabels"]),
+        )
     if tool_name in PROFILE_AUTO_APPROVED_ASK_TOOLS.get(scope.worker_profile, set()) and tool_name in scope.allowed_tool_names:
-        return "auto_approve"
-    return "deny"
+        return WorkerActionPermissionDecision(
+            decision="auto_approve",
+            reason="Worker profile allows this ask-tool action.",
+            action_key=action["key"],
+            action_label=action["label"],
+            risk_level=action["riskLevel"],
+            risk_labels=tuple(action["riskLabels"]),
+        )
+    return WorkerActionPermissionDecision(
+        decision="deny",
+        reason=f"Worker action requires approval: {action['label']}",
+        action_key=action["key"],
+        action_label=action["label"],
+        risk_level=action["riskLevel"],
+        risk_labels=tuple(action["riskLabels"]),
+    )
+
+
+def worker_action_policy(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if tool_name == "terminal":
+        command = str(args.get("command") or "").strip()
+        normalized = _normalize_command(command)
+        key = f"terminal:command:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
+        risk_labels = _terminal_risk_labels(normalized)
+        risk_level = "high" if any(label in risk_labels for label in ("destructive", "installer", "network_script")) else "medium"
+        label = f"terminal command `{_truncate_label(normalized or '(empty command)', 120)}`"
+        return {"key": key, "label": label, "riskLevel": risk_level, "riskLabels": risk_labels}
+
+    if tool_name == "process":
+        action = str(args.get("action") or "list").strip().lower() or "list"
+        if action == "signal":
+            action = "kill"
+        risk_labels = ["destructive", "process_signal"] if action == "kill" else ["local_process_inspection"]
+        risk_level = "high" if action == "kill" else "medium"
+        pid = args.get("pid")
+        pid_label = f" pid {pid}" if isinstance(pid, int) else ""
+        return {
+            "key": f"process:{action}",
+            "label": f"process {action}{pid_label}",
+            "riskLevel": risk_level,
+            "riskLabels": risk_labels,
+        }
+
+    if tool_name in {"patch", "write_file", "read_file", "vision_analyze"}:
+        path = str(args.get("path") or "").strip()
+        path_key = path.replace("\\", "/") or "*"
+        risk = "workspace_mutation" if tool_name in {"patch", "write_file"} else "local_file_exposure"
+        risk_level = "medium" if tool_name in {"patch", "write_file"} else "low"
+        return {
+            "key": f"{tool_name}:path:{path_key}",
+            "label": f"{tool_name} {path_key}",
+            "riskLevel": risk_level,
+            "riskLabels": [risk],
+        }
+
+    if tool_name == "web_extract":
+        url = str(args.get("url") or "").strip()
+        return {
+            "key": f"web_extract:url:{url or '*'}",
+            "label": f"web page extraction{f' from {url}' if url else ''}",
+            "riskLevel": "medium",
+            "riskLabels": ["external_content"],
+        }
+
+    return {
+        "key": f"{tool_name}:run",
+        "label": f"{tool_name} action",
+        "riskLevel": "medium",
+        "riskLabels": ["ask_tool"],
+    }
+
+
+def _normalize_command(command: str) -> str:
+    return " ".join(command.strip().split())
+
+
+def _terminal_risk_labels(command: str) -> list[str]:
+    labels: list[str] = ["shell_command"]
+    destructive_patterns = [
+        r"(^|[;&|]\s*)rm\s+",
+        r"(^|[;&|]\s*)rmdir\s+",
+        r"(^|[;&|]\s*)git\s+clean\b",
+        r"(^|[;&|]\s*)find\b.*\s-delete\b",
+    ]
+    installer_patterns = [
+        r"\b(npm|pnpm|yarn|pip|pip3|uv|brew|cargo|gem)\s+install\b",
+        r"\bnpx\b",
+    ]
+    network_script_patterns = [
+        r"\b(curl|wget)\b.*\|\s*(sh|bash|zsh|python|python3)\b",
+        r"\b(bash|sh|zsh)\s+<\s*\(",
+    ]
+    if any(re.search(pattern, command) for pattern in destructive_patterns):
+        labels.append("destructive")
+    if any(re.search(pattern, command) for pattern in installer_patterns):
+        labels.append("installer")
+    if any(re.search(pattern, command) for pattern in network_script_patterns):
+        labels.append("network_script")
+    return labels
+
+
+def _truncate_label(value: str, max_chars: int) -> str:
+    return value if len(value) <= max_chars else value[: max_chars - 3] + "..."
 
 
 def _string_list(value: Any) -> list[str]:
@@ -169,6 +331,19 @@ def _string_list(value: Any) -> list[str]:
     output: list[str] = []
     for item in value:
         normalized = str(item or "").strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            output.append(normalized)
+    return output
+
+
+def _raw_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in value:
+        normalized = str(item or "").strip()
         if normalized and normalized not in seen:
             seen.add(normalized)
             output.append(normalized)

@@ -616,10 +616,14 @@ def _resume_strategy_for_checkpoint(checkpoint: dict[str, object] | None) -> lis
     resume_from = checkpoint.get("resumeFrom")
     phase = _text(checkpoint.get("phase"))
     approved_tools = _string_list(checkpoint.get("approvedTools"))
+    approved_actions = _raw_string_list(checkpoint.get("approvedToolActions"))
     approved_tool_name = _text(checkpoint.get("approvedToolName"))
     if approved_tool_name and approved_tool_name not in approved_tools:
         approved_tools.append(approved_tool_name)
-    if not isinstance(resume_from, dict) and not approved_tools:
+    approved_tool_action = _text(checkpoint.get("approvedToolAction"))
+    if approved_tool_action and approved_tool_action not in approved_actions:
+        approved_actions.append(approved_tool_action)
+    if not isinstance(resume_from, dict) and not approved_tools and not approved_actions:
         return []
     resume_phase = _text(resume_from.get("previousPhase") or resume_from.get("phase")) if isinstance(resume_from, dict) else ""
     if not resume_phase:
@@ -634,6 +638,18 @@ def _resume_strategy_for_checkpoint(checkpoint: dict[str, object] | None) -> lis
         lines.append(f"lastEventType: {last_event}")
     if approved_tools:
         lines.append(f"approvedTools: {', '.join(approved_tools)}")
+    if approved_actions:
+        lines.append(f"approvedToolActions: {', '.join(approved_actions)}")
+    if isinstance(resume_from, dict):
+        action_label = _text(resume_from.get("approvalActionLabel"))
+        risk_level = _text(resume_from.get("approvalRiskLevel"))
+        risk_labels = _string_list(resume_from.get("approvalRiskLabels"))
+        if action_label:
+            lines.append(f"approvedActionLabel: {_truncate(action_label, 300)}")
+        if risk_level:
+            lines.append(f"approvalRiskLevel: {risk_level}")
+        if risk_labels:
+            lines.append(f"approvalRiskLabels: {', '.join(risk_labels[:10])}")
     result_preview = _text(resume_from.get("resultPreview")) if isinstance(resume_from, dict) else ""
     error_preview = _text(resume_from.get("errorPreview")) if isinstance(resume_from, dict) else ""
     if result_preview:
@@ -648,6 +664,9 @@ def _resume_strategy_for_checkpoint(checkpoint: dict[str, object] | None) -> lis
         lines.append("- Use the approved tool only for the blocked step that required approval; do not treat it as broad or permanent permission.")
         lines.append("- Continue from resumeFrom and avoid repeating completed analysis before the approval checkpoint.")
         lines.append("- If the approved tool is still insufficient, return a clear blocker instead of requesting unrelated risky actions.")
+    if approved_actions:
+        lines.append("- A user approved only the listed tool action key(s) for this resumed worker run.")
+        lines.append("- Use the approved action only for the blocked step; a different command, process action, path, or external target requires a new approval checkpoint.")
     if resume_phase in {"assistant_message_received", "completed", "blocked_for_review"} or result_preview:
         lines.append("- Treat the prior result preview as a partial draft or completed candidate.")
         lines.append("- Verify it against the acceptance criteria and dependency artifacts before redoing work.")
@@ -676,6 +695,19 @@ def _string_list(value: object) -> list[str]:
     output: list[str] = []
     for item in value:
         normalized = _text(item)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            output.append(normalized)
+    return output
+
+
+def _raw_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in value:
+        normalized = str(item or "").strip()
         if normalized and normalized not in seen:
             seen.add(normalized)
             output.append(normalized)
@@ -1183,6 +1215,7 @@ class TaskWorker:
                 allowed_tool_names=base_scope.allowed_tool_names,
                 workspace_path=base_scope.workspace_path,
                 approved_ask_tool_names=base_scope.approved_ask_tool_names,
+                approved_ask_tool_actions=base_scope.approved_ask_tool_actions,
                 file_resume_policies=worker_file_resume_policies_from_artifacts(worker_context.task_artifacts),
             )
             attempt = memory_store.create_task_attempt(
@@ -1335,6 +1368,11 @@ class TaskWorker:
                         )
                         if not bool(payload.get("ok")) and str(payload.get("failureCode") or "") == "worker_permission_denied":
                             permission_block_tool_name = tool_name
+                            parsed_result = _parse_tool_result_preview(_text(payload.get("resultPreview")))
+                            approval_action_key = _text(parsed_result.get("approvalActionKey")) if parsed_result else ""
+                            approval_action_label = _text(parsed_result.get("approvalActionLabel")) if parsed_result else ""
+                            approval_risk_level = _text(parsed_result.get("approvalRiskLevel")) if parsed_result else ""
+                            approval_risk_labels = _string_list(parsed_result.get("approvalRiskLabels")) if parsed_result else []
                             permission_block_checkpoint = self._attempt_checkpoint(
                                 task,
                                 scope,
@@ -1343,7 +1381,17 @@ class TaskWorker:
                                 reason="worker_tool_permission_required",
                                 last_event_type=event_type,
                                 tool_name=tool_name,
+                                tool_result_preview=_text(payload.get("resultPreview")),
                             )
+                            if approval_action_key:
+                                permission_block_checkpoint["approvalActionKey"] = approval_action_key
+                                permission_block_checkpoint["approvalActions"] = [approval_action_key]
+                            if approval_action_label:
+                                permission_block_checkpoint["approvalActionLabel"] = approval_action_label
+                            if approval_risk_level:
+                                permission_block_checkpoint["approvalRiskLevel"] = approval_risk_level
+                            if approval_risk_labels:
+                                permission_block_checkpoint["approvalRiskLabels"] = approval_risk_labels
                             tool_checkpoint = permission_block_checkpoint
                         memory_store.heartbeat_task_attempt(
                             attempt_id,

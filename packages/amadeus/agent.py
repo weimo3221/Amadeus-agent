@@ -49,7 +49,7 @@ from amadeus.tool_runtime import (
     ToolLoopGuardrail,
     ToolRegistry,
 )
-from amadeus.worker_policy import WorkerRuntimeScope, worker_permission_decision
+from amadeus.worker_policy import WorkerRuntimeScope, worker_action_permission_decision
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2155,23 +2155,39 @@ class AgentRuntime:
         permission_request_id: str | None = None
         permission_decision = "allow"
         if spec.permission == "ask":
-            worker_permission = worker_permission_decision(self._current_worker_scope(), tool_name, spec.permission)
-            if worker_permission == "deny":
+            worker_permission = worker_action_permission_decision(
+                self._current_worker_scope(),
+                tool_name,
+                args,
+                spec.permission,
+            )
+            worker_permission_preview = {
+                "error": worker_permission.reason or f"Worker profile cannot request interactive permission for tool: {tool_name}",
+                "approvalActionKey": worker_permission.action_key,
+                "approvalActionLabel": worker_permission.action_label,
+                "approvalRiskLevel": worker_permission.risk_level,
+                "approvalRiskLabels": list(worker_permission.risk_labels),
+            }
+            worker_permission_preview = {key: value for key, value in worker_permission_preview.items() if value}
+            worker_permission_preview_text = json.dumps(worker_permission_preview, ensure_ascii=False, sort_keys=True)
+            if worker_permission.decision == "deny":
                 logger.info(
-                    "Tool permission denied by worker policy sessionId=%s turnId=%s toolCallId=%s toolName=%s workerProfile=%s",
+                    "Tool permission denied by worker policy sessionId=%s turnId=%s toolCallId=%s toolName=%s workerProfile=%s approvalActionKey=%s",
                     session_id,
                     turn_id,
                     tool_call_id,
                     tool_name,
                     self._current_worker_profile(),
+                    worker_permission.action_key,
                 )
-                result = {"error": f"Worker profile cannot request interactive permission for tool: {tool_name}"}
+                result = {"error": worker_permission_preview["error"]}
                 guardrail.after_call(tool_name, args, result, False, workspace_epoch=workspace_epoch)
                 self._record_tool_result(history, session_id, tool_call_id, tool_name, result)
                 yield AgentEvent("tool.finished", self._tool_finished_payload(
                     tool_name,
                     ok=False,
                     failure_code="worker_permission_denied",
+                    result_preview=worker_permission_preview_text,
                 ))
                 yield self._audit_tool(
                     session_id,
@@ -2187,18 +2203,23 @@ class AgentRuntime:
                         "workerProfile": self._current_worker_profile(),
                         "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
                         "workerWorkspacePath": self._current_worker_workspace_path(),
+                        "approvalActionKey": worker_permission.action_key,
+                        "approvalActionLabel": worker_permission.action_label,
+                        "approvalRiskLevel": worker_permission.risk_level,
+                        "approvalRiskLabels": list(worker_permission.risk_labels),
                     },
                 )
                 return
-            if worker_permission == "auto_approve":
+            if worker_permission.decision == "auto_approve":
                 permission_decision = "worker_auto_approved"
                 logger.info(
-                    "Tool permission auto-approved by worker policy sessionId=%s turnId=%s toolCallId=%s toolName=%s workerProfile=%s",
+                    "Tool permission auto-approved by worker policy sessionId=%s turnId=%s toolCallId=%s toolName=%s workerProfile=%s approvalActionKey=%s",
                     session_id,
                     turn_id,
                     tool_call_id,
                     tool_name,
                     self._current_worker_profile(),
+                    worker_permission.action_key,
                 )
             else:
                 request = PermissionRequest(

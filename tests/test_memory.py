@@ -897,6 +897,36 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(approved["checkpoint"]["phase"], "approved")
         self.assertIn("review_approved", [event["type"] for event in events])
 
+    def test_resume_blocked_worker_action_preserves_action_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(session_id="session-1", title="Approve action")
+            memory.start_task(str(task["id"]), claim_lock="worker-1")
+            memory.block_task(
+                str(task["id"]),
+                claim_lock="worker-1",
+                reason="Needs action approval",
+                checkpoint={
+                    "status": "blocked",
+                    "phase": "approval_required",
+                    "reason": "worker_tool_permission_required",
+                    "toolName": "process",
+                    "approvalActionKey": "process:kill",
+                    "approvalActionLabel": "process kill pid 123",
+                    "approvalRiskLevel": "high",
+                    "approvalRiskLabels": ["destructive", "process_signal"],
+                },
+            )
+
+            resumed = memory.resume_blocked_task(str(task["id"]))
+
+        self.assertEqual(resumed["checkpoint"]["phase"], "approval_resume_requested")
+        self.assertEqual(resumed["checkpoint"]["approvedToolName"], "process")
+        self.assertEqual(resumed["checkpoint"]["approvedToolAction"], "process:kill")
+        self.assertEqual(resumed["checkpoint"]["approvedToolActions"], ["process:kill"])
+        self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalActionLabel"], "process kill pid 123")
+        self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalRiskLabels"], ["destructive", "process_signal"])
+
     def test_task_graph_fields_edges_attempts_and_artifacts_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
