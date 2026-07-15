@@ -150,6 +150,8 @@ class TaskWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             database = Path(tmpdir) / "amadeus.sqlite"
             workspace = Path(tmpdir) / "workspace"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Run subprocess", worker_profile="researcher")
             runner = SubprocessTaskRunner(
                 database_path=database,
                 workspace_path=workspace,
@@ -157,22 +159,80 @@ class TaskWorkerTests(unittest.TestCase):
                 process_factory=fake_process_factory,
             )
 
-            runner.submit("task-123", lambda task_id: None)
+            runner.submit(str(task["id"]), lambda task_id: None)
             runner.shutdown()
 
         self.assertEqual(len(launches), 1)
         command = launches[0]["command"]
         self.assertEqual(command[:3], ["/usr/bin/python-test", "-m", "amadeus.task_worker_entrypoint"])
         self.assertIn("--task-id", command)
-        self.assertIn("task-123", command)
+        self.assertIn(str(task["id"]), command)
+        self.assertIn("--run-id", command)
         env = launches[0]["env"]
         self.assertIsInstance(env, dict)
-        self.assertEqual(env["AMADEUS_TASK_ID"], "task-123")
+        self.assertEqual(env["AMADEUS_TASK_ID"], str(task["id"]))
+        self.assertEqual(env["AMADEUS_TASK_RUN_ID"], command[command.index("--run-id") + 1])
         self.assertEqual(env["AMADEUS_MEMORY_DB"], str(database))
         self.assertEqual(env["AMADEUS_TASK_RUNNER"], "sync")
+        self.assertEqual(env["AMADEUS_WORKER_PROFILE"], "researcher")
         self.assertEqual(env["AMADEUS_WORKSPACE"], str(workspace))
         self.assertIn(str(Path(__file__).resolve().parents[1] / "packages"), env["PYTHONPATH"].split(os.pathsep))
         self.assertEqual(launches[0]["cwd"], str(workspace))
+
+    def test_subprocess_task_runner_requeues_running_task_after_nonzero_exit(self) -> None:
+        launches: list[dict[str, object]] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Recover subprocess", max_attempts=2)
+            running = memory.start_task(str(task["id"]), claim_lock="child-claim", lease_owner="child-worker", runner_kind="process_entrypoint")
+            self.assertEqual(running["status"], "running")
+
+            def fake_process_factory(command: list[str], **kwargs: object) -> FakeProcess:
+                launches.append({"command": command, **kwargs})
+                env = kwargs["env"]
+                self.assertIsInstance(env, dict)
+                memory.create_task_attempt(str(task["id"]), run_id=str(env["AMADEUS_TASK_RUN_ID"]), worker_id="child-worker")
+                return FakeProcess(return_code=1)
+
+            runner = SubprocessTaskRunner(database_path=database, process_factory=fake_process_factory)
+            runner.submit(str(task["id"]), lambda task_id: None)
+            runner.shutdown()
+
+            recovered = memory.get_task(str(task["id"]))
+            attempts = memory.list_task_attempts(str(task["id"]))
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual(recovered["status"], "queued")
+        self.assertIn("Task subprocess exited with code 1", str(recovered["error"]))
+        self.assertEqual(attempts[0]["status"], "failed")
+        self.assertIn("Task subprocess exited with code 1", str(attempts[0]["error"]))
+        self.assertIn("retry_scheduled", [event["type"] for event in events])
+
+    def test_subprocess_task_runner_fails_running_task_after_final_nonzero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Fail subprocess", max_attempts=1)
+            memory.start_task(str(task["id"]), claim_lock="child-claim", lease_owner="child-worker", runner_kind="process_entrypoint")
+
+            def fake_process_factory(command: list[str], **kwargs: object) -> FakeProcess:
+                env = kwargs["env"]
+                self.assertIsInstance(env, dict)
+                memory.create_task_attempt(str(task["id"]), run_id=str(env["AMADEUS_TASK_RUN_ID"]), worker_id="child-worker")
+                return FakeProcess(return_code=1)
+
+            runner = SubprocessTaskRunner(database_path=database, process_factory=fake_process_factory)
+            runner.submit(str(task["id"]), lambda task_id: None)
+            runner.shutdown()
+
+            failed = memory.get_task(str(task["id"]))
+            attempts = memory.list_task_attempts(str(task["id"]))
+
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("Task subprocess exited with code 1", str(failed["error"]))
+        self.assertEqual(attempts[0]["status"], "failed")
 
     def test_task_worker_entrypoint_runs_one_task_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -180,11 +240,12 @@ class TaskWorkerTests(unittest.TestCase):
             runtime = SuccessfulRuntime()
             task = memory.create_task(session_id="session-1", title="Run entrypoint")
 
-            finished = run_task_once(memory_store=memory, agent_runtime=runtime, task_id=str(task["id"]))
+            finished = run_task_once(memory_store=memory, agent_runtime=runtime, task_id=str(task["id"]), run_id="entry-run-1")
             attempts = memory.list_task_attempts(str(task["id"]))
 
         self.assertEqual(finished["status"], "succeeded")
         self.assertEqual(finished["runnerKind"], "process_entrypoint")
+        self.assertEqual(attempts[0]["runId"], "entry-run-1")
         self.assertEqual(attempts[0]["workerId"].split("-")[0], "process_entrypoint")
 
     def test_task_worker_entrypoint_requires_task_id(self) -> None:

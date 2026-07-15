@@ -1097,8 +1097,8 @@ UI 不需要知道 runner 细节，但需要能展示：
 
 - Status: first optional POSIX fork-backed `ProcessTaskRunner` is implemented behind the `TaskRunner` contract and can be selected with `AMADEUS_TASK_RUNNER=process`.
 - First dedicated single-task worker entrypoint is implemented in `amadeus.task_worker_entrypoint`: a subprocess can bind work through `--task-id` / `AMADEUS_TASK_ID` and `--database` / `AMADEUS_MEMORY_DB` while reusing `TaskWorker` state transitions.
-- First external subprocess launcher/supervisor slice is implemented in `SubprocessTaskRunner`: `AMADEUS_TASK_RUNNER=subprocess` starts `python -m amadeus.task_worker_entrypoint`, passes `AMADEUS_TASK_ID`, `AMADEUS_MEMORY_DB`, and `AMADEUS_WORKSPACE`, enforces bounded concurrency, and joins or terminates child processes from the parent runner.
-- 仍需让运行时按 worker profile 绑定 `AMADEUS_TASK_RUN_ID`、`AMADEUS_WORKER_PROFILE`，并负责进程重启、退出码驱动的 reclaim、attempt abandonment 和失败恢复。
+- First external subprocess launcher/supervisor slice is implemented in `SubprocessTaskRunner`: `AMADEUS_TASK_RUNNER=subprocess` starts `python -m amadeus.task_worker_entrypoint`, passes `AMADEUS_TASK_ID`, `AMADEUS_TASK_RUN_ID`, `AMADEUS_MEMORY_DB`, `AMADEUS_WORKSPACE`, and `AMADEUS_WORKER_PROFILE`, enforces bounded concurrency, joins or terminates child processes from the parent runner, and reclaims non-zero exits back into queued retry or terminal failure.
+- 仍需实现更完整的进程重启策略、显式 attempt abandonment 语义，以及按 worker profile 执行工具/权限/工作区策略。
 - task attempt heartbeat 独立于父 turn 生命周期。
 - 重启后 expired lease 可 reclaim，未完成 attempt 可标记 abandoned/retry。
 - 增强 supervisor 管理层，但仍复用同一个 store、ToolRuntime、WorkerContext builder 和单任务 entrypoint。

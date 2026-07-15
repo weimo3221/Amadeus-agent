@@ -17,12 +17,14 @@ def run_task_once(
     agent_runtime: Any,
     task_id: str,
     runner_kind: str = "process_entrypoint",
+    run_id: str | None = None,
 ) -> dict[str, object]:
     worker = TaskWorker(
         lambda: memory_store,
         lambda: agent_runtime,
         runner=SynchronousTaskRunner(),
         runner_kind=runner_kind,
+        attempt_run_id=run_id,
     )
     worker.submit(task_id)
     worker.shutdown()
@@ -35,6 +37,7 @@ def run_task_once(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run one Amadeus background task in a dedicated worker process.")
     parser.add_argument("--task-id", default=os.environ.get("AMADEUS_TASK_ID", ""), help="Task id to claim and execute.")
+    parser.add_argument("--run-id", default=os.environ.get("AMADEUS_TASK_RUN_ID", ""), help="Optional attempt run id.")
     parser.add_argument(
         "--database",
         default=os.environ.get("AMADEUS_MEMORY_DB", ""),
@@ -50,7 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     database = Path(database_text).expanduser()
     memory_store = MessageMemoryStore(database)
     runtime = AgentRuntime(memory_store, audio_runtime=None)
-    task = run_task_once(memory_store=memory_store, agent_runtime=runtime, task_id=task_id)
+    run_id = str(args.run_id or "").strip() or None
+    task = run_task_once(memory_store=memory_store, agent_runtime=runtime, task_id=task_id, run_id=run_id)
     status = str(task.get("status") or "")
     if status == "succeeded":
         return 0

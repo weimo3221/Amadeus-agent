@@ -163,7 +163,7 @@ class SubprocessTaskRunner:
         self._semaphore = threading.BoundedSemaphore(max(1, int(max_workers)))
         self._lock = threading.Lock()
         self._supervisors: list[threading.Thread] = []
-        self._processes: dict[str, subprocess.Popen[Any]] = {}
+        self._processes: dict[str, tuple[subprocess.Popen[Any], str]] = {}
         self._closed = False
 
     def submit(self, task_id: str, run_task: TaskCallable) -> None:
@@ -173,15 +173,15 @@ class SubprocessTaskRunner:
                 raise RuntimeError("task runner is shut down")
         self._semaphore.acquire()
         try:
-            process = self._start_process(task_id)
+            process, run_id = self._start_process(task_id)
         except BaseException:
             self._semaphore.release()
             raise
         with self._lock:
-            self._processes[task_id] = process
+            self._processes[task_id] = (process, run_id)
         supervisor = threading.Thread(
             target=self._join_process,
-            args=(task_id, process),
+            args=(task_id, process, run_id),
             name=f"amadeus-task-subprocess-supervisor-{task_id[:8]}",
             daemon=True,
         )
@@ -192,7 +192,7 @@ class SubprocessTaskRunner:
     def shutdown(self, *, wait: bool = True) -> None:
         with self._lock:
             self._closed = True
-            processes = list(self._processes.values())
+            processes = [process for process, _ in self._processes.values()]
         if wait:
             for process in processes:
                 process.wait()
@@ -210,11 +210,17 @@ class SubprocessTaskRunner:
                 if process.poll() is None:
                     process.terminate()
 
-    def _start_process(self, task_id: str) -> subprocess.Popen[Any]:
+    def _start_process(self, task_id: str) -> tuple[subprocess.Popen[Any], str]:
+        run_id = uuid4().hex
+        task = MessageMemoryStore(self._database_path).get_task(task_id)
+        worker_profile = str((task or {}).get("workerProfile") or (task or {}).get("workerType") or "").strip()
         env = dict(os.environ)
         env["AMADEUS_TASK_ID"] = task_id
+        env["AMADEUS_TASK_RUN_ID"] = run_id
         env["AMADEUS_MEMORY_DB"] = str(self._database_path)
         env["AMADEUS_TASK_RUNNER"] = "sync"
+        if worker_profile:
+            env["AMADEUS_WORKER_PROFILE"] = worker_profile
         if self._workspace_path is not None:
             env["AMADEUS_WORKSPACE"] = str(self._workspace_path)
         packages_dir = str(Path(__file__).resolve().parents[1])
@@ -226,22 +232,59 @@ class SubprocessTaskRunner:
             "amadeus.task_worker_entrypoint",
             "--task-id",
             task_id,
+            "--run-id",
+            run_id,
             "--database",
             str(self._database_path),
         ]
-        return self._process_factory(command, env=env, cwd=str(self._workspace_path) if self._workspace_path else None)
+        process = self._process_factory(command, env=env, cwd=str(self._workspace_path) if self._workspace_path else None)
+        return process, run_id
 
-    def _join_process(self, task_id: str, process: subprocess.Popen[Any]) -> None:
+    def _join_process(self, task_id: str, process: subprocess.Popen[Any], run_id: str) -> None:
         try:
             return_code = process.wait()
             if return_code != 0:
                 logger.info("Task subprocess exited non-zero taskId=%s pid=%s returnCode=%s", task_id, process.pid, return_code)
+                self._recover_nonzero_exit(task_id, run_id=run_id, return_code=return_code)
         finally:
             with self._lock:
                 current = self._processes.get(task_id)
-                if current is process:
+                if current and current[0] is process:
                     self._processes.pop(task_id, None)
             self._semaphore.release()
+
+    def _recover_nonzero_exit(self, task_id: str, *, run_id: str, return_code: int) -> None:
+        memory_store = MessageMemoryStore(self._database_path)
+        task = memory_store.get_task(task_id)
+        if not task or task.get("status") != "running":
+            return
+        claim_lock = str(task.get("claimLock") or "").strip()
+        if not claim_lock:
+            return
+        error = f"Task subprocess exited with code {return_code}"
+        for attempt in memory_store.list_task_attempts(task_id, limit=20):
+            if str(attempt.get("status") or "") == "running" and str(attempt.get("runId") or "") == run_id:
+                try:
+                    memory_store.finish_task_attempt(
+                        str(attempt["id"]),
+                        status="failed",
+                        error=error,
+                        checkpoint={"status": "subprocess_exited", "returnCode": return_code},
+                    )
+                except Exception:
+                    logger.debug("Task subprocess failed to mark attempt failed taskId=%s runId=%s", task_id, run_id, exc_info=True)
+        try:
+            if int(task.get("attemptCount") or 0) < int(task.get("maxAttempts") or 1):
+                memory_store.retry_task(
+                    task_id,
+                    claim_lock=claim_lock,
+                    error=error,
+                    next_run_at=datetime.now(timezone.utc).isoformat(),
+                )
+            else:
+                memory_store.fail_task(task_id, claim_lock=claim_lock, error=error)
+        except Exception:
+            logger.info("Task subprocess failed to reclaim taskId=%s runId=%s", task_id, run_id, exc_info=True)
 
 
 def build_task_runner(
@@ -450,6 +493,7 @@ class TaskWorker:
         lease_seconds: float | None = None,
         runner_kind: str = "in_process",
         runner: TaskRunner | None = None,
+        attempt_run_id: str | None = None,
     ) -> None:
         self._memory_store_provider = memory_store_provider
         self._agent_runtime_provider = agent_runtime_provider
@@ -461,6 +505,7 @@ class TaskWorker:
         self._heartbeat_interval_seconds = max(0.5, min(30.0, self._lease_seconds / 3.0))
         self._runner_kind = str(runner_kind or "in_process").strip() or "in_process"
         self._worker_id = f"{self._runner_kind}-{uuid4().hex[:12]}"
+        self._attempt_run_id = str(attempt_run_id).strip() if attempt_run_id else None
         self._runner = runner or InProcessTaskRunner(max_workers=max_workers)
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}
@@ -542,6 +587,7 @@ class TaskWorker:
             worker_context = build_worker_context(memory_store, task_id)
             attempt = memory_store.create_task_attempt(
                 task_id,
+                run_id=self._attempt_run_id,
                 worker_id=self._worker_id,
                 worker_profile=str(task.get("workerProfile") or task.get("workerType") or ""),
                 input_context=worker_context.to_payload(),
