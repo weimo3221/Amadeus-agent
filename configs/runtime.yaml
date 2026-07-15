@@ -108,6 +108,12 @@ memoryReview:
   failureCooldownSeconds: 300
 
 tasks:
+  # Maximum synchronous wait for one restricted child-agent delegation. The
+  # child still runs through the normal task runner and is cancelled when the
+  # parent turn or this deadline expires.
+  # Env override: AMADEUS_CHILD_AGENT_TIMEOUT_SECONDS.
+  childAgentTimeoutSeconds: 240
+
   # How long a resumed background worker may use one approved action-specific
   # ask-tool permission before the approval expires. The grant is still scoped
   # to the next worker run and the exact blocked action key.

@@ -1019,7 +1019,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         previous = os.environ.get("AMADEUS_CONTEXT_MAX_TOKENS")
         os.environ.pop("AMADEUS_CONTEXT_MAX_TOKENS", None)
         self.runtime_config_path.write_text(
-            "context:\n  maxTokens: 3456\nsummary:\n  triggerMessageCount: 7\ntasks:\n  workerApprovalActionTtlSeconds: 123\n",
+            "context:\n  maxTokens: 3456\nsummary:\n  triggerMessageCount: 7\ntasks:\n  workerApprovalActionTtlSeconds: 123\n  childAgentTimeoutSeconds: 77\n",
             encoding="utf-8",
         )
         try:
@@ -1035,9 +1035,11 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["config"]["context"]["maxTokens"], 3456)
         self.assertEqual(payload["config"]["summary"]["triggerMessageCount"], 7)
         self.assertEqual(payload["config"]["tasks"]["workerApprovalActionTtlSeconds"], 123)
+        self.assertEqual(payload["config"]["tasks"]["childAgentTimeoutSeconds"], 77)
         self.assertEqual(runtime_server.agent_runtime.context_max_tokens, 3456)
         self.assertEqual(runtime_server.agent_runtime.summary_trigger_message_count, 7)
         self.assertEqual(runtime_server.agent_runtime.worker_approval_action_ttl_seconds, 123)
+        self.assertEqual(runtime_server.agent_runtime.child_agent_timeout_seconds, 77)
         self.assertEqual(runtime_server.memory_store.worker_approval_action_ttl_seconds, 123)
 
     def test_runtime_health_reports_structured_local_checks(self) -> None:

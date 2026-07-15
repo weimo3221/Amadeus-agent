@@ -4,7 +4,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from amadeus.memory import MessageMemoryStore
-from amadeus.memory_provider import ExternalMemoryResult, LocalRuntimeMemoryProvider, RuntimeMemoryManager
+from amadeus.memory_provider import (
+    ExternalMemoryResult,
+    LocalRuntimeMemoryProvider,
+    RuntimeMemoryArtifacts,
+    RuntimeMemoryManager,
+    TurnMemoryBundle,
+)
 from amadeus.planning import format_active_plan_for_context
 
 
@@ -86,17 +92,28 @@ class ContextAssembler:
         self.config = config or ContextAssemblerConfig()
         self.memory_manager = memory_manager or RuntimeMemoryManager(LocalRuntimeMemoryProvider(memory_store))
 
-    def assemble(self, session_id: str, user_text: str, *, base_system_prompt: str | None = None) -> AssembledContext:
+    def assemble(
+        self,
+        session_id: str,
+        user_text: str,
+        *,
+        base_system_prompt: str | None = None,
+        include_memory_prefetch: bool = True,
+    ) -> AssembledContext:
         active_plan = self.memory_store.load_session_plan(session_id)
         active_todos = self.memory_store.list_todos(session_id=session_id, active_only=True, limit=self.config.todo_limit)
         active_tasks = self.memory_store.list_tasks(session_id=session_id, active_only=True, limit=self.config.task_limit)
         recent_tasks = self.memory_store.list_recent_terminal_tasks(session_id=session_id, limit=self.config.recent_task_limit)
-        memory_bundle = self.memory_manager.prefetch_for_turn(
-            user_text,
-            session_id=session_id,
-            memory_item_limit=self.config.memory_item_limit,
-            retrieval_limit=self.config.retrieval_limit,
-            external_limit=self.config.retrieval_limit,
+        memory_bundle = (
+            self.memory_manager.prefetch_for_turn(
+                user_text,
+                session_id=session_id,
+                memory_item_limit=self.config.memory_item_limit,
+                retrieval_limit=self.config.retrieval_limit,
+                external_limit=self.config.retrieval_limit,
+            )
+            if include_memory_prefetch
+            else TurnMemoryBundle(runtime=RuntimeMemoryArtifacts(provider="disabled"))
         )
 
         sources: list[ContextSource] = []

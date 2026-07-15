@@ -98,6 +98,7 @@ class WorkerRuntimeScope:
     approved_ask_tool_actions: frozenset[str] = frozenset()
     approved_ask_tool_action_expirations: tuple[tuple[str, str], ...] = ()
     file_resume_policies: tuple[dict[str, Any], ...] = ()
+    source_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,7 @@ def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
         worker_profile=profile,
         allowed_toolsets=toolsets,
         allowed_tool_names=allowed_tool_names,
+        source_session_id=str(task.get("sessionId") or "").strip() or None,
         sandbox_mode=sandbox_mode,
         workspace_path=worker_workspace_path_for_task(task),
         approved_ask_tool_names=frozenset(

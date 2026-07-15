@@ -93,6 +93,7 @@ DESKTOP_COMPANION_LIVE2D_SCALE = 0.92
 DESKTOP_COMPANION_LIVE2D_OFFSET_X = 0
 DESKTOP_COMPANION_LIVE2D_OFFSET_Y = 0
 AGENT_MAX_TOOL_ITERATIONS = 90
+CHILD_AGENT_TIMEOUT_SECONDS = 240
 WORKSPACE_MUTATING_TOOLS = {"patch", "write_file"}
 POTENTIALLY_WORKSPACE_MUTATING_TOOLS = {"terminal", "execute_code"}
 logger = logging.getLogger(__name__)
@@ -564,6 +565,13 @@ class AgentRuntime:
             ),
         )
         self.memory_store.set_worker_approval_action_ttl_seconds(self.worker_approval_action_ttl_seconds)
+        self.child_agent_timeout_seconds = parse_positive_int_env(
+            "AMADEUS_CHILD_AGENT_TIMEOUT_SECONDS",
+            parse_positive_int_value(
+                tasks_config.get("childAgentTimeoutSeconds"),
+                CHILD_AGENT_TIMEOUT_SECONDS,
+            ),
+        )
         self.desktop_companion_live2d_scale = parse_float_env(
             "AMADEUS_DESKTOP_COMPANION_LIVE2D_SCALE",
             parse_float_value(desktop_config.get("companionLive2dScale"), DESKTOP_COMPANION_LIVE2D_SCALE, minimum=0.25, maximum=2.5),
@@ -1038,12 +1046,14 @@ class AgentRuntime:
 
         history.append({"role": "assistant", "content": assistant_text})
         assistant_message_id = self.memory_store.save(session_id, "assistant", assistant_text)
-        self.memory_store.finish_plan_run(
-            session_id=session_id,
-            turn_id=turn_id,
-            assistant_message_id=assistant_message_id,
-        )
-        summary_event = self._maybe_compact_conversation(session_id, reason="turn_end")
+        worker_turn = self._current_worker_scope() is not None
+        if not worker_turn:
+            self.memory_store.finish_plan_run(
+                session_id=session_id,
+                turn_id=turn_id,
+                assistant_message_id=assistant_message_id,
+            )
+        summary_event = None if worker_turn else self._maybe_compact_conversation(session_id, reason="turn_end")
         logger.info(
             "Completed agent turn sessionId=%s turnId=%s assistantTextChars=%s memoryMessages=%s",
             session_id,
@@ -1055,11 +1065,11 @@ class AgentRuntime:
         yield AgentEvent("assistant.message", {"text": assistant_text, "turnId": turn_id})
         if summary_event:
             yield summary_event
-        review_event = self._maybe_review_memory(session_id)
+        review_event = None if worker_turn else self._maybe_review_memory(session_id)
         if review_event:
             yield review_event
 
-        if self.audio_runtime:
+        if self.audio_runtime and not worker_turn:
             audio_result = self.audio_runtime.speak(AudioOutputCommand(text=assistant_text, format="wav"))
             if not isinstance(audio_result, AudioFallbackResult):
                 logger.info("Runtime audio ready sessionId=%s turnId=%s durationMs=%s", session_id, turn_id, audio_result.duration_ms)
@@ -1322,6 +1332,7 @@ class AgentRuntime:
             },
             "tasks": {
                 "workerApprovalActionTtlSeconds": self.worker_approval_action_ttl_seconds,
+                "childAgentTimeoutSeconds": self.child_agent_timeout_seconds,
             },
             "desktop": {
                 "companionLive2dScale": self.desktop_companion_live2d_scale,
@@ -1612,6 +1623,7 @@ class AgentRuntime:
             session_id,
             user_text,
             base_system_prompt=self._build_system_prompt(session_id=session_id),
+            include_memory_prefetch=self._current_worker_scope() is None,
         )
         system_context = assembled_context.system_context
         role_prompt = self.memory_store.role_prompt_for_session(session_id)
@@ -1644,6 +1656,7 @@ class AgentRuntime:
             session_id,
             "",
             base_system_prompt=self._build_system_prompt(session_id=session_id),
+            include_memory_prefetch=self._current_worker_scope() is None,
         )
         return self._load_history(
             session_id,
@@ -2359,6 +2372,7 @@ class AgentRuntime:
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 worker_profile=self._current_worker_profile(),
+                worker_source_session_id=self._current_worker_source_session_id(),
                 worker_allowed_toolsets=self._current_worker_allowed_toolsets(),
                 worker_sandbox_mode=self._current_worker_sandbox_mode(),
                 worker_workspace_path=self._current_worker_workspace_path(),
@@ -2367,6 +2381,7 @@ class AgentRuntime:
                 worker_file_resume_policies=self._current_worker_file_resume_policies(),
                 workspace_epoch=workspace_epoch,
                 cancel_event=cancel_event,
+                timeout_seconds=self.child_agent_timeout_seconds if tool_name == "delegate_task" else 30.0,
                 permission_request_id=permission_request_id,
                 permission_decision=permission_decision,
                 audit_metadata={
@@ -2376,6 +2391,7 @@ class AgentRuntime:
                     "permissionDecision": permission_decision,
                     "workspaceEpoch": workspace_epoch,
                     "workerProfile": self._current_worker_profile(),
+                    "workerSourceSessionId": self._current_worker_source_session_id(),
                     "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
                     "workerSandboxMode": self._current_worker_sandbox_mode(),
                     "workerWorkspacePath": self._current_worker_workspace_path(),
@@ -2730,6 +2746,10 @@ class AgentRuntime:
         scope = self._current_worker_scope()
         return scope.worker_profile if scope else None
 
+    def _current_worker_source_session_id(self) -> str | None:
+        scope = self._current_worker_scope()
+        return scope.source_session_id if scope else None
+
     def _current_worker_allowed_toolsets(self) -> tuple[str, ...]:
         scope = self._current_worker_scope()
         return scope.allowed_toolsets if scope else ()
@@ -2756,10 +2776,11 @@ class AgentRuntime:
 
     def _build_system_prompt(self, *, session_id: str | None = None) -> str:
         workspace_root = self._workspace_root_for_session(session_id)
-        stable_memory = self._format_stable_memory_for_prompt(session_id=session_id)
+        worker_scope = self._current_worker_scope()
+        stable_memory = "" if worker_scope is not None else self._format_stable_memory_for_prompt(session_id=session_id)
         identity_prompt = self._identity_prompt_for_session(session_id)
         allowed_tool_names = self._effective_allowed_tool_names(session_id)
-        allowed_skills = self._role_allowed_skills(session_id)
+        allowed_skills = set() if worker_scope is not None else self._role_allowed_skills(session_id)
         enabled_tools = {
             schema.get("function", {}).get("name", "")
             for schema in self.enabled_tool_schemas(session_id)

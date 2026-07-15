@@ -97,6 +97,7 @@ RUNTIME_CONFIG_FIELDS: dict[str, dict[str, tuple[type, float | int | None, float
         "failureCooldownSeconds": (int, 1, None),
     },
     "tasks": {
+        "childAgentTimeoutSeconds": (int, 1, None),
         "workerApprovalActionTtlSeconds": (int, 1, None),
     },
     "desktop": {

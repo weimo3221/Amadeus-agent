@@ -847,10 +847,43 @@ class ToolRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             from amadeus.memory import MessageMemoryStore
 
+            class ImmediateChildTaskWorker:
+                def __init__(self, memory_store: MessageMemoryStore) -> None:
+                    self.memory_store = memory_store
+                    self.submitted: list[str] = []
+
+                def submit(self, task_id: str) -> None:
+                    self.submitted.append(task_id)
+                    self.memory_store.start_task(
+                        task_id,
+                        claim_lock="delegate-test",
+                        lease_owner="delegate-test",
+                        runner_kind="isolated_test",
+                    )
+                    self.memory_store.add_task_artifact(
+                        task_id,
+                        {
+                            "type": "summary",
+                            "title": "Worker result",
+                            "content": "The task system persists state transitions in task_events.",
+                        },
+                    )
+                    self.memory_store.complete_task(
+                        task_id,
+                        claim_lock="delegate-test",
+                        result="The task system persists state transitions in task_events.",
+                    )
+
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
             memory.save("session-1", "user", "The task system uses SQLite task_events for state history.")
             registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
-            context = ToolContext(session_id="session-1", memory_store=memory)
+            task_worker = ImmediateChildTaskWorker(memory)
+            context = ToolContext(
+                session_id="session-1",
+                cwd=Path(tmpdir),
+                memory_store=memory,
+                task_worker=task_worker,
+            )
 
             result = registry.execute(
                 "delegate_task",
@@ -862,16 +895,125 @@ class ToolRegistryTests(unittest.TestCase):
                 },
                 context,
             )
+            child_task = memory.get_task(str(result.output["childTaskId"]))
+            artifacts = memory.list_task_artifacts(str(result.output["childTaskId"]))
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.output["delegateType"], "restricted_research")
+        self.assertEqual(result.output["delegateType"], "isolated_child_agent")
+        self.assertEqual(result.output["status"], "succeeded")
         self.assertEqual(result.output["maxDepth"], 1)
         self.assertEqual(result.output["maxConcurrency"], 2)
         self.assertEqual(result.output["allowedTools"], ["search_files", "read_file", "search_memory"])
         self.assertNotIn("write_file", result.output["allowedTools"])
-        self.assertGreaterEqual(result.output["findingCount"], 1)
-        self.assertIn("Restricted research delegate completed", result.output["summary"])
+        self.assertEqual(task_worker.submitted, [result.output["childTaskId"]])
+        self.assertIsNotNone(child_task)
+        assert child_task is not None
+        self.assertEqual(child_task["kind"], "delegated")
+        self.assertEqual(child_task["workerProfile"], "researcher")
+        self.assertEqual(child_task["allowedToolsets"], ["read", "search"])
+        self.assertEqual(child_task["contextHints"]["sandboxMode"], "read_only")
+        self.assertIn("delegate_task", child_task["disallowedTools"])
+        self.assertEqual(len(artifacts), 1)
         self.assertIn("task_events", result.output["summary"])
+
+    def test_delegate_task_rejects_recursive_worker_delegation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "delegate_task",
+                {"task": "Delegate again."},
+                ToolContext(
+                    session_id="worker:child",
+                    memory_store=memory,
+                    task_worker=object(),
+                    worker_profile="researcher",
+                    worker_source_session_id="session-1",
+                ),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("recursive child-agent delegation", str(result.output["error"]))
+
+    def test_delegate_task_cancels_child_when_parent_tool_times_out(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            class PendingChildTaskWorker:
+                def __init__(self, memory_store: MessageMemoryStore) -> None:
+                    self.memory_store = memory_store
+                    self.submitted: list[str] = []
+                    self.cancelled = threading.Event()
+
+                def submit(self, task_id: str) -> None:
+                    self.submitted.append(task_id)
+
+                def cancel(self, task_id: str, *, reason: str | None = None) -> dict[str, object]:
+                    cancelled = self.memory_store.cancel_task(task_id, reason=reason)
+                    self.cancelled.set()
+                    return cancelled
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task_worker = PendingChildTaskWorker(memory)
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+            result = registry.execute(
+                "delegate_task",
+                {"task": "Wait for evidence.", "maxWaitSeconds": 10},
+                ToolContext(
+                    session_id="session-1",
+                    memory_store=memory,
+                    task_worker=task_worker,
+                    timeout_seconds=0.1,
+                    cancel_event=threading.Event(),
+                ),
+            )
+            self.assertTrue(task_worker.cancelled.wait(timeout=2))
+            child_task = memory.get_task(task_worker.submitted[0])
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_code, "tool_timeout")
+        self.assertIsNotNone(child_task)
+        assert child_task is not None
+        self.assertEqual(child_task["status"], "cancelled")
+        self.assertIn("Parent delegate tool cancelled", str(child_task["error"]))
+
+    def test_worker_memory_tools_are_bound_to_source_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from amadeus.memory import MessageMemoryStore
+
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-source", "user", "shared-token source evidence")
+            memory.save("session-other", "user", "shared-token unrelated evidence")
+            memory.save("worker:child", "user", "isolated worker prompt")
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            context = ToolContext(
+                session_id="worker:child",
+                memory_store=memory,
+                worker_profile="researcher",
+                worker_source_session_id="session-source",
+            )
+
+            searched = registry.execute(
+                "search_memory",
+                {"query": "shared-token", "includeAllSessions": True},
+                context,
+            )
+            denied_read = registry.execute(
+                "read_session_messages",
+                {"sessionId": "session-other"},
+                context,
+            )
+
+        self.assertTrue(searched.ok)
+        self.assertEqual(searched.output["sessionId"], "session-source")
+        self.assertFalse(searched.output["includeAllSessions"])
+        self.assertEqual(len(searched.output["results"]), 1)
+        self.assertIn("source evidence", searched.output["results"][0]["content"])
+        self.assertFalse(denied_read.ok)
+        self.assertIn("source session", str(denied_read.output["error"]))
 
     def test_update_plan_persists_session_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

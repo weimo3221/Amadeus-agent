@@ -28,7 +28,7 @@ from amadeus.worker_policy import (
     worker_action_permission_decision,
     worker_permission_decision,
 )
-from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
+from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context, worker_session_id_for_task
 
 
 class SuccessfulRuntime:
@@ -152,6 +152,26 @@ class ScopedRuntime(SuccessfulRuntime):
     def worker_tool_scope(self, allowed_tool_names: set[str]):
         self.scopes.append(set(allowed_tool_names))
         yield
+
+
+class IsolatedSessionRuntime:
+    def __init__(self, memory_store: MessageMemoryStore) -> None:
+        self.memory_store = memory_store
+        self.sessions: list[str] = []
+        self.runtime_scopes: list[WorkerRuntimeScope] = []
+
+    @contextlib.contextmanager
+    def worker_runtime_scope(self, scope: WorkerRuntimeScope):
+        self.runtime_scopes.append(scope)
+        yield
+
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        del request_permission
+        self.sessions.append(session_id)
+        self.memory_store.save(session_id, "user", user_text)
+        yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": "turn-isolated", "startedAt": "now"})
+        self.memory_store.save(session_id, "assistant", "isolated worker result")
+        yield AgentEvent("assistant.message", {"text": "isolated worker result"})
 
 
 class RejectingScopeRuntime(SuccessfulRuntime):
@@ -736,6 +756,36 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("Use the body.", str(finished["result"]))
         self.assertEqual([event["type"] for event in events], ["created", "running", "succeeded"])
         self.assertEqual(published, [("running", "running"), ("succeeded", "succeeded")])
+
+    def test_worker_model_turn_uses_archived_task_session_without_polluting_parent_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-1", "user", "parent conversation remains separate")
+            runtime = IsolatedSessionRuntime(memory)
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=ImmediateTaskRunner())
+            task = memory.create_task(
+                session_id="session-1",
+                title="Isolated child turn",
+                worker_profile="researcher",
+                allowed_toolsets=["read", "search"],
+            )
+            child_session_id = worker_session_id_for_task(str(task["id"]))
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+            parent_messages = memory.load("session-1")
+            child_messages = memory.load(child_session_id)
+            child_session = memory.get_session(child_session_id)
+
+        self.assertEqual(runtime.sessions, [child_session_id])
+        self.assertEqual([message["content"] for message in parent_messages], ["parent conversation remains separate"])
+        self.assertEqual(len(child_messages), 2)
+        self.assertIn("<task>", child_messages[0]["content"])
+        self.assertEqual(child_messages[1]["content"], "isolated worker result")
+        self.assertIsNotNone(child_session)
+        assert child_session is not None
+        self.assertTrue(child_session["archived"])
+        self.assertEqual(runtime.runtime_scopes[0].source_session_id, "session-1")
 
     def test_worker_syncs_linked_plan_item_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

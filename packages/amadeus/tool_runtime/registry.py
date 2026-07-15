@@ -54,6 +54,7 @@ class ToolContext:
     tool_call_id: str | None = None
     tool_name: str | None = None
     worker_profile: str | None = None
+    worker_source_session_id: str | None = None
     worker_allowed_toolsets: tuple[str, ...] = ()
     worker_sandbox_mode: str | None = None
     worker_workspace_path: str | None = None

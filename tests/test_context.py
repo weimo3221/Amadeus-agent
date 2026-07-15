@@ -124,6 +124,27 @@ class ContextAssemblerTests(unittest.TestCase):
             self.assertTrue(any(result.get("retrievalProvider") == "fts_global" for result in hybrid_artifacts.retrievals))
             self.assertEqual(hybrid_artifacts.memory_items, legacy_artifacts.memory_items)
 
+    def test_context_assembler_can_disable_all_turn_time_memory_prefetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory.save("session-other", "assistant", "global fallback secret")
+            assembler = ContextAssembler(
+                memory,
+                "Base",
+                memory_manager=RuntimeMemoryManager(HybridRuntimeMemoryProvider(memory)),
+            )
+
+            assembled = assembler.assemble(
+                "worker:task",
+                "Find secret",
+                include_memory_prefetch=False,
+            )
+
+        self.assertEqual(assembled.user_content, "Find secret")
+        self.assertNotIn("global fallback secret", assembled.system_context)
+        self.assertNotIn("global fallback secret", assembled.user_content)
+        self.assertNotIn("retrieval", assembled.diagnostics()["sourceCounts"])
+
     def test_search_memory_items_tool_tracks_memory_item_access(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

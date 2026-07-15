@@ -855,14 +855,16 @@ finally:
     def test_runtime_config_sets_worker_approval_action_ttl(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime.yaml"
         config_path.write_text(
-            "tasks:\n  workerApprovalActionTtlSeconds: 234\n",
+            "tasks:\n  workerApprovalActionTtlSeconds: 234\n  childAgentTimeoutSeconds: 123\n",
             encoding="utf-8",
         )
         runtime = FakeAgentRuntime(self.memory, runtime_config_path=config_path)
 
         self.assertEqual(runtime.worker_approval_action_ttl_seconds, 234)
+        self.assertEqual(runtime.child_agent_timeout_seconds, 123)
         self.assertEqual(self.memory.worker_approval_action_ttl_seconds, 234)
         self.assertEqual(runtime._runtime_config_snapshot()["tasks"]["workerApprovalActionTtlSeconds"], 234)
+        self.assertEqual(runtime._runtime_config_snapshot()["tasks"]["childAgentTimeoutSeconds"], 123)
 
     def test_runtime_config_env_overrides_worker_approval_action_ttl(self) -> None:
         config_path = Path(self.tmpdir.name) / "runtime.yaml"
@@ -1991,6 +1993,32 @@ finally:
         self.assertEqual(tool_audit[1]["metadata"]["workerSandboxMode"], "workspace_execute")
         self.assertEqual(tool_audit[1]["metadata"]["approvalActionKey"], preview["approvalActionKey"])
         self.assertEqual(tool_audit[1]["metadata"]["approvalRiskLabels"], ["shell_command"])
+
+    def test_worker_turn_does_not_prefetch_global_or_stable_memory(self) -> None:
+        self.memory.save("session-other", "assistant", "GLOBAL-WORKER-SECRET isolation evidence")
+        self.memory.update_stable_memory("user", "add", content="STABLE-WORKER-SECRET")
+        runtime = FakeAgentRuntime(self.memory, deltas=["isolated"])
+        scope = WorkerRuntimeScope(
+            worker_profile="researcher",
+            allowed_toolsets=("read", "search"),
+            allowed_tool_names=frozenset({"search_files", "read_file", "search_memory"}),
+            source_session_id="session-source",
+            sandbox_mode="read_only",
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            events = list(runtime.run_turn(
+                "worker:isolated",
+                "Find isolation evidence.",
+                lambda _request: False,
+            ))
+
+        model_context = json.dumps(runtime.decision_messages[0], ensure_ascii=False)
+        self.assertNotIn("GLOBAL-WORKER-SECRET", model_context)
+        self.assertNotIn("STABLE-WORKER-SECRET", model_context)
+        context_event = next(event for event in events if event.type == "memory.context.used")
+        self.assertNotIn("retrieval", context_event.payload["sourceCounts"])
+        self.assertNotIn("conversation_summary", context_event.payload["sourceCounts"])
 
     def test_worker_read_only_sandbox_hides_and_denies_mutation_tools(self) -> None:
         calls: list[dict[str, Any]] = []

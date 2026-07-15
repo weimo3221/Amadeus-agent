@@ -69,6 +69,10 @@ WORKER_WORKSPACE_COPY_IGNORE = {
 }
 
 
+def worker_session_id_for_task(task_id: str) -> str:
+    return f"worker:{str(task_id).strip()}"
+
+
 def _recovery_checkpoint_from_attempt(
     *,
     reason: str,
@@ -1562,6 +1566,7 @@ class TaskWorker:
                 worker_profile=base_scope.worker_profile,
                 allowed_toolsets=base_scope.allowed_toolsets,
                 allowed_tool_names=base_scope.allowed_tool_names,
+                source_session_id=base_scope.source_session_id,
                 sandbox_mode=base_scope.sandbox_mode,
                 workspace_path=workspace_override or base_scope.workspace_path,
                 workspace_isolation=(
@@ -1586,7 +1591,15 @@ class TaskWorker:
             attempt_id = str(attempt["id"])
             prompt = worker_context.to_prompt()
             runtime = self._agent_runtime_provider()
-            validation_error = self._validate_worker_runtime_scope(runtime, session_id, scope)
+            worker_session_id = worker_session_id_for_task(task_id)
+            source_role_id = memory_store.role_id_for_session(session_id)
+            memory_store.ensure_session(
+                worker_session_id,
+                role_id=source_role_id,
+                title=f"Worker {task_id[:12]}",
+            )
+            memory_store.archive_session(worker_session_id)
+            validation_error = self._validate_worker_runtime_scope(runtime, worker_session_id, scope)
             if validation_error:
                 memory_store.finish_task_attempt(
                     attempt_id,
@@ -1615,7 +1628,7 @@ class TaskWorker:
                     attempt_id,
                     checkpoint=set_checkpoint(self._attempt_checkpoint(task, scope, status="running", phase="model_turn_starting")),
                 )
-                events = runtime.run_turn(session_id, prompt, self._deny_permission)
+                events = runtime.run_turn(worker_session_id, prompt, self._deny_permission)
                 for event in events:
                     if isinstance(event, AgentEvent):
                         event_type = event.type
@@ -1646,9 +1659,9 @@ class TaskWorker:
                                 )),
                             )
                             with self._lock:
-                                self._turns[task_id] = (session_id, turn_id)
+                                self._turns[task_id] = (worker_session_id, turn_id)
                             if cancel_event.is_set():
-                                runtime.cancel_turn(session_id, turn_id=turn_id)
+                                runtime.cancel_turn(worker_session_id, turn_id=turn_id)
                     if cancel_event.is_set():
                         if attempt_id:
                             memory_store.finish_task_attempt(

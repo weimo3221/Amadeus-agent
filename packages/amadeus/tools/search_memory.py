@@ -21,7 +21,12 @@ def search_memory(args: dict[str, Any], context: Any) -> dict[str, Any]:
 
     limit = normalize_positive_int(args.get("limit"), DEFAULT_MEMORY_SEARCH_LIMIT, 1, MAX_MEMORY_SEARCH_LIMIT)
     include_all_sessions = bool(args.get("includeAllSessions")) if isinstance(args.get("includeAllSessions"), bool) else False
-    session_id = None if include_all_sessions else getattr(context, "session_id", "default")
+    worker_source_session_id = str(getattr(context, "worker_source_session_id", "") or "").strip()
+    if worker_source_session_id:
+        session_id = worker_source_session_id
+        include_all_sessions = False
+    else:
+        session_id = None if include_all_sessions else getattr(context, "session_id", "default")
 
     results = memory_store.search(query, session_id=session_id, limit=limit)
     return {

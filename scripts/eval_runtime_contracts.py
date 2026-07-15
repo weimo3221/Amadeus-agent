@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+import contextlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -30,6 +31,7 @@ from amadeus.workers import (
     TaskCallable,
     TaskWorker,
     build_worker_context,
+    worker_session_id_for_task,
 )
 
 
@@ -142,6 +144,73 @@ def eval_runner_contract_matrix() -> None:
             }
 
     require("sync" in results and "in_process" in results, "runner contract matrix did not execute required runners")
+
+
+class EvalChildRuntime:
+    def __init__(self, memory_store: MessageMemoryStore) -> None:
+        self.memory_store = memory_store
+        self.sessions: list[str] = []
+        self.scopes: list[WorkerRuntimeScope] = []
+
+    def worker_runtime_scope(self, scope: WorkerRuntimeScope):
+        self.scopes.append(scope)
+        return contextlib.nullcontext()
+
+    def run_turn(self, session_id: str, user_text: str, request_permission: Callable[[PermissionRequest], bool]):
+        del request_permission
+        self.sessions.append(session_id)
+        self.memory_store.save(session_id, "user", user_text)
+        yield AgentEvent("agent.turn.started", {"sessionId": session_id, "turnId": "eval-child-turn", "startedAt": "now"})
+        self.memory_store.save(session_id, "assistant", "isolated child summary")
+        yield AgentEvent("assistant.message", {"text": "isolated child summary"})
+
+
+def eval_isolated_child_agent_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+        memory.save("eval-parent", "user", "parent history")
+        runtime = EvalChildRuntime(memory)
+        runner = EvalImmediateRunner()
+        worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
+        registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+
+        result = registry.execute(
+            "delegate_task",
+            {
+                "task": "Inspect the task lifecycle contract.",
+                "queries": ["task lifecycle"],
+                "includeMemory": True,
+            },
+            ToolContext(
+                session_id="eval-parent",
+                cwd=Path(tmpdir),
+                memory_store=memory,
+                task_worker=worker,
+                cancel_event=threading.Event(),
+            ),
+        )
+        worker.shutdown()
+
+        child_task_id = str(result.output.get("childTaskId") or "")
+        child_task = memory.get_task(child_task_id)
+        child_session_id = worker_session_id_for_task(child_task_id)
+        child_session = memory.get_session(child_session_id)
+        parent_messages = memory.load("eval-parent")
+        child_messages = memory.load(child_session_id)
+        artifacts = memory.list_task_artifacts(child_task_id)
+
+        require(result.ok, "isolated delegate tool failed")
+        require(result.output["delegateType"] == "isolated_child_agent", "delegate did not use isolated child agent")
+        require(child_task is not None and child_task["kind"] == "delegated", "tracked delegated task missing")
+        require(child_task["status"] == "succeeded", "isolated child task did not succeed")
+        require(runtime.sessions == [child_session_id], "child model turn did not use task-specific session")
+        require(child_session is not None and child_session["archived"] is True, "child session was not archived")
+        require(len(parent_messages) == 1 and parent_messages[0]["content"] == "parent history", "child polluted parent history")
+        require(len(child_messages) == 2, "child session did not contain isolated turn history")
+        require(runtime.scopes[0].source_session_id == "eval-parent", "child source session scope missing")
+        require("delegate_task" not in runtime.scopes[0].allowed_tool_names, "child scope allowed recursive delegation")
+        require(any(artifact["type"] == "summary" for artifact in artifacts), "child summary artifact missing")
+        require(result.output["summary"] == "isolated child summary", "parent did not receive summary-only handoff")
 
 
 class EvalPlanningModel:
@@ -545,6 +614,7 @@ def main() -> int:
         ("role_identity_and_task_context", eval_role_identity_and_task_context),
         ("task_lifecycle", eval_task_lifecycle_contract),
         ("runner_contract_matrix", eval_runner_contract_matrix),
+        ("isolated_child_agent", eval_isolated_child_agent_contract),
         ("orchestrator_and_artifact_handoff", eval_orchestrator_contract),
         ("mcp_tool_contract", eval_mcp_tool_contract),
         ("subprocess_supervisor_faults", eval_subprocess_supervisor_fault_contract),

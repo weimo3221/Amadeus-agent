@@ -17,8 +17,15 @@ def read_session_messages(args: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"error": "memory store is not available"}
 
     current_session_id = str(getattr(context, "session_id", "default") or "default")
+    worker_source_session_id = str(getattr(context, "worker_source_session_id", "") or "").strip()
     requested_session_id = args.get("sessionId")
-    session_id = requested_session_id.strip() if isinstance(requested_session_id, str) and requested_session_id.strip() else current_session_id
+    session_id = (
+        requested_session_id.strip()
+        if isinstance(requested_session_id, str) and requested_session_id.strip()
+        else worker_source_session_id or current_session_id
+    )
+    if worker_source_session_id and session_id not in {current_session_id, worker_source_session_id}:
+        return {"error": "worker may read only its isolated session or source session"}
     limit = normalize_positive_int(args.get("limit"), DEFAULT_SESSION_MESSAGE_LIMIT, 1, MAX_SESSION_MESSAGE_LIMIT)
     after_message_id = args.get("afterMessageId") if isinstance(args.get("afterMessageId"), int) else None
     max_message_chars = normalize_positive_int(args.get("maxMessageChars"), DEFAULT_MESSAGE_CHARS, 1, MAX_MESSAGE_CHARS)
