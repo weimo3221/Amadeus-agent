@@ -2007,7 +2007,10 @@ finally:
                 "tool_calls": [{
                     "id": "call_patch",
                     "type": "function",
-                    "function": {"name": "patch", "arguments": "{}"},
+                    "function": {
+                        "name": "patch",
+                        "arguments": "{\"path\":\"src/app.py\",\"oldText\":\"old\",\"newText\":\"new\"}",
+                    },
                 }],
             },
         )
@@ -2165,7 +2168,10 @@ finally:
                 "tool_calls": [{
                     "id": "call_patch",
                     "type": "function",
-                    "function": {"name": "patch", "arguments": "{}"},
+                    "function": {
+                        "name": "patch",
+                        "arguments": "{\"path\":\"src/app.py\",\"oldText\":\"old\",\"newText\":\"new\"}",
+                    },
                 }],
             },
         )
@@ -2199,6 +2205,59 @@ finally:
         self.assertEqual(observed_contexts[0].worker_allowed_toolsets, ("patch",))
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]
         self.assertTrue(tool_finished[0]["ok"])
+
+    def test_worker_scope_blocks_profile_auto_approval_for_high_risk_patch(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def inspect_patch(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+            calls.append(args)
+            return {"changed": False, "permissionDecision": context.permission_decision}
+
+        runtime = FakeAgentRuntime(
+            self.memory,
+            tool_decision={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {
+                        "name": "patch",
+                        "arguments": "{\"path\":\"src/app.py\",\"oldText\":\"old\",\"newText\":\"new\",\"replaceAll\":true}",
+                    },
+                }],
+            },
+        )
+        runtime.tool_registry = ToolRegistry(
+            specs=[
+                ToolSpec(
+                    name="patch",
+                    display_name="Patch",
+                    permission="ask",
+                    enabled=True,
+                    schema={"type": "function", "function": {"name": "patch"}},
+                    handler=inspect_patch,
+                ),
+            ],
+            config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
+        )
+        permission_requests: list[PermissionRequest] = []
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("patch",),
+            allowed_tool_names=frozenset({"patch"}),
+        )
+
+        with runtime.worker_runtime_scope(scope):
+            events = list(runtime.run_turn("worker-session", "patch file", lambda request: permission_requests.append(request) or False))
+
+        self.assertEqual(permission_requests, [])
+        self.assertEqual(calls, [])
+        tool_finished = [event.payload for event in events if event.type == "tool.finished"]
+        self.assertEqual(tool_finished[0]["failureCode"], "worker_permission_denied")
+        preview = json.loads(str(tool_finished[0]["resultPreview"]))
+        self.assertEqual(preview["approvalRiskLevel"], "high")
+        self.assertIn("bulk_replace", preview["approvalRiskLabels"])
 
     def test_worker_file_resume_policy_blocks_redundant_patch_before_execution(self) -> None:
         calls: list[dict[str, Any]] = []

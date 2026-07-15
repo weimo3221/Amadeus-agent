@@ -12,6 +12,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from unittest import mock
 
 import sys
 
@@ -304,6 +305,39 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("terminal", execute_scope.allowed_tool_names)
         self.assertIn("execute_code", execute_scope.allowed_tool_names)
 
+    def test_task_worker_passes_child_workspace_isolation_metadata_to_runtime_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source = Path(tmpdir) / "source"
+            source.mkdir()
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = ScopedRuntime()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=ImmediateTaskRunner())
+            task = memory.create_task(
+                session_id="session-1",
+                title="Scoped isolated task",
+                worker_profile="coder",
+                allowed_toolsets=["read"],
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "AMADEUS_WORKER_WORKSPACE_OVERRIDE": str(workspace),
+                    "AMADEUS_WORKER_WORKSPACE_ISOLATION": "copy",
+                    "AMADEUS_WORKER_WORKSPACE_SOURCE": str(source),
+                },
+            ):
+                worker.submit(str(task["id"]))
+                worker.shutdown()
+
+        self.assertEqual(len(runtime.runtime_scopes), 1)
+        scope = runtime.runtime_scopes[0]
+        self.assertEqual(scope.workspace_path, str(workspace))
+        self.assertEqual(scope.workspace_isolation, "copy")
+        self.assertEqual(scope.workspace_source_path, str(source))
+
     def test_agent_runtime_worker_tool_scope_filters_schemas_and_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
@@ -359,6 +393,57 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("outside", str(error))
         self.assertIn("session workspace", str(error))
 
+    def test_agent_runtime_allows_copy_isolated_workspace_outside_session_when_source_is_inside(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            role_workspace = Path(tmpdir) / "role-workspace"
+            role_workspace.mkdir()
+            source_workspace = role_workspace / "src"
+            source_workspace.mkdir()
+            isolated_workspace = Path(tmpdir) / "worker-copy"
+            isolated_workspace.mkdir()
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite", default_workspace_path=role_workspace)
+            runtime = AgentRuntime(memory, audio_runtime=None)
+            scope = WorkerRuntimeScope(
+                worker_profile="coder",
+                allowed_toolsets=("read",),
+                allowed_tool_names=frozenset({"read_file"}),
+                workspace_path=str(isolated_workspace),
+                workspace_isolation="copy",
+                workspace_source_path=str(source_workspace),
+            )
+
+            error = runtime.validate_worker_runtime_scope("session-1", scope)
+            with runtime.worker_runtime_scope(scope):
+                workspace_root = runtime._workspace_root_for_session("session-1")
+
+        self.assertIsNone(error)
+        self.assertEqual(workspace_root, isolated_workspace.resolve())
+
+    def test_agent_runtime_rejects_copy_isolated_workspace_when_source_is_outside_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            role_workspace = Path(tmpdir) / "role-workspace"
+            role_workspace.mkdir()
+            outside_source = Path(tmpdir) / "outside-source"
+            outside_source.mkdir()
+            isolated_workspace = Path(tmpdir) / "worker-copy"
+            isolated_workspace.mkdir()
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite", default_workspace_path=role_workspace)
+            runtime = AgentRuntime(memory, audio_runtime=None)
+            scope = WorkerRuntimeScope(
+                worker_profile="coder",
+                allowed_toolsets=("read",),
+                allowed_tool_names=frozenset({"read_file"}),
+                workspace_path=str(isolated_workspace),
+                workspace_isolation="copy",
+                workspace_source_path=str(outside_source),
+            )
+
+            error = runtime.validate_worker_runtime_scope("session-1", scope)
+
+        self.assertIsNotNone(error)
+        self.assertIn("source", str(error))
+        self.assertIn("session workspace", str(error))
+
     def test_worker_fails_invalid_runtime_scope_without_running_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
@@ -400,6 +485,7 @@ class TaskWorkerTests(unittest.TestCase):
             runner = SubprocessTaskRunner(
                 database_path=database,
                 workspace_path=workspace,
+                workspace_isolation="none",
                 python_executable="/usr/bin/python-test",
                 process_factory=fake_process_factory,
             )
@@ -420,9 +506,57 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(env["AMADEUS_MEMORY_DB"], str(database))
         self.assertEqual(env["AMADEUS_TASK_RUNNER"], "sync")
         self.assertEqual(env["AMADEUS_WORKER_PROFILE"], "researcher")
-        self.assertEqual(env["AMADEUS_WORKSPACE"], str(workspace))
+        self.assertEqual(Path(str(env["AMADEUS_WORKSPACE"])).resolve(), workspace.resolve())
         self.assertIn(str(Path(__file__).resolve().parents[1] / "packages"), env["PYTHONPATH"].split(os.pathsep))
-        self.assertEqual(launches[0]["cwd"], str(workspace))
+        self.assertEqual(Path(str(launches[0]["cwd"])).resolve(), workspace.resolve())
+
+    def test_subprocess_task_runner_copies_workspace_for_isolated_child_runtime(self) -> None:
+        launches: list[dict[str, object]] = []
+
+        def fake_process_factory(command: list[str], **kwargs: object) -> FakeProcess:
+            launches.append({"command": command, **kwargs})
+            return FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            (workspace / "src").mkdir()
+            (workspace / "src" / "app.py").write_text("print('source')\n", encoding="utf-8")
+            (workspace / "node_modules").mkdir()
+            (workspace / "node_modules" / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+            sandbox_root = Path(tmpdir) / "sandboxes"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(
+                session_id="session-1",
+                title="Run subprocess",
+                worker_profile="coder",
+                context_hints={"workspacePath": "src"},
+            )
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                workspace_path=workspace,
+                workspace_isolation="copy",
+                sandbox_root=sandbox_root,
+                python_executable="/usr/bin/python-test",
+                process_factory=fake_process_factory,
+            )
+
+            runner.submit(str(task["id"]), lambda task_id: None)
+            runner.shutdown()
+
+            self.assertEqual(len(launches), 1)
+            env = launches[0]["env"]
+            self.assertIsInstance(env, dict)
+            isolated_workspace = Path(str(env["AMADEUS_WORKSPACE"]))
+            self.assertEqual(env["AMADEUS_WORKER_WORKSPACE_OVERRIDE"], str(isolated_workspace))
+            self.assertEqual(env["AMADEUS_WORKER_WORKSPACE_ISOLATION"], "copy")
+            self.assertEqual(env["AMADEUS_WORKER_WORKSPACE_SOURCE"], str((workspace / "src").resolve()))
+            isolated_workspace.resolve().relative_to(sandbox_root.resolve())
+            self.assertEqual(launches[0]["cwd"], str(isolated_workspace))
+            self.assertTrue((isolated_workspace / "app.py").exists())
+            self.assertFalse((isolated_workspace.parent / "node_modules").exists())
+            self.assertFalse(isolated_workspace.samefile(workspace / "src"))
 
     def test_subprocess_task_runner_requeues_running_task_after_nonzero_exit(self) -> None:
         launches: list[dict[str, object]] = []
@@ -702,6 +836,63 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(allowed.decision, "auto_approve")
         self.assertEqual(expired.decision, "deny")
         self.assertIn("expired", str(expired.reason))
+
+    def test_worker_profile_auto_approval_blocks_high_risk_patch_actions(self) -> None:
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("patch",),
+            allowed_tool_names=frozenset({"patch"}),
+        )
+
+        safe_patch = worker_action_permission_decision(
+            scope,
+            "patch",
+            {"path": "src/app.py", "oldText": "old", "newText": "new"},
+            "ask",
+        )
+        bulk_patch = worker_action_permission_decision(
+            scope,
+            "patch",
+            {"path": "src/app.py", "oldText": "old", "newText": "new", "replaceAll": True},
+            "ask",
+        )
+        external_patch = worker_action_permission_decision(
+            scope,
+            "patch",
+            {"path": "../outside.py", "oldText": "old", "newText": "new"},
+            "ask",
+        )
+
+        self.assertEqual(safe_patch.decision, "auto_approve")
+        self.assertEqual(bulk_patch.decision, "deny")
+        self.assertIn("bulk_replace", bulk_patch.risk_labels)
+        self.assertEqual(external_patch.decision, "deny")
+        self.assertIn("workspace_external_path", external_patch.risk_labels)
+
+    def test_legacy_tool_wide_approval_does_not_bypass_high_risk_action_policy(self) -> None:
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("patch",),
+            allowed_tool_names=frozenset({"patch"}),
+            approved_ask_tool_names=frozenset({"patch"}),
+        )
+
+        safe_patch = worker_action_permission_decision(
+            scope,
+            "patch",
+            {"path": "src/app.py", "oldText": "old", "newText": "new"},
+            "ask",
+        )
+        bulk_patch = worker_action_permission_decision(
+            scope,
+            "patch",
+            {"path": "src/app.py", "oldText": "old", "newText": "new", "replaceAll": True},
+            "ask",
+        )
+
+        self.assertEqual(safe_patch.decision, "auto_approve")
+        self.assertEqual(bulk_patch.decision, "deny")
+        self.assertIn("Legacy worker tool approval is not sufficient", str(bulk_patch.reason))
 
     def test_worker_action_policy_classifies_sensitive_and_destructive_actions(self) -> None:
         destructive_command = worker_action_policy("terminal", {"command": "sudo rm -rf build && printenv"})

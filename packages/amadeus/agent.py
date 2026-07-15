@@ -1122,6 +1122,17 @@ class AgentRuntime:
         if worker_root is None:
             return f"Worker workspace is not an existing directory: {scope.workspace_path}"
         session_root = self._role_workspace_root_for_session(session_id)
+        if scope.workspace_isolation == "copy":
+            source_text = scope.workspace_source_path or scope.workspace_path
+            source_root = self._resolve_workspace_root(source_text)
+            if source_root is None:
+                return f"Worker workspace source is not an existing directory: {source_text}"
+            if not self._path_is_inside(source_root, session_root):
+                return (
+                    "Worker workspace source must be inside the session workspace: "
+                    f"{source_root} is outside {session_root}"
+                )
+            return None
         if not self._path_is_inside(worker_root, session_root):
             return (
                 "Worker workspace must be inside the session workspace: "
@@ -2122,6 +2133,8 @@ class AgentRuntime:
                     "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
                     "workerSandboxMode": self._current_worker_sandbox_mode(),
                     "workerWorkspacePath": self._current_worker_workspace_path(),
+                    "workerWorkspaceIsolation": self._current_worker_workspace_isolation(),
+                    "workerWorkspaceSourcePath": self._current_worker_workspace_source_path(),
                 },
             )
             return
@@ -2253,6 +2266,8 @@ class AgentRuntime:
                         "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
                         "workerSandboxMode": self._current_worker_sandbox_mode(),
                         "workerWorkspacePath": self._current_worker_workspace_path(),
+                        "workerWorkspaceIsolation": self._current_worker_workspace_isolation(),
+                        "workerWorkspaceSourcePath": self._current_worker_workspace_source_path(),
                         "approvalActionKey": worker_permission.action_key,
                         "approvalActionLabel": worker_permission.action_label,
                         "approvalRiskLevel": worker_permission.risk_level,
@@ -2347,6 +2362,8 @@ class AgentRuntime:
                 worker_allowed_toolsets=self._current_worker_allowed_toolsets(),
                 worker_sandbox_mode=self._current_worker_sandbox_mode(),
                 worker_workspace_path=self._current_worker_workspace_path(),
+                worker_workspace_isolation=self._current_worker_workspace_isolation(),
+                worker_workspace_source_path=self._current_worker_workspace_source_path(),
                 worker_file_resume_policies=self._current_worker_file_resume_policies(),
                 workspace_epoch=workspace_epoch,
                 cancel_event=cancel_event,
@@ -2362,6 +2379,8 @@ class AgentRuntime:
                     "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
                     "workerSandboxMode": self._current_worker_sandbox_mode(),
                     "workerWorkspacePath": self._current_worker_workspace_path(),
+                    "workerWorkspaceIsolation": self._current_worker_workspace_isolation(),
+                    "workerWorkspaceSourcePath": self._current_worker_workspace_source_path(),
                     "workerFileResumePolicyCount": len(self._current_worker_file_resume_policies()),
                 },
             ),
@@ -2671,6 +2690,8 @@ class AgentRuntime:
         worker_workspace_path = self._current_worker_workspace_path()
         if worker_workspace_path:
             worker_root = self._resolve_workspace_root(worker_workspace_path)
+            if worker_root is not None and self._current_worker_workspace_isolation() == "copy":
+                return worker_root
             if worker_root is not None and self._path_is_inside(worker_root, self._role_workspace_root_for_session(session_id)):
                 return worker_root
         return self._role_workspace_root_for_session(session_id)
@@ -2720,6 +2741,14 @@ class AgentRuntime:
     def _current_worker_workspace_path(self) -> str | None:
         scope = self._current_worker_scope()
         return scope.workspace_path if scope else None
+
+    def _current_worker_workspace_isolation(self) -> str | None:
+        scope = self._current_worker_scope()
+        return scope.workspace_isolation if scope else None
+
+    def _current_worker_workspace_source_path(self) -> str | None:
+        scope = self._current_worker_scope()
+        return scope.workspace_source_path if scope else None
 
     def _current_worker_file_resume_policies(self) -> tuple[dict[str, Any], ...]:
         scope = self._current_worker_scope()

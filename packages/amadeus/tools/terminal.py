@@ -8,6 +8,11 @@ from typing import Any
 
 from amadeus.tools.base import ToolSpec, normalize_positive_int
 from amadeus.tools.search_files import is_inside, workspace_root_from_context
+from amadeus.tools.workspace_sandbox import (
+    validate_command_workspace_references,
+    workspace_sandbox_enabled,
+    workspace_sandbox_environment,
+)
 
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
@@ -58,6 +63,14 @@ def terminal(args: dict[str, Any], context: Any = None) -> dict[str, Any]:
     if error:
         return {"error": error}
     assert cwd is not None
+    workspace_root = workspace_root_from_context(context)
+
+    env = None
+    if workspace_sandbox_enabled(context):
+        sandbox_error = validate_command_workspace_references(command, workspace_root)
+        if sandbox_error:
+            return {"error": sandbox_error, "command": command, "cwd": cwd.as_posix()}
+        env = workspace_sandbox_environment(workspace_root)
 
     timeout_seconds = _effective_timeout(args, context)
     max_output_chars = normalize_positive_int(args.get("maxOutputChars"), DEFAULT_OUTPUT_CHARS, 100, MAX_OUTPUT_CHARS)
@@ -72,6 +85,7 @@ def terminal(args: dict[str, Any], context: Any = None) -> dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_seconds,
+            env=env,
         )
     except subprocess.TimeoutExpired as timeout:
         stdout, stdout_truncated = _trim_text(timeout.stdout or "", per_stream_chars)

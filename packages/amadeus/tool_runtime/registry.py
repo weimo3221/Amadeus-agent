@@ -57,6 +57,8 @@ class ToolContext:
     worker_allowed_toolsets: tuple[str, ...] = ()
     worker_sandbox_mode: str | None = None
     worker_workspace_path: str | None = None
+    worker_workspace_isolation: str | None = None
+    worker_workspace_source_path: str | None = None
     worker_file_resume_policies: tuple[dict[str, Any], ...] = ()
     permission_request_id: str | None = None
     permission_decision: str | None = None

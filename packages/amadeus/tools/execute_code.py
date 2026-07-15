@@ -10,6 +10,11 @@ from typing import Any
 from amadeus.tools.base import ToolSpec, normalize_positive_int
 from amadeus.tools.search_files import is_inside, workspace_root_from_context
 from amadeus.tools.terminal import _trim_text
+from amadeus.tools.workspace_sandbox import (
+    ensure_workspace_sandbox_dir,
+    workspace_sandbox_enabled,
+    workspace_sandbox_environment,
+)
 
 
 DEFAULT_EXECUTE_CODE_TIMEOUT_SECONDS = 30
@@ -56,13 +61,19 @@ def execute_code(args: dict[str, Any], context: Any = None) -> dict[str, Any]:
     max_output_chars = normalize_positive_int(args.get("maxOutputChars"), DEFAULT_EXECUTE_CODE_OUTPUT_CHARS, 100, MAX_EXECUTE_CODE_OUTPUT_CHARS)
     per_stream_chars = max(50, max_output_chars // 2)
     stdin_text = args.get("stdin") if isinstance(args.get("stdin"), str) else None
+    workspace_root = workspace_root_from_context(context)
+    sandbox_enabled = workspace_sandbox_enabled(context)
+    temp_parent = ensure_workspace_sandbox_dir(workspace_root) if sandbox_enabled else None
 
-    with tempfile.TemporaryDirectory(prefix="amadeus_execute_code_") as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix="execute_code_",
+        dir=str(temp_parent) if temp_parent is not None else None,
+    ) as tmpdir:
         script_path = Path(tmpdir) / "script.py"
         script_path.write_text(code, encoding="utf-8")
-        env = os.environ.copy()
+        env = workspace_sandbox_environment(workspace_root) if sandbox_enabled else os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = str(workdir) if not existing_pythonpath else f"{workdir}{os.pathsep}{existing_pythonpath}"
+        env["PYTHONPATH"] = str(workdir) if not existing_pythonpath else os.pathsep.join([str(workdir), existing_pythonpath])
         try:
             completed = subprocess.run(
                 [sys.executable, str(script_path)],

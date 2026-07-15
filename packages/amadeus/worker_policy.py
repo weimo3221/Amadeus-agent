@@ -42,6 +42,19 @@ PROFILE_AUTO_APPROVED_ASK_TOOLS: dict[str, set[str]] = {
     "reviewer": set(),
     "synthesizer": set(),
 }
+PROFILE_AUTO_APPROVAL_BLOCKING_RISK_LABELS = {
+    "destructive",
+    "installer",
+    "network_script",
+    "privileged",
+    "sensitive_data",
+    "sensitive_path",
+    "workspace_external_path",
+    "whole_file_write",
+    "bulk_replace",
+    "insecure_transport",
+    "unknown_target",
+}
 TOOLSET_TOOL_NAMES: dict[str, set[str]] = {
     "read": {"search_files", "read_file", "read_session_messages"},
     "search": {"search_files", "search_memory"},
@@ -79,6 +92,8 @@ class WorkerRuntimeScope:
     allowed_tool_names: frozenset[str]
     sandbox_mode: str = "workspace_write"
     workspace_path: str | None = None
+    workspace_isolation: str | None = None
+    workspace_source_path: str | None = None
     approved_ask_tool_names: frozenset[str] = frozenset()
     approved_ask_tool_actions: frozenset[str] = frozenset()
     approved_ask_tool_action_expirations: tuple[tuple[str, str], ...] = ()
@@ -317,18 +332,44 @@ def worker_action_permission_decision(
             risk_labels=tuple(action["riskLabels"]),
         )
     if tool_name in scope.approved_ask_tool_names and tool_name in scope.allowed_tool_names:
+        blocking_labels = _auto_approval_blocking_labels(action)
+        if action["riskLevel"] != "high" and not blocking_labels:
+            return WorkerActionPermissionDecision(
+                decision="auto_approve",
+                reason="Legacy approved tool checkpoint matches this worker tool.",
+                action_key=action["key"],
+                action_label=action["label"],
+                risk_level=action["riskLevel"],
+                risk_labels=tuple(action["riskLabels"]),
+            )
         return WorkerActionPermissionDecision(
-            decision="auto_approve",
-            reason="Legacy approved tool checkpoint matches this worker tool.",
+            decision="deny",
+            reason=(
+                "Legacy worker tool approval is not sufficient for this "
+                f"{action['riskLevel']} risk action: {action['label']}"
+            ),
             action_key=action["key"],
             action_label=action["label"],
             risk_level=action["riskLevel"],
             risk_labels=tuple(action["riskLabels"]),
         )
     if tool_name in PROFILE_AUTO_APPROVED_ASK_TOOLS.get(scope.worker_profile, set()) and tool_name in scope.allowed_tool_names:
+        blocking_labels = _auto_approval_blocking_labels(action)
+        if action["riskLevel"] != "high" and not blocking_labels:
+            return WorkerActionPermissionDecision(
+                decision="auto_approve",
+                reason="Worker profile allows this ask-tool action.",
+                action_key=action["key"],
+                action_label=action["label"],
+                risk_level=action["riskLevel"],
+                risk_labels=tuple(action["riskLabels"]),
+            )
         return WorkerActionPermissionDecision(
-            decision="auto_approve",
-            reason="Worker profile allows this ask-tool action.",
+            decision="deny",
+            reason=(
+                f"Worker action requires approval because it is {action['riskLevel']} risk: "
+                f"{action['label']}"
+            ),
             action_key=action["key"],
             action_label=action["label"],
             risk_level=action["riskLevel"],
@@ -400,6 +441,13 @@ def worker_action_policy(tool_name: str, args: dict[str, Any]) -> dict[str, Any]
         "riskLevel": "medium",
         "riskLabels": ["ask_tool"],
     }
+
+
+def _auto_approval_blocking_labels(action: dict[str, Any]) -> list[str]:
+    return [
+        label for label in action["riskLabels"]
+        if label in PROFILE_AUTO_APPROVAL_BLOCKING_RISK_LABELS
+    ]
 
 
 def _normalize_command(command: str) -> str:

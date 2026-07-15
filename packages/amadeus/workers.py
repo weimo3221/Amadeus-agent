@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -19,7 +20,12 @@ from uuid import uuid4
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.worker_policy import WorkerRuntimeScope, build_worker_runtime_scope, worker_file_resume_policies_from_artifacts
+from amadeus.worker_policy import (
+    WorkerRuntimeScope,
+    build_worker_runtime_scope,
+    worker_file_resume_policies_from_artifacts,
+    worker_workspace_path_for_task,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +45,25 @@ WORKER_CHECKPOINT_PREVIEW_CHARS = 1000
 WORKER_TOOL_ARTIFACT_PREVIEW_CHARS = 2000
 WORKER_FILE_MANIFEST_LIMIT = 10
 WORKER_FILE_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
+WORKER_WORKSPACE_ISOLATION_MODES = {"none", "copy"}
+WORKER_WORKSPACE_COPY_IGNORE = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "dist",
+    "out",
+    "build",
+    ".vite",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "data",
+    ".amadeus-sandbox",
+}
 
 
 def _recovery_checkpoint_from_attempt(
@@ -193,6 +218,85 @@ class ProcessTaskRunner:
             self._semaphore.release()
 
 
+def normalize_worker_workspace_isolation(value: str | None, *, default: str = "none") -> str:
+    normalized = str(value or default).strip().lower().replace("-", "_")
+    aliases = {
+        "": default,
+        "off": "none",
+        "false": "none",
+        "0": "none",
+        "none": "none",
+        "shared": "none",
+        "copy": "copy",
+        "isolated": "copy",
+        "isolated_copy": "copy",
+        "workspace_copy": "copy",
+    }
+    return aliases.get(normalized, default if default in WORKER_WORKSPACE_ISOLATION_MODES else "none")
+
+
+def _path_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_path_component(value: str) -> str:
+    normalized = "".join(
+        character if character.isalnum() or character in {"-", "_", "."} else "-"
+        for character in str(value or "").strip()
+    ).strip(".-")
+    digest = hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:8]
+    return f"{(normalized or 'task')[:80]}-{digest}"
+
+
+def _resolve_task_workspace(source_workspace: Path, task: dict[str, object] | None) -> Path:
+    if not task:
+        return source_workspace
+    workspace_hint = worker_workspace_path_for_task(task)
+    if not workspace_hint:
+        return source_workspace
+    candidate = Path(workspace_hint).expanduser()
+    if not candidate.is_absolute():
+        candidate = source_workspace / candidate
+    try:
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return source_workspace
+    return resolved if resolved.is_dir() and _path_inside(resolved, source_workspace) else source_workspace
+
+
+def _copy_workspace(source: Path, destination: Path) -> None:
+    source_root = source.resolve()
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored: set[str] = set()
+        for name in names:
+            if name in WORKER_WORKSPACE_COPY_IGNORE:
+                ignored.add(name)
+                continue
+            candidate = Path(directory) / name
+            if candidate.is_symlink():
+                try:
+                    target = candidate.resolve()
+                except (OSError, RuntimeError, ValueError):
+                    ignored.add(name)
+                    continue
+                if not _path_inside(target, source_root):
+                    ignored.add(name)
+        return ignored
+
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.exists() and source.is_dir():
+        shutil.copytree(source, destination, symlinks=False, ignore=ignore)
+        return
+    destination.mkdir(parents=True, exist_ok=True)
+
+
 class SubprocessTaskRunner:
     def __init__(
         self,
@@ -201,6 +305,8 @@ class SubprocessTaskRunner:
         max_workers: int = 2,
         python_executable: str | None = None,
         workspace_path: str | Path | None = None,
+        workspace_isolation: str | None = None,
+        sandbox_root: str | Path | None = None,
         process_factory: ProcessFactory | None = None,
     ) -> None:
         database = Path(database_path).expanduser()
@@ -209,6 +315,12 @@ class SubprocessTaskRunner:
         self._database_path = database
         self._python_executable = python_executable or sys.executable
         self._workspace_path = Path(workspace_path).expanduser() if workspace_path else None
+        isolation_default = "copy" if self._workspace_path is not None else "none"
+        self._workspace_isolation = normalize_worker_workspace_isolation(
+            workspace_isolation or os.environ.get("AMADEUS_TASK_WORKSPACE_ISOLATION"),
+            default=isolation_default,
+        )
+        self._sandbox_root = Path(sandbox_root).expanduser() if sandbox_root else database.parent / "worker_workspaces"
         self._process_factory = process_factory or subprocess.Popen
         self._semaphore = threading.BoundedSemaphore(max(1, int(max_workers)))
         self._lock = threading.Lock()
@@ -264,6 +376,22 @@ class SubprocessTaskRunner:
         run_id = uuid4().hex
         task = MessageMemoryStore(self._database_path).get_task(task_id)
         worker_profile = str((task or {}).get("workerProfile") or (task or {}).get("workerType") or "").strip()
+        source_workspace = self._workspace_path.resolve() if self._workspace_path is not None else None
+        effective_workspace = source_workspace
+        workspace_source = source_workspace
+        workspace_isolation = "none"
+        if source_workspace is not None and self._workspace_isolation == "copy":
+            task_workspace = _resolve_task_workspace(source_workspace, task)
+            sandbox_workspace = self._sandbox_root / _safe_path_component(task_id) / run_id / "workspace"
+            _copy_workspace(source_workspace, sandbox_workspace)
+            try:
+                relative_task_workspace = task_workspace.resolve().relative_to(source_workspace.resolve())
+            except ValueError:
+                relative_task_workspace = Path()
+            effective_workspace = (sandbox_workspace / relative_task_workspace).resolve()
+            effective_workspace.mkdir(parents=True, exist_ok=True)
+            workspace_source = task_workspace.resolve()
+            workspace_isolation = "copy"
         env = dict(os.environ)
         env["AMADEUS_TASK_ID"] = task_id
         env["AMADEUS_TASK_RUN_ID"] = run_id
@@ -271,8 +399,12 @@ class SubprocessTaskRunner:
         env["AMADEUS_TASK_RUNNER"] = "sync"
         if worker_profile:
             env["AMADEUS_WORKER_PROFILE"] = worker_profile
-        if self._workspace_path is not None:
-            env["AMADEUS_WORKSPACE"] = str(self._workspace_path)
+        if effective_workspace is not None:
+            env["AMADEUS_WORKSPACE"] = str(effective_workspace)
+            env["AMADEUS_WORKER_WORKSPACE_OVERRIDE"] = str(effective_workspace)
+        env["AMADEUS_WORKER_WORKSPACE_ISOLATION"] = workspace_isolation
+        if workspace_source is not None:
+            env["AMADEUS_WORKER_WORKSPACE_SOURCE"] = str(workspace_source)
         packages_dir = str(Path(__file__).resolve().parents[1])
         existing_pythonpath = env.get("PYTHONPATH")
         env["PYTHONPATH"] = packages_dir if not existing_pythonpath else os.pathsep.join([packages_dir, existing_pythonpath])
@@ -287,7 +419,7 @@ class SubprocessTaskRunner:
             "--database",
             str(self._database_path),
         ]
-        process = self._process_factory(command, env=env, cwd=str(self._workspace_path) if self._workspace_path else None)
+        process = self._process_factory(command, env=env, cwd=str(effective_workspace) if effective_workspace else None)
         return process, run_id
 
     def _join_process(self, task_id: str, process: subprocess.Popen[Any], run_id: str) -> None:
@@ -361,6 +493,8 @@ def build_task_runner(
     max_workers: int = 2,
     database_path: str | Path | None = None,
     workspace_path: str | Path | None = None,
+    workspace_isolation: str | None = None,
+    sandbox_root: str | Path | None = None,
 ) -> TaskRunner:
     normalized = str(kind or "in_process").strip().lower().replace("-", "_")
     if normalized in {"sync", "synchronous", "inline"}:
@@ -372,7 +506,13 @@ def build_task_runner(
     if normalized in {"subprocess", "external_process", "external", "process_entrypoint"}:
         if database_path is None:
             raise ValueError("subprocess task runner requires database_path")
-        return SubprocessTaskRunner(database_path=database_path, max_workers=max_workers, workspace_path=workspace_path)
+        return SubprocessTaskRunner(
+            database_path=database_path,
+            max_workers=max_workers,
+            workspace_path=workspace_path,
+            workspace_isolation=workspace_isolation,
+            sandbox_root=sandbox_root,
+        )
     raise ValueError("task runner kind must be one of sync, in_process, process, or subprocess")
 
 
@@ -797,6 +937,15 @@ def _artifact_resume_metadata(tool_name: str, parsed_result: dict[str, object] |
 
 
 def _workspace_root_for_task(memory_store: MessageMemoryStore, task: dict[str, object]) -> Path | None:
+    workspace_override = str(os.environ.get("AMADEUS_WORKER_WORKSPACE_OVERRIDE") or "").strip()
+    if workspace_override:
+        try:
+            override_path = Path(workspace_override).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            override_path = None
+        if override_path is not None and override_path.is_dir():
+            return override_path
+
     base = Path(str(memory_store.default_workspace_path)).expanduser() if getattr(memory_store, "default_workspace_path", None) else Path.cwd()
     workspace_text = ""
     hints = task.get("contextHints")
@@ -1212,12 +1361,21 @@ class TaskWorker:
         try:
             worker_context = build_worker_context(memory_store, task_id)
             base_scope = build_worker_runtime_scope(task)
+            workspace_override = str(os.environ.get("AMADEUS_WORKER_WORKSPACE_OVERRIDE") or "").strip()
+            workspace_isolation = str(os.environ.get("AMADEUS_WORKER_WORKSPACE_ISOLATION") or "").strip()
+            workspace_source = str(os.environ.get("AMADEUS_WORKER_WORKSPACE_SOURCE") or "").strip()
             scope = WorkerRuntimeScope(
                 worker_profile=base_scope.worker_profile,
                 allowed_toolsets=base_scope.allowed_toolsets,
                 allowed_tool_names=base_scope.allowed_tool_names,
                 sandbox_mode=base_scope.sandbox_mode,
-                workspace_path=base_scope.workspace_path,
+                workspace_path=workspace_override or base_scope.workspace_path,
+                workspace_isolation=(
+                    normalize_worker_workspace_isolation(workspace_isolation)
+                    if workspace_isolation
+                    else base_scope.workspace_isolation
+                ),
+                workspace_source_path=workspace_source or base_scope.workspace_source_path,
                 approved_ask_tool_names=base_scope.approved_ask_tool_names,
                 approved_ask_tool_actions=base_scope.approved_ask_tool_actions,
                 approved_ask_tool_action_expirations=base_scope.approved_ask_tool_action_expirations,
@@ -1589,6 +1747,10 @@ class TaskWorker:
         }
         if scope.workspace_path:
             checkpoint["workspacePath"] = scope.workspace_path
+        if scope.workspace_isolation:
+            checkpoint["workspaceIsolation"] = scope.workspace_isolation
+        if scope.workspace_source_path:
+            checkpoint["workspaceSourcePath"] = scope.workspace_source_path
         if task.get("planRunId"):
             checkpoint["planRunId"] = str(task.get("planRunId"))
         if task.get("planItemId"):

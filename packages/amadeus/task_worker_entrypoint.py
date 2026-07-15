@@ -11,6 +11,20 @@ from amadeus.memory import MessageMemoryStore
 from amadeus.workers import SynchronousTaskRunner, TaskWorker
 
 
+def _worker_workspace_from_env() -> Path | None:
+    for key in ("AMADEUS_WORKER_WORKSPACE_OVERRIDE", "AMADEUS_WORKSPACE"):
+        value = str(os.environ.get(key) or "").strip()
+        if not value:
+            continue
+        candidate = Path(value).expanduser()
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate.resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+    return None
+
+
 def run_task_once(
     *,
     memory_store: MessageMemoryStore,
@@ -51,8 +65,13 @@ def main(argv: list[str] | None = None) -> int:
     if not database_text:
         parser.error("--database or AMADEUS_MEMORY_DB is required")
     database = Path(database_text).expanduser()
-    memory_store = MessageMemoryStore(database)
-    runtime = AgentRuntime(memory_store, audio_runtime=None)
+    workspace_root = _worker_workspace_from_env()
+    memory_store = MessageMemoryStore(database, default_workspace_path=workspace_root)
+    runtime = AgentRuntime(
+        memory_store,
+        audio_runtime=None,
+        workspace_root=workspace_root or Path.cwd(),
+    )
     run_id = str(args.run_id or "").strip() or None
     task = run_task_once(memory_store=memory_store, agent_runtime=runtime, task_id=task_id, run_id=run_id)
     status = str(task.get("status") or "")

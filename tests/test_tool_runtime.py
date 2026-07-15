@@ -193,6 +193,24 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("cwd must be inside", result.output["error"])
 
+    def test_terminal_worker_workspace_sandbox_rejects_absolute_path_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            outside_path = Path(tmpdir).parent / "outside-worker-sandbox.txt"
+            result = registry.execute(
+                "terminal",
+                {"command": f"printf bad > {outside_path}", "cwd": "."},
+                ToolContext(
+                    session_id="session-1",
+                    cwd=Path(tmpdir),
+                    worker_workspace_path=str(Path(tmpdir)),
+                    worker_sandbox_mode="workspace_execute",
+                ),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("outside the workspace sandbox", result.output["error"])
+
     def test_process_tool_checks_current_process_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
@@ -218,6 +236,34 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.output["exitCode"], 0)
         self.assertIn(Path(tmpdir).name, result.output["stdout"])
+
+    def test_execute_code_worker_workspace_sandbox_blocks_python_writes_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outside_path = Path(tmpdir).parent / "outside-execute-code-sandbox.txt"
+            if outside_path.exists():
+                outside_path.unlink()
+            registry = ToolRegistry(config_path=Path(tmpdir) / "missing-tools.yaml")
+            result = registry.execute(
+                "execute_code",
+                {
+                    "code": (
+                        "from pathlib import Path\n"
+                        f"Path({str(outside_path)!r}).write_text('bad', encoding='utf-8')\n"
+                    ),
+                    "cwd": ".",
+                },
+                ToolContext(
+                    session_id="session-1",
+                    cwd=Path(tmpdir),
+                    worker_workspace_path=str(Path(tmpdir)),
+                    worker_sandbox_mode="workspace_execute",
+                ),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertNotEqual(result.output["exitCode"], 0)
+        self.assertIn("outside workspace sandbox", result.output["stderr"])
+        self.assertFalse(outside_path.exists())
 
     def test_clarify_tool_returns_structured_question(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

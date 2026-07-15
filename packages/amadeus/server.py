@@ -118,6 +118,8 @@ agent_runtime = AgentRuntime(memory_store, audio_runtime)
 runtime_event_bus = RuntimeEventBus()
 TASK_RUNNER_KIND = os.environ.get("AMADEUS_TASK_RUNNER", "in_process")
 TASK_MAX_WORKERS = int(os.environ.get("AMADEUS_TASK_MAX_WORKERS", "2"))
+TASK_WORKSPACE_ISOLATION = os.environ.get("AMADEUS_TASK_WORKSPACE_ISOLATION")
+TASK_WORKSPACE_SANDBOX_ROOT = os.environ.get("AMADEUS_TASK_WORKSPACE_SANDBOX_ROOT")
 
 
 def publish_task_update(task: dict[str, object], action: str) -> None:
@@ -166,6 +168,8 @@ task_worker = TaskWorker(
         max_workers=TASK_MAX_WORKERS,
         database_path=DATABASE_PATH,
         workspace_path=REPO_ROOT,
+        workspace_isolation=TASK_WORKSPACE_ISOLATION,
+        sandbox_root=TASK_WORKSPACE_SANDBOX_ROOT,
     ),
 )
 agent_runtime.set_task_worker(task_worker)

@@ -10,13 +10,14 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "packages"))
 
-from amadeus.agent import AgentEvent, PermissionRequest
+from amadeus.agent import AgentEvent, AgentRuntime, PermissionRequest
 from amadeus.context import ContextAssembler
 from amadeus.memory import MessageMemoryStore
 from amadeus.mcp import McpServerConfig, build_mcp_tool_specs
 from amadeus.orchestrator import OrchestratorService
 from amadeus.tool_runtime import ToolContext, ToolRegistry
-from amadeus.workers import TaskCallable, TaskWorker
+from amadeus.worker_policy import WorkerRuntimeScope, worker_action_permission_decision
+from amadeus.workers import SubprocessTaskRunner, TaskCallable, TaskWorker
 
 
 def require(condition: bool, message: str) -> None:
@@ -172,11 +173,131 @@ def eval_mcp_tool_contract() -> None:
     require(result.output["result"]["content"][0]["text"] == "hello", "MCP tool result was not preserved")
 
 
+class EvalProcess:
+    pid = 12345
+
+    def wait(self) -> int:
+        return 0
+
+    def poll(self) -> int:
+        return 0
+
+    def terminate(self) -> None:
+        return None
+
+
+def eval_worker_isolation_policy_contract() -> None:
+    launches: list[dict[str, Any]] = []
+
+    def fake_process_factory(command: list[str], **kwargs: object) -> EvalProcess:
+        launches.append({"command": command, **kwargs})
+        return EvalProcess()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        database = root / "amadeus.sqlite"
+        workspace = root / "workspace"
+        source = workspace / "src"
+        source.mkdir(parents=True)
+        (source / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (workspace / "node_modules").mkdir()
+        (workspace / "node_modules" / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+
+        memory = MessageMemoryStore(database, default_workspace_path=workspace)
+        task = memory.create_task(
+            session_id="eval-session",
+            title="Isolated worker",
+            worker_profile="coder",
+            allowed_toolsets=["read", "patch", "terminal", "code"],
+            context_hints={"workspacePath": "src", "sandboxMode": "workspace_execute"},
+        )
+        runner = SubprocessTaskRunner(
+            database_path=database,
+            workspace_path=workspace,
+            workspace_isolation="copy",
+            sandbox_root=root / "worker-sandboxes",
+            process_factory=fake_process_factory,
+        )
+        runner.submit(str(task["id"]), lambda _task_id: None)
+        runner.shutdown()
+
+        require(len(launches) == 1, "subprocess runner did not launch one child")
+        env = launches[0].get("env")
+        require(isinstance(env, dict), "subprocess launch env missing")
+        isolated_workspace = Path(str(env["AMADEUS_WORKSPACE"]))
+        require(env["AMADEUS_WORKER_WORKSPACE_ISOLATION"] == "copy", "worker isolation env was not set")
+        require(Path(str(env["AMADEUS_WORKER_WORKSPACE_SOURCE"])) == source.resolve(), "worker source workspace was not preserved")
+        require(isolated_workspace != source.resolve(), "isolated worker reused the source workspace")
+        require((isolated_workspace / "app.py").exists(), "isolated worker copy did not include task workspace files")
+        require(not (isolated_workspace.parent / "node_modules").exists(), "isolated worker copy included ignored generated directories")
+
+        runtime = AgentRuntime(memory, audio_runtime=None, workspace_root=workspace)
+        scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("read", "patch", "terminal", "code"),
+            allowed_tool_names=frozenset({"read_file", "patch", "terminal", "execute_code"}),
+            sandbox_mode="workspace_execute",
+            workspace_path=str(isolated_workspace),
+            workspace_isolation="copy",
+            workspace_source_path=str(source.resolve()),
+        )
+        require(runtime.validate_worker_runtime_scope("eval-session", scope) is None, "copy-isolated worker scope was rejected")
+        with runtime.worker_runtime_scope(scope):
+            require(runtime._workspace_root_for_session("eval-session") == isolated_workspace.resolve(), "runtime did not use isolated worker workspace")
+
+        registry = ToolRegistry(config_path=root / "missing-tools.yaml")
+        outside_path = root / "outside.txt"
+        terminal_result = registry.execute(
+            "terminal",
+            {"command": f"printf bad > {outside_path}", "cwd": "."},
+            ToolContext(
+                session_id="eval-session",
+                cwd=isolated_workspace,
+                worker_workspace_path=str(isolated_workspace),
+                worker_workspace_isolation="copy",
+                worker_sandbox_mode="workspace_execute",
+            ),
+        )
+        require(not terminal_result.ok, "terminal sandbox allowed an outside workspace path")
+        require("outside the workspace sandbox" in str(terminal_result.output.get("error")), "terminal sandbox error was not explicit")
+
+        code_result = registry.execute(
+            "execute_code",
+            {
+                "code": (
+                    "from pathlib import Path\n"
+                    f"Path({str(outside_path)!r}).write_text('bad', encoding='utf-8')\n"
+                ),
+                "cwd": ".",
+            },
+            ToolContext(
+                session_id="eval-session",
+                cwd=isolated_workspace,
+                worker_workspace_path=str(isolated_workspace),
+                worker_workspace_isolation="copy",
+                worker_sandbox_mode="workspace_execute",
+            ),
+        )
+        require(code_result.ok, "execute_code sandbox should return a structured command result")
+        require(code_result.output.get("exitCode") != 0, "execute_code sandbox did not fail an outside write")
+        require(not outside_path.exists(), "execute_code sandbox wrote outside the workspace")
+
+        decision = worker_action_permission_decision(
+            scope,
+            "patch",
+            {"path": "src/app.py", "oldText": "a", "newText": "b", "replaceAll": True},
+            "ask",
+        )
+        require(decision.decision == "deny", "high-risk profile auto-approval was not denied")
+        require("bulk_replace" in decision.risk_labels, "high-risk approval decision missed bulk_replace risk label")
+
+
 def main() -> int:
     eval_role_identity_and_task_context()
     eval_task_lifecycle_contract()
     eval_orchestrator_contract()
     eval_mcp_tool_contract()
+    eval_worker_isolation_policy_contract()
     print("runtime contract evals passed")
     return 0
 
