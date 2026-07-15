@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import signal
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -42,6 +45,99 @@ class InProcessTaskRunner:
 
     def shutdown(self, *, wait: bool = True) -> None:
         self._executor.shutdown(wait=wait, cancel_futures=True)
+
+
+def _run_task_process_entry(task_id: str, run_task: TaskCallable) -> None:
+    try:
+        run_task(task_id)
+    except BaseException:
+        traceback.print_exc()
+        raise
+
+
+class ProcessTaskRunner:
+    def __init__(self, *, max_workers: int = 2, start_method: str = "fork") -> None:
+        if start_method != "fork" or not hasattr(os, "fork"):
+            raise RuntimeError("ProcessTaskRunner requires POSIX fork support")
+        self._semaphore = threading.BoundedSemaphore(max(1, int(max_workers)))
+        self._lock = threading.Lock()
+        self._supervisors: list[threading.Thread] = []
+        self._processes: dict[str, int] = {}
+        self._closed = False
+
+    def submit(self, task_id: str, run_task: TaskCallable) -> None:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("task runner is shut down")
+        self._semaphore.acquire()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                _run_task_process_entry(task_id, run_task)
+                os._exit(0)
+            except BaseException:
+                os._exit(1)
+        with self._lock:
+            self._processes[task_id] = pid
+        supervisor = threading.Thread(
+            target=self._join_process,
+            args=(task_id, pid),
+            name=f"amadeus-task-process-supervisor-{task_id[:8]}",
+            daemon=True,
+        )
+        with self._lock:
+            self._supervisors.append(supervisor)
+        supervisor.start()
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        with self._lock:
+            self._closed = True
+            pids = list(self._processes.values())
+        if wait:
+            for pid in pids:
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    pass
+            seen: set[int] = set()
+            while True:
+                with self._lock:
+                    supervisors = [supervisor for supervisor in self._supervisors if id(supervisor) not in seen]
+                if not supervisors:
+                    break
+                for supervisor in supervisors:
+                    seen.add(id(supervisor))
+                    supervisor.join()
+        else:
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+    def _join_process(self, task_id: str, pid: int) -> None:
+        try:
+            try:
+                _, status = os.waitpid(pid, 0)
+            except ChildProcessError:
+                status = 0
+            if status != 0:
+                logger.info("Task process exited non-zero taskId=%s pid=%s status=%s", task_id, pid, status)
+        finally:
+            with self._lock:
+                current = self._processes.get(task_id)
+                if current == pid:
+                    self._processes.pop(task_id, None)
+            self._semaphore.release()
+
+
+def build_task_runner(kind: str | None, *, max_workers: int = 2) -> TaskRunner:
+    normalized = str(kind or "in_process").strip().lower().replace("-", "_")
+    if normalized in {"in_process", "thread", "threads", "threaded"}:
+        return InProcessTaskRunner(max_workers=max_workers)
+    if normalized in {"process", "processes", "fork", "process_backed"}:
+        return ProcessTaskRunner(max_workers=max_workers)
+    raise ValueError("task runner kind must be one of in_process or process")
 
 
 @dataclass(frozen=True)

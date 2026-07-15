@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.workers import TaskCallable, TaskWorker, build_worker_context
+from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
 
 
 class SuccessfulRuntime:
@@ -84,6 +85,16 @@ class ImmediateTaskRunner:
 
 
 class TaskWorkerTests(unittest.TestCase):
+    def test_build_task_runner_selects_supported_runner_kinds(self) -> None:
+        in_process = build_task_runner("in_process", max_workers=1)
+        self.assertIsInstance(in_process, InProcessTaskRunner)
+        in_process.shutdown()
+
+        if hasattr(os, "fork"):
+            process = build_task_runner("process", max_workers=1)
+            self.assertIsInstance(process, ProcessTaskRunner)
+            process.shutdown()
+
     def test_worker_uses_injected_task_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

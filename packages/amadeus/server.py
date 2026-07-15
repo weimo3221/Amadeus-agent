@@ -39,7 +39,7 @@ from amadeus.runtime_events import RuntimeEventBus
 from amadeus.scheduling import ScheduledJobWorker
 from amadeus.tool_runtime import ToolContext
 from amadeus.tools import list_tools
-from amadeus.workers import TaskWorker
+from amadeus.workers import TaskWorker, build_task_runner
 
 
 HOST = os.environ.get("AMADEUS_PYTHON_RUNTIME_HOST", os.environ.get("AMADEUS_PYTHON_TOOLS_HOST", "127.0.0.1"))
@@ -113,6 +113,8 @@ memory_embedding_backfill_runner = MemoryEmbeddingBackfillRunner()
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
 runtime_event_bus = RuntimeEventBus()
+TASK_RUNNER_KIND = os.environ.get("AMADEUS_TASK_RUNNER", "in_process")
+TASK_MAX_WORKERS = int(os.environ.get("AMADEUS_TASK_MAX_WORKERS", "2"))
 
 
 def publish_task_update(task: dict[str, object], action: str) -> None:
@@ -150,7 +152,14 @@ def publish_scheduled_job_update(job: dict[str, object], action: str) -> None:
     )
 
 
-task_worker = TaskWorker(lambda: memory_store, lambda: agent_runtime, publish_task_event=publish_task_update)
+task_worker = TaskWorker(
+    lambda: memory_store,
+    lambda: agent_runtime,
+    publish_task_event=publish_task_update,
+    max_workers=TASK_MAX_WORKERS,
+    runner_kind=TASK_RUNNER_KIND,
+    runner=build_task_runner(TASK_RUNNER_KIND, max_workers=TASK_MAX_WORKERS),
+)
 agent_runtime.set_task_worker(task_worker)
 task_worker.recover()
 orchestrator_service = OrchestratorService(memory_store, submit_task=task_worker.submit, model_client=agent_runtime.model_client)

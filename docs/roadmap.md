@@ -282,9 +282,9 @@ Target deliverables:
 - First task-worker reliability slice complete: persisted task attempts, retry scheduling, stale `running` recovery, startup reclaim, and worker status event broadcasting.
 - First blocked/review/artifact slice complete: `reviewRequired` tasks stop in `blocked`, approve/resume endpoints are exposed, typed artifacts render in the task detail modal, and Main UI shows recent task notifications.
 - MCP bridge first slice complete: configured HTTP JSON-RPC MCP servers can expose `tools/list` tools as normalized `mcp__<server>__<tool>` schemas and execute them through `tools/call` under ToolRuntime permissions/audit. The local dev MCP server now includes both a minimal Amadeus fixture and a no-token Hermes-style fixture for add/test/execute verification.
-- First task runner abstraction complete: `TaskRunner` / `InProcessTaskRunner` separate scheduling/execution submission from the task state machine, leaving process-backed execution as a later implementation.
+- First task runner abstraction complete: `TaskRunner` / `InProcessTaskRunner` separate scheduling/execution submission from the task state machine. A first optional POSIX `ProcessTaskRunner` is available behind the same contract; a dedicated durable process worker entrypoint remains future work.
 - First task-state context slice complete: queued/running/blocked session tasks are injected as reference-only `<active-tasks>` context and recent terminal outcomes are injected as `<recent-tasks>` with diagnostics.
-- Durable multi-process task runner implementation.
+- Dedicated durable multi-process task worker entrypoint.
 - Richer context compression: Hermes-style tool-call transcript persistence, pair-safe summary boundary alignment, trigger-budget recent-tail retention, and turn-start / overflow-retry / turn-end compaction paths are in place; remaining work is better compression observability, selective old-tool-output pruning, and quality audits for generated summaries.
 - Long task plans.
 - Human approval checkpoints.
