@@ -1,0 +1,41 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_d2d926acc5a929 1092,1095,1109
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_8e8d10e2fd6467 138,142
+docs/project-status.md
+  s_80fee7171b51b9::t_88066ccf71bb0a 473,516
+docs/roadmap.md
+  s_80fee7171b51b9::t_7f3ef5d246b5d8 17,288
+packages/amadeus/README.md
+  s_80fee7171b51b9::t_dde37c528d7388 86,92
+packages/amadeus/agent.py
+  s_80fee7171b51b9::t_5c7e2cdcea23e7 52-57,1151-1154,2100-2128,2254,2348,2363,2716-2719
+packages/amadeus/tool_runtime/registry.py
+  s_80fee7171b51b9::t_f0bf3a2d1dcf51 58
+packages/amadeus/worker_policy.py
+  s_80fee7171b51b9::t_513ded358c0746 13-22,80,101-102,107,172-231
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_8bb7c3b26bc6db 1219,1588
+tests/test_python_agent_runtime.py
+  s_80fee7171b51b9::t_303e9c60608282 1972,1991,1995-2053,2091,2101,2141
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_843ac33ffdb15e 272,282-306,331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b060603ee88c8e419f5645867b9e56262775320c",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
