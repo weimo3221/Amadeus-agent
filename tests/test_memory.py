@@ -1003,6 +1003,51 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(len(graph["tasks"]), 2)
         self.assertEqual(len(graph["edges"]), 1)
 
+    def test_task_artifact_file_resume_override_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(session_id="session-1", title="Override file resume")
+            artifact = memory.add_task_artifact(
+                str(task["id"]),
+                {"type": "diff", "title": "Patch", "path": "src/app.py"},
+                metadata={
+                    "toolName": "patch",
+                    "fileResumePolicy": {
+                        "action": "skip_redundant_mutation",
+                        "paths": ["src/app.py"],
+                    },
+                },
+            )
+
+            updated = memory.set_task_artifact_file_resume_override(
+                str(task["id"]),
+                str(artifact["id"]),
+                "force_rerun",
+            )
+            cleared = memory.set_task_artifact_file_resume_override(
+                str(task["id"]),
+                str(artifact["id"]),
+                None,
+            )
+
+        self.assertEqual(updated["metadata"]["fileResumePolicy"]["override"], "force_rerun")
+        self.assertNotIn("override", cleared["metadata"]["fileResumePolicy"])
+
+    def test_task_artifact_file_resume_override_rejects_invalid_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(session_id="session-1", title="Override file resume")
+            artifact = memory.add_task_artifact(
+                str(task["id"]),
+                {"type": "summary", "title": "No policy", "content": "plain"},
+                metadata={"source": "test"},
+            )
+
+            with self.assertRaises(ValueError):
+                memory.set_task_artifact_file_resume_override(str(task["id"]), str(artifact["id"]), "force_rerun")
+            with self.assertRaises(ValueError):
+                memory.set_task_artifact_file_resume_override(str(task["id"]), str(artifact["id"]), "invalid")
+
     def test_runnable_tasks_wait_for_dependency_edges(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

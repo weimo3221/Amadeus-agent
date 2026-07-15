@@ -2651,6 +2651,62 @@ class MessageMemoryStore:
             ).fetchall()
         return [task_artifact_response(row) for row in rows]
 
+    def set_task_artifact_file_resume_override(
+        self,
+        task_id: str,
+        artifact_id: str,
+        override: str | None,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_artifact_id = str(artifact_id or "").strip()
+        allowed_overrides = {"force_rerun", "ignore_artifact", "accept_current_state"}
+        normalized_override = str(override or "").strip()
+        if not normalized_artifact_id:
+            raise ValueError("artifact id is required")
+        if normalized_override and normalized_override not in allowed_overrides:
+            raise ValueError("unsupported file resume override")
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, task_id, attempt_id, type, title, path, url, content, metadata_json, created_at
+                FROM task_artifacts
+                WHERE id = ? AND task_id = ?
+                """,
+                (normalized_artifact_id, normalized_task_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("task artifact not found")
+            metadata = json_payload(row[8], default={})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            policy = metadata.get("fileResumePolicy")
+            if not isinstance(policy, dict):
+                raise ValueError("task artifact has no file resume policy")
+            next_policy = dict(policy)
+            if normalized_override:
+                next_policy["override"] = normalized_override
+            else:
+                next_policy.pop("override", None)
+            next_metadata = dict(metadata)
+            next_metadata["fileResumePolicy"] = next_policy
+            metadata_json = normalize_task_json_object(next_metadata, field_name="metadata")
+            connection.execute(
+                "UPDATE task_artifacts SET metadata_json = ? WHERE id = ? AND task_id = ?",
+                (metadata_json, normalized_artifact_id, normalized_task_id),
+            )
+            updated = connection.execute(
+                """
+                SELECT id, task_id, attempt_id, type, title, path, url, content, metadata_json, created_at
+                FROM task_artifacts
+                WHERE id = ? AND task_id = ?
+                """,
+                (normalized_artifact_id, normalized_task_id),
+            ).fetchone()
+        if updated is None:
+            raise RuntimeError("task artifact could not be loaded")
+        return task_artifact_response(updated)
+
     def get_task_graph(self, task_id: str) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
         root = self.get_task(normalized_task_id)

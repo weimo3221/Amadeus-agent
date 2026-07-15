@@ -660,6 +660,12 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.handle_task_approve(task_id)
             return
 
+        task_artifact_override = parse_task_artifact_override_path(parsed.path)
+        if task_artifact_override is not None:
+            task_id, artifact_id = task_artifact_override
+            self.handle_task_artifact_file_resume_override(task_id, artifact_id)
+            return
+
         if parsed.path.startswith("/tasks/") and parsed.path.endswith("/decompose"):
             task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/decompose")).strip()
             self.handle_task_decompose(task_id)
@@ -1178,6 +1184,42 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(400, {"ok": False, "error": str(error)})
         except Exception as error:
             logger.info("Task artifacts list failed error=%s", error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
+    def handle_task_artifact_file_resume_override(self, task_id: str, artifact_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            if not artifact_id:
+                self.write_json(400, {"ok": False, "error": "artifact id is required"})
+                return
+            body = self.read_json_body()
+            override_value = body.get("override")
+            override = override_value if isinstance(override_value, str) and override_value.strip() else None
+            artifact = memory_store.set_task_artifact_file_resume_override(task_id, artifact_id, override)
+            artifacts = memory_store.list_task_artifacts(task_id, limit=100)
+            task = memory_store.get_task(task_id)
+            logger.info(
+                "Updated task artifact file resume override taskId=%s artifactId=%s override=%s",
+                task_id,
+                artifact_id,
+                override or "",
+            )
+            if task is not None:
+                publish_task_update(task, "artifact_override_updated")
+            self.write_json(200, {
+                "ok": True,
+                "taskId": task_id,
+                "artifact": artifact,
+                "artifacts": artifacts,
+                "artifactCount": len(artifacts),
+                "task": task,
+            })
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task artifact file resume override failed error=%s", error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
     def handle_task_decompose(self, task_id: str) -> None:
@@ -3561,6 +3603,15 @@ def update_runtime_config_content(
             next_lines.append(f"  {key}: {value}")
 
     return "\n".join(next_lines).rstrip() + "\n"
+
+
+def parse_task_artifact_override_path(path: str) -> tuple[str, str] | None:
+    parts = [unquote(part) for part in path.strip("/").split("/")]
+    if len(parts) != 5:
+        return None
+    if parts[0] != "tasks" or parts[2] != "artifacts" or parts[4] != "file-resume-override":
+        return None
+    return parts[1].strip(), parts[3].strip()
 
 
 def scheduled_job_event_payload(job: dict[str, object], action: str) -> dict[str, object]:

@@ -8,7 +8,16 @@ import AmTag from '@/components/ui/AmTag.vue'
 import AmModal from '@/components/ui/AmModal.vue'
 import AmButton from '@/components/ui/AmButton.vue'
 
-const { state, loadTaskEvents, cancelTask, resumeTask, approveTask, rerunTask } = useRuntime()
+const {
+  state,
+  loadTaskEvents,
+  loadTaskArtifacts,
+  cancelTask,
+  resumeTask,
+  approveTask,
+  rerunTask,
+  setTaskArtifactFileResumeOverride,
+} = useRuntime()
 
 const taskColumns = [
   { key: 'title', title: '任务', width: '42%' },
@@ -73,6 +82,7 @@ const artifactMeta: Record<string, { label: string; icon: string; tone: ToolTone
 const detailOpen = ref(false)
 const selectedTaskId = ref<string | null>(null)
 const taskEvents = ref<TaskEventItem[]>([])
+const taskArtifacts = ref<TaskArtifact[]>([])
 const eventsLoading = ref(false)
 const actionLoading = ref<string | null>(null)
 
@@ -85,6 +95,10 @@ const selectedPlanItem = computed(() => {
   if (!task?.planItemId) return null
   return state.plan.find((item) => item.id === task.planItemId) ?? null
 })
+
+const detailArtifacts = computed(() =>
+  taskArtifacts.value.length ? taskArtifacts.value : selectedTask.value?.artifacts ?? [],
+)
 
 function taskDetail(row: { detail?: string; result?: string; error?: string; status?: TaskStatus }) {
   if (row.error) return `失败原因：${row.error}`
@@ -303,6 +317,10 @@ function artifactMetadata(artifact: TaskArtifact) {
   return asRecord(artifact.metadata)
 }
 
+function artifactId(artifact: TaskArtifact) {
+  return typeof artifact.id === 'string' ? artifact.id : ''
+}
+
 function artifactResumePolicy(artifact: TaskArtifact) {
   return asRecord(artifactMetadata(artifact)?.fileResumePolicy)
 }
@@ -368,6 +386,17 @@ function resumePolicyOverrideDescription(policy: Record<string, unknown> | null)
   return ''
 }
 
+function resumePolicyOverrideButtonLabel(override: string) {
+  return resumePolicyOverrideMeta[override]?.label ?? override
+}
+
+function resumePolicyOverrideOptions(policy: Record<string, unknown> | null) {
+  const action = resumePolicyAction(policy)
+  if (action === 'skip_redundant_mutation') return ['force_rerun', 'ignore_artifact']
+  if (action === 'reinspect_before_mutation') return ['accept_current_state', 'ignore_artifact']
+  return ['ignore_artifact']
+}
+
 function manifestStatus(verification: Record<string, unknown> | null) {
   return String(verification?.status ?? '')
 }
@@ -397,11 +426,28 @@ async function openTaskDetail(task: TaskItem) {
   selectedTaskId.value = task.id
   detailOpen.value = true
   taskEvents.value = []
+  taskArtifacts.value = []
   eventsLoading.value = true
   try {
-    taskEvents.value = await loadTaskEvents(task.id)
+    const [events, artifacts] = await Promise.all([
+      loadTaskEvents(task.id),
+      loadTaskArtifacts(task.id),
+    ])
+    taskEvents.value = events
+    taskArtifacts.value = artifacts
   } finally {
     eventsLoading.value = false
+  }
+}
+
+async function runFileResumeOverride(task: TaskItem, artifact: TaskArtifact, override: string | null) {
+  const id = artifactId(artifact)
+  if (!id) return
+  actionLoading.value = `file-resume-override:${id}:${override ?? 'clear'}`
+  try {
+    taskArtifacts.value = await setTaskArtifactFileResumeOverride(task.id, id, override)
+  } finally {
+    actionLoading.value = null
   }
 }
 
@@ -665,11 +711,11 @@ async function runRerun(task: TaskItem) {
           </div>
         </div>
 
-        <div v-if="selectedTask.artifacts.length" class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
+        <div v-if="detailArtifacts.length" class="rounded-[var(--radius-xl2)] border border-line bg-surface p-3">
           <p class="mb-2 text-xs font-semibold text-ink">Artifacts</p>
           <div class="space-y-2">
             <div
-              v-for="(artifact, index) in selectedTask.artifacts"
+              v-for="(artifact, index) in detailArtifacts"
               :key="`${artifact.type}-${index}`"
               class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/60 p-2"
             >
@@ -720,6 +766,30 @@ async function runRerun(task: TaskItem) {
                 <p v-if="resumePolicyOverrideDescription(artifactResumePolicy(artifact))" class="mt-1 text-ink-soft">
                   {{ resumePolicyOverrideDescription(artifactResumePolicy(artifact)) }}
                 </p>
+                <div
+                  v-if="artifactId(artifact)"
+                  class="mt-2 flex flex-wrap gap-1"
+                >
+                  <AmButton
+                    v-for="override in resumePolicyOverrideOptions(artifactResumePolicy(artifact))"
+                    :key="override"
+                    variant="secondary"
+                    size="sm"
+                    :loading="actionLoading === `file-resume-override:${artifactId(artifact)}:${override}`"
+                    @click="runFileResumeOverride(selectedTask, artifact, override)"
+                  >
+                    {{ resumePolicyOverrideButtonLabel(override) }}
+                  </AmButton>
+                  <AmButton
+                    v-if="resumePolicyOverride(artifactResumePolicy(artifact))"
+                    variant="ghost"
+                    size="sm"
+                    :loading="actionLoading === `file-resume-override:${artifactId(artifact)}:clear`"
+                    @click="runFileResumeOverride(selectedTask, artifact, null)"
+                  >
+                    清除覆盖
+                  </AmButton>
+                </div>
                 <p v-if="resumePolicyPaths(artifactResumePolicy(artifact)).length" class="mt-1 font-mono text-ink-faint">
                   {{ resumePolicyPaths(artifactResumePolicy(artifact)).join(', ') }}
                 </p>

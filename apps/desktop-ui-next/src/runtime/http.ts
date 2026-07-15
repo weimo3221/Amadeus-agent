@@ -196,6 +196,25 @@ export async function fetchTaskEvents(taskId: string): Promise<TaskEventPayload[
   return data?.events ?? []
 }
 
+export async function fetchTaskArtifacts(taskId: string): Promise<Array<Record<string, unknown>>> {
+  const data = await getJson<{ artifacts: Array<Record<string, unknown>> }>(
+    `/tasks/${encodeURIComponent(taskId)}/artifacts?limit=100`,
+  )
+  return data?.artifacts ?? []
+}
+
+export async function setTaskArtifactFileResumeOverrideRequest(
+  taskId: string,
+  artifactId: string,
+  override: string | null,
+): Promise<{ task: TaskRecord | null; artifacts: Array<Record<string, unknown>> }> {
+  const data = await postJson<{ task?: TaskRecord | null; artifacts?: Array<Record<string, unknown>> }>(
+    `/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}/file-resume-override`,
+    { override },
+  )
+  return { task: data?.task ?? null, artifacts: data?.artifacts ?? [] }
+}
+
 export async function cancelTaskRequest(taskId: string, reason?: string): Promise<TaskRecord | null> {
   const data = await postJson<{ task: TaskRecord }>(
     `/tasks/${encodeURIComponent(taskId)}/cancel`,

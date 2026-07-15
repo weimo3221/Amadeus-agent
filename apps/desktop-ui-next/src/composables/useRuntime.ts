@@ -21,6 +21,7 @@ import type {
   SkillActivation,
   SessionItem,
   SkillItem,
+  TaskArtifact,
   TaskEventItem,
   TaskItem,
   TaskNotification,
@@ -58,11 +59,13 @@ import {
   fetchToolsConfig,
   fetchToolsList,
   fetchTasks,
+  fetchTaskArtifacts,
   fetchTaskEvents,
   resumeTaskRequest,
   fetchTtsVoices,
   importLive2dModel,
   selectLive2dModel,
+  setTaskArtifactFileResumeOverrideRequest,
   updateAudioConfig,
   updateLive2dBehaviors,
   updateRoleRequest,
@@ -1067,6 +1070,33 @@ export function useRuntime() {
     return fetchTaskEvents(taskId)
   }
 
+  async function loadTaskArtifacts(taskId: string): Promise<TaskArtifact[]> {
+    const artifacts = await fetchTaskArtifacts(taskId)
+    return artifacts.map((artifact) => ({
+      type: String(artifact.type ?? 'summary'),
+      ...artifact,
+    }))
+  }
+
+  async function setTaskArtifactFileResumeOverride(
+    taskId: string,
+    artifactId: string,
+    override: string | null,
+  ): Promise<TaskArtifact[]> {
+    const result = await setTaskArtifactFileResumeOverrideRequest(taskId, artifactId, override)
+    if (result.task) {
+      const nextTask = tasksToItems([result.task])[0]
+      const index = state.tasks.findIndex((task) => task.id === nextTask.id)
+      if (index >= 0) {
+        state.tasks.splice(index, 1, nextTask)
+      }
+    }
+    return result.artifacts.map((artifact) => ({
+      type: String(artifact.type ?? 'summary'),
+      ...artifact,
+    }))
+  }
+
   async function cancelTask(taskId: string): Promise<boolean> {
     const task = await cancelTaskRequest(taskId)
     if (!task) return false
@@ -1151,10 +1181,12 @@ export function useRuntime() {
     refreshTasks,
     createTaskFromPlan,
     loadTaskEvents,
+    loadTaskArtifacts,
     cancelTask,
     resumeTask,
     approveTask,
     rerunTask,
+    setTaskArtifactFileResumeOverride,
     createScheduledJob,
   }
 }

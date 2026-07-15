@@ -721,6 +721,42 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(artifacts["artifactCount"], 1)
         self.assertEqual(artifacts["artifacts"][0]["content"], "Graph endpoint works.")
 
+    def test_tasks_http_sets_file_resume_override_on_artifact(self) -> None:
+        task = runtime_server.memory_store.create_task(session_id="http-test", title="Override task")
+        artifact = runtime_server.memory_store.add_task_artifact(
+            str(task["id"]),
+            {"type": "diff", "title": "Patch", "path": "src/app.py"},
+            metadata={
+                "toolName": "patch",
+                "fileResumePolicy": {
+                    "action": "skip_redundant_mutation",
+                    "paths": ["src/app.py"],
+                },
+            },
+        )
+
+        updated = self.post_json(
+            f"/tasks/{task['id']}/artifacts/{artifact['id']}/file-resume-override",
+            {"override": "force_rerun"},
+        )
+        cleared = self.post_json(
+            f"/tasks/{task['id']}/artifacts/{artifact['id']}/file-resume-override",
+            {"override": None},
+        )
+        invalid = self.post_json_status(
+            f"/tasks/{task['id']}/artifacts/{artifact['id']}/file-resume-override",
+            {"override": "invalid"},
+            expected_status=400,
+        )
+
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["artifact"]["metadata"]["fileResumePolicy"]["override"], "force_rerun")
+        self.assertEqual(updated["artifacts"][0]["metadata"]["fileResumePolicy"]["override"], "force_rerun")
+        self.assertEqual(updated["task"]["id"], task["id"])
+        self.assertNotIn("override", cleared["artifact"]["metadata"]["fileResumePolicy"])
+        self.assertFalse(invalid["ok"])
+        self.assertIn("unsupported", invalid["error"])
+
     def test_tasks_http_decompose_and_dispatch_graph(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Root graph")
         subscriber_id, subscriber_queue = runtime_server.runtime_event_bus.subscribe()
