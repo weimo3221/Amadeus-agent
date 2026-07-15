@@ -1,0 +1,23 @@
+packages/amadeus/server.py
+  s_80fee7171b51b9::t_1e8f854974038f 129-137,1196-1198,1220-1221,1241
+tests/test_python_runtime_http.py
+  s_80fee7171b51b9::t_b68f3c278b8e08 726,728-746,757-759,814,816-820,828-829
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fe51a88890f8624a0ad46d07575030d20e47712c",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
