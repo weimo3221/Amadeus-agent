@@ -237,6 +237,41 @@ function approvalStateLabel(task: TaskItem | null) {
   return '审批动作'
 }
 
+function approvalIsExpired(task: TaskItem | null) {
+  const expiry = approvalExpiry(task)
+  if (!expiry) return false
+  const date = new Date(expiry)
+  return !Number.isNaN(date.getTime()) && date.getTime() <= Date.now()
+}
+
+function approvalExplanation(task: TaskItem | null) {
+  const phase = checkpointText(task, 'phase')
+  const tool = approvalToolName(task)
+  const action = approvalActionLabel(task)
+  const actionText = action ? `“${action}”` : '这个动作'
+  const toolText = tool ? ` ${tool} 工具` : ''
+
+  if (approvalIsExpired(task)) {
+    return `上一次批准已过期。再次恢复会重新排队任务，worker 需要为${toolText}${actionText}重新进入审批流程。`
+  }
+  if (phase === 'approval_resume_requested') {
+    const expiry = approvalExpiry(task)
+    const expiryText = expiry ? `，授权将在 ${formatDateTime(expiry)} 到期` : ''
+    return `已允许下一次 worker run 只执行${toolText}${actionText}${expiryText}；这不是永久权限，也不会批准同一工具的其他动作。`
+  }
+  if (phase === 'approval_required') {
+    return `点击恢复执行会只批准${toolText}${actionText}，然后让 worker 从阻塞点继续；其他动作仍会继续受审批策略限制。`
+  }
+  return `这条 checkpoint 关联一个受限工具动作；worker 只能按记录的动作边界继续。`
+}
+
+function resumeButtonLabel(task: TaskItem | null) {
+  if (!hasApprovalCheckpoint(task)) return '恢复执行'
+  if (approvalIsExpired(task)) return '重新请求授权'
+  if (checkpointText(task, 'phase') === 'approval_required') return '批准并恢复'
+  return '恢复执行'
+}
+
 function hasApprovalCheckpoint(task: TaskItem | null) {
   return Boolean(
     approvalToolName(task)
@@ -558,6 +593,9 @@ async function runRerun(task: TaskItem) {
             <p v-if="approvalActionLabel(selectedTask)" class="text-ink-soft">
               动作：<span class="font-mono text-ink">{{ approvalActionLabel(selectedTask) }}</span>
             </p>
+            <p class="mt-2 rounded-[var(--radius-xl2)] border border-warning/15 bg-white/55 p-2 text-ink-soft">
+              {{ approvalExplanation(selectedTask) }}
+            </p>
             <p v-if="approvalActionKey(selectedTask)" class="mt-1 break-all text-ink-faint">
               Key：<span class="font-mono text-ink-soft">{{ approvalActionKey(selectedTask) }}</span>
             </p>
@@ -721,7 +759,7 @@ async function runRerun(task: TaskItem) {
           :loading="actionLoading === 'resume'"
           @click="runResume(selectedTask)"
         >
-          恢复执行
+          {{ resumeButtonLabel(selectedTask) }}
         </AmButton>
         <AmButton
           v-if="selectedTask && ['failed', 'cancelled', 'succeeded'].includes(selectedTask.status)"
