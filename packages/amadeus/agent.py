@@ -413,6 +413,7 @@ class AgentRuntime:
         summary_config = runtime_config.get("summary", {})
         memory_config = runtime_config.get("memory", {})
         memory_review_config = runtime_config.get("memoryReview", {})
+        tasks_config = runtime_config.get("tasks", {})
         desktop_config = runtime_config.get("desktop", {})
         agent_config = runtime_config.get("agent", {})
         vector_retrieval_enabled = configured_runtime_memory_vector_retrieval(memory_config)
@@ -550,6 +551,14 @@ class AgentRuntime:
             "AMADEUS_MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS",
             parse_positive_int_value(memory_review_config.get("failureCooldownSeconds"), MEMORY_REVIEW_FAILURE_COOLDOWN_SECONDS),
         )
+        self.worker_approval_action_ttl_seconds = parse_positive_int_env(
+            "AMADEUS_WORKER_APPROVAL_ACTION_TTL_SECONDS",
+            parse_positive_int_value(
+                tasks_config.get("workerApprovalActionTtlSeconds"),
+                MessageMemoryStore.WORKER_APPROVAL_ACTION_TTL_SECONDS,
+            ),
+        )
+        self.memory_store.set_worker_approval_action_ttl_seconds(self.worker_approval_action_ttl_seconds)
         self.desktop_companion_live2d_scale = parse_float_env(
             "AMADEUS_DESKTOP_COMPANION_LIVE2D_SCALE",
             parse_float_value(desktop_config.get("companionLive2dScale"), DESKTOP_COMPANION_LIVE2D_SCALE, minimum=0.25, maximum=2.5),
@@ -1291,6 +1300,9 @@ class AgentRuntime:
                 "maxCandidates": self.memory_review_max_candidates,
                 "successCooldownSeconds": self.memory_review_success_cooldown_seconds,
                 "failureCooldownSeconds": self.memory_review_failure_cooldown_seconds,
+            },
+            "tasks": {
+                "workerApprovalActionTtlSeconds": self.worker_approval_action_ttl_seconds,
             },
             "desktop": {
                 "companionLive2dScale": self.desktop_companion_live2d_scale,

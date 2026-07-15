@@ -89,6 +89,9 @@ RUNTIME_CONFIG_FIELDS: dict[str, dict[str, tuple[type, float | int | None, float
         "successCooldownSeconds": (int, 1, None),
         "failureCooldownSeconds": (int, 1, None),
     },
+    "tasks": {
+        "workerApprovalActionTtlSeconds": (int, 1, None),
+    },
     "desktop": {
         "companionLive2dScale": (float, 0.25, 2.5),
         "companionLive2dOffsetX": (int, None, None),

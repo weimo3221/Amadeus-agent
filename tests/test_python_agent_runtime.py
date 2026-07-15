@@ -852,6 +852,37 @@ finally:
 
         self.assertEqual(runtime.context_max_tokens, 4321)
 
+    def test_runtime_config_sets_worker_approval_action_ttl(self) -> None:
+        config_path = Path(self.tmpdir.name) / "runtime.yaml"
+        config_path.write_text(
+            "tasks:\n  workerApprovalActionTtlSeconds: 234\n",
+            encoding="utf-8",
+        )
+        runtime = FakeAgentRuntime(self.memory, runtime_config_path=config_path)
+
+        self.assertEqual(runtime.worker_approval_action_ttl_seconds, 234)
+        self.assertEqual(self.memory.worker_approval_action_ttl_seconds, 234)
+        self.assertEqual(runtime._runtime_config_snapshot()["tasks"]["workerApprovalActionTtlSeconds"], 234)
+
+    def test_runtime_config_env_overrides_worker_approval_action_ttl(self) -> None:
+        config_path = Path(self.tmpdir.name) / "runtime.yaml"
+        config_path.write_text(
+            "tasks:\n  workerApprovalActionTtlSeconds: 234\n",
+            encoding="utf-8",
+        )
+        previous = os.environ.get("AMADEUS_WORKER_APPROVAL_ACTION_TTL_SECONDS")
+        os.environ["AMADEUS_WORKER_APPROVAL_ACTION_TTL_SECONDS"] = "345"
+        try:
+            runtime = FakeAgentRuntime(self.memory, runtime_config_path=config_path)
+        finally:
+            if previous is None:
+                os.environ.pop("AMADEUS_WORKER_APPROVAL_ACTION_TTL_SECONDS", None)
+            else:
+                os.environ["AMADEUS_WORKER_APPROVAL_ACTION_TTL_SECONDS"] = previous
+
+        self.assertEqual(runtime.worker_approval_action_ttl_seconds, 345)
+        self.assertEqual(self.memory.worker_approval_action_ttl_seconds, 345)
+
     def test_memory_prefetch_injects_context_into_current_user_message_only(self) -> None:
         self.memory.save("default", "user", "My notebook color is blue.")
         runtime = FakeAgentRuntime(self.memory, deltas=["remembered"])

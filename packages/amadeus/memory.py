@@ -90,15 +90,31 @@ class MessageMemoryStore:
         database_path: Path,
         stable_memory_dir: Path | None = None,
         default_workspace_path: Path | str | None = None,
+        worker_approval_action_ttl_seconds: int | None = None,
     ) -> None:
         self.database_path = database_path
         self.stable_memory_dir = stable_memory_dir or database_path.parent / "memory"
         self.roles_root = self.database_path.parent / "roles"
         self.default_workspace_path = normalize_default_workspace_path(default_workspace_path)
+        self.worker_approval_action_ttl_seconds = self._normalize_worker_approval_action_ttl_seconds(
+            worker_approval_action_ttl_seconds,
+        )
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.stable_memory_dir.mkdir(parents=True, exist_ok=True)
         self.roles_root.mkdir(parents=True, exist_ok=True)
         self.initialize()
+
+    @classmethod
+    def _normalize_worker_approval_action_ttl_seconds(cls, value: int | None) -> int:
+        try:
+            parsed = int(value) if value is not None else cls.WORKER_APPROVAL_ACTION_TTL_SECONDS
+        except (TypeError, ValueError):
+            return cls.WORKER_APPROVAL_ACTION_TTL_SECONDS
+        return parsed if parsed > 0 else cls.WORKER_APPROVAL_ACTION_TTL_SECONDS
+
+    def set_worker_approval_action_ttl_seconds(self, value: int | None) -> int:
+        self.worker_approval_action_ttl_seconds = self._normalize_worker_approval_action_ttl_seconds(value)
+        return self.worker_approval_action_ttl_seconds
 
     def initialize(self) -> None:
         with self.connect() as connection:
@@ -3432,7 +3448,7 @@ class MessageMemoryStore:
             approved_tool_name = str(previous_checkpoint.get("toolName") or "").strip()
             approved_action_key = str(previous_checkpoint.get("approvalActionKey") or "").strip()
             approval_action_expires_at = (
-                datetime.now(timezone.utc) + timedelta(seconds=self.WORKER_APPROVAL_ACTION_TTL_SECONDS)
+                datetime.now(timezone.utc) + timedelta(seconds=self.worker_approval_action_ttl_seconds)
             ).isoformat()
             checkpoint = {
                 "status": "queued",

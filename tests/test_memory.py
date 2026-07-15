@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import sys
@@ -900,7 +900,10 @@ class MessageMemoryStoreTests(unittest.TestCase):
 
     def test_resume_blocked_worker_action_preserves_action_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            memory = MessageMemoryStore(
+                Path(tmpdir) / "amadeus.sqlite",
+                worker_approval_action_ttl_seconds=120,
+            )
             task = memory.create_task(session_id="session-1", title="Approve action")
             memory.start_task(str(task["id"]), claim_lock="worker-1")
             memory.block_task(
@@ -930,7 +933,9 @@ class MessageMemoryStoreTests(unittest.TestCase):
             {"process:kill": resumed["checkpoint"]["approvedToolActionExpiresAt"]},
         )
         expires_at = datetime.fromisoformat(str(resumed["checkpoint"]["approvedToolActionExpiresAt"]))
-        self.assertGreater(expires_at, datetime.now(timezone.utc))
+        now = datetime.now(timezone.utc)
+        self.assertGreater(expires_at, now)
+        self.assertLess(expires_at - now, timedelta(seconds=130))
         self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalActionLabel"], "process kill pid 123")
         self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalRiskLabels"], ["destructive", "process_signal"])
 

@@ -92,7 +92,7 @@ Fallback path today:
 - `AgentRuntime` maintains a per-session `workspace_epoch` for file-observing tool guardrails; successful `patch` / `write_file` mutations advance the epoch so repeated reads/searches after an edit are not treated as stale duplicates.
 - Python tool implementations are split under `packages/amadeus/tools/`, with `amadeus.tools` kept as the public registry entrypoint.
 - `configs/tools.yaml` is loaded at startup and controls effective tool enabled/permission state.
-- `configs/runtime.yaml` controls runtime memory/context tuning such as token-budget compaction, summary thresholds, and memory review limits; it is loaded at startup and can be explicitly reloaded with `POST /runtime/config/reload`, while environment variables can still override these values for deployment.
+- `configs/runtime.yaml` controls runtime memory/context/task tuning such as token-budget compaction, summary thresholds, memory review limits, and worker action approval expiry; it is loaded at startup and can be explicitly reloaded with `POST /runtime/config/reload`, while environment variables can still override these values for deployment.
 - Desktop diagnostics show the Python runtime tool permission state through the server bridge.
 - `packages/amadeus/tools.ts` now only keeps TypeScript tool types plus Python `/tools/list` and `/tools/execute` bridge helpers; it no longer mirrors the concrete tool registry or local tool handlers.
 - Python `/agent/turn` is wired as the preferred turn path.
@@ -108,7 +108,7 @@ Fallback path today:
   - requests Python audio output after the assistant message
 - Python tracks the active running turn per session, emits `agent.turn.started` / `agent.turn.cancelled`, and exposes `POST /agent/cancel` for cooperative cancellation. This does not yet provide checkpoint/resume or forced provider-request termination.
 - Python includes `turnId` in assistant stream/final events and `task.plan.updated` events produced during a turn, allowing desktop clients to associate live reasoning, assistant text, and plan progress with the correct user request.
-- Python task worker now honors `reviewRequired`: successful worker output enters `blocked` with a review reason, task-level `approval_required` checkpoint, and handoff summary instead of `succeeded`; `POST /tasks/{id}/approve` finalizes it with an `approved` checkpoint. Worker ask-tools that are not profile-auto-approved now block the task with an approval checkpoint instead of failing the worker outright; blocked checkpoints include an action key/label/risk metadata when available, and `POST /tasks/{id}/resume` records that action key with a default 15-minute expiry so the next worker run can auto-approve only that specific unexpired tool action through `WorkerRuntimeScope`. Main UI task details now surface the approval tool, action label/key, risk labels, and action-expiry status directly above the raw checkpoint JSON.
+- Python task worker now honors `reviewRequired`: successful worker output enters `blocked` with a review reason, task-level `approval_required` checkpoint, and handoff summary instead of `succeeded`; `POST /tasks/{id}/approve` finalizes it with an `approved` checkpoint. Worker ask-tools that are not profile-auto-approved now block the task with an approval checkpoint instead of failing the worker outright; blocked checkpoints include an action key/label/risk metadata when available, and `POST /tasks/{id}/resume` records that action key with expiry from `tasks.workerApprovalActionTtlSeconds` / `AMADEUS_WORKER_APPROVAL_ACTION_TTL_SECONDS` (default 15 minutes) so the next worker run can auto-approve only that specific unexpired tool action through `WorkerRuntimeScope`. Main UI task details now surface the approval tool, action label/key, risk labels, and action-expiry status directly above the raw checkpoint JSON.
 - Ask-tool permission requests cross the Python runtime boundary:
   - Python emits `tool.permission.request`
   - the TypeScript bridge relays it to desktop
@@ -513,7 +513,7 @@ Started: the first restricted `delegate_task` research/search tool, session task
 - Add full sub-agent orchestration abstraction.
 - Add context compression.
 - Add richer planning quality evals, child-agent runners, more granular file-resume override semantics, and truly isolated child-runtime workspace sandboxing on top of the new task graph store, WorkerContext builder, internal orchestrator service, optional process runner, single-task worker entrypoint, subprocess launcher, first-pass `WorkerRuntimeScope`, checkpoint-aware retry handoff, first-pass approval checkpoints, saved-phase resume prompts, and worker tool-output/file-state artifacts.
-- Refine approval checkpoints with inline approve/resume copy, configurable expiry, more action classifiers, and policy coverage for destructive/sensitive/low-confidence actions beyond the first terminal/process/path action keys.
+- Refine approval checkpoints with inline approve/resume copy, more action classifiers, and policy coverage for destructive/sensitive/low-confidence actions beyond the first terminal/process/path action keys.
 - Add provider/harness profiles.
 - Add eval coverage for tool choice, permissions, memory, Live2D, audio, and guardrails.
 

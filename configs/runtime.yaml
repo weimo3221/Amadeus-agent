@@ -107,6 +107,13 @@ memoryReview:
   # Cooldown after a failed automatic review, in seconds.
   failureCooldownSeconds: 300
 
+tasks:
+  # How long a resumed background worker may use one approved action-specific
+  # ask-tool permission before the approval expires. The grant is still scoped
+  # to the next worker run and the exact blocked action key.
+  # Env override: AMADEUS_WORKER_APPROVAL_ACTION_TTL_SECONDS.
+  workerApprovalActionTtlSeconds: 900
+
 desktop:
   # Companion Live2D model fit multiplier. Increase to make the model larger;
   # decrease to leave more transparent desktop space around the model.
