@@ -1,0 +1,23 @@
+packages/amadeus/memory.py
+  s_80fee7171b51b9::t_6ca8f920a4bdec 2654-2709
+packages/amadeus/server.py
+  s_80fee7171b51b9::t_8065f78676ba77 663-668,1189-1224,3608-3616
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c72907fdc64b38df8515e7c8154cc3c5f044ee48",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
