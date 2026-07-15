@@ -1,0 +1,23 @@
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_7b6d3f20bb89c4 4,40-41,502-504,750-845,995-998
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_9e52a8c950030b 10,871-875,898-903,906-907
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3fc3ac6757816f728c697f6741c751a528e949b5",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
