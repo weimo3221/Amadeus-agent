@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import sys
@@ -924,6 +925,12 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(resumed["checkpoint"]["approvedToolName"], "process")
         self.assertEqual(resumed["checkpoint"]["approvedToolAction"], "process:kill")
         self.assertEqual(resumed["checkpoint"]["approvedToolActions"], ["process:kill"])
+        self.assertEqual(
+            resumed["checkpoint"]["approvedToolActionExpirations"],
+            {"process:kill": resumed["checkpoint"]["approvedToolActionExpiresAt"]},
+        )
+        expires_at = datetime.fromisoformat(str(resumed["checkpoint"]["approvedToolActionExpiresAt"]))
+        self.assertGreater(expires_at, datetime.now(timezone.utc))
         self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalActionLabel"], "process kill pid 123")
         self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalRiskLabels"], ["destructive", "process_signal"])
 

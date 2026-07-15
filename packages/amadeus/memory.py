@@ -83,6 +83,8 @@ DEFAULT_ROLE_PERSONA = (
 
 
 class MessageMemoryStore:
+    WORKER_APPROVAL_ACTION_TTL_SECONDS = 15 * 60
+
     def __init__(
         self,
         database_path: Path,
@@ -3429,6 +3431,9 @@ class MessageMemoryStore:
             was_approval_checkpoint = bool(row[2]) or str(previous_checkpoint.get("phase") or "") == "approval_required"
             approved_tool_name = str(previous_checkpoint.get("toolName") or "").strip()
             approved_action_key = str(previous_checkpoint.get("approvalActionKey") or "").strip()
+            approval_action_expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=self.WORKER_APPROVAL_ACTION_TTL_SECONDS)
+            ).isoformat()
             checkpoint = {
                 "status": "queued",
                 "phase": "approval_resume_requested" if was_approval_checkpoint else "blocked_resume_requested",
@@ -3440,6 +3445,8 @@ class MessageMemoryStore:
             if approved_action_key:
                 checkpoint["approvedToolAction"] = approved_action_key
                 checkpoint["approvedToolActions"] = [approved_action_key]
+                checkpoint["approvedToolActionExpiresAt"] = approval_action_expires_at
+                checkpoint["approvedToolActionExpirations"] = {approved_action_key: approval_action_expires_at}
             if previous_checkpoint:
                 checkpoint["resumeFrom"] = {
                     key: previous_checkpoint.get(key)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -69,6 +70,7 @@ class WorkerRuntimeScope:
     workspace_path: str | None = None
     approved_ask_tool_names: frozenset[str] = frozenset()
     approved_ask_tool_actions: frozenset[str] = frozenset()
+    approved_ask_tool_action_expirations: tuple[tuple[str, str], ...] = ()
     file_resume_policies: tuple[dict[str, Any], ...] = ()
 
 
@@ -95,6 +97,7 @@ def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
             name for name in worker_approved_ask_tool_names_for_task(task) if name in allowed_tool_names
         ),
         approved_ask_tool_actions=frozenset(worker_approved_ask_tool_actions_for_task(task)),
+        approved_ask_tool_action_expirations=worker_approved_ask_tool_action_expirations_for_task(task),
     )
 
 
@@ -181,6 +184,27 @@ def worker_approved_ask_tool_actions_for_task(task: dict[str, object]) -> set[st
     return actions
 
 
+def worker_approved_ask_tool_action_expirations_for_task(task: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    checkpoint = task.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        return ()
+    if str(checkpoint.get("phase") or "") != "approval_resume_requested":
+        return ()
+    expirations: dict[str, str] = {}
+    raw_expirations = checkpoint.get("approvedToolActionExpirations")
+    if isinstance(raw_expirations, dict):
+        for key, value in raw_expirations.items():
+            action_key = str(key or "").strip()
+            expires_at = str(value or "").strip()
+            if action_key and expires_at:
+                expirations[action_key] = expires_at
+    single_action = str(checkpoint.get("approvedToolAction") or "").strip()
+    single_expires_at = str(checkpoint.get("approvedToolActionExpiresAt") or "").strip()
+    if single_action and single_expires_at:
+        expirations[single_action] = single_expires_at
+    return tuple(sorted(expirations.items()))
+
+
 def worker_permission_decision(scope: WorkerRuntimeScope | None, tool_name: str, permission: str) -> str:
     return worker_action_permission_decision(scope, tool_name, {}, permission).decision
 
@@ -201,6 +225,16 @@ def worker_action_permission_decision(
             risk_labels=tuple(action["riskLabels"]),
         )
     if action["key"] in scope.approved_ask_tool_actions and tool_name in scope.allowed_tool_names:
+        expires_at = _approved_action_expires_at(scope, action["key"])
+        if expires_at and _is_expired(expires_at):
+            return WorkerActionPermissionDecision(
+                decision="deny",
+                reason=f"Worker action approval expired for: {action['label']}",
+                action_key=action["key"],
+                action_label=action["label"],
+                risk_level=action["riskLevel"],
+                risk_labels=tuple(action["riskLabels"]),
+            )
         return WorkerActionPermissionDecision(
             decision="auto_approve",
             reason="Approved action checkpoint matches this worker tool action.",
@@ -322,6 +356,23 @@ def _terminal_risk_labels(command: str) -> list[str]:
 
 def _truncate_label(value: str, max_chars: int) -> str:
     return value if len(value) <= max_chars else value[: max_chars - 3] + "..."
+
+
+def _approved_action_expires_at(scope: WorkerRuntimeScope, action_key: str) -> str | None:
+    for key, expires_at in scope.approved_ask_tool_action_expirations:
+        if key == action_key:
+            return expires_at
+    return None
+
+
+def _is_expired(expires_at: str) -> bool:
+    try:
+        parsed = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed <= datetime.now(timezone.utc)
 
 
 def _string_list(value: Any) -> list[str]:

@@ -640,6 +640,9 @@ def _resume_strategy_for_checkpoint(checkpoint: dict[str, object] | None) -> lis
         lines.append(f"approvedTools: {', '.join(approved_tools)}")
     if approved_actions:
         lines.append(f"approvedToolActions: {', '.join(approved_actions)}")
+        expires_at = _text(checkpoint.get("approvedToolActionExpiresAt"))
+        if expires_at:
+            lines.append(f"approvedToolActionExpiresAt: {expires_at}")
     if isinstance(resume_from, dict):
         action_label = _text(resume_from.get("approvalActionLabel"))
         risk_level = _text(resume_from.get("approvalRiskLevel"))
@@ -1216,6 +1219,7 @@ class TaskWorker:
                 workspace_path=base_scope.workspace_path,
                 approved_ask_tool_names=base_scope.approved_ask_tool_names,
                 approved_ask_tool_actions=base_scope.approved_ask_tool_actions,
+                approved_ask_tool_action_expirations=base_scope.approved_ask_tool_action_expirations,
                 file_resume_policies=worker_file_resume_policies_from_artifacts(worker_context.task_artifacts),
             )
             attempt = memory_store.create_task_attempt(

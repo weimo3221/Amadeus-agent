@@ -650,6 +650,31 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(list_decision.decision, "deny")
         self.assertEqual(list_decision.action_key, "process:list")
 
+    def test_worker_action_permission_approval_expires(self) -> None:
+        future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        future_scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("terminal",),
+            allowed_tool_names=frozenset({"process"}),
+            approved_ask_tool_actions=frozenset({"process:kill"}),
+            approved_ask_tool_action_expirations=(("process:kill", future),),
+        )
+        expired_scope = WorkerRuntimeScope(
+            worker_profile="coder",
+            allowed_toolsets=("terminal",),
+            allowed_tool_names=frozenset({"process"}),
+            approved_ask_tool_actions=frozenset({"process:kill"}),
+            approved_ask_tool_action_expirations=(("process:kill", past),),
+        )
+
+        allowed = worker_action_permission_decision(future_scope, "process", {"action": "kill", "pid": 123}, "ask")
+        expired = worker_action_permission_decision(expired_scope, "process", {"action": "kill", "pid": 123}, "ask")
+
+        self.assertEqual(allowed.decision, "auto_approve")
+        self.assertEqual(expired.decision, "deny")
+        self.assertIn("expired", str(expired.reason))
+
     def test_worker_retries_transient_failure_then_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
@@ -882,11 +907,17 @@ class TaskWorkerTests(unittest.TestCase):
                     "reason": "human_approved_worker_action",
                     "approvedToolName": "terminal",
                     "approvedTools": ["terminal"],
+                    "approvedToolAction": "terminal:command:fixture",
+                    "approvedToolActions": ["terminal:command:fixture"],
+                    "approvedToolActionExpiresAt": "2026-07-15T12:00:00+00:00",
                     "resumeFrom": {
                         "status": "blocked",
                         "phase": "approval_required",
                         "reason": "worker_tool_permission_required",
                         "toolName": "terminal",
+                        "approvalActionLabel": "terminal command `npm install`",
+                        "approvalRiskLevel": "high",
+                        "approvalRiskLabels": ["shell_command", "installer"],
                         "lastEventType": "tool.finished",
                     },
                 },
@@ -898,6 +929,10 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("<resume-strategy>", prompt)
         self.assertIn("resumeFromPhase: approval_required", prompt)
         self.assertIn("approvedTools: terminal", prompt)
+        self.assertIn("approvedToolActions: terminal:command:fixture", prompt)
+        self.assertIn("approvedToolActionExpiresAt: 2026-07-15T12:00:00+00:00", prompt)
+        self.assertIn("approvedActionLabel: terminal command `npm install`", prompt)
+        self.assertIn("approvalRiskLevel: high", prompt)
         self.assertIn("approved the listed ask-tool", prompt)
         self.assertIn("only for the blocked step", prompt)
         self.assertIn("not treat it as broad or permanent permission", prompt)
