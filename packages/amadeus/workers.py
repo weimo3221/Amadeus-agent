@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.worker_policy import worker_tool_names_for_task
+from amadeus.worker_policy import WorkerRuntimeScope, build_worker_runtime_scope
 
 
 logger = logging.getLogger(__name__)
@@ -598,7 +598,7 @@ class TaskWorker:
             attempt_id = str(attempt["id"])
             prompt = worker_context.to_prompt()
             runtime = self._agent_runtime_provider()
-            worker_scope = self._worker_tool_scope(runtime, worker_tool_names_for_task(task))
+            worker_scope = self._worker_runtime_scope(runtime, build_worker_runtime_scope(task))
             with worker_scope:
                 events = runtime.run_turn(session_id, prompt, self._deny_permission)
                 for event in events:
@@ -746,10 +746,13 @@ class TaskWorker:
                 logger.debug("Task lease heartbeat failed taskId=%s", task_id, exc_info=True)
 
     @staticmethod
-    def _worker_tool_scope(runtime: Any, allowed_tool_names: set[str]) -> Any:
+    def _worker_runtime_scope(runtime: Any, scope: WorkerRuntimeScope) -> Any:
+        runtime_scope_factory = getattr(runtime, "worker_runtime_scope", None)
+        if callable(runtime_scope_factory):
+            return runtime_scope_factory(scope)
         scope_factory = getattr(runtime, "worker_tool_scope", None)
         if callable(scope_factory):
-            return scope_factory(allowed_tool_names)
+            return scope_factory(set(scope.allowed_tool_names))
         return contextlib.nullcontext()
 
     @staticmethod

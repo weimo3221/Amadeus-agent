@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -51,10 +52,32 @@ TOOLSET_TOOL_NAMES: dict[str, set[str]] = {
 }
 
 
-def worker_toolsets_for_task(task: dict[str, object]) -> list[str]:
+@dataclass(frozen=True)
+class WorkerRuntimeScope:
+    worker_profile: str
+    allowed_toolsets: tuple[str, ...]
+    allowed_tool_names: frozenset[str]
+    workspace_path: str | None = None
+
+
+def build_worker_runtime_scope(task: dict[str, object]) -> WorkerRuntimeScope:
+    profile = worker_profile_for_task(task)
+    toolsets = tuple(worker_toolsets_for_task(task))
+    return WorkerRuntimeScope(
+        worker_profile=profile,
+        allowed_toolsets=toolsets,
+        allowed_tool_names=frozenset(worker_tool_names_for_task(task)),
+        workspace_path=worker_workspace_path_for_task(task),
+    )
+
+
+def worker_profile_for_task(task: dict[str, object]) -> str:
     profile = str(task.get("workerProfile") or DEFAULT_WORKER_PROFILE).strip().lower()
-    if profile not in ALLOWED_WORKER_PROFILES:
-        profile = DEFAULT_WORKER_PROFILE
+    return profile if profile in ALLOWED_WORKER_PROFILES else DEFAULT_WORKER_PROFILE
+
+
+def worker_toolsets_for_task(task: dict[str, object]) -> list[str]:
+    profile = worker_profile_for_task(task)
     raw_allowed = task.get("allowedToolsets")
     explicit = _string_list(raw_allowed)
     allowed_by_profile = PROFILE_TOOLSET_POLICY[profile]
@@ -69,6 +92,18 @@ def worker_tool_names_for_task(task: dict[str, object]) -> set[str]:
         names.update(TOOLSET_TOOL_NAMES.get(toolset, set()))
     names.difference_update(_string_list(task.get("disallowedTools")))
     return names
+
+
+def worker_workspace_path_for_task(task: dict[str, object]) -> str | None:
+    hints = task.get("contextHints")
+    if not isinstance(hints, dict):
+        return None
+    for key in ("workspacePath", "workspace", "cwd"):
+        raw_value = hints.get(key)
+        value = str(raw_value or "").strip()
+        if value:
+            return value
+    return None
 
 
 def _string_list(value: Any) -> list[str]:

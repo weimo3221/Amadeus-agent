@@ -49,6 +49,7 @@ from amadeus.tool_runtime import (
     ToolLoopGuardrail,
     ToolRegistry,
 )
+from amadeus.worker_policy import WorkerRuntimeScope
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -90,8 +91,8 @@ AGENT_MAX_TOOL_ITERATIONS = 90
 WORKSPACE_MUTATING_TOOLS = {"patch", "write_file"}
 POTENTIALLY_WORKSPACE_MUTATING_TOOLS = {"terminal", "execute_code"}
 logger = logging.getLogger(__name__)
-_WORKER_ALLOWED_TOOL_NAMES: contextvars.ContextVar[frozenset[str] | None] = contextvars.ContextVar(
-    "amadeus_worker_allowed_tool_names",
+_WORKER_RUNTIME_SCOPE: contextvars.ContextVar[WorkerRuntimeScope | None] = contextvars.ContextVar(
+    "amadeus_worker_runtime_scope",
     default=None,
 )
 
@@ -1082,11 +1083,23 @@ class AgentRuntime:
 
     @contextlib.contextmanager
     def worker_tool_scope(self, allowed_tool_names: set[str] | frozenset[str] | None) -> Iterable[None]:
-        token = _WORKER_ALLOWED_TOOL_NAMES.set(frozenset(allowed_tool_names) if allowed_tool_names is not None else None)
+        scope = None
+        if allowed_tool_names is not None:
+            scope = WorkerRuntimeScope(
+                worker_profile="worker",
+                allowed_toolsets=(),
+                allowed_tool_names=frozenset(allowed_tool_names),
+            )
+        with self.worker_runtime_scope(scope):
+            yield
+
+    @contextlib.contextmanager
+    def worker_runtime_scope(self, scope: WorkerRuntimeScope | None) -> Iterable[None]:
+        token = _WORKER_RUNTIME_SCOPE.set(scope)
         try:
             yield
         finally:
-            _WORKER_ALLOWED_TOOL_NAMES.reset(token)
+            _WORKER_RUNTIME_SCOPE.reset(token)
 
     def _role_runtime_scope(self, session_id: str | None = None) -> RoleRuntimeScope:
         return normalize_role_runtime_scope(self.memory_store.role_runtime_scope_for_session(session_id))
@@ -1104,9 +1117,10 @@ class AgentRuntime:
 
     def _effective_allowed_tool_names(self, session_id: str | None = None) -> set[str] | None:
         role_names = self._role_allowed_tool_names(session_id)
-        worker_names = _WORKER_ALLOWED_TOOL_NAMES.get()
-        if worker_names is None:
+        worker_scope = _WORKER_RUNTIME_SCOPE.get()
+        if worker_scope is None:
             return role_names
+        worker_names = worker_scope.allowed_tool_names
         if role_names is None:
             return set(worker_names)
         return set(role_names).intersection(worker_names)
@@ -2193,6 +2207,9 @@ class AgentRuntime:
                 user_message_id=user_message_id,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
+                worker_profile=self._current_worker_profile(),
+                worker_allowed_toolsets=self._current_worker_allowed_toolsets(),
+                worker_workspace_path=self._current_worker_workspace_path(),
                 workspace_epoch=workspace_epoch,
                 cancel_event=cancel_event,
                 permission_request_id=permission_request_id,
@@ -2203,6 +2220,9 @@ class AgentRuntime:
                     "permission": spec.permission,
                     "permissionDecision": permission_decision,
                     "workspaceEpoch": workspace_epoch,
+                    "workerProfile": self._current_worker_profile(),
+                    "workerAllowedToolsets": list(self._current_worker_allowed_toolsets()),
+                    "workerWorkspacePath": self._current_worker_workspace_path(),
                 },
             ),
         )
@@ -2505,19 +2525,43 @@ class AgentRuntime:
                 yield AgentEvent(event_type, payload)
 
     def _workspace_root_for_session(self, session_id: str | None = None) -> Path:
+        worker_workspace_path = self._current_worker_workspace_path()
+        if worker_workspace_path:
+            worker_root = self._resolve_workspace_root(worker_workspace_path)
+            if worker_root is not None:
+                return worker_root
         if not session_id:
             return self.workspace_root
         workspace_path = self.memory_store.role_workspace_path_for_session(session_id)
         if not workspace_path:
             return self.workspace_root
+        resolved = self._resolve_workspace_root(workspace_path)
+        return resolved or self.workspace_root
+
+    def _resolve_workspace_root(self, workspace_path: str) -> Path | None:
         candidate = Path(workspace_path).expanduser()
         if not candidate.is_absolute():
             candidate = self.workspace_root / candidate
         try:
             resolved = candidate.resolve()
         except OSError:
-            return self.workspace_root
-        return resolved if resolved.is_dir() else self.workspace_root
+            return None
+        return resolved if resolved.is_dir() else None
+
+    def _current_worker_scope(self) -> WorkerRuntimeScope | None:
+        return _WORKER_RUNTIME_SCOPE.get()
+
+    def _current_worker_profile(self) -> str | None:
+        scope = self._current_worker_scope()
+        return scope.worker_profile if scope else None
+
+    def _current_worker_allowed_toolsets(self) -> tuple[str, ...]:
+        scope = self._current_worker_scope()
+        return scope.allowed_toolsets if scope else ()
+
+    def _current_worker_workspace_path(self) -> str | None:
+        scope = self._current_worker_scope()
+        return scope.workspace_path if scope else None
 
     def _build_system_prompt(self, *, session_id: str | None = None) -> str:
         workspace_root = self._workspace_root_for_session(session_id)

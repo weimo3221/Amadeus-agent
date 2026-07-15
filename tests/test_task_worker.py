@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 from amadeus.agent import AgentEvent, AgentRuntime, PermissionRequest
 from amadeus.memory import MessageMemoryStore
 from amadeus.task_worker_entrypoint import main as task_worker_entrypoint_main, run_task_once
+from amadeus.worker_policy import WorkerRuntimeScope
 from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
 
 
@@ -77,6 +78,12 @@ class SlowRuntime:
 class ScopedRuntime(SuccessfulRuntime):
     def __init__(self) -> None:
         self.scopes: list[set[str]] = []
+        self.runtime_scopes: list[WorkerRuntimeScope] = []
+
+    @contextlib.contextmanager
+    def worker_runtime_scope(self, scope: WorkerRuntimeScope):
+        self.runtime_scopes.append(scope)
+        yield
 
     @contextlib.contextmanager
     def worker_tool_scope(self, allowed_tool_names: set[str]):
@@ -162,17 +169,22 @@ class TaskWorkerTests(unittest.TestCase):
                 worker_profile="researcher",
                 allowed_toolsets=["read", "web", "terminal"],
                 disallowed_tools=["web_extract"],
+                context_hints={"workspacePath": "research-workspace"},
             )
 
             worker.submit(str(task["id"]))
             worker.shutdown()
 
-        self.assertEqual(len(runtime.scopes), 1)
-        scope = runtime.scopes[0]
-        self.assertIn("read_file", scope)
-        self.assertIn("web_search", scope)
-        self.assertNotIn("terminal", scope)
-        self.assertNotIn("web_extract", scope)
+        self.assertEqual(len(runtime.runtime_scopes), 1)
+        scope = runtime.runtime_scopes[0]
+        self.assertEqual(scope.worker_profile, "researcher")
+        self.assertEqual(scope.allowed_toolsets, ("read", "web"))
+        self.assertEqual(scope.workspace_path, "research-workspace")
+        self.assertIn("read_file", scope.allowed_tool_names)
+        self.assertIn("web_search", scope.allowed_tool_names)
+        self.assertNotIn("terminal", scope.allowed_tool_names)
+        self.assertNotIn("web_extract", scope.allowed_tool_names)
+        self.assertEqual(runtime.scopes, [])
 
     def test_agent_runtime_worker_tool_scope_filters_schemas_and_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,6 +197,25 @@ class TaskWorkerTests(unittest.TestCase):
                 self.assertEqual(names, {"get_current_time", "read_file"})
                 self.assertTrue(runtime.role_allows_tool("session-1", "read_file"))
                 self.assertFalse(runtime.role_allows_tool("session-1", "terminal"))
+
+    def test_agent_runtime_worker_runtime_scope_overrides_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "worker-workspace"
+            workspace.mkdir()
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite", default_workspace_path=Path(tmpdir) / "role-workspace")
+            runtime = AgentRuntime(memory, audio_runtime=None)
+            scope = WorkerRuntimeScope(
+                worker_profile="coder",
+                allowed_toolsets=("read", "patch"),
+                allowed_tool_names=frozenset({"read_file", "patch"}),
+                workspace_path=str(workspace),
+            )
+
+            with runtime.worker_runtime_scope(scope):
+                self.assertEqual(runtime._workspace_root_for_session("session-1"), workspace.resolve())
+                schemas = runtime.enabled_tool_schemas("session-1")
+                names = {schema["function"]["name"] for schema in schemas}
+                self.assertEqual(names, {"read_file", "patch"})
 
     def test_subprocess_task_runner_launches_entrypoint_with_task_env(self) -> None:
         launches: list[dict[str, object]] = []

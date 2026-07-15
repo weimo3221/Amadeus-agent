@@ -53,6 +53,9 @@ class ToolContext:
     user_message_id: int | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
+    worker_profile: str | None = None
+    worker_allowed_toolsets: tuple[str, ...] = ()
+    worker_workspace_path: str | None = None
     permission_request_id: str | None = None
     permission_decision: str | None = None
     workspace_epoch: int | None = None
