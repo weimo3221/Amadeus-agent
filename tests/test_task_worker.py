@@ -768,6 +768,38 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("Verify it against the acceptance criteria", prompt)
         self.assertIn("only perform the missing follow-up work", prompt)
 
+    def test_worker_context_adds_approved_tool_resume_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(
+                session_id="session-1",
+                title="Resume approved command",
+                checkpoint={
+                    "status": "queued",
+                    "phase": "approval_resume_requested",
+                    "reason": "human_approved_worker_action",
+                    "approvedToolName": "terminal",
+                    "approvedTools": ["terminal"],
+                    "resumeFrom": {
+                        "status": "blocked",
+                        "phase": "approval_required",
+                        "reason": "worker_tool_permission_required",
+                        "toolName": "terminal",
+                        "lastEventType": "tool.finished",
+                    },
+                },
+            )
+
+            context = build_worker_context(memory, str(task["id"]))
+            prompt = context.to_prompt()
+
+        self.assertIn("<resume-strategy>", prompt)
+        self.assertIn("resumeFromPhase: approval_required", prompt)
+        self.assertIn("approvedTools: terminal", prompt)
+        self.assertIn("approved the listed ask-tool", prompt)
+        self.assertIn("only for the blocked step", prompt)
+        self.assertIn("not treat it as broad or permanent permission", prompt)
+
     def test_worker_records_attempt_and_result_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

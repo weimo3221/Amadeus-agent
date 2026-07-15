@@ -554,19 +554,28 @@ def _resume_strategy_for_checkpoint(checkpoint: dict[str, object] | None) -> lis
     if not checkpoint:
         return []
     resume_from = checkpoint.get("resumeFrom")
-    if not isinstance(resume_from, dict):
+    phase = _text(checkpoint.get("phase"))
+    approved_tools = _string_list(checkpoint.get("approvedTools"))
+    approved_tool_name = _text(checkpoint.get("approvedToolName"))
+    if approved_tool_name and approved_tool_name not in approved_tools:
+        approved_tools.append(approved_tool_name)
+    if not isinstance(resume_from, dict) and not approved_tools:
         return []
-    phase = _text(resume_from.get("previousPhase") or resume_from.get("phase"))
-    last_event = _text(resume_from.get("lastEventType"))
+    resume_phase = _text(resume_from.get("previousPhase") or resume_from.get("phase")) if isinstance(resume_from, dict) else ""
+    if not resume_phase:
+        resume_phase = phase
+    last_event = _text(resume_from.get("lastEventType")) if isinstance(resume_from, dict) else ""
     reason = _text(checkpoint.get("reason"))
     lines = [
         f"reason: {reason or 'retry'}",
-        f"resumeFromPhase: {phase or 'unknown'}",
+        f"resumeFromPhase: {resume_phase or 'unknown'}",
     ]
     if last_event:
         lines.append(f"lastEventType: {last_event}")
-    result_preview = _text(resume_from.get("resultPreview"))
-    error_preview = _text(resume_from.get("errorPreview"))
+    if approved_tools:
+        lines.append(f"approvedTools: {', '.join(approved_tools)}")
+    result_preview = _text(resume_from.get("resultPreview")) if isinstance(resume_from, dict) else ""
+    error_preview = _text(resume_from.get("errorPreview")) if isinstance(resume_from, dict) else ""
     if result_preview:
         lines.append("priorResultPreview:")
         lines.append(_truncate(result_preview, WORKER_CONTEXT_FIELD_CHARS))
@@ -574,25 +583,43 @@ def _resume_strategy_for_checkpoint(checkpoint: dict[str, object] | None) -> lis
         lines.append("priorErrorPreview:")
         lines.append(_truncate(error_preview, WORKER_CONTEXT_FIELD_CHARS))
     lines.append("instructions:")
-    if phase in {"assistant_message_received", "completed", "blocked_for_review"} or result_preview:
+    if approved_tools:
+        lines.append("- A user approved the listed ask-tool(s) for this resumed worker run.")
+        lines.append("- Use the approved tool only for the blocked step that required approval; do not treat it as broad or permanent permission.")
+        lines.append("- Continue from resumeFrom and avoid repeating completed analysis before the approval checkpoint.")
+        lines.append("- If the approved tool is still insufficient, return a clear blocker instead of requesting unrelated risky actions.")
+    if resume_phase in {"assistant_message_received", "completed", "blocked_for_review"} or result_preview:
         lines.append("- Treat the prior result preview as a partial draft or completed candidate.")
         lines.append("- Verify it against the acceptance criteria and dependency artifacts before redoing work.")
         lines.append("- If the draft is sufficient, return a concise final result that says what was verified.")
         lines.append("- If artifacts or details are missing, only perform the missing follow-up work.")
-    elif phase in {"model_turn_started", "model_turn_starting", "scope_validated", "context_built"}:
+    elif resume_phase in {"model_turn_started", "model_turn_starting", "scope_validated", "context_built"}:
         lines.append("- The previous worker stopped before producing a usable final result.")
         lines.append("- Continue from the task specification and available dependency context.")
         lines.append("- Avoid repeating any completed dependency analysis already shown in handoffSummary or previous attempts.")
-    elif phase in {"error_received", "failed"} or error_preview:
+    elif resume_phase in {"error_received", "failed"} or error_preview:
         lines.append("- Review the prior error before retrying.")
         lines.append("- Change approach if the same error is likely to repeat.")
         lines.append("- Return a blocker clearly if the error requires user input or unavailable capability.")
-    elif phase in {"cancelled", "turn_cancelled", "subprocess_exited"}:
+    elif resume_phase in {"cancelled", "turn_cancelled", "subprocess_exited"}:
         lines.append("- Resume conservatively from the last durable context.")
         lines.append("- Check whether any partial output or artifact can be reused before restarting work.")
     else:
         lines.append("- Use resumeFrom as recovery context and avoid unnecessary duplicate work.")
     return lines
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in value:
+        normalized = _text(item)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            output.append(normalized)
+    return output
 
 
 def _json_preview(value: object, *, max_chars: int = WORKER_CONTEXT_FIELD_CHARS) -> str:
