@@ -332,7 +332,17 @@ class TaskWorkerTests(unittest.TestCase):
                 launches.append({"command": command, **kwargs})
                 env = kwargs["env"]
                 self.assertIsInstance(env, dict)
-                memory.create_task_attempt(str(task["id"]), run_id=str(env["AMADEUS_TASK_RUN_ID"]), worker_id="child-worker")
+                memory.create_task_attempt(
+                    str(task["id"]),
+                    run_id=str(env["AMADEUS_TASK_RUN_ID"]),
+                    worker_id="child-worker",
+                    checkpoint={
+                        "status": "running",
+                        "phase": "assistant_message_received",
+                        "lastEventType": "assistant.message",
+                        "resultPreview": "partial subprocess result",
+                    },
+                )
                 return FakeProcess(return_code=1)
 
             runner = SubprocessTaskRunner(database_path=database, process_factory=fake_process_factory)
@@ -345,6 +355,11 @@ class TaskWorkerTests(unittest.TestCase):
 
         self.assertEqual(recovered["status"], "queued")
         self.assertIn("Task subprocess exited with code 1", str(recovered["error"]))
+        self.assertEqual(recovered["checkpoint"]["phase"], "retry_ready")
+        self.assertEqual(recovered["checkpoint"]["reason"], "subprocess_exited")
+        self.assertEqual(recovered["checkpoint"]["resumeFrom"]["phase"], "subprocess_exited")
+        self.assertEqual(recovered["checkpoint"]["resumeFrom"]["previousPhase"], "assistant_message_received")
+        self.assertIn("partial subprocess result", str(recovered["handoffSummary"]))
         self.assertEqual(attempts[0]["status"], "abandoned")
         self.assertIn("Task subprocess exited with code 1", str(attempts[0]["error"]))
         self.assertEqual(attempts[0]["checkpoint"]["status"], "abandoned")
@@ -520,6 +535,16 @@ class TaskWorkerTests(unittest.TestCase):
             runtime = SuccessfulRuntime()
             task = memory.create_task(session_id="session-1", title="Recover")
             memory.start_task(str(task["id"]), claim_lock="stale-worker")
+            memory.create_task_attempt(
+                str(task["id"]),
+                worker_id="stale-worker",
+                checkpoint={
+                    "status": "running",
+                    "phase": "model_turn_started",
+                    "turnId": "turn-stale",
+                    "lastEventType": "agent.turn.started",
+                },
+            )
             old_heartbeat = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
             with memory.connect() as connection:
                 connection.execute(
@@ -541,6 +566,11 @@ class TaskWorkerTests(unittest.TestCase):
             events = memory.list_task_events(str(task["id"]))
 
         self.assertEqual([task["id"] for task in recovered], [task["id"]])
+        self.assertEqual(recovered[0]["checkpoint"]["phase"], "retry_ready")
+        self.assertEqual(recovered[0]["checkpoint"]["reason"], "stale_running_recovered")
+        self.assertEqual(recovered[0]["checkpoint"]["resumeFrom"]["phase"], "model_turn_started")
+        self.assertEqual(recovered[0]["checkpoint"]["resumeFrom"]["turnId"], "turn-stale")
+        self.assertIn("model_turn_started", str(recovered[0]["handoffSummary"]))
         self.assertEqual(finished["attemptCount"], 2)
         self.assertEqual([event["type"] for event in events], ["created", "running", "recovered", "running", "succeeded"])
         self.assertIn(("queued", "recovered"), published)

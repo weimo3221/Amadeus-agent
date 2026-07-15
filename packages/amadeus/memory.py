@@ -3487,6 +3487,8 @@ class MessageMemoryStore:
         claim_lock: str,
         error: str | None = None,
         next_run_at: str | None = None,
+        checkpoint: dict[str, object] | None = None,
+        handoff_summary: str | None = None,
     ) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
@@ -3494,6 +3496,12 @@ class MessageMemoryStore:
             raise ValueError("claim_lock is required")
         normalized_error = normalize_optional_text(error, max_chars=MAX_TASK_ERROR_CHARS, field_name="error")
         normalized_next_run_at = normalize_optional_text(next_run_at, max_chars=80, field_name="next_run_at")
+        checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint") if checkpoint is not None else None
+        normalized_handoff_summary = normalize_optional_text(
+            handoff_summary,
+            max_chars=MAX_TASK_RESULT_CHARS,
+            field_name="handoff_summary",
+        ) if handoff_summary is not None else None
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             row = connection.execute(
@@ -3524,12 +3532,16 @@ class MessageMemoryStore:
                     last_heartbeat = NULL,
                     next_run_at = ?,
                     error = ?,
+                    checkpoint_json = COALESCE(?, checkpoint_json),
+                    handoff_summary = COALESCE(?, handoff_summary),
                     updated_at = ?
                 WHERE id = ? AND status = 'running' AND claim_lock = ?
                 """,
                 (
                     normalized_next_run_at,
                     normalized_error,
+                    checkpoint_json,
+                    normalized_handoff_summary,
                     now,
                     normalized_task_id,
                     normalized_claim_lock,
@@ -3547,6 +3559,7 @@ class MessageMemoryStore:
                     "attemptCount": int(row[4] or 0),
                     "maxAttempts": int(row[5] or 0),
                     "nextRunAt": normalized_next_run_at,
+                    "checkpoint": checkpoint if checkpoint is not None else None,
                 },
                 created_at=now,
             )
@@ -3614,7 +3627,7 @@ class MessageMemoryStore:
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
         stale_after = max(1.0, float(stale_after_seconds))
-        stale: list[tuple[str, str, str | None, str | None, str | None, str | None]] = []
+        stale: list[tuple[str, str, str | None, str | None, str | None, str | None, dict[str, object] | None, str | None]] = []
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -3633,6 +3646,12 @@ class MessageMemoryStore:
                     continue
                 if lease_expires_at is None and heartbeat is not None and (now_dt - heartbeat).total_seconds() < stale_after:
                     continue
+                latest_checkpoint = self._latest_running_attempt_checkpoint(connection, str(row[0]))
+                recovery_checkpoint = self._recovery_checkpoint(
+                    reason="stale_running_recovered",
+                    previous_checkpoint=latest_checkpoint,
+                    recovered_at=now,
+                )
                 stale.append((
                     str(row[0]),
                     str(row[1]),
@@ -3640,8 +3659,19 @@ class MessageMemoryStore:
                     str(row[3]) if row[3] else None,
                     str(row[4]) if row[4] else None,
                     str(row[5]) if row[5] else None,
+                    recovery_checkpoint,
+                    self._recovery_handoff_summary(
+                        "Task worker recovered stale running task",
+                        latest_checkpoint,
+                    ),
                 ))
-            for task_id, session_id, claim_lock, heartbeat, lease_owner, lease_expires_at in stale:
+            for task_id, session_id, claim_lock, heartbeat, lease_owner, lease_expires_at, recovery_checkpoint, handoff_summary in stale:
+                checkpoint_json = normalize_task_json_object(recovery_checkpoint, field_name="checkpoint")
+                normalized_handoff_summary = normalize_optional_text(
+                    handoff_summary,
+                    max_chars=MAX_TASK_RESULT_CHARS,
+                    field_name="handoff_summary",
+                )
                 connection.execute(
                     """
                     UPDATE tasks
@@ -3652,12 +3682,16 @@ class MessageMemoryStore:
                         last_heartbeat = NULL,
                         next_run_at = ?,
                         error = ?,
+                        checkpoint_json = ?,
+                        handoff_summary = ?,
                         updated_at = ?
                     WHERE id = ? AND status = 'running'
                     """,
                     (
                         now,
                         "Task worker recovered stale running task",
+                        checkpoint_json,
+                        normalized_handoff_summary,
                         now,
                         task_id,
                     ),
@@ -3675,10 +3709,65 @@ class MessageMemoryStore:
                         "leaseOwner": lease_owner,
                         "leaseExpiresAt": lease_expires_at,
                         "lastHeartbeat": heartbeat,
+                        "checkpoint": recovery_checkpoint,
                     },
                     created_at=now,
                 )
-        return [task for task_id, _, _, _, _, _ in stale if (task := self.get_task(task_id)) is not None]
+        return [task for task_id, _, _, _, _, _, _, _ in stale if (task := self.get_task(task_id)) is not None]
+
+    def _latest_running_attempt_checkpoint(self, connection: sqlite3.Connection, task_id: str) -> dict[str, object] | None:
+        row = connection.execute(
+            """
+            SELECT checkpoint_json
+            FROM task_attempts
+            WHERE task_id = ? AND status = 'running'
+            ORDER BY heartbeat_at DESC, started_at DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return None
+        checkpoint = json_payload(row[0], default={})
+        return checkpoint if isinstance(checkpoint, dict) and checkpoint else None
+
+    @staticmethod
+    def _recovery_checkpoint(
+        *,
+        reason: str,
+        previous_checkpoint: dict[str, object] | None,
+        recovered_at: str,
+    ) -> dict[str, object]:
+        checkpoint: dict[str, object] = {
+            "status": "queued",
+            "phase": "retry_ready",
+            "reason": reason,
+            "recoveredAt": recovered_at,
+        }
+        if previous_checkpoint:
+            checkpoint["resumeFrom"] = {
+                "status": previous_checkpoint.get("status"),
+                "phase": previous_checkpoint.get("phase"),
+                "turnId": previous_checkpoint.get("turnId"),
+                "lastEventType": previous_checkpoint.get("lastEventType"),
+                "workerProfile": previous_checkpoint.get("workerProfile"),
+                "allowedToolsets": previous_checkpoint.get("allowedToolsets"),
+                "resultPreview": previous_checkpoint.get("resultPreview"),
+                "errorPreview": previous_checkpoint.get("errorPreview"),
+            }
+        return checkpoint
+
+    @staticmethod
+    def _recovery_handoff_summary(message: str, previous_checkpoint: dict[str, object] | None) -> str:
+        if not previous_checkpoint:
+            return message
+        phase = str(previous_checkpoint.get("phase") or "unknown")
+        last_event = str(previous_checkpoint.get("lastEventType") or "none")
+        preview = previous_checkpoint.get("errorPreview") or previous_checkpoint.get("resultPreview")
+        summary = f"{message}. Resume from previous worker phase={phase}, lastEventType={last_event}."
+        if preview:
+            summary += f" Preview: {str(preview)[:500]}"
+        return summary
 
     def finish_task(
         self,

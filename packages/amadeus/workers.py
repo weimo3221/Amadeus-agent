@@ -35,6 +35,47 @@ WORKER_CONTEXT_PROMPT_CHARS = 20000
 WORKER_CHECKPOINT_PREVIEW_CHARS = 1000
 
 
+def _recovery_checkpoint_from_attempt(
+    *,
+    reason: str,
+    previous_checkpoint: dict[str, object] | None,
+) -> dict[str, object]:
+    checkpoint: dict[str, object] = {
+        "status": "queued",
+        "phase": "retry_ready",
+        "reason": reason,
+        "recoveredAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if previous_checkpoint:
+        checkpoint["resumeFrom"] = {
+            "status": previous_checkpoint.get("status"),
+            "phase": previous_checkpoint.get("phase"),
+            "reason": previous_checkpoint.get("reason"),
+            "returnCode": previous_checkpoint.get("returnCode"),
+        }
+        nested = previous_checkpoint.get("previousCheckpoint")
+        if isinstance(nested, dict):
+            checkpoint["resumeFrom"]["previousPhase"] = nested.get("phase")
+            checkpoint["resumeFrom"]["lastEventType"] = nested.get("lastEventType")
+            checkpoint["resumeFrom"]["turnId"] = nested.get("turnId")
+            checkpoint["resumeFrom"]["resultPreview"] = nested.get("resultPreview")
+            checkpoint["resumeFrom"]["errorPreview"] = nested.get("errorPreview")
+    return checkpoint
+
+
+def _recovery_handoff_summary(message: str, checkpoint: dict[str, object] | None) -> str:
+    if not checkpoint:
+        return message
+    nested = checkpoint.get("previousCheckpoint") if isinstance(checkpoint.get("previousCheckpoint"), dict) else checkpoint
+    phase = str(nested.get("phase") or "unknown") if isinstance(nested, dict) else "unknown"
+    last_event = str(nested.get("lastEventType") or "none") if isinstance(nested, dict) else "none"
+    preview = (nested.get("errorPreview") or nested.get("resultPreview")) if isinstance(nested, dict) else None
+    summary = f"{message}. Resume from previous worker phase={phase}, lastEventType={last_event}."
+    if preview:
+        summary += f" Preview: {str(preview)[:500]}"
+    return summary
+
+
 class TaskRunner(Protocol):
     def submit(self, task_id: str, run_task: TaskCallable) -> None:
         ...
@@ -265,14 +306,24 @@ class SubprocessTaskRunner:
         if not claim_lock:
             return
         error = f"Task subprocess exited with code {return_code}"
+        abandoned_checkpoint: dict[str, object] | None = None
         for attempt in memory_store.list_task_attempts(task_id, limit=20):
             if str(attempt.get("status") or "") == "running" and str(attempt.get("runId") or "") == run_id:
+                previous_checkpoint = attempt.get("checkpoint") if isinstance(attempt.get("checkpoint"), dict) else None
+                abandoned_checkpoint = {
+                    "status": "abandoned",
+                    "phase": "subprocess_exited",
+                    "reason": "subprocess_exited",
+                    "returnCode": return_code,
+                }
+                if previous_checkpoint:
+                    abandoned_checkpoint["previousCheckpoint"] = previous_checkpoint
                 try:
                     memory_store.finish_task_attempt(
                         str(attempt["id"]),
                         status="abandoned",
                         error=error,
-                        checkpoint={"status": "abandoned", "reason": "subprocess_exited", "returnCode": return_code},
+                        checkpoint=abandoned_checkpoint,
                     )
                 except Exception:
                     logger.debug("Task subprocess failed to mark attempt failed taskId=%s runId=%s", task_id, run_id, exc_info=True)
@@ -283,6 +334,14 @@ class SubprocessTaskRunner:
                     claim_lock=claim_lock,
                     error=error,
                     next_run_at=datetime.now(timezone.utc).isoformat(),
+                    checkpoint=_recovery_checkpoint_from_attempt(
+                        reason="subprocess_exited",
+                        previous_checkpoint=abandoned_checkpoint,
+                    ),
+                    handoff_summary=_recovery_handoff_summary(
+                        error,
+                        abandoned_checkpoint,
+                    ),
                 )
             else:
                 memory_store.fail_task(task_id, claim_lock=claim_lock, error=error)
@@ -356,6 +415,14 @@ class WorkerContext:
         if isinstance(context_hints, dict) and context_hints:
             lines.append("contextHints:")
             lines.append(_json_preview(context_hints))
+        checkpoint = task.get("checkpoint")
+        if isinstance(checkpoint, dict) and checkpoint:
+            lines.append("checkpoint:")
+            lines.append(_json_preview(checkpoint))
+        handoff_summary = _text(task.get("handoffSummary"))
+        if handoff_summary:
+            lines.append("handoffSummary:")
+            lines.append(_truncate(handoff_summary, WORKER_CONTEXT_FIELD_CHARS))
         allowed = task.get("allowedToolsets")
         disallowed = task.get("disallowedTools")
         if allowed:
