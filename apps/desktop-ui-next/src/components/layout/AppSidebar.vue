@@ -71,6 +71,8 @@ const connectionMeta: Record<ConnectionState, { label: string; tone: string; dot
         v-for="item in primary"
         :key="item.key"
         type="button"
+        data-testid="main-nav-item"
+        :data-nav-key="item.key"
         class="group relative flex items-center gap-3 rounded-[var(--radius-xl2)] px-3 py-2.5 text-sm font-medium
                transition-all duration-200 ease-[var(--ease-soft)]"
         :class="
@@ -106,6 +108,8 @@ const connectionMeta: Record<ConnectionState, { label: string; tone: string; dot
         v-for="item in secondary"
         :key="item.key"
         type="button"
+        data-testid="main-nav-item"
+        :data-nav-key="item.key"
         class="group flex items-center gap-3 rounded-[var(--radius-xl2)] px-3 py-2.5 text-sm font-medium
                transition-all duration-200 ease-[var(--ease-soft)]"
         :class="

@@ -28,7 +28,6 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          mainUi: resolve(__dirname, 'src/renderer/main-ui/index.html'),
           companion: resolve(__dirname, 'src/renderer/companion/index.html'),
         },
       },

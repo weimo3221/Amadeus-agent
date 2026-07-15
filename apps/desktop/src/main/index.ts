@@ -18,18 +18,6 @@ const isE2eOpenMainUi = process.env.AMADEUS_E2E_OPEN_MAIN_UI === '1'
 const isE2eCompanionHover = process.env.AMADEUS_E2E_COMPANION_HOVER === '1'
 const defaultCompanionSessionId = process.env.AMADEUS_SESSION_ID || 'companion:default'
 
-// The Vue main UI (apps/desktop-ui-next) is the production workbench.
-// The vanilla renderer is retained only as an explicit fallback and for older E2E DOM assertions.
-const isAnyE2e = isE2eSmoke
-  || isE2eRuntimeUi
-  || isE2eLive2D
-  || isE2eAudioFeedback
-  || isE2eAudioError
-  || isE2ePermissionPrompt
-  || isE2eMultiSkillSelect
-  || isE2eOpenMainUi
-  || isE2eCompanionHover
-const useLegacyMainUi = process.env.AMADEUS_MAIN_UI_LEGACY === '1' || isAnyE2e
 const mainUiDevServerUrl = process.env.AMADEUS_MAIN_UI_DEV_URL || 'http://127.0.0.1:5178/'
 
 let mainUiWindow: BrowserWindow | undefined
@@ -111,9 +99,9 @@ function publishCompanionInteractionMode(): void {
   })
 }
 
-function rendererDevUrl(entry: 'main-ui' | 'companion'): string {
+function companionRendererDevUrl(): string {
   const baseUrl = process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173/'
-  return new URL(`${entry}/index.html`, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString()
+  return new URL('companion/index.html', baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString()
 }
 
 function rendererQuery(sessionId = defaultCompanionSessionId): Record<string, string> {
@@ -152,20 +140,6 @@ function mainUiQueryString(sessionId: string): string {
 }
 
 function loadMainUi(window: BrowserWindow, sessionId: string): void {
-  // E2E and the explicit legacy flag keep the deprecated vanilla renderer so DOM assertions hold.
-  if (useLegacyMainUi) {
-    if (process.env.AMADEUS_DESKTOP_DEV === '1') {
-      const url = new URL(rendererDevUrl('main-ui'))
-      url.searchParams.set('sessionId', sessionId)
-      void window.loadURL(url.toString())
-    }
-    else {
-      void window.loadFile(join(__dirname, '../renderer/main-ui/index.html'), { query: rendererQuery(sessionId) })
-    }
-    return
-  }
-
-  // Default production path: the Vue main UI (apps/desktop-ui-next).
   const search = mainUiQueryString(sessionId)
   if (process.env.AMADEUS_DESKTOP_DEV === '1') {
     const url = new URL(mainUiDevServerUrl)
@@ -283,11 +257,6 @@ function createCompanionWindow(): BrowserWindow {
       return
     }
 
-    if (isE2eRuntimeUi) {
-      void runRuntimeUiE2E(window)
-      return
-    }
-
     if (isE2eLive2D) {
       void runLive2DSwitchE2E(window)
       return
@@ -295,11 +264,6 @@ function createCompanionWindow(): BrowserWindow {
 
     if (isE2eAudioFeedback) {
       void runAudioFeedbackE2E(window)
-      return
-    }
-
-    if (isE2ePermissionPrompt) {
-      void runPermissionPromptE2E(window)
       return
     }
 
@@ -331,7 +295,7 @@ function createCompanionWindow(): BrowserWindow {
   })
 
   if (!isE2eSmoke && !isE2eRuntimeUi && !isE2eLive2D && !isE2eAudioFeedback && !isE2ePermissionPrompt && !isE2eMultiSkillSelect && process.env.AMADEUS_DESKTOP_DEV === '1') {
-    const url = new URL(rendererDevUrl('companion'))
+    const url = new URL(companionRendererDevUrl())
     url.searchParams.set('sessionId', defaultCompanionSessionId)
     void window.loadURL(url.toString())
   }
@@ -394,6 +358,15 @@ function createMainUiWindow(sessionId = defaultCompanionSessionId): BrowserWindo
   window.on('hide', publishCompanionInteractionMode)
   window.on('minimize', publishCompanionInteractionMode)
   window.on('restore', publishCompanionInteractionMode)
+  window.webContents.on('did-finish-load', () => {
+    if (isE2eRuntimeUi) {
+      void runRuntimeUiE2E(window)
+      return
+    }
+    if (isE2ePermissionPrompt) {
+      void runPermissionPromptE2E(window)
+    }
+  })
 
   loadMainUi(window, sessionId)
 
@@ -406,12 +379,8 @@ async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> 
     const result = await mainWindow.webContents.executeJavaScript(`
       (() => new Promise((resolve, reject) => {
         const expectAllow = ${expectAllow};
-        const deadline = Date.now() + 8000;
-        const text = (selector) => document.querySelector(selector)?.textContent ?? '';
-        const connectionState = () => {
-          const label = document.querySelector('#connection-label');
-          return label?.getAttribute('aria-label') || label?.getAttribute('title') || label?.dataset?.state || label?.textContent || '';
-        };
+        const deadline = Date.now() + 10000;
+        const byTestId = (id) => document.querySelector('[data-testid="' + id + '"]');
         const waitFor = (predicate, label) => {
           return new Promise((waitResolve, waitReject) => {
             const tick = () => {
@@ -427,7 +396,7 @@ async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> 
               }
 
               if (Date.now() > deadline) {
-                waitReject(new Error('Timed out waiting for ' + label + '; tool=' + text('#tool-status')));
+                waitReject(new Error('Timed out waiting for ' + label));
                 return;
               }
               setTimeout(tick, 50);
@@ -437,35 +406,38 @@ async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> 
         };
 
         (async () => {
-          await waitFor(() => connectionState() === 'Connected' || connectionState() === 'connected', 'runtime connection');
-          const input = document.querySelector('#chat-input');
-          const form = document.querySelector('#chat-form');
-          const prompt = document.querySelector('#tool-permission');
-          const allowButton = document.querySelector('#tool-allow-button');
-          const denyButton = document.querySelector('#tool-deny-button');
-          if (!input || !form || !prompt || !allowButton || !denyButton) {
-            throw new Error('Permission prompt controls are missing');
+          await waitFor(() => byTestId('runtime-connection')?.dataset?.state === 'online', 'Vue runtime connection');
+          const input = byTestId('chat-input');
+          const sendButton = byTestId('chat-send');
+          if (!(input instanceof HTMLTextAreaElement) || !(sendButton instanceof HTMLButtonElement)) {
+            throw new Error('Vue chat controls are missing');
           }
 
-          input.value = 'e2e permission ping';
+          const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+          valueSetter?.call(input, 'e2e permission ping');
           input.dispatchEvent(new Event('input', { bubbles: true }));
-          form.requestSubmit();
+          await waitFor(() => !sendButton.disabled, 'Vue chat send enabled');
+          sendButton.click();
 
-          await waitFor(() => !prompt.hidden, 'permission prompt visible');
-          const promptText = text('#tool-permission-text');
+          await waitFor(() => Boolean(byTestId('tool-permission')), 'Vue permission prompt visible');
+          const promptText = byTestId('tool-permission')?.textContent ?? '';
+          const actionButton = byTestId(expectAllow ? 'tool-permission-allow' : 'tool-permission-deny');
+          if (!(actionButton instanceof HTMLButtonElement)) {
+            throw new Error('Vue permission action is missing');
+          }
+          actionButton.click();
+          await waitFor(() => !byTestId('tool-permission'), 'Vue permission prompt cleared');
+
           if (expectAllow) {
-            allowButton.click();
-            await waitFor(() => text('#tool-status') === 'Tool permission approved', 'allow status');
+            if (!promptText.includes('Editing local file')) {
+              throw new Error('Vue permission prompt did not render the tool name');
+            }
           }
-          else {
-            denyButton.click();
-            await waitFor(() => text('#tool-status') === 'Tool permission denied', 'deny status');
-          }
-          await waitFor(() => prompt.hidden, 'permission prompt cleared');
 
           resolve({
             promptText,
-            toolStatus: text('#tool-status'),
+            approved: expectAllow,
+            renderer: 'vue-main-ui',
           });
         })().catch(reject);
       }))()
@@ -625,12 +597,9 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
     const result = await mainWindow.webContents.executeJavaScript(`
       (() => new Promise((resolve, reject) => {
         const enableMultiSkillSelect = ${enableMultiSkillSelect};
-        const deadline = Date.now() + 8000;
-        const text = (selector) => document.querySelector(selector)?.textContent ?? '';
-        const connectionState = () => {
-          const label = document.querySelector('#connection-label');
-          return label?.getAttribute('aria-label') || label?.getAttribute('title') || label?.dataset?.state || label?.textContent || '';
-        };
+        const deadline = Date.now() + 10000;
+        const byTestId = (id) => document.querySelector('[data-testid="' + id + '"]');
+        const nav = (key) => document.querySelector('[data-testid="main-nav-item"][data-nav-key="' + key + '"]');
         const waitFor = (predicate, label) => {
           return new Promise((waitResolve, waitReject) => {
             const tick = () => {
@@ -656,40 +625,55 @@ async function runRuntimeUiE2E(mainWindow: BrowserWindow): Promise<void> {
         };
 
         (async () => {
-          await waitFor(() => connectionState() === 'Connected' || connectionState() === 'connected', 'runtime connection');
-          const input = document.querySelector('#chat-input');
-          const form = document.querySelector('#chat-form');
-          const skillsList = document.querySelector('#skills-list');
-          if (!input || !form) {
-            throw new Error('Chat form is missing');
-          }
+          await waitFor(() => byTestId('runtime-connection')?.dataset?.state === 'online', 'Vue runtime connection');
+          let selectedSkillIds = [];
+          let skillsPage = '';
 
           if (enableMultiSkillSelect) {
-            await waitFor(() => (skillsList?.querySelectorAll('input[type="checkbox"]').length ?? 0) >= 2, 'skills loaded');
-            await waitFor(() => text('#skill-detail-title').includes('development/runtime-debug'), 'default skill detail');
-            const checkboxes = Array.from(skillsList.querySelectorAll('input[type="checkbox"]'));
-            checkboxes.forEach((checkbox) => {
-              checkbox.checked = true;
-              checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            const skillsNav = nav('skills');
+            if (!(skillsNav instanceof HTMLButtonElement)) {
+              throw new Error('Vue skills navigation is missing');
+            }
+            skillsNav.click();
+            await waitFor(() => document.querySelectorAll('[data-testid="skill-toggle"]').length >= 2, 'Vue skills loaded');
+            const toggles = Array.from(document.querySelectorAll('[data-testid="skill-toggle"]'));
+            toggles.forEach((toggle) => {
+              if (toggle instanceof HTMLButtonElement) toggle.click();
             });
+            selectedSkillIds = toggles.map((toggle) => toggle.getAttribute('data-skill-id')).filter(Boolean);
+            skillsPage = document.body.textContent ?? '';
+
+            const chatNav = nav('chat');
+            if (!(chatNav instanceof HTMLButtonElement)) {
+              throw new Error('Vue chat navigation is missing');
+            }
+            chatNav.click();
+            await waitFor(() => Boolean(byTestId('chat-input')), 'Vue chat restored');
           }
 
-          input.value = 'e2e runtime ping';
+          const input = byTestId('chat-input');
+          const sendButton = byTestId('chat-send');
+          if (!(input instanceof HTMLTextAreaElement) || !(sendButton instanceof HTMLButtonElement)) {
+            throw new Error('Vue chat controls are missing');
+          }
+
+          const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+          valueSetter?.call(input, 'e2e runtime ping');
           input.dispatchEvent(new Event('input', { bubbles: true }));
-          form.requestSubmit();
+          await waitFor(() => !sendButton.disabled, 'Vue chat send enabled');
+          sendButton.click();
 
           await waitFor(() => {
-            return Array.from(document.querySelectorAll('.message.assistant'))
+            return Array.from(document.querySelectorAll('[data-testid="chat-message"][data-role="assistant"]'))
               .some((element) => element.textContent?.includes('E2E runtime reply'));
-          }, 'assistant reply');
+          }, 'Vue assistant reply');
 
           resolve({
-            connection: connectionState(),
-            memory: text('#memory-status'),
-            skills: text('#skills-status'),
-            skillDetailTitle: text('#skill-detail-title'),
-            skillDetailBody: text('#skill-detail-body'),
-            chat: text('#chat-log'),
+            connection: byTestId('runtime-connection')?.dataset?.state ?? '',
+            selectedSkillIds,
+            skillsPage,
+            chat: byTestId('chat-log')?.textContent ?? '',
+            renderer: 'vue-main-ui',
           });
         })().catch(reject);
       }))()
@@ -730,20 +714,20 @@ async function runOpenMainUiE2E(window: BrowserWindow): Promise<void> {
       throw new Error(`Main UI did not inherit companion session: ${url}`)
     }
 
-      const loadDeadline = Date.now() + 5000
-      while (mainUiWindow.webContents.isLoading() && Date.now() < loadDeadline) {
-        await new Promise((resolveWait) => setTimeout(resolveWait, 100))
-      }
-      await new Promise((resolveWait) => setTimeout(resolveWait, 1500))
-      const connection = await mainUiWindow.webContents.executeJavaScript(`
-        (() => {
-          const label = document.querySelector('#connection-label');
-          return label?.getAttribute('aria-label') || label?.getAttribute('title') || label?.dataset?.state || label?.textContent || '';
-        })()
-      `)
+    const loadDeadline = Date.now() + 5000
+    while (mainUiWindow.webContents.isLoading() && Date.now() < loadDeadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100))
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1500))
+    const connection = await mainUiWindow.webContents.executeJavaScript(`
+      (() => {
+        const label = document.querySelector('[data-testid="runtime-connection"]');
+        return label?.dataset?.state || label?.textContent || '';
+      })()
+    `)
 
-      console.log(`AMADEUS_E2E_OPEN_MAIN_UI ${JSON.stringify({ ...result, windowCount: BrowserWindow.getAllWindows().length, url, connection })}`)
-      setTimeout(() => app.quit(), 100)
+    console.log(`AMADEUS_E2E_OPEN_MAIN_UI ${JSON.stringify({ ...result, windowCount: BrowserWindow.getAllWindows().length, url, connection, renderer: 'vue-main-ui' })}`)
+    setTimeout(() => app.quit(), 100)
   }
   catch (error) {
     console.error(`AMADEUS_E2E_OPEN_MAIN_UI failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -881,6 +865,9 @@ else {
     })
 
     createCompanionWindow()
+    if (isE2eRuntimeUi || isE2ePermissionPrompt) {
+      createMainUiWindow(defaultCompanionSessionId)
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

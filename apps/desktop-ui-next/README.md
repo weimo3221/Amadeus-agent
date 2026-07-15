@@ -50,9 +50,9 @@ directly from the Python runtime over HTTP; endpoints in use include:
 - `GET /skills/list`, skill view/manage APIs
 - runtime, model, Live2D, audio, MCP/tool, and ToolRuntime audit/config APIs
 
-The Vue workbench is the production Main UI surface. The older vanilla
-`apps/desktop/src/renderer/main-ui` path is retained only as an explicit
-fallback and for older E2E compatibility.
+The Vue workbench is the sole production Main UI renderer. Packaged Electron
+E2E coverage exercises its chat, skill selection, permission, and Companion
+session attach flows.
 
 This package is a renderer, not the native desktop shell. Electron window
 lifecycle, IPC/preload wiring, Companion, global cursor tracking, desktop audio

@@ -27,6 +27,8 @@ const toolSummary = computed(() => {
 
 <template>
   <div
+    data-testid="chat-message"
+    :data-role="message.role"
     class="flex items-end gap-2.5 animate-[var(--animate-rise-in)]"
     :class="message.role === 'user' ? 'flex-row-reverse' : ''"
   >

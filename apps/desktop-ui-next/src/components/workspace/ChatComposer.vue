@@ -41,6 +41,7 @@ function onKeydown(event: KeyboardEvent) {
   >
     <textarea
       v-model="draft"
+      data-testid="chat-input"
       rows="2"
       placeholder="和 Amadeus 说点什么…（Enter 发送，Shift+Enter 换行）"
       class="max-h-40 w-full resize-none bg-transparent px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-faint"
@@ -69,6 +70,7 @@ function onKeydown(event: KeyboardEvent) {
 
       <button
         type="button"
+        data-testid="chat-send"
         :disabled="!draft.trim()"
         class="group inline-flex items-center gap-2 rounded-[var(--radius-pill)] bg-gradient-to-b from-brand-400 to-brand-600
                px-4 py-2 text-sm font-medium text-white shadow-[var(--shadow-soft)]

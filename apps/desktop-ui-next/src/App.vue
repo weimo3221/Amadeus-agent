@@ -22,7 +22,7 @@ function onNavigate(key: string) {
 </script>
 
 <template>
-  <div class="relative flex h-full flex-col text-ink">
+  <div data-testid="main-ui-app" class="relative flex h-full flex-col text-ink">
     <AppBackground />
 
     <div class="flex min-h-0 flex-1 gap-4 p-4">

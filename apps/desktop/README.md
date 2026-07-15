@@ -13,9 +13,8 @@ or audio provider selection.
 - Companion: transparent always-on-top Live2D presence with lightweight input,
   transient streaming bubbles, microphone input, runtime audio playback, lipsync,
   global-cursor visibility, pointer/gaze behavior, and permission prompts.
-- Main UI: Electron-hosted workbench window. By default this loads the Vue app in
-  `apps/desktop-ui-next`; the legacy vanilla renderer is kept only behind
-  `AMADEUS_MAIN_UI_LEGACY` and older compatibility tests.
+- Main UI: Electron-hosted workbench window that loads the Vue app in
+  `apps/desktop-ui-next`.
 
 ## Responsibilities
 
@@ -34,4 +33,5 @@ This app communicates with `apps/server` through the event protocol in
 
 Runtime UI behavior is covered by `src/renderer/runtime-ui.test.ts`, which runs
 without launching Electron or loading Live2D assets. Packaged desktop behavior is
-covered by Electron E2E tests under `e2e/`.
+covered by Electron E2E tests under `e2e/`; Main UI chat, skill selection,
+permission, and Companion attach flows exercise the packaged Vue renderer.

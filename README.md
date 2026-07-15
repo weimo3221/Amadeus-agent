@@ -76,7 +76,7 @@ flowchart TD
 | Path | Role |
 |---|---|
 | [`apps/desktop`](apps/desktop) | Electron shell with **Companion** (Live2D, lightweight chat, voice), native window orchestration, IPC, global cursor tracking, and production Main UI hosting. |
-| [`apps/desktop-ui-next`](apps/desktop-ui-next) | Production Main UI renderer — Vue 3 + Vite + Tailwind v4 for chat, sessions, tasks, timed messages, skills, memory, and config. It replaces the legacy `apps/desktop/src/renderer/main-ui` renderer, not the Electron shell. |
+| [`apps/desktop-ui-next`](apps/desktop-ui-next) | Production Main UI renderer — Vue 3 + Vite + Tailwind v4 for chat, sessions, tasks, timed messages, skills, memory, and config. The Electron shell remains in `apps/desktop`. |
 | [`apps/server`](apps/server) | Thin TypeScript bridge: WebSocket fanout plus Live2D / audio / runtime HTTP proxying. |
 | [`packages/amadeus`](packages/amadeus) | The agent brain: turn path, provider boundary, Memory v2, ToolRuntime, scheduling, todos, ASR/TTS/Live2D helpers, and the runtime HTTP API. |
 | [`packages/live2d-stage`](packages/live2d-stage) | Intended Live2D rendering adapter boundary (not yet the active implementation). |

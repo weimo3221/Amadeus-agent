@@ -98,7 +98,9 @@ scrollToBottom()
                   class="inline-flex size-1.5 rounded-full"
                   :class="state.connection === 'online' ? 'bg-success' : state.connection === 'connecting' ? 'bg-warning' : 'bg-ink-faint'"
                 />
-                {{ connectionLabel }}
+                <span data-testid="runtime-connection" :data-state="state.connection">
+                  {{ connectionLabel }}
+                </span>
               </p>
             </div>
           </div>
@@ -119,7 +121,7 @@ scrollToBottom()
       </div>
 
       <!-- chat log -->
-      <div ref="chatLog" class="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+      <div ref="chatLog" data-testid="chat-log" class="flex-1 space-y-5 overflow-y-auto px-5 py-5">
         <AmEmptyState
           v-if="!state.chat.length"
           icon="ph:chat-circle-dots-duotone"
@@ -135,7 +137,11 @@ scrollToBottom()
       </div>
 
       <!-- tool permission prompt -->
-      <div v-if="state.toolPermission" class="border-t border-line/70 px-5 py-3">
+      <div
+        v-if="state.toolPermission"
+        data-testid="tool-permission"
+        class="border-t border-line/70 px-5 py-3"
+      >
         <div class="flex items-start gap-3 rounded-[var(--radius-xl3)] border border-warning/30 bg-warning-soft/60 p-3">
           <Icon icon="ph:shield-warning-duotone" :width="20" class="mt-0.5 shrink-0 text-[#b9791a]" />
           <div class="min-w-0 flex-1">
@@ -145,8 +151,8 @@ scrollToBottom()
             <p class="mt-0.5 text-xs text-ink-soft">{{ state.toolPermission.reason }}</p>
           </div>
           <div class="flex shrink-0 items-center gap-2">
-            <AmButton variant="ghost" size="sm" @click="respondPermission(false)">拒绝</AmButton>
-            <AmButton variant="primary" size="sm" icon="ph:check-bold" @click="respondPermission(true)">允许</AmButton>
+            <AmButton data-testid="tool-permission-deny" variant="ghost" size="sm" @click="respondPermission(false)">拒绝</AmButton>
+            <AmButton data-testid="tool-permission-allow" variant="primary" size="sm" icon="ph:check-bold" @click="respondPermission(true)">允许</AmButton>
           </div>
         </div>
       </div>

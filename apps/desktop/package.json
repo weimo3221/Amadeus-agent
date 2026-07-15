@@ -7,9 +7,10 @@
   "scripts": {
     "dev": "AMADEUS_DESKTOP_DEV=1 electron-vite dev",
     "build": "electron-vite build",
+    "build:main-ui": "npm --prefix ../desktop-ui-next run build",
     "preview": "electron-vite preview",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "test:e2e": "npm run build && node --import tsx --test \"e2e/**/*.test.ts\"",
+    "test:e2e": "npm run build:main-ui && npm run build && node --import tsx --test \"e2e/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

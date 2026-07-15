@@ -195,8 +195,8 @@ Desktop app responsibilities:
 Current note:
 
 - The actual Companion Live2D and lightweight renderer behavior logic currently lives in `apps/desktop/src/renderer/companion/main.ts`.
-- The larger chat/workbench renderer is `apps/desktop-ui-next`; Electron loads it by default and keeps the legacy vanilla `apps/desktop/src/renderer/main-ui` path available only behind `AMADEUS_MAIN_UI_LEGACY` and older E2E compatibility paths.
-- `apps/desktop-ui-next` replaces the legacy Main UI renderer, not the whole `apps/desktop` package. `apps/desktop` remains necessary for Electron `BrowserWindow` creation, IPC/preload wiring, Companion, global cursor tracking, desktop audio playback, and native window behavior.
+- The larger chat/workbench renderer is `apps/desktop-ui-next`; Electron always loads this Vue renderer for Main UI windows, including packaged E2E runs.
+- `apps/desktop-ui-next` is the Main UI renderer, not the whole `apps/desktop` package. `apps/desktop` remains necessary for Electron `BrowserWindow` creation, IPC/preload wiring, Companion, global cursor tracking, desktop audio playback, and native window behavior.
 - Companion panel visibility is not DOM hover-driven. The renderer shows the panel only when the global cursor point is inside the Companion window bounds and hides it 1.5 seconds after the cursor leaves.
 - Live2D model fit is configured from `configs/runtime.yaml` through `/live2d/config` (`desktop.companionLive2dScale`, `desktop.companionLive2dOffsetX`, `desktop.companionLive2dOffsetY`).
 - `packages/live2d-stage` is still an intended package boundary, not the active implementation.

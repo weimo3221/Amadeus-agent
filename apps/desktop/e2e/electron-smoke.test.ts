@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import type { AddressInfo } from 'node:net'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import { randomUUID } from 'node:crypto'
@@ -33,6 +33,7 @@ describe('Electron desktop smoke', () => {
 
       assert.equal(output.code, 0, output.stderr || output.stdout)
       assert.match(output.stdout, /AMADEUS_E2E_RUNTIME_UI/)
+      assert.match(output.stdout, /vue-main-ui/)
       assert.match(output.stdout, /E2E runtime reply/)
       assert.equal(runtime.receivedUserText(), 'e2e runtime ping')
       assert.deepEqual(runtime.receivedSkills(), [])
@@ -55,6 +56,7 @@ describe('Electron desktop smoke', () => {
 
       assert.equal(output.code, 0, output.stderr || output.stdout)
       assert.match(output.stdout, /AMADEUS_E2E_OPEN_MAIN_UI/)
+      assert.match(output.stdout, /vue-main-ui/)
       assert.match(output.stdout, /sessionId=companion%3Adefault/)
       await waitFor(() => {
         const surfaces = runtime.feedbackEvents().map((event) => `${event.surface}:${event.sessionId}`).sort()
@@ -92,6 +94,7 @@ describe('Electron desktop smoke', () => {
 
       assert.equal(output.code, 0, output.stderr || output.stdout)
       assert.match(output.stdout, /AMADEUS_E2E_RUNTIME_UI/)
+      assert.match(output.stdout, /vue-main-ui/)
       assert.deepEqual(runtime.receivedSkills(), [
         'development/runtime-debug',
         'development/desktop-e2e',
@@ -188,6 +191,7 @@ describe('Electron desktop smoke', () => {
 
       assert.equal(output.code, 0, output.stderr || output.stdout)
       assert.match(output.stdout, /AMADEUS_E2E_PERMISSION_PROMPT/)
+      assert.match(output.stdout, /vue-main-ui/)
       assert.deepEqual(runtime.permissionResponses(), [{
         requestId: 'e2e-permission-request',
         approved: true,
@@ -211,6 +215,7 @@ describe('Electron desktop smoke', () => {
 
       assert.equal(output.code, 0, output.stderr || output.stdout)
       assert.match(output.stdout, /AMADEUS_E2E_PERMISSION_PROMPT/)
+      assert.match(output.stdout, /vue-main-ui/)
       assert.deepEqual(runtime.permissionResponses(), [{
         requestId: 'e2e-permission-request',
         approved: false,

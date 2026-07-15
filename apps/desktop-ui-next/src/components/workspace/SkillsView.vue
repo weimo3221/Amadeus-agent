@@ -66,6 +66,8 @@ function skillStatus(id: string) {
         <div
           v-for="sk in state.skills"
           :key="sk.id"
+          data-testid="skill-card"
+          :data-skill-id="sk.id"
           class="group rounded-[var(--radius-xl3)] border border-line bg-surface p-4 transition-all duration-200 ease-[var(--ease-soft)]
                  hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-[var(--shadow-soft)]"
         >
@@ -92,6 +94,8 @@ function skillStatus(id: string) {
           <p class="mt-2.5 text-xs leading-relaxed text-ink-soft">{{ sk.summary }}</p>
           <button
             type="button"
+            data-testid="skill-toggle"
+            :data-skill-id="sk.id"
             class="mt-3 inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] px-2.5 py-1.5 text-xs font-medium transition-all duration-200"
             :class="
               state.suggestedSkillIds.includes(sk.id)
