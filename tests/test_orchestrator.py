@@ -157,6 +157,27 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(len(planned["edges"]), 1)
         self.assertEqual(len(model.payloads), 2)
 
+    def test_plan_root_repairs_invalid_model_graph_before_applying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            model = FakePlanningModel([
+                '{"goal":"Build planning","approach":"Inspect then design","acceptanceCriteria":["graph created"],"outOfScope":[]}',
+                '{"tasks":[{"tempId":"research","title":"Research","workerProfile":"researcher","allowedToolsets":["read","terminal"]}],"edges":[]}',
+                '{"tasks":[{"tempId":"research","title":"Research","workerProfile":"researcher","allowedToolsets":["read","search"]}],"edges":[]}',
+            ])
+            service = OrchestratorService(memory, model_client=model)
+            root = service.create_root_goal(session_id="session-1", title="Build planning")
+
+            planned = service.plan_root(str(root["id"]))
+
+        self.assertFalse(planned["fallback"])
+        self.assertTrue(planned["repaired"])
+        self.assertEqual(planned["decompositionSource"], "model_repaired")
+        self.assertIn("cannot allow toolsets", planned["repairReason"])
+        self.assertEqual(len(planned["tasks"]), 1)
+        self.assertEqual(planned["tasks"][0]["allowedToolsets"], ["read", "search"])
+        self.assertEqual(len(model.payloads), 3)
+
     def test_plan_root_falls_back_to_single_child_when_model_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
@@ -170,6 +191,26 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(planned["decompositionSource"], "fallback")
         self.assertEqual(len(planned["tasks"]), 1)
         self.assertEqual(planned["tasks"][0]["title"], "Fallback root")
+
+    def test_plan_root_falls_back_when_graph_repair_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            model = FakePlanningModel([
+                '{"goal":"Fallback root","approach":"Do work","acceptanceCriteria":["done"],"outOfScope":[]}',
+                '{"tasks":[{"tempId":"a","title":"A","dependsOn":["b"]},{"tempId":"b","title":"B","dependsOn":["a"]}],"edges":[]}',
+                '{"tasks":[{"tempId":"rogue","title":"Rogue","workerProfile":"admin"}],"edges":[]}',
+            ])
+            service = OrchestratorService(memory, model_client=model)
+            root = service.create_root_goal(session_id="session-1", title="Fallback root", body="Do work")
+
+            planned = service.plan_root(str(root["id"]))
+
+        self.assertTrue(planned["fallback"])
+        self.assertFalse(planned["repaired"])
+        self.assertEqual(planned["decompositionSource"], "fallback")
+        self.assertEqual(len(planned["tasks"]), 1)
+        self.assertIn("unsupported workerProfile", planned["decompositionError"])
+        self.assertEqual(len(model.payloads), 3)
 
     def test_dispatch_ready_respects_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

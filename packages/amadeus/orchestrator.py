@@ -29,6 +29,12 @@ DEFAULT_PROFILE_TOOLSETS: dict[str, list[str]] = {
     "reviewer": ["read", "search", "memory"],
     "synthesizer": ["read", "memory"],
 }
+TASK_GRAPH_JSON_SHAPE = (
+    '{"tasks":[{"tempId":"short-id","title":"task title","body":"worker instructions",'
+    '"workerProfile":"researcher|planner|coder|reviewer|synthesizer",'
+    '"acceptanceCriteria":["criterion"],"contextHints":{},"allowedToolsets":["read"],'
+    '"disallowedTools":[],"dependsOn":["other-temp-id"]}],"edges":[]}'
+)
 
 
 class PlanningModel(Protocol):
@@ -176,18 +182,36 @@ class OrchestratorService:
                             "Allowed worker profiles: researcher, planner, coder, reviewer, synthesizer.\n"
                             "Use conservative tool bounds: researcher should use read/search, coder may request patch/terminal, reviewer should avoid writes.\n\n"
                             "Return JSON in this exact shape:\n"
-                            '{"tasks":[{"tempId":"short-id","title":"task title","body":"worker instructions","workerProfile":"researcher|planner|coder|reviewer|synthesizer","acceptanceCriteria":["criterion"],"contextHints":{},"allowedToolsets":["read"],"disallowedTools":[],"dependsOn":["other-temp-id"]}],"edges":[]}'
+                            f"{TASK_GRAPH_JSON_SHAPE}"
                         ),
                     },
                 ]
             )
             graph = {"tasks": parsed.get("tasks"), "edges": parsed.get("edges")}
-            self.validate_graph(graph, max_children=max_children)
+            try:
+                self.validate_graph(graph, max_children=max_children)
+            except Exception as validation_error:
+                repaired = self.repair_task_graph(
+                    root_task_id,
+                    spec=spec,
+                    invalid_graph=graph,
+                    validation_error=str(validation_error),
+                    max_children=max_children,
+                )
+                return {
+                    "source": "model_repaired",
+                    "spec": spec,
+                    "graph": repaired["graph"],
+                    "fallback": False,
+                    "repaired": True,
+                    "repairReason": str(validation_error),
+                }
             return {
                 "source": "model",
                 "spec": spec,
                 "graph": graph,
                 "fallback": False,
+                "repaired": False,
             }
         except Exception as error:
             logger.info("Model-backed task decomposition failed taskId=%s error=%s; using single-task fallback", root_task_id, error)
@@ -216,8 +240,56 @@ class OrchestratorService:
                     "edges": [],
                 },
                 "fallback": True,
+                "repaired": False,
                 "error": str(error),
             }
+
+    def repair_task_graph(
+        self,
+        root_task_id: str,
+        *,
+        spec: dict[str, object],
+        invalid_graph: dict[str, object],
+        validation_error: str,
+        max_children: int = 6,
+    ) -> dict[str, object]:
+        root = self.memory_store.get_task(root_task_id)
+        if root is None:
+            raise ValueError("root task not found")
+        parsed = self._request_planning_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You repair invalid long-running agent task graphs. "
+                        "Return only JSON. Do not include markdown. "
+                        "Preserve the user's goal, remove invalid dependencies, avoid cycles, and use conservative worker profiles/toolsets."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Root task:\n"
+                        f"id: {root.get('id')}\n"
+                        f"title: {root.get('title')}\n"
+                        f"body: {root.get('body') or ''}\n\n"
+                        "Execution spec:\n"
+                        f"{json.dumps(spec, ensure_ascii=False)}\n\n"
+                        "Validation error:\n"
+                        f"{validation_error}\n\n"
+                        "Invalid graph:\n"
+                        f"{json.dumps(invalid_graph, ensure_ascii=False)}\n\n"
+                        "Allowed worker profiles: researcher, planner, coder, reviewer, synthesizer.\n"
+                        f"Profile toolset policy: {json.dumps({key: sorted(value) for key, value in PROFILE_TOOLSET_POLICY.items()}, ensure_ascii=False)}\n\n"
+                        "Return a corrected JSON graph in this exact shape:\n"
+                        f"{TASK_GRAPH_JSON_SHAPE}"
+                    ),
+                },
+            ]
+        )
+        graph = {"tasks": parsed.get("tasks"), "edges": parsed.get("edges")}
+        self.validate_graph(graph, max_children=max_children)
+        return {"graph": graph}
 
     def plan_root(self, root_task_id: str, *, max_children: int = 6) -> dict[str, object]:
         decomposition = self.decompose_task(root_task_id, max_children=max_children)
@@ -227,6 +299,8 @@ class OrchestratorService:
             "spec": decomposition.get("spec"),
             "decompositionSource": decomposition.get("source"),
             "fallback": bool(decomposition.get("fallback")),
+            "repaired": bool(decomposition.get("repaired")),
+            "repairReason": decomposition.get("repairReason"),
             "decompositionError": decomposition.get("error"),
         }
 

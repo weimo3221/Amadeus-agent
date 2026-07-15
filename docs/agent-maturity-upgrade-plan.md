@@ -1074,15 +1074,15 @@ UI 不需要知道 runner 细节，但需要能展示：
 
 ### Slice 4：Internal orchestrator
 
-- Status: first model-backed graph generation and root synthesis are implemented behind the internal orchestrator service.
-- Added internal `OrchestratorService` with root goal creation, structured graph validation, child task/edge persistence, ready child dispatch, terminal child review, and root synthesis.
+- Status: first model-backed graph generation, graph repair, and root synthesis are implemented behind the internal orchestrator service.
+- Added internal `OrchestratorService` with root goal creation, structured graph validation, graph repair, child task/edge persistence, ready child dispatch, terminal child review, and root synthesis.
 - Added controlled Python HTTP entrypoints: `POST /tasks/{id}/decompose` applies a validated structured graph, `POST /tasks/{id}/dispatch` submits dependency-ready children through the existing task worker, and `POST /tasks/{id}/synthesize` summarizes terminal child results into the root task.
-- `POST /tasks/{id}/decompose` can also run with `auto: true`, which asks the configured planning model for a fixed-shape JSON spec and task graph, validates it, applies it, and falls back to a single child task if model JSON generation fails.
+- `POST /tasks/{id}/decompose` can also run with `auto: true`, which asks the configured planning model for a fixed-shape JSON spec and task graph, validates it, asks the model for one fixed-shape repair if validation fails, applies the repaired graph when valid, and falls back to a single child task if generation/repair still fails.
 - `POST /tasks/{id}/synthesize` waits while children are still active, blocks the root when any child failed/cancelled, and completes the root with a summary artifact when all children succeeded. Model synthesis uses a fixed JSON response shape and falls back to deterministic child-result summarization.
 - Graph validation rejects duplicate task ids, unknown dependencies, unknown edge endpoints, excessive child counts, dependency cycles, unknown worker profiles, unknown toolsets, and profile/toolset escalation.
 - Known worker profiles get orchestrator-owned default `allowedToolsets`, so missing model tool bounds do not become an unbounded child-worker prompt.
 - `decompose_task` is still not exposed as a model tool; model generation is an internal service call and all writes still go through graph validation.
-- Remaining work: graph repair, richer planning prompts/evals, broader graph event publication, and process-backed child-agent runners.
+- Remaining work: richer repair strategies, richer planning prompts/evals, broader graph event publication, and process-backed child-agent runners.
 
 ### Slice 5：Isolated child runner
 

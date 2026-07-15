@@ -762,6 +762,23 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(len(decomposed["tasks"]), 2)
         self.assertEqual(len(decomposed["edges"]), 1)
 
+    def test_tasks_http_auto_decompose_repairs_invalid_model_graph(self) -> None:
+        root = runtime_server.memory_store.create_task(session_id="http-test", title="Auto repair graph", body="Plan this.")
+        self.planning_model.responses = [
+            '{"goal":"Auto repair graph","approach":"Research safely","acceptanceCriteria":["child created"],"outOfScope":[]}',
+            '{"tasks":[{"tempId":"research","title":"Research","workerProfile":"researcher","allowedToolsets":["read","terminal"]}],"edges":[]}',
+            '{"tasks":[{"tempId":"research","title":"Research","workerProfile":"researcher","allowedToolsets":["read","search"]}],"edges":[]}',
+        ]
+
+        decomposed = self.post_json(f"/tasks/{root['id']}/decompose", {"auto": True})
+
+        self.assertTrue(decomposed["ok"])
+        self.assertFalse(decomposed["fallback"])
+        self.assertTrue(decomposed["repaired"])
+        self.assertEqual(decomposed["decompositionSource"], "model_repaired")
+        self.assertIn("cannot allow toolsets", decomposed["repairReason"])
+        self.assertEqual(decomposed["tasks"][0]["allowedToolsets"], ["read", "search"])
+
     def test_tasks_http_synthesize_completes_root(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Synthesize graph")
         self.planning_model.responses = ['{"summary":"merged","result":"Merged final result"}']
