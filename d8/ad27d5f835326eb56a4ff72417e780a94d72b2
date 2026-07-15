@@ -1,0 +1,27 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_f650db7133c3a6 1087
+docs/project-status.md
+  s_80fee7171b51b9::t_a9f49f0196b41b 507,511
+docs/roadmap.md
+  s_80fee7171b51b9::t_805a4c88895693 292
+scripts/eval_runtime_contracts.py
+  s_80fee7171b51b9::t_83992a7c029c44 7,17,81,85-140,178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d8ad27d5f835326eb56a4ff72417e780a94d72b2",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
