@@ -232,10 +232,13 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIsInstance(in_process, InProcessTaskRunner)
         in_process.shutdown()
 
-        if hasattr(os, "fork"):
+        if ProcessTaskRunner.supported():
             process = build_task_runner("process", max_workers=1)
             self.assertIsInstance(process, ProcessTaskRunner)
             process.shutdown()
+        else:
+            with self.assertRaisesRegex(RuntimeError, "use SubprocessTaskRunner"):
+                build_task_runner("process", max_workers=1)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             subprocess_runner = build_task_runner("subprocess", max_workers=1, database_path=Path(tmpdir) / "amadeus.sqlite")

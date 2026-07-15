@@ -290,7 +290,7 @@ Target deliverables:
 - Long task plans.
 - Refined human approval policy for destructive, sensitive, or low-confidence worker actions beyond the current ask-tool approval checkpoint.
 - Provider and harness profiles.
-- First runtime contract eval complete for role identity, active/recent task context, task lifecycle, orchestrator graph repair/dispatch/synthesis, MCP tool contracts, worker workspace isolation, execution-tool sandbox guards, and high-risk worker approval blocking. Broaden eval harness for tool choice, permission, planning quality, memory, Live2D, audio, and richer guardrail behavior.
+- Runtime contract eval now runs eight structured scenarios through `npm test`, covering role/task context, cross-runner lifecycle consistency, orchestrator repair/dependency/artifact handoff, MCP, subprocess fault recovery/cancellation/deduplication, workspace/symlink/path/write sandbox boundaries, and action-specific approval expiry/scope. Broaden next into model-backed planning quality, longer crash/restart soak tests, memory, Live2D/audio, and richer tool-choice/guardrail behavior.
 
 Reference:
 

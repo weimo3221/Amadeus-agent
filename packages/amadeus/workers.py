@@ -155,9 +155,16 @@ def _run_task_process_entry(task_id: str, run_task: TaskCallable) -> None:
 
 
 class ProcessTaskRunner:
+    @staticmethod
+    def supported() -> bool:
+        return hasattr(os, "fork") and sys.platform != "darwin"
+
     def __init__(self, *, max_workers: int = 2, start_method: str = "fork") -> None:
-        if start_method != "fork" or not hasattr(os, "fork"):
-            raise RuntimeError("ProcessTaskRunner requires POSIX fork support")
+        if start_method != "fork" or not self.supported():
+            raise RuntimeError(
+                "ProcessTaskRunner requires supported POSIX fork execution; "
+                "use SubprocessTaskRunner on macOS"
+            )
         self._semaphore = threading.BoundedSemaphore(max(1, int(max_workers)))
         self._lock = threading.Lock()
         self._supervisors: list[threading.Thread] = []
