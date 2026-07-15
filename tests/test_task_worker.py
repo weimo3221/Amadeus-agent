@@ -500,6 +500,10 @@ class TaskWorkerTests(unittest.TestCase):
 
         self.assertIn("title: Review", str(finished["result"]))
         self.assertEqual(finished["blockedReason"], "Review required before marking this task complete.")
+        self.assertEqual(finished["checkpoint"]["status"], "blocked")
+        self.assertEqual(finished["checkpoint"]["phase"], "approval_required")
+        self.assertEqual(finished["checkpoint"]["reason"], "human_review_required")
+        self.assertIn("title: Review", str(finished["handoffSummary"]))
         self.assertEqual([event["type"] for event in events], ["created", "running", "blocked"])
         self.assertIn(("blocked", "blocked"), published)
 

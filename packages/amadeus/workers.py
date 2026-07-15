@@ -887,6 +887,15 @@ class TaskWorker:
                     )
                 self._handle_failure(memory_store, task_id, claim_lock=claim_lock, task=task, error=error_text)
             elif bool(task.get("reviewRequired")):
+                approval_checkpoint = self._attempt_checkpoint(
+                    task,
+                    scope,
+                    status="blocked",
+                    phase="approval_required",
+                    reason="human_review_required",
+                    last_event_type="assistant.message" if result_text else None,
+                    result_preview=result_text,
+                )
                 if attempt_id:
                     memory_store.finish_task_attempt(
                         attempt_id,
@@ -906,6 +915,8 @@ class TaskWorker:
                     claim_lock=claim_lock,
                     result=result_text or "",
                     reason="Review required before marking this task complete.",
+                    checkpoint=approval_checkpoint,
+                    handoff_summary=result_text or None,
                 )
                 self._sync_plan_item(memory_store, blocked, "pending")
                 self._publish_task_update(blocked, "blocked")

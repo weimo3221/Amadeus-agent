@@ -882,6 +882,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         resumed = self.post_json(f"/tasks/{task_2['id']}/resume", {})
 
         self.assertEqual(resumed["task"]["status"], "queued")
+        self.assertEqual(resumed["task"]["checkpoint"]["phase"], "blocked_resume_requested")
 
     def test_runtime_events_streams_published_task_updates(self) -> None:
         received: list[dict] = []

@@ -873,7 +873,14 @@ class MessageMemoryStoreTests(unittest.TestCase):
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
             task = memory.create_task(session_id="session-1", title="Review me", review_required=True)
             memory.start_task(str(task["id"]), claim_lock="worker-1")
-            blocked = memory.block_task(str(task["id"]), claim_lock="worker-1", result="Draft", reason="Needs review")
+            blocked = memory.block_task(
+                str(task["id"]),
+                claim_lock="worker-1",
+                result="Draft",
+                reason="Needs review",
+                checkpoint={"status": "blocked", "phase": "approval_required", "reason": "human_review_required"},
+                handoff_summary="Draft",
+            )
             resumed = memory.resume_blocked_task(str(task["id"]))
             memory.start_task(str(task["id"]), claim_lock="worker-2")
             blocked_again = memory.block_task(str(task["id"]), claim_lock="worker-2", result="Draft 2", reason="Needs review")
@@ -881,9 +888,13 @@ class MessageMemoryStoreTests(unittest.TestCase):
             events = memory.list_task_events(str(task["id"]))
 
         self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["checkpoint"]["phase"], "approval_required")
+        self.assertEqual(blocked["handoffSummary"], "Draft")
         self.assertEqual(resumed["status"], "queued")
+        self.assertEqual(resumed["checkpoint"]["phase"], "approval_resume_requested")
         self.assertEqual(blocked_again["result"], "Draft 2")
         self.assertEqual(approved["status"], "succeeded")
+        self.assertEqual(approved["checkpoint"]["phase"], "approved")
         self.assertIn("review_approved", [event["type"] for event in events])
 
     def test_task_graph_fields_edges_attempts_and_artifacts_round_trip(self) -> None:

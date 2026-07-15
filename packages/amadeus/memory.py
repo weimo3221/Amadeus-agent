@@ -3333,11 +3333,19 @@ class MessageMemoryStore:
         reason: str,
         claim_lock: str | None = None,
         result: str | None = None,
+        checkpoint: dict[str, object] | None = None,
+        handoff_summary: str | None = None,
     ) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
         normalized_reason = normalize_optional_text(reason, max_chars=MAX_TASK_ERROR_CHARS, field_name="reason") or "Task blocked"
         normalized_result = normalize_optional_text(result, max_chars=MAX_TASK_RESULT_CHARS, field_name="result")
+        checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint") if checkpoint is not None else None
+        normalized_handoff_summary = normalize_optional_text(
+            handoff_summary,
+            max_chars=MAX_TASK_RESULT_CHARS,
+            field_name="handoff_summary",
+        ) if handoff_summary is not None else None
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             row = connection.execute(
@@ -3364,6 +3372,8 @@ class MessageMemoryStore:
                 SET status = 'blocked',
                     blocked_reason = ?,
                     result = COALESCE(?, result),
+                    checkpoint_json = COALESCE(?, checkpoint_json),
+                    handoff_summary = COALESCE(?, handoff_summary),
                     claim_lock = NULL,
                     lease_owner = NULL,
                     lease_expires_at = NULL,
@@ -3372,7 +3382,7 @@ class MessageMemoryStore:
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (normalized_reason, normalized_result, now, normalized_task_id),
+                (normalized_reason, normalized_result, checkpoint_json, normalized_handoff_summary, now, normalized_task_id),
             )
             self._insert_task_event(
                 connection,
@@ -3381,7 +3391,12 @@ class MessageMemoryStore:
                 event_type="blocked",
                 status="blocked",
                 message=normalized_reason,
-                metadata={"previousStatus": current_status, "claimLock": normalized_claim_lock},
+                metadata={
+                    "previousStatus": current_status,
+                    "claimLock": normalized_claim_lock,
+                    "checkpointPhase": checkpoint.get("phase") if checkpoint else None,
+                    "checkpointReason": checkpoint.get("reason") if checkpoint else None,
+                },
                 created_at=now,
             )
         task = self.get_task(normalized_task_id)
@@ -3394,7 +3409,7 @@ class MessageMemoryStore:
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT session_id, status FROM tasks WHERE id = ?",
+                "SELECT session_id, status, review_required FROM tasks WHERE id = ?",
                 (normalized_task_id,),
             ).fetchone()
             if not row:
@@ -3404,11 +3419,18 @@ class MessageMemoryStore:
                 if task is None:
                     raise ValueError("task not found")
                 return task
+            checkpoint = {
+                "status": "queued",
+                "phase": "approval_resume_requested" if bool(row[2]) else "blocked_resume_requested",
+                "reason": "human_review_resumed" if bool(row[2]) else "blocked_task_resumed",
+            }
+            checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint")
             connection.execute(
                 """
                 UPDATE tasks
                 SET status = 'queued',
                     blocked_reason = NULL,
+                    checkpoint_json = ?,
                     claim_lock = NULL,
                     lease_owner = NULL,
                     lease_expires_at = NULL,
@@ -3417,7 +3439,7 @@ class MessageMemoryStore:
                     finished_at = NULL
                 WHERE id = ? AND status = 'blocked'
                 """,
-                (now, normalized_task_id),
+                (checkpoint_json, now, normalized_task_id),
             )
             self._insert_task_event(
                 connection,
@@ -3426,7 +3448,7 @@ class MessageMemoryStore:
                 event_type="resumed",
                 status="queued",
                 message="Task resumed from blocked state",
-                metadata=None,
+                metadata={"checkpointPhase": checkpoint["phase"], "checkpointReason": checkpoint["reason"]},
                 created_at=now,
             )
         task = self.get_task(normalized_task_id)
@@ -3449,12 +3471,19 @@ class MessageMemoryStore:
                 if task is None:
                     raise ValueError("task not found")
                 return task
+            checkpoint = {
+                "status": "succeeded",
+                "phase": "approved",
+                "reason": "human_approved",
+            }
+            checkpoint_json = normalize_task_json_object(checkpoint, field_name="checkpoint")
             connection.execute(
                 """
                 UPDATE tasks
                 SET status = 'succeeded',
                     blocked_reason = NULL,
                     error = NULL,
+                    checkpoint_json = ?,
                     claim_lock = NULL,
                     lease_owner = NULL,
                     lease_expires_at = NULL,
@@ -3463,7 +3492,7 @@ class MessageMemoryStore:
                     finished_at = ?
                 WHERE id = ? AND status = 'blocked' AND review_required = 1
                 """,
-                (now, now, normalized_task_id),
+                (checkpoint_json, now, now, normalized_task_id),
             )
             self._insert_task_event(
                 connection,
@@ -3472,7 +3501,7 @@ class MessageMemoryStore:
                 event_type="review_approved",
                 status="succeeded",
                 message="Review approved; task marked succeeded",
-                metadata=None,
+                metadata={"checkpointPhase": checkpoint["phase"], "checkpointReason": checkpoint["reason"]},
                 created_at=now,
             )
         task = self.get_task(normalized_task_id)
