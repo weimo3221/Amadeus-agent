@@ -267,9 +267,9 @@ class SubprocessTaskRunner:
                 try:
                     memory_store.finish_task_attempt(
                         str(attempt["id"]),
-                        status="failed",
+                        status="abandoned",
                         error=error,
-                        checkpoint={"status": "subprocess_exited", "returnCode": return_code},
+                        checkpoint={"status": "abandoned", "reason": "subprocess_exited", "returnCode": return_code},
                     )
                 except Exception:
                     logger.debug("Task subprocess failed to mark attempt failed taskId=%s runId=%s", task_id, run_id, exc_info=True)

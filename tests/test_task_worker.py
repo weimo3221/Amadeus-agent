@@ -206,8 +206,9 @@ class TaskWorkerTests(unittest.TestCase):
 
         self.assertEqual(recovered["status"], "queued")
         self.assertIn("Task subprocess exited with code 1", str(recovered["error"]))
-        self.assertEqual(attempts[0]["status"], "failed")
+        self.assertEqual(attempts[0]["status"], "abandoned")
         self.assertIn("Task subprocess exited with code 1", str(attempts[0]["error"]))
+        self.assertEqual(attempts[0]["checkpoint"]["status"], "abandoned")
         self.assertIn("retry_scheduled", [event["type"] for event in events])
 
     def test_subprocess_task_runner_fails_running_task_after_final_nonzero_exit(self) -> None:
@@ -232,7 +233,8 @@ class TaskWorkerTests(unittest.TestCase):
 
         self.assertEqual(failed["status"], "failed")
         self.assertIn("Task subprocess exited with code 1", str(failed["error"]))
-        self.assertEqual(attempts[0]["status"], "failed")
+        self.assertEqual(attempts[0]["status"], "abandoned")
+        self.assertEqual(attempts[0]["checkpoint"]["reason"], "subprocess_exited")
 
     def test_task_worker_entrypoint_runs_one_task_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
