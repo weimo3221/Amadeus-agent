@@ -502,6 +502,9 @@ class WorkerContext:
                     file_manifest = metadata.get("fileManifest")
                     if isinstance(file_manifest, list) and file_manifest:
                         lines.append(f"  fileManifest: {_json_preview(file_manifest, max_chars=1200)}")
+                    file_manifest_verification = metadata.get("fileManifestVerification")
+                    if isinstance(file_manifest_verification, dict) and file_manifest_verification:
+                        lines.append(f"  fileManifestVerification: {_json_preview(file_manifest_verification, max_chars=1200)}")
                 content = _text(artifact.get("content"))
                 if content:
                     lines.append(f"  content: {_truncate(content, WORKER_CONTEXT_FIELD_CHARS)}")
@@ -556,7 +559,11 @@ def build_worker_context(memory_store: MessageMemoryStore, task_id: str) -> Work
 
     dependencies: list[dict[str, object]] = []
     dependency_artifacts: list[dict[str, object]] = []
-    task_artifacts = memory_store.list_task_artifacts(task_id, limit=WORKER_CONTEXT_TASK_ARTIFACT_LIMIT)
+    task_artifacts = _enrich_artifacts_with_manifest_verification(
+        memory_store,
+        task,
+        memory_store.list_task_artifacts(task_id, limit=WORKER_CONTEXT_TASK_ARTIFACT_LIMIT),
+    )
     for edge in memory_store.list_task_edges(task_id, direction="incoming")[:WORKER_CONTEXT_DEPENDENCY_LIMIT]:
         dependency = memory_store.get_task(str(edge.get("fromTaskId") or ""))
         if dependency is None:
@@ -565,7 +572,11 @@ def build_worker_context(memory_store: MessageMemoryStore, task_id: str) -> Work
         dependency["edgeType"] = edge.get("edgeType")
         dependency["requiredStatus"] = edge.get("requiredStatus")
         dependencies.append(dependency)
-        dependency_artifacts.extend(memory_store.list_task_artifacts(str(dependency["id"]), limit=WORKER_CONTEXT_ARTIFACT_LIMIT))
+        dependency_artifacts.extend(_enrich_artifacts_with_manifest_verification(
+            memory_store,
+            dependency,
+            memory_store.list_task_artifacts(str(dependency["id"]), limit=WORKER_CONTEXT_ARTIFACT_LIMIT),
+        ))
 
     previous_attempts = [
         attempt
@@ -841,6 +852,79 @@ def _attach_file_manifest(
         metadata["fileManifestRoot"] = str(workspace_root)
         metadata["fileManifestVersion"] = 1
     return metadata
+
+
+def _verify_file_manifest(workspace_root: Path | None, saved_manifest: object) -> dict[str, object] | None:
+    if workspace_root is None or not isinstance(saved_manifest, list):
+        return None
+    entries: list[dict[str, object]] = []
+    statuses: list[str] = []
+    for saved_entry in saved_manifest[:WORKER_FILE_MANIFEST_LIMIT]:
+        if not isinstance(saved_entry, dict):
+            continue
+        path = _text(saved_entry.get("path"))
+        if not path:
+            continue
+        current = _file_manifest_entry(workspace_root, path)
+        expected_state = _text(saved_entry.get("state"))
+        current_state = _text(current.get("state"))
+        expected_sha = _text(saved_entry.get("sha256"))
+        current_sha = _text(current.get("sha256"))
+        if expected_state == "present" and current_state == "present" and expected_sha and current_sha:
+            status = "unchanged" if expected_sha == current_sha else "changed"
+        elif expected_state == current_state and expected_state and expected_state != "present":
+            status = "unchanged"
+        elif expected_state and current_state and expected_state != current_state:
+            status = "changed"
+        else:
+            status = "unverifiable"
+        statuses.append(status)
+        entries.append({
+            "path": path,
+            "status": status,
+            "expectedState": expected_state or None,
+            "currentState": current_state or None,
+            "expectedSha256": expected_sha or None,
+            "currentSha256": current_sha or None,
+            "currentSizeBytes": current.get("sizeBytes"),
+        })
+    if not entries:
+        return None
+    if any(status == "changed" for status in statuses):
+        status = "changed"
+    elif all(status == "unchanged" for status in statuses):
+        status = "unchanged"
+    else:
+        status = "unverifiable"
+    return {
+        "status": status,
+        "verifiedAt": datetime.now(timezone.utc).isoformat(),
+        "entries": entries,
+    }
+
+
+def _enrich_artifacts_with_manifest_verification(
+    memory_store: MessageMemoryStore,
+    task: dict[str, object],
+    artifacts: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    workspace_root = _workspace_root_for_task(memory_store, task)
+    enriched: list[dict[str, object]] = []
+    for artifact in artifacts:
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, dict):
+            enriched.append(artifact)
+            continue
+        verification = _verify_file_manifest(workspace_root, metadata.get("fileManifest"))
+        if verification is None:
+            enriched.append(artifact)
+            continue
+        next_artifact = dict(artifact)
+        next_metadata = dict(metadata)
+        next_metadata["fileManifestVerification"] = verification
+        next_artifact["metadata"] = next_metadata
+        enriched.append(next_artifact)
+    return enriched
 
 
 def _tool_artifact_type(tool_name: str, metadata: dict[str, object]) -> str:

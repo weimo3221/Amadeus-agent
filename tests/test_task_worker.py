@@ -883,6 +883,9 @@ class TaskWorkerTests(unittest.TestCase):
             artifacts = memory.list_task_artifacts(str(task["id"]))
             context = build_worker_context(memory, str(task["id"]))
             prompt = context.to_prompt()
+            (workspace / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
+            changed_context = build_worker_context(memory, str(task["id"]))
+            changed_prompt = changed_context.to_prompt()
 
         patch_artifacts = [artifact for artifact in artifacts if artifact["title"] == "Tool result: patch"]
         self.assertEqual(len(patch_artifacts), 1)
@@ -905,6 +908,11 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("affectedFiles: src/app.py", prompt)
         self.assertIn("fileManifest:", prompt)
         self.assertIn(hashlib.sha256(file_content.encode("utf-8")).hexdigest(), prompt)
+        self.assertIn("fileManifestVerification:", prompt)
+        self.assertIn('"status": "unchanged"', prompt)
+        changed_metadata = changed_context.task_artifacts[0]["metadata"]
+        self.assertEqual(changed_metadata["fileManifestVerification"]["status"], "changed")
+        self.assertIn('"status": "changed"', changed_prompt)
         self.assertIn("idempotencyHint: Verify the affected file contents", prompt)
 
     def test_worker_records_attempt_and_result_artifact(self) -> None:
