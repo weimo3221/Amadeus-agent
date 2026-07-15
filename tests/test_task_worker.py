@@ -5,6 +5,8 @@ import threading
 import time
 import unittest
 import os
+import contextlib
+import io
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -15,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
-from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
+from amadeus.task_worker_entrypoint import main as task_worker_entrypoint_main, run_task_once
+from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
 
 
 class SuccessfulRuntime:
@@ -86,6 +89,10 @@ class ImmediateTaskRunner:
 
 class TaskWorkerTests(unittest.TestCase):
     def test_build_task_runner_selects_supported_runner_kinds(self) -> None:
+        synchronous = build_task_runner("sync", max_workers=1)
+        self.assertIsInstance(synchronous, SynchronousTaskRunner)
+        synchronous.shutdown()
+
         in_process = build_task_runner("in_process", max_workers=1)
         self.assertIsInstance(in_process, InProcessTaskRunner)
         in_process.shutdown()
@@ -111,6 +118,26 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertTrue(runner.shutdown_called)
         self.assertIsNotNone(finished)
         self.assertEqual(finished["status"], "succeeded")
+
+    def test_task_worker_entrypoint_runs_one_task_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = SuccessfulRuntime()
+            task = memory.create_task(session_id="session-1", title="Run entrypoint")
+
+            finished = run_task_once(memory_store=memory, agent_runtime=runtime, task_id=str(task["id"]))
+            attempts = memory.list_task_attempts(str(task["id"]))
+
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertEqual(finished["runnerKind"], "process_entrypoint")
+        self.assertEqual(attempts[0]["workerId"].split("-")[0], "process_entrypoint")
+
+    def test_task_worker_entrypoint_requires_task_id(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                task_worker_entrypoint_main(["--database", "memory.sqlite"])
+
+        self.assertNotEqual(error.exception.code, 0)
 
     def test_worker_marks_task_succeeded_with_assistant_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

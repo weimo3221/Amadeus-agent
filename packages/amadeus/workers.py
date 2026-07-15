@@ -47,6 +47,14 @@ class InProcessTaskRunner:
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
 
+class SynchronousTaskRunner:
+    def submit(self, task_id: str, run_task: TaskCallable) -> None:
+        run_task(task_id)
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        return None
+
+
 def _run_task_process_entry(task_id: str, run_task: TaskCallable) -> None:
     try:
         run_task(task_id)
@@ -133,11 +141,13 @@ class ProcessTaskRunner:
 
 def build_task_runner(kind: str | None, *, max_workers: int = 2) -> TaskRunner:
     normalized = str(kind or "in_process").strip().lower().replace("-", "_")
+    if normalized in {"sync", "synchronous", "inline"}:
+        return SynchronousTaskRunner()
     if normalized in {"in_process", "thread", "threads", "threaded"}:
         return InProcessTaskRunner(max_workers=max_workers)
     if normalized in {"process", "processes", "fork", "process_backed"}:
         return ProcessTaskRunner(max_workers=max_workers)
-    raise ValueError("task runner kind must be one of in_process or process")
+    raise ValueError("task runner kind must be one of sync, in_process, or process")
 
 
 @dataclass(frozen=True)
