@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import threading
+import contextlib
+import contextvars
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,6 +90,10 @@ AGENT_MAX_TOOL_ITERATIONS = 90
 WORKSPACE_MUTATING_TOOLS = {"patch", "write_file"}
 POTENTIALLY_WORKSPACE_MUTATING_TOOLS = {"terminal", "execute_code"}
 logger = logging.getLogger(__name__)
+_WORKER_ALLOWED_TOOL_NAMES: contextvars.ContextVar[frozenset[str] | None] = contextvars.ContextVar(
+    "amadeus_worker_allowed_tool_names",
+    default=None,
+)
 
 
 @dataclass(frozen=True)
@@ -1059,10 +1065,10 @@ class AgentRuntime:
         yield from self._emit_assistant_state(session_id, turn_id, "idle")
 
     def tool_permission_state(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        return self.tool_registry.permission_state(self._role_allowed_tool_names(session_id))
+        return self.tool_registry.permission_state(self._effective_allowed_tool_names(session_id))
 
     def enabled_tool_schemas(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        return self.tool_registry.enabled_schemas(self._role_allowed_tool_names(session_id))
+        return self.tool_registry.enabled_schemas(self._effective_allowed_tool_names(session_id))
 
     def skill_summaries(self, session_id: str | None = None) -> list[dict[str, Any]]:
         return self.skill_catalog.skill_summaries(allowed_skills=self._role_allowed_skills(session_id))
@@ -1071,8 +1077,16 @@ class AgentRuntime:
         return self.skill_catalog.view_skill(name, allowed_skills=self._role_allowed_skills(session_id))
 
     def role_allows_tool(self, session_id: str | None, tool_name: str) -> bool:
-        allowed_names = self._role_allowed_tool_names(session_id)
+        allowed_names = self._effective_allowed_tool_names(session_id)
         return allowed_names is None or tool_name in allowed_names
+
+    @contextlib.contextmanager
+    def worker_tool_scope(self, allowed_tool_names: set[str] | frozenset[str] | None) -> Iterable[None]:
+        token = _WORKER_ALLOWED_TOOL_NAMES.set(frozenset(allowed_tool_names) if allowed_tool_names is not None else None)
+        try:
+            yield
+        finally:
+            _WORKER_ALLOWED_TOOL_NAMES.reset(token)
 
     def _role_runtime_scope(self, session_id: str | None = None) -> RoleRuntimeScope:
         return normalize_role_runtime_scope(self.memory_store.role_runtime_scope_for_session(session_id))
@@ -1087,6 +1101,15 @@ class AgentRuntime:
             if isinstance(item.get("name"), str) and role_allows_tool(scope, str(item["name"]))
         }
         return names
+
+    def _effective_allowed_tool_names(self, session_id: str | None = None) -> set[str] | None:
+        role_names = self._role_allowed_tool_names(session_id)
+        worker_names = _WORKER_ALLOWED_TOOL_NAMES.get()
+        if worker_names is None:
+            return role_names
+        if role_names is None:
+            return set(worker_names)
+        return set(role_names).intersection(worker_names)
 
     def _role_allowed_skills(self, session_id: str | None = None) -> set[str] | None:
         scope = self._role_runtime_scope(session_id)
@@ -2500,7 +2523,7 @@ class AgentRuntime:
         workspace_root = self._workspace_root_for_session(session_id)
         stable_memory = self._format_stable_memory_for_prompt(session_id=session_id)
         identity_prompt = self._identity_prompt_for_session(session_id)
-        allowed_tool_names = self._role_allowed_tool_names(session_id)
+        allowed_tool_names = self._effective_allowed_tool_names(session_id)
         allowed_skills = self._role_allowed_skills(session_id)
         enabled_tools = {
             schema.get("function", {}).get("name", "")

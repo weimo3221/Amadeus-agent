@@ -1089,7 +1089,8 @@ UI 不需要知道 runner 细节，但需要能展示：
 ### Slice 5：Isolated child runner
 
 - 在 `TaskRunner` 合同后接 `ThreadedChildAgentRunner`，创建隔离 child runtime。
-- worker profile 决定 tool visibility 和 permission policy。
+- 已完成第一版 worker profile/toolset tool visibility enforcement：worker task 的 `workerProfile`、`allowedToolsets`、`disallowedTools` 会被解析成临时 `AgentRuntime` tool scope，限制 child turn 的 tool schema、prompt hints 和执行检查。
+- 仍需补更细的 permission policy、workspace policy，以及真正 isolated child runtime。
 - 子 Agent 只写自己的 attempt/artifacts/task events，不写父会话 raw history。
 - 将现有 `delegate_task` 的启发式 search/read 实现迁到 child runner 背后，保持 depth=1、summary-only parent result。
 
@@ -1099,7 +1100,8 @@ UI 不需要知道 runner 细节，但需要能展示：
 - First dedicated single-task worker entrypoint is implemented in `amadeus.task_worker_entrypoint`: a subprocess can bind work through `--task-id` / `AMADEUS_TASK_ID` and `--database` / `AMADEUS_MEMORY_DB` while reusing `TaskWorker` state transitions.
 - First external subprocess launcher/supervisor slice is implemented in `SubprocessTaskRunner`: `AMADEUS_TASK_RUNNER=subprocess` starts `python -m amadeus.task_worker_entrypoint`, passes `AMADEUS_TASK_ID`, `AMADEUS_TASK_RUN_ID`, `AMADEUS_MEMORY_DB`, `AMADEUS_WORKSPACE`, and `AMADEUS_WORKER_PROFILE`, enforces bounded concurrency, joins or terminates child processes from the parent runner, and reclaims non-zero exits back into queued retry or terminal failure.
 - Subprocess-loss attempts are now explicitly marked `abandoned`, keeping process interruption distinct from normal model/runtime `failed` attempts.
-- 仍需实现更完整的进程重启策略，以及按 worker profile 执行工具/权限/工作区策略。
+- Worker profile/toolset policy now limits child tool visibility and execution through `AgentRuntime.worker_tool_scope(...)`.
+- 仍需实现更完整的进程重启策略，以及按 worker profile 执行更细的权限/工作区策略。
 - task attempt heartbeat 独立于父 turn 生命周期。
 - 重启后 expired lease 可 reclaim；subprocess 非零退出已能将匹配 run 的未完成 attempt 标记为 `abandoned` 并触发 retry/fail。
 - 增强 supervisor 管理层，但仍复用同一个 store、ToolRuntime、WorkerContext builder 和单任务 entrypoint。

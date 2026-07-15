@@ -7,28 +7,18 @@ from typing import Any, Callable, Protocol
 
 from amadeus.memory import MessageMemoryStore
 from amadeus.model import first_choice_message, parse_json_object_from_text
+from amadeus.worker_policy import (
+    ALLOWED_WORKER_PROFILES,
+    DEFAULT_PROFILE_TOOLSETS,
+    DEFAULT_WORKER_PROFILE,
+    KNOWN_TOOLSETS,
+    PROFILE_TOOLSET_POLICY,
+)
 
 
 TaskSubmitter = Callable[[str], None]
 logger = logging.getLogger(__name__)
 
-DEFAULT_WORKER_PROFILE = "planner"
-ALLOWED_WORKER_PROFILES = {"researcher", "planner", "coder", "reviewer", "synthesizer"}
-KNOWN_TOOLSETS = {"read", "search", "memory", "web", "plan", "task", "skills", "patch", "write", "terminal", "code", "browser", "vision"}
-PROFILE_TOOLSET_POLICY: dict[str, set[str]] = {
-    "researcher": {"read", "search", "memory", "web"},
-    "planner": {"read", "search", "memory", "plan", "task", "skills"},
-    "coder": {"read", "search", "memory", "web", "skills", "patch", "write", "terminal", "code", "browser", "vision"},
-    "reviewer": {"read", "search", "memory"},
-    "synthesizer": {"read", "memory"},
-}
-DEFAULT_PROFILE_TOOLSETS: dict[str, list[str]] = {
-    "researcher": ["read", "search", "memory", "web"],
-    "planner": ["read", "search", "memory", "plan"],
-    "coder": ["read", "search", "memory", "patch"],
-    "reviewer": ["read", "search", "memory"],
-    "synthesizer": ["read", "memory"],
-}
 TASK_GRAPH_JSON_SHAPE = (
     '{"tasks":[{"tempId":"short-id","title":"task title","body":"worker instructions",'
     '"workerProfile":"researcher|planner|coder|reviewer|synthesizer",'

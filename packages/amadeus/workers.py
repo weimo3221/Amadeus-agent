@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from uuid import uuid4
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
+from amadeus.worker_policy import worker_tool_names_for_task
 
 
 logger = logging.getLogger(__name__)
@@ -596,52 +598,55 @@ class TaskWorker:
             attempt_id = str(attempt["id"])
             prompt = worker_context.to_prompt()
             runtime = self._agent_runtime_provider()
-            for event in runtime.run_turn(session_id, prompt, self._deny_permission):
-                if isinstance(event, AgentEvent):
-                    event_type = event.type
-                    payload = event.payload
-                else:
-                    event_type = str(getattr(event, "type", ""))
-                    payload = getattr(event, "payload", {})
-                if event_type == "agent.turn.started":
-                    try:
-                        memory_store.heartbeat_task(
-                            task_id,
-                            claim_lock=claim_lock,
-                            lease_seconds=self._lease_seconds,
-                        )
-                    except Exception:
-                        logger.debug("Task heartbeat failed taskId=%s", task_id, exc_info=True)
-                    turn_id = str(payload.get("turnId") or "")
-                    if turn_id:
-                        with self._lock:
-                            self._turns[task_id] = (session_id, turn_id)
-                        if cancel_event.is_set():
-                            runtime.cancel_turn(session_id, turn_id=turn_id)
-                if cancel_event.is_set():
-                    if attempt_id:
-                        memory_store.finish_task_attempt(
-                            attempt_id,
-                            status="cancelled",
-                            error="Task worker cancelled",
-                            checkpoint={"status": "cancelled"},
-                        )
-                    self._ensure_cancelled(task_id, reason="Task worker cancelled")
-                    return
-                if event_type == "assistant.message":
-                    result_text = str(payload.get("text") or "")
-                elif event_type == "agent.turn.cancelled":
-                    if attempt_id:
-                        memory_store.finish_task_attempt(
-                            attempt_id,
-                            status="cancelled",
-                            error="Agent turn cancelled",
-                            checkpoint={"status": "cancelled"},
-                        )
-                    self._ensure_cancelled(task_id, reason="Agent turn cancelled")
-                    return
-                elif event_type == "error":
-                    error_text = str(payload.get("message") or payload.get("code") or "Task failed")
+            worker_scope = self._worker_tool_scope(runtime, worker_tool_names_for_task(task))
+            with worker_scope:
+                events = runtime.run_turn(session_id, prompt, self._deny_permission)
+                for event in events:
+                    if isinstance(event, AgentEvent):
+                        event_type = event.type
+                        payload = event.payload
+                    else:
+                        event_type = str(getattr(event, "type", ""))
+                        payload = getattr(event, "payload", {})
+                    if event_type == "agent.turn.started":
+                        try:
+                            memory_store.heartbeat_task(
+                                task_id,
+                                claim_lock=claim_lock,
+                                lease_seconds=self._lease_seconds,
+                            )
+                        except Exception:
+                            logger.debug("Task heartbeat failed taskId=%s", task_id, exc_info=True)
+                        turn_id = str(payload.get("turnId") or "")
+                        if turn_id:
+                            with self._lock:
+                                self._turns[task_id] = (session_id, turn_id)
+                            if cancel_event.is_set():
+                                runtime.cancel_turn(session_id, turn_id=turn_id)
+                    if cancel_event.is_set():
+                        if attempt_id:
+                            memory_store.finish_task_attempt(
+                                attempt_id,
+                                status="cancelled",
+                                error="Task worker cancelled",
+                                checkpoint={"status": "cancelled"},
+                            )
+                        self._ensure_cancelled(task_id, reason="Task worker cancelled")
+                        return
+                    if event_type == "assistant.message":
+                        result_text = str(payload.get("text") or "")
+                    elif event_type == "agent.turn.cancelled":
+                        if attempt_id:
+                            memory_store.finish_task_attempt(
+                                attempt_id,
+                                status="cancelled",
+                                error="Agent turn cancelled",
+                                checkpoint={"status": "cancelled"},
+                            )
+                        self._ensure_cancelled(task_id, reason="Agent turn cancelled")
+                        return
+                    elif event_type == "error":
+                        error_text = str(payload.get("message") or payload.get("code") or "Task failed")
 
             if cancel_event.is_set():
                 if attempt_id:
@@ -739,6 +744,13 @@ class TaskWorker:
                     )
             except Exception:
                 logger.debug("Task lease heartbeat failed taskId=%s", task_id, exc_info=True)
+
+    @staticmethod
+    def _worker_tool_scope(runtime: Any, allowed_tool_names: set[str]) -> Any:
+        scope_factory = getattr(runtime, "worker_tool_scope", None)
+        if callable(scope_factory):
+            return scope_factory(allowed_tool_names)
+        return contextlib.nullcontext()
 
     @staticmethod
     def _task_prompt(task: dict[str, object]) -> str:

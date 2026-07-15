@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.agent import AgentEvent, PermissionRequest
+from amadeus.agent import AgentEvent, AgentRuntime, PermissionRequest
 from amadeus.memory import MessageMemoryStore
 from amadeus.task_worker_entrypoint import main as task_worker_entrypoint_main, run_task_once
 from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context
@@ -72,6 +72,16 @@ class SlowRuntime:
         self.started.set()
         self.release.wait(timeout=2)
         yield AgentEvent("assistant.message", {"text": "slow completed"})
+
+
+class ScopedRuntime(SuccessfulRuntime):
+    def __init__(self) -> None:
+        self.scopes: list[set[str]] = []
+
+    @contextlib.contextmanager
+    def worker_tool_scope(self, allowed_tool_names: set[str]):
+        self.scopes.append(set(allowed_tool_names))
+        yield
 
 
 class ImmediateTaskRunner:
@@ -139,6 +149,42 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertTrue(runner.shutdown_called)
         self.assertIsNotNone(finished)
         self.assertEqual(finished["status"], "succeeded")
+
+    def test_worker_applies_profile_tool_scope_to_runtime_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = ScopedRuntime()
+            runner = ImmediateTaskRunner()
+            worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
+            task = memory.create_task(
+                session_id="session-1",
+                title="Scoped task",
+                worker_profile="researcher",
+                allowed_toolsets=["read", "web", "terminal"],
+                disallowed_tools=["web_extract"],
+            )
+
+            worker.submit(str(task["id"]))
+            worker.shutdown()
+
+        self.assertEqual(len(runtime.scopes), 1)
+        scope = runtime.scopes[0]
+        self.assertIn("read_file", scope)
+        self.assertIn("web_search", scope)
+        self.assertNotIn("terminal", scope)
+        self.assertNotIn("web_extract", scope)
+
+    def test_agent_runtime_worker_tool_scope_filters_schemas_and_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            runtime = AgentRuntime(memory, audio_runtime=None)
+
+            with runtime.worker_tool_scope({"get_current_time", "read_file"}):
+                schemas = runtime.enabled_tool_schemas("session-1")
+                names = {schema["function"]["name"] for schema in schemas}
+                self.assertEqual(names, {"get_current_time", "read_file"})
+                self.assertTrue(runtime.role_allows_tool("session-1", "read_file"))
+                self.assertFalse(runtime.role_allows_tool("session-1", "terminal"))
 
     def test_subprocess_task_runner_launches_entrypoint_with_task_env(self) -> None:
         launches: list[dict[str, object]] = []
