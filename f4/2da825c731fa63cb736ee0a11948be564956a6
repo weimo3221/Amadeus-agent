@@ -1,0 +1,33 @@
+docs/agent-maturity-upgrade-plan.md
+  s_80fee7171b51b9::t_9b57ad830847de 1092-1093,1105-1106
+docs/implementation-notes.md
+  s_80fee7171b51b9::t_10222f3c838b44 136
+docs/project-status.md
+  s_80fee7171b51b9::t_5d743b78a8b740 473,512
+docs/roadmap.md
+  s_80fee7171b51b9::t_f49ae0c17907a0 17,285,287
+packages/amadeus/memory.py
+  s_80fee7171b51b9::t_3fc70d73af7233 3490-3491,3499-3504,3535-3536,3543-3544,3562,3630,3649-3654,3662-3666,3668-3674,3685-3686,3693-3694,3712,3716-3770
+packages/amadeus/workers.py
+  s_80fee7171b51b9::t_09318a8389e226 38-78,309,312-320,326,337-344,418-425
+tests/test_task_worker.py
+  s_80fee7171b51b9::t_540f07d0a45a1b 335-345,358-362,538-547,569-573
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f42da825c731fa63cb736ee0a11948be564956a6",
+  "prompts": {},
+  "sessions": {
+    "s_80fee7171b51b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6079-6855-7750-8d34-2a0d6e1e47e7",
+        "model": "unknown"
+      },
+      "human_author": "weichaoren <weichaoren@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
