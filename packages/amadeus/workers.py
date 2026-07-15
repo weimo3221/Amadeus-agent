@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import json
 import os
 import signal
@@ -36,6 +37,8 @@ WORKER_CONTEXT_FIELD_CHARS = 4000
 WORKER_CONTEXT_PROMPT_CHARS = 20000
 WORKER_CHECKPOINT_PREVIEW_CHARS = 1000
 WORKER_TOOL_ARTIFACT_PREVIEW_CHARS = 2000
+WORKER_FILE_MANIFEST_LIMIT = 10
+WORKER_FILE_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
 
 
 def _recovery_checkpoint_from_attempt(
@@ -496,6 +499,9 @@ class WorkerContext:
                     idempotency_hint = _text(metadata.get("idempotencyHint"))
                     if idempotency_hint:
                         lines.append(f"  idempotencyHint: {_truncate(idempotency_hint, 800)}")
+                    file_manifest = metadata.get("fileManifest")
+                    if isinstance(file_manifest, list) and file_manifest:
+                        lines.append(f"  fileManifest: {_json_preview(file_manifest, max_chars=1200)}")
                 content = _text(artifact.get("content"))
                 if content:
                     lines.append(f"  content: {_truncate(content, WORKER_CONTEXT_FIELD_CHARS)}")
@@ -741,6 +747,102 @@ def _artifact_resume_metadata(tool_name: str, parsed_result: dict[str, object] |
     return metadata
 
 
+def _workspace_root_for_task(memory_store: MessageMemoryStore, task: dict[str, object]) -> Path | None:
+    base = Path(str(memory_store.default_workspace_path)).expanduser() if getattr(memory_store, "default_workspace_path", None) else Path.cwd()
+    workspace_text = ""
+    hints = task.get("contextHints")
+    if isinstance(hints, dict):
+        for key in ("workspacePath", "workspace", "cwd"):
+            value = _text(hints.get(key))
+            if value:
+                workspace_text = value
+                break
+    if not workspace_text:
+        try:
+            session = memory_store.get_session(str(task.get("sessionId") or ""))
+        except Exception:
+            session = None
+        if isinstance(session, dict):
+            workspace_text = _text(session.get("workspacePath"))
+    try:
+        candidate = Path(workspace_text).expanduser() if workspace_text else base
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        return candidate.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _path_is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _file_manifest_entry(workspace_root: Path, relative_path: str) -> dict[str, object]:
+    entry: dict[str, object] = {"path": relative_path}
+    if not relative_path or Path(relative_path).is_absolute():
+        entry["state"] = "invalid_path"
+        return entry
+    try:
+        target_path = (workspace_root / relative_path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        entry["state"] = "invalid_path"
+        return entry
+    if not _path_is_inside(target_path, workspace_root):
+        entry["state"] = "outside_workspace"
+        return entry
+    try:
+        stat = target_path.stat()
+    except FileNotFoundError:
+        entry["state"] = "missing"
+        return entry
+    except OSError:
+        entry["state"] = "stat_error"
+        return entry
+    if not target_path.is_file():
+        entry["state"] = "not_file"
+        return entry
+    entry["state"] = "present"
+    entry["sizeBytes"] = int(stat.st_size)
+    entry["mtime"] = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+    if stat.st_size > WORKER_FILE_MANIFEST_MAX_BYTES:
+        entry["sha256"] = None
+        entry["sha256Truncated"] = True
+        return entry
+    digest = hashlib.sha256()
+    try:
+        with target_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        entry["state"] = "read_error"
+        return entry
+    entry["sha256"] = digest.hexdigest()
+    entry["sha256Truncated"] = False
+    return entry
+
+
+def _attach_file_manifest(
+    metadata: dict[str, object],
+    *,
+    workspace_root: Path | None,
+) -> dict[str, object]:
+    if workspace_root is None:
+        return metadata
+    paths = _string_list(metadata.get("affectedFiles")) or _string_list(metadata.get("observedFiles"))
+    if not paths:
+        return metadata
+    manifest = [_file_manifest_entry(workspace_root, path) for path in paths[:WORKER_FILE_MANIFEST_LIMIT]]
+    if manifest:
+        metadata["fileManifest"] = manifest
+        metadata["fileManifestRoot"] = str(workspace_root)
+        metadata["fileManifestVersion"] = 1
+    return metadata
+
+
 def _tool_artifact_type(tool_name: str, metadata: dict[str, object]) -> str:
     if tool_name in {"terminal", "process", "execute_code"}:
         return "command_output"
@@ -890,6 +992,10 @@ class TaskWorker:
                 return
             parsed_result = _parse_tool_result_preview(result_preview)
             resume_metadata = _artifact_resume_metadata(tool_name, parsed_result)
+            resume_metadata = _attach_file_manifest(
+                resume_metadata,
+                workspace_root=_workspace_root_for_task(memory_store, task),
+            )
             artifact_type = _tool_artifact_type(tool_name, resume_metadata)
             artifact: dict[str, object] = {
                 "type": artifact_type,

@@ -7,6 +7,7 @@ import unittest
 import os
 import contextlib
 import io
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -867,7 +868,11 @@ class TaskWorkerTests(unittest.TestCase):
 
     def test_worker_records_file_state_resume_metadata_for_patch_tool(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            workspace = Path(tmpdir) / "workspace"
+            (workspace / "src").mkdir(parents=True)
+            file_content = "print('new')\n"
+            (workspace / "src" / "app.py").write_text(file_content, encoding="utf-8")
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite", default_workspace_path=workspace)
             runtime = PatchToolResultRuntime()
             runner = ImmediateTaskRunner()
             worker = TaskWorker(lambda: memory, lambda: runtime, runner=runner)
@@ -890,8 +895,16 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertTrue(artifact["metadata"]["changed"])
         self.assertEqual(artifact["metadata"]["replacements"], 1)
         self.assertIn("Verify the affected file contents", str(artifact["metadata"]["idempotencyHint"]))
+        manifest = artifact["metadata"]["fileManifest"]
+        self.assertEqual(manifest[0]["path"], "src/app.py")
+        self.assertEqual(manifest[0]["state"], "present")
+        self.assertEqual(manifest[0]["sizeBytes"], len(file_content.encode("utf-8")))
+        self.assertEqual(manifest[0]["sha256"], hashlib.sha256(file_content.encode("utf-8")).hexdigest())
+        self.assertFalse(manifest[0]["sha256Truncated"])
         self.assertIn("resumeKind: file_state", prompt)
         self.assertIn("affectedFiles: src/app.py", prompt)
+        self.assertIn("fileManifest:", prompt)
+        self.assertIn(hashlib.sha256(file_content.encode("utf-8")).hexdigest(), prompt)
         self.assertIn("idempotencyHint: Verify the affected file contents", prompt)
 
     def test_worker_records_attempt_and_result_artifact(self) -> None:
