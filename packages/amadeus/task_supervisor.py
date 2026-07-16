@@ -39,6 +39,7 @@ class DurableTaskSupervisor:
         workspace_isolation: str = DEFAULT_TASK_WORKSPACE_ISOLATION,
         sandbox_root: str | Path | None = None,
         logs_root: str | Path | None = None,
+        os_sandbox_mode: str | None = None,
         max_workers: int = 2,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         lease_seconds: float | None = None,
@@ -67,6 +68,7 @@ class DurableTaskSupervisor:
             logs_root=logs_root,
             supervisor_id=self.owner_id,
             resource_limits=resource_limits,
+            os_sandbox_mode=os_sandbox_mode,
             process_factory=process_factory,
         )
         self.worker = TaskWorker(
@@ -209,6 +211,7 @@ class DurableTaskSupervisor:
             "workspacePath": str(self.workspace_path) if self.workspace_path else None,
             "pollIntervalSeconds": self.poll_interval_seconds,
             "leaseSeconds": self.lease_seconds,
+            "osSandbox": self.runner.status().get("osSandbox"),
         }
         if status:
             metadata["status"] = status
@@ -236,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--logs-root",
         default=os.environ.get("AMADEUS_TASK_LOGS_ROOT", ""),
+    )
+    parser.add_argument(
+        "--os-sandbox",
+        default=os.environ.get("AMADEUS_TASK_OS_SANDBOX", "auto"),
     )
     parser.add_argument(
         "--max-workers",
@@ -276,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         workspace_isolation=args.workspace_isolation,
         sandbox_root=args.sandbox_root or None,
         logs_root=args.logs_root or None,
+        os_sandbox_mode=args.os_sandbox,
         max_workers=max(1, args.max_workers),
         poll_interval_seconds=max(0.1, args.poll_interval),
         lease_seconds=args.lease_seconds,

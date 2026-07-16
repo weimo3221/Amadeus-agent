@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from amadeus.agent import AgentEvent, PermissionRequest
 from amadeus.memory import MessageMemoryStore
+from amadeus.os_sandbox import OsSandboxBackend, select_os_sandbox_backend
 from amadeus.worker_policy import (
     WorkerRuntimeScope,
     build_worker_runtime_scope,
@@ -473,6 +474,7 @@ class SubprocessTaskRunner:
         logs_root: str | Path | None = None,
         supervisor_id: str | None = None,
         resource_limits: TaskResourceLimits | None = None,
+        os_sandbox_mode: str | None = None,
         process_factory: ProcessFactory | None = None,
     ) -> None:
         database = Path(database_path).expanduser()
@@ -490,6 +492,14 @@ class SubprocessTaskRunner:
         self._logs_root = Path(logs_root).expanduser() if logs_root else database.parent / "task_logs"
         self._supervisor_id = str(supervisor_id or f"subprocess-{uuid4().hex[:12]}")
         self._resource_limits = resource_limits or TaskResourceLimits.from_environment()
+        requested_os_sandbox = str(
+            os_sandbox_mode
+            if os_sandbox_mode is not None
+            else os.environ.get("AMADEUS_TASK_OS_SANDBOX", "auto")
+        )
+        self._os_sandbox: OsSandboxBackend = select_os_sandbox_backend(
+            requested_os_sandbox
+        )
         self._process_factory = process_factory or subprocess.Popen
         self._max_workers = max(1, int(max_workers))
         self._semaphore = threading.BoundedSemaphore(self._max_workers)
@@ -619,6 +629,7 @@ class SubprocessTaskRunner:
             "logsRoot": str(self._logs_root),
             "supervisorId": self._supervisor_id,
             "resourceLimits": self._resource_limits.to_dict(),
+            "osSandbox": self._os_sandbox.to_dict(),
             "activeProcessCount": len(active) + len(adopted),
             "activeProcesses": active,
             "adoptedProcesses": adopted,
@@ -883,6 +894,50 @@ class SubprocessTaskRunner:
             "--database",
             str(self._database_path),
         ]
+        os_sandbox = self._os_sandbox.to_dict()
+        if self._os_sandbox.enforced:
+            if effective_workspace is None:
+                if self._os_sandbox.requested in {
+                    "required",
+                    "bubblewrap",
+                    "sandbox-exec",
+                }:
+                    raise RuntimeError(
+                        "OS sandbox requires a concrete worker workspace"
+                    )
+                os_sandbox = {
+                    **os_sandbox,
+                    "enforced": False,
+                    "reason": "worker workspace is not configured",
+                }
+            else:
+                runtime_sandbox_root = (
+                    effective_workspace / ".amadeus-sandbox" / "runtime"
+                )
+                runtime_home = runtime_sandbox_root / "home"
+                runtime_tmp = runtime_sandbox_root / "tmp"
+                runtime_home.mkdir(parents=True, exist_ok=True)
+                runtime_tmp.mkdir(parents=True, exist_ok=True)
+                env["HOME"] = str(runtime_home)
+                env["TMPDIR"] = str(runtime_tmp)
+                env["TMP"] = str(runtime_tmp)
+                env["TEMP"] = str(runtime_tmp)
+                env["PYTHONDONTWRITEBYTECODE"] = "1"
+                env["AMADEUS_WORKER_OS_SANDBOX_BACKEND"] = self._os_sandbox.name
+                profile_path = (
+                    self._database_path.parent
+                    / "os_sandbox_profiles"
+                    / _safe_path_component(task_id)
+                    / f"{run_id}.sb"
+                )
+                command = self._os_sandbox.wrap_command(
+                    command,
+                    workspace_path=effective_workspace,
+                    state_root=self._database_path.parent.resolve(),
+                    database_path=self._database_path.resolve(),
+                    protected_workspace_root=self._sandbox_root.resolve(),
+                    profile_path=profile_path,
+                )
         log_path = self._logs_root / _safe_path_component(task_id) / f"{run_id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = log_path.open("ab", buffering=0)
@@ -912,6 +967,7 @@ class SubprocessTaskRunner:
                 "workspaceIsolation": workspace_isolation,
                 "workspaceSourcePath": str(workspace_source) if workspace_source else None,
                 "resourceLimits": self._resource_limits.to_dict(),
+                "osSandbox": os_sandbox,
             },
         )
         self._record_supervisor_event(
@@ -927,6 +983,7 @@ class SubprocessTaskRunner:
                 "logPath": str(log_path),
                 "supervisorId": self._supervisor_id,
                 "resourceLimits": self._resource_limits.to_dict(),
+                "osSandbox": os_sandbox,
             },
         )
         return process, run_id
@@ -1186,12 +1243,18 @@ class ExternalSupervisorTaskRunner:
         memory_store = MessageMemoryStore(self._database_path)
         lease = memory_store.get_supervisor_lease(self._lease_name)
         processes = memory_store.list_task_processes(active_only=True)
+        lease_metadata = (
+            lease.get("metadata")
+            if isinstance(lease, dict) and isinstance(lease.get("metadata"), dict)
+            else {}
+        )
         return {
             "kind": "external_supervisor",
             "closed": self._closed,
             "leaseName": self._lease_name,
             "lease": lease,
             "externalSupervisorActive": bool(lease and lease.get("active")),
+            "osSandbox": lease_metadata.get("osSandbox"),
             "activeProcessCount": len(processes),
             "activeProcesses": processes,
         }
@@ -1208,6 +1271,7 @@ def build_task_runner(
     logs_root: str | Path | None = None,
     supervisor_id: str | None = None,
     resource_limits: TaskResourceLimits | None = None,
+    os_sandbox_mode: str | None = None,
 ) -> TaskRunner:
     normalized = str(kind or "in_process").strip().lower().replace("-", "_")
     if normalized in {"sync", "synchronous", "inline"}:
@@ -1232,6 +1296,7 @@ def build_task_runner(
             logs_root=logs_root,
             supervisor_id=supervisor_id,
             resource_limits=resource_limits,
+            os_sandbox_mode=os_sandbox_mode,
         )
     raise ValueError(
         "task runner kind must be one of sync, in_process, process, subprocess, or external_supervisor"

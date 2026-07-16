@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from amadeus.agent import AgentEvent, AgentRuntime, PermissionRequest
 from amadeus.memory import MessageMemoryStore
+from amadeus.os_sandbox import OsSandboxBackend
 from amadeus.task_worker_entrypoint import main as task_worker_entrypoint_main, run_task_once
 from amadeus.worker_policy import (
     WorkerRuntimeScope,
@@ -559,6 +560,7 @@ class TaskWorkerTests(unittest.TestCase):
                     termination_grace_seconds=2,
                 ),
                 python_executable="/usr/bin/python-test",
+                os_sandbox_mode="none",
                 process_factory=fake_process_factory,
             )
 
@@ -620,6 +622,7 @@ class TaskWorkerTests(unittest.TestCase):
                     wall_timeout_seconds=0.05,
                     termination_grace_seconds=0.05,
                 ),
+                os_sandbox_mode="none",
                 process_factory=fake_process_factory,
             )
 
@@ -636,6 +639,57 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertIn("subprocess_termination_requested", [event["type"] for event in events])
         self.assertEqual(process_records[0]["status"], "exited")
         self.assertEqual(process_records[0]["returnCode"], -15)
+
+    def test_subprocess_task_runner_wraps_worker_with_os_sandbox(self) -> None:
+        launches: list[dict[str, object]] = []
+
+        def fake_process_factory(command: list[str], **kwargs: object) -> FakeProcess:
+            launches.append({"command": command, **kwargs})
+            return FakeProcess()
+
+        backend = OsSandboxBackend(
+            requested="required",
+            name="bubblewrap",
+            executable="/usr/bin/bwrap",
+            enforced=True,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "state" / "amadeus.sqlite"
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Sandbox worker")
+            with mock.patch(
+                "amadeus.workers.select_os_sandbox_backend",
+                return_value=backend,
+            ):
+                runner = SubprocessTaskRunner(
+                    database_path=database,
+                    workspace_path=workspace,
+                    workspace_isolation="none",
+                    os_sandbox_mode="required",
+                    process_factory=fake_process_factory,
+                )
+            runner.submit(str(task["id"]), lambda task_id: None)
+            runner.shutdown()
+            process_record = memory.list_task_processes(
+                task_id=str(task["id"]),
+            )[0]
+            events = memory.list_task_events(str(task["id"]))
+
+        command = launches[0]["command"]
+        self.assertEqual(command[:4], ["/usr/bin/bwrap", "--ro-bind", "/", "/"])
+        self.assertEqual(
+            launches[0]["env"]["AMADEUS_WORKER_OS_SANDBOX_BACKEND"],
+            "bubblewrap",
+        )
+        self.assertTrue(process_record["metadata"]["osSandbox"]["enforced"])
+        self.assertEqual(
+            process_record["metadata"]["osSandbox"]["backend"],
+            "bubblewrap",
+        )
+        started = next(event for event in events if event["type"] == "subprocess_started")
+        self.assertEqual(started["metadata"]["osSandbox"]["backend"], "bubblewrap")
 
     def test_subprocess_task_runner_adopts_live_process_and_terminates_cancelled_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -790,6 +844,7 @@ class TaskWorkerTests(unittest.TestCase):
             task = memory.create_task(session_id="session-1", title="Supervise subprocess")
             runner = SubprocessTaskRunner(
                 database_path=database,
+                os_sandbox_mode="none",
                 process_factory=fake_process_factory,
             )
 
@@ -834,6 +889,7 @@ class TaskWorkerTests(unittest.TestCase):
                 workspace_isolation="copy",
                 sandbox_root=sandbox_root,
                 python_executable="/usr/bin/python-test",
+                os_sandbox_mode="none",
                 process_factory=fake_process_factory,
             )
 
@@ -880,7 +936,11 @@ class TaskWorkerTests(unittest.TestCase):
                 )
                 return FakeProcess(return_code=1)
 
-            runner = SubprocessTaskRunner(database_path=database, process_factory=fake_process_factory)
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                os_sandbox_mode="none",
+                process_factory=fake_process_factory,
+            )
             runner.submit(str(task["id"]), lambda task_id: None)
             runner.shutdown()
 
@@ -913,7 +973,11 @@ class TaskWorkerTests(unittest.TestCase):
                 memory.create_task_attempt(str(task["id"]), run_id=str(env["AMADEUS_TASK_RUN_ID"]), worker_id="child-worker")
                 return FakeProcess(return_code=1)
 
-            runner = SubprocessTaskRunner(database_path=database, process_factory=fake_process_factory)
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                os_sandbox_mode="none",
+                process_factory=fake_process_factory,
+            )
             runner.submit(str(task["id"]), lambda task_id: None)
             runner.shutdown()
 

@@ -155,6 +155,7 @@ TASK_MAX_WORKERS = int(os.environ.get("AMADEUS_TASK_MAX_WORKERS", "2"))
 TASK_WORKSPACE_ISOLATION = os.environ.get("AMADEUS_TASK_WORKSPACE_ISOLATION", DEFAULT_TASK_WORKSPACE_ISOLATION)
 TASK_WORKSPACE_SANDBOX_ROOT = os.environ.get("AMADEUS_TASK_WORKSPACE_SANDBOX_ROOT")
 TASK_LOGS_ROOT = os.environ.get("AMADEUS_TASK_LOGS_ROOT")
+TASK_OS_SANDBOX = os.environ.get("AMADEUS_TASK_OS_SANDBOX", "auto")
 TASK_RECOVERY_INTERVAL_SECONDS = float(
     os.environ.get("AMADEUS_TASK_RECOVERY_INTERVAL_SECONDS", str(DEFAULT_TASK_RECOVERY_INTERVAL_SECONDS))
 )
@@ -210,6 +211,7 @@ task_worker = TaskWorker(
         workspace_isolation=TASK_WORKSPACE_ISOLATION,
         sandbox_root=TASK_WORKSPACE_SANDBOX_ROOT,
         logs_root=TASK_LOGS_ROOT,
+        os_sandbox_mode=TASK_OS_SANDBOX,
     ),
 )
 agent_runtime.set_task_worker(task_worker)

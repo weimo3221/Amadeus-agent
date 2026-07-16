@@ -155,7 +155,7 @@ The paper smoke test finds `Attention Is All You Need`, verifies `arXiv:1706.037
 | TypeScript bridge | `http://127.0.0.1:8788` · `ws://127.0.0.1:8788/ws` |
 | Python runtime | `http://127.0.0.1:8790` |
 
-Long tasks use the independent `packages/amadeus/task_supervisor.py` process by default. It owns subprocess launch/recovery through a SQLite single-primary lease, keeps a durable worker PID registry, adopts workers after supervisor restart, writes per-run logs, and applies worker wall-clock/POSIX resource limits. Set `AMADEUS_TASK_SUPERVISOR_MODE=embedded` only for compatibility or focused tests.
+Long tasks use the independent `packages/amadeus/task_supervisor.py` process by default. It owns subprocess launch/recovery through a SQLite single-primary lease, keeps a durable worker PID registry, adopts workers after supervisor restart, writes per-run logs, and applies worker wall-clock/POSIX resource limits. `AMADEUS_TASK_OS_SANDBOX=auto` probes Linux bubblewrap or macOS Seatbelt (`sandbox-exec`); use `required` to fail closed when the native backend is unavailable, or `none` only for explicit compatibility. Set `AMADEUS_TASK_SUPERVISOR_MODE=embedded` only for compatibility or focused tests.
 
 Default provider environment (stored only in local `.env`, git-ignored):
 
