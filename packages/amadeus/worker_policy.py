@@ -315,7 +315,7 @@ def worker_action_permission_decision(
             risk_labels=tuple(action["riskLabels"]),
         )
     if action["key"] in scope.approved_ask_tool_actions and tool_name in scope.allowed_tool_names:
-        expires_at = _approved_action_expires_at(scope, action["key"])
+        expires_at = worker_approved_action_expires_at(scope, action["key"])
         if expires_at and _is_expired(expires_at):
             return WorkerActionPermissionDecision(
                 decision="deny",
@@ -404,12 +404,31 @@ def worker_action_policy(tool_name: str, args: dict[str, Any]) -> dict[str, Any]
         risk_labels = ["destructive", "process_signal"] if action == "kill" else ["local_process_inspection"]
         risk_level = "high" if action == "kill" else "medium"
         pid = args.get("pid")
-        pid_label = f" pid {pid}" if isinstance(pid, int) else ""
+        try:
+            normalized_pid = str(int(pid)) if int(pid) > 0 else "*"
+        except (TypeError, ValueError):
+            normalized_pid = "*"
+        pid_label = f" pid {normalized_pid}" if action in {"kill", "status"} else ""
+        if action in {"kill", "status"} and normalized_pid == "*":
+            risk_labels.append("unknown_target")
+        if action == "kill":
+            raw_signal_name = str(args.get("signal") or "TERM").strip().upper() or "TERM"
+            signal_name = re.sub(r"[^A-Z0-9_-]", "_", raw_signal_name)[:20] or "TERM"
+            key = f"process:kill:pid:{normalized_pid}:signal:{signal_name}"
+            label = f"process kill pid {normalized_pid} signal {signal_name}"
+        elif action == "status":
+            key = f"process:status:pid:{normalized_pid}"
+            label = f"process status{pid_label}"
+        else:
+            query = " ".join(str(args.get("query") or "").strip().casefold().split())
+            query_key = hashlib.sha256(query.encode("utf-8")).hexdigest()[:16] if query else "all"
+            key = f"process:list:query:{query_key}"
+            label = f"process list{f' query `{_truncate_label(query, 80)}`' if query else ''}"
         return {
-            "key": f"process:{action}",
-            "label": f"process {action}{pid_label}",
+            "key": key,
+            "label": label,
             "riskLevel": risk_level,
-            "riskLabels": risk_labels,
+            "riskLabels": _dedupe_labels(risk_labels),
         }
 
     if tool_name in {"patch", "write_file", "read_file", "vision_analyze"}:
@@ -581,7 +600,7 @@ def _truncate_label(value: str, max_chars: int) -> str:
     return value if len(value) <= max_chars else value[: max_chars - 3] + "..."
 
 
-def _approved_action_expires_at(scope: WorkerRuntimeScope, action_key: str) -> str | None:
+def worker_approved_action_expires_at(scope: WorkerRuntimeScope, action_key: str) -> str | None:
     for key, expires_at in scope.approved_ask_tool_action_expirations:
         if key == action_key:
             return expires_at

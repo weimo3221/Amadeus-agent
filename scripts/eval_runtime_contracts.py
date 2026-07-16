@@ -457,28 +457,96 @@ def eval_subprocess_supervisor_fault_contract() -> None:
 def eval_action_approval_scope_contract() -> None:
     future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    approved_key = "process:kill:pid:42:signal:TERM"
     approved_scope = WorkerRuntimeScope(
         worker_profile="coder",
         allowed_toolsets=("terminal",),
         allowed_tool_names=frozenset({"process"}),
-        approved_ask_tool_actions=frozenset({"process:kill"}),
-        approved_ask_tool_action_expirations=(("process:kill", future),),
+        approved_ask_tool_actions=frozenset({approved_key}),
+        approved_ask_tool_action_expirations=((approved_key, future),),
     )
     expired_scope = WorkerRuntimeScope(
         worker_profile="coder",
         allowed_toolsets=("terminal",),
         allowed_tool_names=frozenset({"process"}),
-        approved_ask_tool_actions=frozenset({"process:kill"}),
-        approved_ask_tool_action_expirations=(("process:kill", past),),
+        approved_ask_tool_actions=frozenset({approved_key}),
+        approved_ask_tool_action_expirations=((approved_key, past),),
     )
 
     exact = worker_action_permission_decision(approved_scope, "process", {"action": "kill", "pid": 42}, "ask")
+    different_target = worker_action_permission_decision(approved_scope, "process", {"action": "kill", "pid": 43}, "ask")
     different = worker_action_permission_decision(approved_scope, "process", {"action": "list"}, "ask")
     expired = worker_action_permission_decision(expired_scope, "process", {"action": "kill", "pid": 42}, "ask")
 
     require(exact.decision == "auto_approve", "exact unexpired action approval was not honored")
+    require(different_target.decision == "deny", "process approval widened to a different pid")
     require(different.decision == "deny", "action-specific approval widened to a different action")
     require(expired.decision == "deny" and "expired" in str(expired.reason), "expired action approval was not rejected")
+
+
+def eval_approval_override_audit_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        memory = MessageMemoryStore(
+            Path(tmpdir) / "amadeus.sqlite",
+            worker_approval_action_ttl_seconds=120,
+        )
+        task = memory.create_task(session_id="eval-session", title="Audit approval and override")
+        artifact = memory.add_task_artifact(
+            str(task["id"]),
+            {"type": "diff", "title": "Patch", "path": "src/app.py"},
+            metadata={
+                "toolName": "patch",
+                "fileResumePolicy": {
+                    "action": "skip_redundant_mutation",
+                    "paths": ["src/app.py"],
+                },
+            },
+        )
+        memory.set_task_artifact_file_resume_override(
+            str(task["id"]),
+            str(artifact["id"]),
+            "force_rerun",
+            audit_source="contract_eval",
+            audit_actor="eval-user",
+        )
+        memory.start_task(str(task["id"]), claim_lock="eval-worker")
+        action_key = "process:kill:pid:42:signal:TERM"
+        memory.block_task(
+            str(task["id"]),
+            claim_lock="eval-worker",
+            reason="Approval required",
+            checkpoint={
+                "status": "blocked",
+                "phase": "approval_required",
+                "reason": "worker_tool_permission_required",
+                "toolName": "process",
+                "approvalActionKey": action_key,
+                "approvalActionLabel": "process kill pid 42 signal TERM",
+                "approvalRiskLevel": "high",
+                "approvalRiskLabels": ["destructive", "process_signal"],
+            },
+        )
+        resumed = memory.resume_blocked_task(
+            str(task["id"]),
+            audit_source="contract_eval",
+            audit_actor="eval-user",
+        )
+        events = memory.list_task_events(str(task["id"]))
+
+        override_event = next(event for event in events if event["type"] == "file_resume_override_set")
+        blocked_event = next(event for event in events if event["type"] == "blocked")
+        resumed_event = next(event for event in events if event["type"] == "resumed")
+        require(override_event["metadata"]["override"] == "force_rerun", "override audit value missing")
+        require(override_event["metadata"]["auditSource"] == "contract_eval", "override audit source missing")
+        require(blocked_event["metadata"]["approvalActionKey"] == action_key, "blocked approval action audit missing")
+        require(blocked_event["metadata"]["approvalRiskLevel"] == "high", "blocked approval risk audit missing")
+        require(resumed_event["metadata"]["approvedToolAction"] == action_key, "resume approval grant audit missing")
+        require(resumed_event["metadata"]["approvalTtlSeconds"] == 120, "resume approval TTL audit missing")
+        require(
+            resumed_event["metadata"]["approvedToolActionExpiresAt"]
+            == resumed["checkpoint"]["approvedToolActionExpiresAt"],
+            "resume approval expiration audit diverged from checkpoint",
+        )
 
 
 def eval_worker_isolation_policy_contract() -> None:
@@ -620,6 +688,7 @@ def main() -> int:
         ("subprocess_supervisor_faults", eval_subprocess_supervisor_fault_contract),
         ("worker_isolation_and_sandbox", eval_worker_isolation_policy_contract),
         ("action_approval_scope", eval_action_approval_scope_contract),
+        ("approval_override_audit", eval_approval_override_audit_contract),
     ]
     results: list[dict[str, object]] = []
     started_at = time.perf_counter()

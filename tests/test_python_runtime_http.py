@@ -748,6 +748,7 @@ class PythonRuntimeHttpTests(unittest.TestCase):
             {"override": "invalid"},
             expected_status=400,
         )
+        events = self.get_json(f"/tasks/{task['id']}/events")
 
         self.assertTrue(updated["ok"])
         self.assertEqual(updated["artifact"]["metadata"]["fileResumePolicy"]["override"], "force_rerun")
@@ -756,6 +757,16 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertNotIn("override", cleared["artifact"]["metadata"]["fileResumePolicy"])
         self.assertFalse(invalid["ok"])
         self.assertIn("unsupported", invalid["error"])
+        override_events = [
+            event for event in events["events"]
+            if event["type"] in {"file_resume_override_set", "file_resume_override_cleared"}
+        ]
+        self.assertEqual([event["type"] for event in override_events], [
+            "file_resume_override_set",
+            "file_resume_override_cleared",
+        ])
+        self.assertEqual(override_events[0]["metadata"]["auditSource"], "http_api")
+        self.assertEqual(override_events[0]["metadata"]["auditActor"], "user")
 
     def test_tasks_http_decompose_and_dispatch_graph(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Root graph")
@@ -908,17 +919,26 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         runtime_server.memory_store.block_task(str(task["id"]), claim_lock="worker", reason="Needs review", result="Draft")
 
         approved = self.post_json(f"/tasks/{task['id']}/approve", {})
+        approved_events = self.get_json(f"/tasks/{task['id']}/events")
 
         self.assertEqual(approved["task"]["status"], "succeeded")
+        review_event = next(event for event in approved_events["events"] if event["type"] == "review_approved")
+        self.assertEqual(review_event["metadata"]["auditSource"], "http_api")
+        self.assertEqual(review_event["metadata"]["auditActor"], "user")
 
         task_2 = runtime_server.memory_store.create_task(session_id="http-test", title="Blocked task")
         runtime_server.memory_store.start_task(str(task_2["id"]), claim_lock="worker")
         runtime_server.memory_store.block_task(str(task_2["id"]), claim_lock="worker", reason="Need input")
 
         resumed = self.post_json(f"/tasks/{task_2['id']}/resume", {})
+        resumed_events = self.get_json(f"/tasks/{task_2['id']}/events")
 
         self.assertEqual(resumed["task"]["status"], "queued")
         self.assertEqual(resumed["task"]["checkpoint"]["phase"], "blocked_resume_requested")
+        resumed_event = next(event for event in resumed_events["events"] if event["type"] == "resumed")
+        self.assertFalse(resumed_event["metadata"]["approvalGranted"])
+        self.assertEqual(resumed_event["metadata"]["auditSource"], "http_api")
+        self.assertEqual(resumed_event["metadata"]["auditActor"], "user")
 
     def test_runtime_events_streams_published_task_updates(self) -> None:
         received: list[dict] = []

@@ -2656,17 +2656,37 @@ class MessageMemoryStore:
         task_id: str,
         artifact_id: str,
         override: str | None,
+        *,
+        audit_source: str = "memory_store",
+        audit_actor: str | None = None,
     ) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
         normalized_artifact_id = str(artifact_id or "").strip()
         allowed_overrides = {"force_rerun", "ignore_artifact", "accept_current_state"}
         normalized_override = str(override or "").strip()
+        normalized_audit_source = normalize_optional_text(
+            audit_source,
+            max_chars=120,
+            field_name="audit_source",
+        ) or "memory_store"
+        normalized_audit_actor = normalize_optional_text(
+            audit_actor,
+            max_chars=120,
+            field_name="audit_actor",
+        )
         if not normalized_artifact_id:
             raise ValueError("artifact id is required")
         if normalized_override and normalized_override not in allowed_overrides:
             raise ValueError("unsupported file resume override")
 
+        now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
+            task_row = connection.execute(
+                "SELECT session_id, status FROM tasks WHERE id = ?",
+                (normalized_task_id,),
+            ).fetchone()
+            if task_row is None:
+                raise ValueError("task not found")
             row = connection.execute(
                 """
                 SELECT id, task_id, attempt_id, type, title, path, url, content, metadata_json, created_at
@@ -2683,6 +2703,7 @@ class MessageMemoryStore:
             policy = metadata.get("fileResumePolicy")
             if not isinstance(policy, dict):
                 raise ValueError("task artifact has no file resume policy")
+            previous_override = str(policy.get("override") or "").strip() or None
             next_policy = dict(policy)
             if normalized_override:
                 next_policy["override"] = normalized_override
@@ -2703,6 +2724,32 @@ class MessageMemoryStore:
                 """,
                 (normalized_artifact_id, normalized_task_id),
             ).fetchone()
+            event_type = "file_resume_override_set" if normalized_override else "file_resume_override_cleared"
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(task_row[0]),
+                event_type=event_type,
+                status=str(task_row[1]),
+                message=(
+                    f"File resume override set to {normalized_override}"
+                    if normalized_override
+                    else "File resume override cleared"
+                ),
+                metadata={
+                    "artifactId": normalized_artifact_id,
+                    "artifactPath": str(row[5]) if row[5] else None,
+                    "toolName": metadata.get("toolName"),
+                    "policyAction": policy.get("action"),
+                    "policyPaths": policy.get("paths"),
+                    "previousOverride": previous_override,
+                    "override": normalized_override or None,
+                    "changed": previous_override != (normalized_override or None),
+                    "auditSource": normalized_audit_source,
+                    "auditActor": normalized_audit_actor,
+                },
+                created_at=now,
+            )
         if updated is None:
             raise RuntimeError("task artifact could not be loaded")
         return task_artifact_response(updated)
@@ -3470,6 +3517,11 @@ class MessageMemoryStore:
                     "claimLock": normalized_claim_lock,
                     "checkpointPhase": checkpoint.get("phase") if checkpoint else None,
                     "checkpointReason": checkpoint.get("reason") if checkpoint else None,
+                    "toolName": checkpoint.get("toolName") if checkpoint else None,
+                    "approvalActionKey": checkpoint.get("approvalActionKey") if checkpoint else None,
+                    "approvalActionLabel": checkpoint.get("approvalActionLabel") if checkpoint else None,
+                    "approvalRiskLevel": checkpoint.get("approvalRiskLevel") if checkpoint else None,
+                    "approvalRiskLabels": checkpoint.get("approvalRiskLabels") if checkpoint else None,
                 },
                 created_at=now,
             )
@@ -3478,8 +3530,24 @@ class MessageMemoryStore:
             raise ValueError("task not found")
         return task
 
-    def resume_blocked_task(self, task_id: str) -> dict[str, object]:
+    def resume_blocked_task(
+        self,
+        task_id: str,
+        *,
+        audit_source: str = "memory_store",
+        audit_actor: str | None = None,
+    ) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
+        normalized_audit_source = normalize_optional_text(
+            audit_source,
+            max_chars=120,
+            field_name="audit_source",
+        ) or "memory_store"
+        normalized_audit_actor = normalize_optional_text(
+            audit_actor,
+            max_chars=120,
+            field_name="audit_actor",
+        )
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             row = connection.execute(
@@ -3503,13 +3571,14 @@ class MessageMemoryStore:
             was_approval_checkpoint = bool(row[2]) or str(previous_checkpoint.get("phase") or "") == "approval_required"
             approved_tool_name = str(previous_checkpoint.get("toolName") or "").strip()
             approved_action_key = str(previous_checkpoint.get("approvalActionKey") or "").strip()
+            approved_worker_action = bool(approved_tool_name or approved_action_key)
             approval_action_expires_at = (
                 datetime.now(timezone.utc) + timedelta(seconds=self.worker_approval_action_ttl_seconds)
             ).isoformat()
             checkpoint = {
                 "status": "queued",
                 "phase": "approval_resume_requested" if was_approval_checkpoint else "blocked_resume_requested",
-                "reason": "human_approved_worker_action" if approved_tool_name else "human_review_resumed" if was_approval_checkpoint else "blocked_task_resumed",
+                "reason": "human_approved_worker_action" if approved_worker_action else "human_review_resumed" if was_approval_checkpoint else "blocked_task_resumed",
             }
             if approved_tool_name:
                 checkpoint["approvedToolName"] = approved_tool_name
@@ -3561,7 +3630,21 @@ class MessageMemoryStore:
                 event_type="resumed",
                 status="queued",
                 message="Task resumed from blocked state",
-                metadata={"checkpointPhase": checkpoint["phase"], "checkpointReason": checkpoint["reason"]},
+                metadata={
+                    "checkpointPhase": checkpoint["phase"],
+                    "checkpointReason": checkpoint["reason"],
+                    "approvalGranted": approved_worker_action,
+                    "approvalScope": "action" if approved_action_key else "legacy_tool" if approved_tool_name else None,
+                    "approvedToolName": approved_tool_name or None,
+                    "approvedToolAction": approved_action_key or None,
+                    "approvedToolActionLabel": previous_checkpoint.get("approvalActionLabel"),
+                    "approvalRiskLevel": previous_checkpoint.get("approvalRiskLevel"),
+                    "approvalRiskLabels": previous_checkpoint.get("approvalRiskLabels"),
+                    "approvedToolActionExpiresAt": approval_action_expires_at if approved_action_key else None,
+                    "approvalTtlSeconds": self.worker_approval_action_ttl_seconds if approved_action_key else None,
+                    "auditSource": normalized_audit_source,
+                    "auditActor": normalized_audit_actor,
+                },
                 created_at=now,
             )
         task = self.get_task(normalized_task_id)
@@ -3569,8 +3652,24 @@ class MessageMemoryStore:
             raise ValueError("task not found")
         return task
 
-    def approve_task_review(self, task_id: str) -> dict[str, object]:
+    def approve_task_review(
+        self,
+        task_id: str,
+        *,
+        audit_source: str = "memory_store",
+        audit_actor: str | None = None,
+    ) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
+        normalized_audit_source = normalize_optional_text(
+            audit_source,
+            max_chars=120,
+            field_name="audit_source",
+        ) or "memory_store"
+        normalized_audit_actor = normalize_optional_text(
+            audit_actor,
+            max_chars=120,
+            field_name="audit_actor",
+        )
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
             row = connection.execute(
@@ -3614,7 +3713,13 @@ class MessageMemoryStore:
                 event_type="review_approved",
                 status="succeeded",
                 message="Review approved; task marked succeeded",
-                metadata={"checkpointPhase": checkpoint["phase"], "checkpointReason": checkpoint["reason"]},
+                metadata={
+                    "checkpointPhase": checkpoint["phase"],
+                    "checkpointReason": checkpoint["reason"],
+                    "approvalScope": "task_review",
+                    "auditSource": normalized_audit_source,
+                    "auditActor": normalized_audit_actor,
+                },
                 created_at=now,
             )
         task = self.get_task(normalized_task_id)

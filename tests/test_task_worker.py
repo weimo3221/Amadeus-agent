@@ -908,38 +908,43 @@ class TaskWorkerTests(unittest.TestCase):
         )
 
     def test_worker_action_permission_approval_is_action_specific(self) -> None:
+        approved_key = "process:kill:pid:123:signal:TERM"
         scope = WorkerRuntimeScope(
             worker_profile="coder",
             allowed_toolsets=("terminal",),
             allowed_tool_names=frozenset({"process"}),
-            approved_ask_tool_actions=frozenset({"process:kill"}),
+            approved_ask_tool_actions=frozenset({approved_key}),
         )
 
         kill_decision = worker_action_permission_decision(scope, "process", {"action": "kill", "pid": 123}, "ask")
+        other_pid_decision = worker_action_permission_decision(scope, "process", {"action": "kill", "pid": 456}, "ask")
         list_decision = worker_action_permission_decision(scope, "process", {"action": "list"}, "ask")
 
         self.assertEqual(kill_decision.decision, "auto_approve")
-        self.assertEqual(kill_decision.action_key, "process:kill")
+        self.assertEqual(kill_decision.action_key, approved_key)
         self.assertEqual(kill_decision.risk_level, "high")
+        self.assertEqual(other_pid_decision.decision, "deny")
+        self.assertEqual(other_pid_decision.action_key, "process:kill:pid:456:signal:TERM")
         self.assertEqual(list_decision.decision, "deny")
-        self.assertEqual(list_decision.action_key, "process:list")
+        self.assertEqual(list_decision.action_key, "process:list:query:all")
 
     def test_worker_action_permission_approval_expires(self) -> None:
         future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
         past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        approved_key = "process:kill:pid:123:signal:TERM"
         future_scope = WorkerRuntimeScope(
             worker_profile="coder",
             allowed_toolsets=("terminal",),
             allowed_tool_names=frozenset({"process"}),
-            approved_ask_tool_actions=frozenset({"process:kill"}),
-            approved_ask_tool_action_expirations=(("process:kill", future),),
+            approved_ask_tool_actions=frozenset({approved_key}),
+            approved_ask_tool_action_expirations=((approved_key, future),),
         )
         expired_scope = WorkerRuntimeScope(
             worker_profile="coder",
             allowed_toolsets=("terminal",),
             allowed_tool_names=frozenset({"process"}),
-            approved_ask_tool_actions=frozenset({"process:kill"}),
-            approved_ask_tool_action_expirations=(("process:kill", past),),
+            approved_ask_tool_actions=frozenset({approved_key}),
+            approved_ask_tool_action_expirations=((approved_key, past),),
         )
 
         allowed = worker_action_permission_decision(future_scope, "process", {"action": "kill", "pid": 123}, "ask")

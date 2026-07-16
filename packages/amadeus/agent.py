@@ -52,6 +52,7 @@ from amadeus.tool_runtime import (
 from amadeus.worker_policy import (
     WorkerRuntimeScope,
     worker_action_permission_decision,
+    worker_approved_action_expires_at,
     worker_sandbox_allows_tool,
     worker_sandbox_denial_reason,
 )
@@ -2229,6 +2230,7 @@ class AgentRuntime:
 
         permission_request_id: str | None = None
         permission_decision = "allow"
+        worker_permission = None
         if spec.permission == "ask":
             worker_permission = worker_action_permission_decision(
                 self._current_worker_scope(),
@@ -2285,6 +2287,11 @@ class AgentRuntime:
                         "approvalActionLabel": worker_permission.action_label,
                         "approvalRiskLevel": worker_permission.risk_level,
                         "approvalRiskLabels": list(worker_permission.risk_labels),
+                        "approvalExpiresAt": (
+                            worker_approved_action_expires_at(worker_scope, worker_permission.action_key)
+                            if worker_scope is not None and worker_permission.action_key
+                            else None
+                        ),
                     },
                 )
                 return
@@ -2344,6 +2351,13 @@ class AgentRuntime:
                             "turnId": turn_id,
                             "toolCallId": tool_call_id,
                             "workspaceEpoch": workspace_epoch,
+                            "permission": spec.permission,
+                            "permissionDecision": "denied",
+                            "permissionRequestId": permission_request_id,
+                            "approvalActionKey": worker_permission.action_key,
+                            "approvalActionLabel": worker_permission.action_label,
+                            "approvalRiskLevel": worker_permission.risk_level,
+                            "approvalRiskLabels": list(worker_permission.risk_labels),
                         },
                     )
                     return
@@ -2357,6 +2371,23 @@ class AgentRuntime:
                     tool_name,
                 )
 
+        worker_approval_expires_at = (
+            worker_approved_action_expires_at(worker_scope, worker_permission.action_key)
+            if worker_permission is not None
+            and worker_scope is not None
+            and worker_permission.action_key
+            else None
+        )
+        permission_audit_metadata = {
+            "permission": spec.permission,
+            "permissionDecision": permission_decision,
+            "permissionRequestId": permission_request_id,
+            "approvalActionKey": worker_permission.action_key if worker_permission is not None else None,
+            "approvalActionLabel": worker_permission.action_label if worker_permission is not None else None,
+            "approvalRiskLevel": worker_permission.risk_level if worker_permission is not None else None,
+            "approvalRiskLabels": list(worker_permission.risk_labels) if worker_permission is not None else [],
+            "approvalExpiresAt": worker_approval_expires_at,
+        }
         result = self.tool_registry.execute(
             tool_name,
             args,
@@ -2387,8 +2418,6 @@ class AgentRuntime:
                 audit_metadata={
                     "turnId": turn_id,
                     "toolCallId": tool_call_id,
-                    "permission": spec.permission,
-                    "permissionDecision": permission_decision,
                     "workspaceEpoch": workspace_epoch,
                     "workerProfile": self._current_worker_profile(),
                     "workerSourceSessionId": self._current_worker_source_session_id(),
@@ -2398,6 +2427,7 @@ class AgentRuntime:
                     "workerWorkspaceIsolation": self._current_worker_workspace_isolation(),
                     "workerWorkspaceSourcePath": self._current_worker_workspace_source_path(),
                     "workerFileResumePolicyCount": len(self._current_worker_file_resume_policies()),
+                    **permission_audit_metadata,
                 },
             ),
         )
@@ -2474,6 +2504,9 @@ class AgentRuntime:
                 "workspaceEpoch": workspace_epoch,
                 "workspaceEpochAfter": workspace_epoch_after,
                 "workspaceMutated": workspace_epoch_after != workspace_epoch,
+                "workerProfile": self._current_worker_profile(),
+                "workerSourceSessionId": self._current_worker_source_session_id(),
+                **permission_audit_metadata,
             },
         )
 

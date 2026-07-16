@@ -56,6 +56,8 @@ const eventTone: Record<string, ToolTone> = {
   blocked: 'warning',
   resumed: 'info',
   review_approved: 'success',
+  file_resume_override_set: 'warning',
+  file_resume_override_cleared: 'neutral',
 }
 
 const eventLabel: Record<string, string> = {
@@ -69,6 +71,8 @@ const eventLabel: Record<string, string> = {
   blocked: '等待审核',
   resumed: '恢复执行',
   review_approved: '审核通过',
+  file_resume_override_set: '恢复策略已覆盖',
+  file_resume_override_cleared: '恢复策略覆盖已清除',
 }
 
 const artifactMeta: Record<string, { label: string; icon: string; tone: ToolTone }> = {

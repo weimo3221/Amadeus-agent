@@ -6,6 +6,7 @@ import tempfile
 import threading
 import urllib.parse
 import unittest
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Iterable
@@ -2165,12 +2166,15 @@ finally:
             ],
             config_path=Path(self.tmpdir.name) / "missing-tools.yaml",
         )
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        approved_key = "process:kill:pid:123:signal:TERM"
         scope = WorkerRuntimeScope(
             worker_profile="coder",
             allowed_toolsets=("terminal",),
             allowed_tool_names=frozenset({"process"}),
             sandbox_mode="workspace_execute",
-            approved_ask_tool_actions=frozenset({"process:kill"}),
+            approved_ask_tool_actions=frozenset({approved_key}),
+            approved_ask_tool_action_expirations=((approved_key, expires_at),),
         )
 
         with runtime.worker_runtime_scope(scope):
@@ -2178,8 +2182,20 @@ finally:
 
         self.assertEqual(len(observed_contexts), 1)
         self.assertEqual(observed_contexts[0].permission_decision, "worker_auto_approved")
+        self.assertEqual(observed_contexts[0].audit_metadata["approvalActionKey"], approved_key)
+        self.assertEqual(observed_contexts[0].audit_metadata["approvalRiskLevel"], "high")
+        self.assertEqual(observed_contexts[0].audit_metadata["approvalExpiresAt"], expires_at)
         tool_finished = [event.payload for event in events if event.type == "tool.finished"]
         self.assertTrue(tool_finished[0]["ok"])
+        audit_events = [event.payload for event in events if event.type == "tool.audit"]
+        finished_audit = audit_events[-1]
+        self.assertEqual(finished_audit["decision"], "finished")
+        self.assertEqual(finished_audit["metadata"]["permissionDecision"], "worker_auto_approved")
+        self.assertEqual(finished_audit["metadata"]["approvalActionKey"], approved_key)
+        self.assertEqual(finished_audit["metadata"]["approvalRiskLabels"], ["destructive", "process_signal"])
+        self.assertEqual(finished_audit["metadata"]["approvalExpiresAt"], expires_at)
+        persisted = runtime.persisted_tool_audit_records("worker-session")
+        self.assertEqual(persisted[-1].metadata["approvalActionKey"], approved_key)
 
     def test_worker_scope_auto_approves_profile_allowed_ask_tools(self) -> None:
         observed_contexts: list[ToolContext] = []

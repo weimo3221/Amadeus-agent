@@ -1211,7 +1211,13 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             body = self.read_json_body()
             override_value = body.get("override")
             override = override_value if isinstance(override_value, str) and override_value.strip() else None
-            artifact = memory_store.set_task_artifact_file_resume_override(task_id, artifact_id, override)
+            artifact = memory_store.set_task_artifact_file_resume_override(
+                task_id,
+                artifact_id,
+                override,
+                audit_source="http_api",
+                audit_actor="user",
+            )
             artifacts = memory_store.list_task_artifacts(task_id, limit=100)
             task = memory_store.get_task(task_id)
             logger.info(
@@ -1398,7 +1404,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             if not task_id:
                 self.write_json(400, {"ok": False, "error": "task id is required"})
                 return
-            task = memory_store.resume_blocked_task(task_id)
+            task = memory_store.resume_blocked_task(
+                task_id,
+                audit_source="http_api",
+                audit_actor="user",
+            )
             task_worker.submit(str(task["id"]))
             publish_task_update(task, "resumed")
             self.write_json(200, {"ok": True, "task": task})
@@ -1414,7 +1424,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             if not task_id:
                 self.write_json(400, {"ok": False, "error": "task id is required"})
                 return
-            task = memory_store.approve_task_review(task_id)
+            task = memory_store.approve_task_review(
+                task_id,
+                audit_source="http_api",
+                audit_actor="user",
+            )
             try:
                 memory_store.update_plan_item_status(
                     session_id=str(task["sessionId"]),
@@ -3574,10 +3588,11 @@ def serialize_runtime_config(config: dict[str, dict[str, int | float]]) -> str:
         "context": "Context and memory injection budgets.",
         "summary": "Automatic conversation summary compaction.",
         "memoryReview": "Automatic durable memory candidate review.",
+        "tasks": "Task worker approval and child-agent controls.",
         "desktop": "Desktop companion display tuning.",
     }
     lines: list[str] = []
-    for section in ("context", "summary", "memoryReview", "desktop"):
+    for section in ("context", "summary", "memoryReview", "tasks", "desktop"):
         if lines:
             lines.append("")
         comment = section_comments.get(section)

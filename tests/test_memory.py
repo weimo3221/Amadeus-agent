@@ -885,7 +885,11 @@ class MessageMemoryStoreTests(unittest.TestCase):
             resumed = memory.resume_blocked_task(str(task["id"]))
             memory.start_task(str(task["id"]), claim_lock="worker-2")
             blocked_again = memory.block_task(str(task["id"]), claim_lock="worker-2", result="Draft 2", reason="Needs review")
-            approved = memory.approve_task_review(str(task["id"]))
+            approved = memory.approve_task_review(
+                str(task["id"]),
+                audit_source="unit_test",
+                audit_actor="reviewer",
+            )
             events = memory.list_task_events(str(task["id"]))
 
         self.assertEqual(blocked["status"], "blocked")
@@ -897,6 +901,10 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertEqual(approved["status"], "succeeded")
         self.assertEqual(approved["checkpoint"]["phase"], "approved")
         self.assertIn("review_approved", [event["type"] for event in events])
+        review_event = next(event for event in events if event["type"] == "review_approved")
+        self.assertEqual(review_event["metadata"]["approvalScope"], "task_review")
+        self.assertEqual(review_event["metadata"]["auditSource"], "unit_test")
+        self.assertEqual(review_event["metadata"]["auditActor"], "reviewer")
 
     def test_resume_blocked_worker_action_preserves_action_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -915,22 +923,27 @@ class MessageMemoryStoreTests(unittest.TestCase):
                     "phase": "approval_required",
                     "reason": "worker_tool_permission_required",
                     "toolName": "process",
-                    "approvalActionKey": "process:kill",
+                    "approvalActionKey": "process:kill:pid:123:signal:TERM",
                     "approvalActionLabel": "process kill pid 123",
                     "approvalRiskLevel": "high",
                     "approvalRiskLabels": ["destructive", "process_signal"],
                 },
             )
 
-            resumed = memory.resume_blocked_task(str(task["id"]))
+            resumed = memory.resume_blocked_task(
+                str(task["id"]),
+                audit_source="unit_test",
+                audit_actor="operator",
+            )
+            events = memory.list_task_events(str(task["id"]))
 
         self.assertEqual(resumed["checkpoint"]["phase"], "approval_resume_requested")
         self.assertEqual(resumed["checkpoint"]["approvedToolName"], "process")
-        self.assertEqual(resumed["checkpoint"]["approvedToolAction"], "process:kill")
-        self.assertEqual(resumed["checkpoint"]["approvedToolActions"], ["process:kill"])
+        self.assertEqual(resumed["checkpoint"]["approvedToolAction"], "process:kill:pid:123:signal:TERM")
+        self.assertEqual(resumed["checkpoint"]["approvedToolActions"], ["process:kill:pid:123:signal:TERM"])
         self.assertEqual(
             resumed["checkpoint"]["approvedToolActionExpirations"],
-            {"process:kill": resumed["checkpoint"]["approvedToolActionExpiresAt"]},
+            {"process:kill:pid:123:signal:TERM": resumed["checkpoint"]["approvedToolActionExpiresAt"]},
         )
         expires_at = datetime.fromisoformat(str(resumed["checkpoint"]["approvedToolActionExpiresAt"]))
         now = datetime.now(timezone.utc)
@@ -938,6 +951,22 @@ class MessageMemoryStoreTests(unittest.TestCase):
         self.assertLess(expires_at - now, timedelta(seconds=130))
         self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalActionLabel"], "process kill pid 123")
         self.assertEqual(resumed["checkpoint"]["resumeFrom"]["approvalRiskLabels"], ["destructive", "process_signal"])
+        blocked_event = next(event for event in events if event["type"] == "blocked")
+        self.assertEqual(blocked_event["metadata"]["approvalActionKey"], "process:kill:pid:123:signal:TERM")
+        self.assertEqual(blocked_event["metadata"]["approvalRiskLevel"], "high")
+        self.assertEqual(blocked_event["metadata"]["approvalRiskLabels"], ["destructive", "process_signal"])
+        resumed_event = next(event for event in events if event["type"] == "resumed")
+        self.assertTrue(resumed_event["metadata"]["approvalGranted"])
+        self.assertEqual(resumed_event["metadata"]["approvalScope"], "action")
+        self.assertEqual(resumed_event["metadata"]["approvedToolAction"], "process:kill:pid:123:signal:TERM")
+        self.assertEqual(resumed_event["metadata"]["approvalRiskLabels"], ["destructive", "process_signal"])
+        self.assertEqual(resumed_event["metadata"]["approvalTtlSeconds"], 120)
+        self.assertEqual(
+            resumed_event["metadata"]["approvedToolActionExpiresAt"],
+            resumed["checkpoint"]["approvedToolActionExpiresAt"],
+        )
+        self.assertEqual(resumed_event["metadata"]["auditSource"], "unit_test")
+        self.assertEqual(resumed_event["metadata"]["auditActor"], "operator")
 
     def test_task_graph_fields_edges_attempts_and_artifacts_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1028,10 +1057,29 @@ class MessageMemoryStoreTests(unittest.TestCase):
                 str(task["id"]),
                 str(artifact["id"]),
                 None,
+                audit_source="unit_test",
+                audit_actor="operator",
             )
+            events = memory.list_task_events(str(task["id"]))
 
         self.assertEqual(updated["metadata"]["fileResumePolicy"]["override"], "force_rerun")
         self.assertNotIn("override", cleared["metadata"]["fileResumePolicy"])
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["created", "file_resume_override_set", "file_resume_override_cleared"],
+        )
+        set_event = events[1]
+        self.assertEqual(set_event["metadata"]["artifactId"], artifact["id"])
+        self.assertEqual(set_event["metadata"]["artifactPath"], "src/app.py")
+        self.assertEqual(set_event["metadata"]["policyAction"], "skip_redundant_mutation")
+        self.assertEqual(set_event["metadata"]["previousOverride"], None)
+        self.assertEqual(set_event["metadata"]["override"], "force_rerun")
+        self.assertTrue(set_event["metadata"]["changed"])
+        clear_event = events[2]
+        self.assertEqual(clear_event["metadata"]["previousOverride"], "force_rerun")
+        self.assertEqual(clear_event["metadata"]["override"], None)
+        self.assertEqual(clear_event["metadata"]["auditSource"], "unit_test")
+        self.assertEqual(clear_event["metadata"]["auditActor"], "operator")
 
     def test_task_artifact_file_resume_override_rejects_invalid_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
