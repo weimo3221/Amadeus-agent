@@ -117,7 +117,7 @@ cp .env.example .env
 npm run dev
 ```
 
-`npm run dev` starts the Python runtime, waits for `/runtime/health`, starts the TypeScript bridge, waits for `/health`, then launches the Electron desktop. If any required child process exits, the supervisor terminates the rest so the stack never silently half-runs.
+`npm run dev` starts the durable task supervisor, Python runtime, and TypeScript bridge in order, waits for both HTTP health endpoints, then launches the Electron desktop. The Python runtime reports the external task supervisor lease through `/runtime/health`. If any required child process exits, the dev-stack supervisor terminates the rest so the stack never silently half-runs.
 
 > The first transcription may download the selected Whisper model. Tune it with `FASTER_WHISPER_MODEL_SIZE`, `FASTER_WHISPER_DEVICE`, `FASTER_WHISPER_COMPUTE_TYPE`, `FASTER_WHISPER_LANGUAGE`, or `FASTER_WHISPER_DOWNLOAD_ROOT`.
 
@@ -155,6 +155,8 @@ The paper smoke test finds `Attention Is All You Need`, verifies `arXiv:1706.037
 | TypeScript bridge | `http://127.0.0.1:8788` · `ws://127.0.0.1:8788/ws` |
 | Python runtime | `http://127.0.0.1:8790` |
 
+Long tasks use the independent `packages/amadeus/task_supervisor.py` process by default. It owns subprocess launch/recovery through a SQLite single-primary lease, keeps a durable worker PID registry, adopts workers after supervisor restart, writes per-run logs, and applies worker wall-clock/POSIX resource limits. Set `AMADEUS_TASK_SUPERVISOR_MODE=embedded` only for compatibility or focused tests.
+
 Default provider environment (stored only in local `.env`, git-ignored):
 
 ```env
@@ -182,7 +184,7 @@ Runtime behavior is driven by YAML under [`configs/`](configs), loaded at startu
 
 The Python runtime exposes structured, local observability surfaces:
 
-- `GET /runtime/health` — health for runtime, model config, memory DB, tools, Live2D, audio, and effective config.
+- `GET /runtime/health` — health for runtime, model config, memory DB, tools, Live2D, audio, effective config, and the external task supervisor lease/process registry under `checks.taskWorker.runner`.
 - `GET /memory/context/diagnostics?sessionId=default&limit=10` — recent per-session Memory v2 context assembly decisions.
 - `GET /scheduled-jobs?sessionId=companion:default&activeOnly=false` — scheduled companion messages including terminal states.
 - `GET /todos?sessionId=companion:default&activeOnly=true` — persistent session todo items.

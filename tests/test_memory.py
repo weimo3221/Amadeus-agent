@@ -1096,6 +1096,121 @@ class MessageMemoryStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 memory.set_task_artifact_file_resume_override(str(task["id"]), str(artifact["id"]), "invalid")
 
+    def test_supervisor_lease_is_exclusive_and_supports_takeover(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+
+            first = memory.acquire_supervisor_lease(
+                "task-supervisor",
+                owner_id="supervisor-one",
+                pid=101,
+                lease_seconds=30,
+                metadata={"mode": "external"},
+            )
+            rejected = memory.acquire_supervisor_lease(
+                "task-supervisor",
+                owner_id="supervisor-two",
+                pid=202,
+                lease_seconds=30,
+            )
+            self.assertIsNone(
+                memory.heartbeat_supervisor_lease(
+                    "task-supervisor",
+                    owner_id="supervisor-two",
+                    lease_seconds=30,
+                )
+            )
+            self.assertFalse(
+                memory.release_supervisor_lease(
+                    "task-supervisor",
+                    owner_id="supervisor-two",
+                )
+            )
+            self.assertTrue(
+                memory.release_supervisor_lease(
+                    "task-supervisor",
+                    owner_id="supervisor-one",
+                )
+            )
+            after_release = memory.acquire_supervisor_lease(
+                "task-supervisor",
+                owner_id="supervisor-two",
+                pid=202,
+                lease_seconds=30,
+            )
+            with memory.connect() as connection:
+                connection.execute(
+                    "UPDATE supervisor_leases SET expires_at = ? WHERE name = ?",
+                    (
+                        (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+                        "task-supervisor",
+                    ),
+                )
+            after_expiry = memory.acquire_supervisor_lease(
+                "task-supervisor",
+                owner_id="supervisor-three",
+                pid=303,
+                lease_seconds=30,
+            )
+
+        self.assertTrue(first["acquired"])
+        self.assertEqual(first["lease"]["ownerId"], "supervisor-one")
+        self.assertEqual(first["lease"]["metadata"], {"mode": "external"})
+        self.assertFalse(rejected["acquired"])
+        self.assertEqual(rejected["lease"]["ownerId"], "supervisor-one")
+        self.assertTrue(after_release["acquired"])
+        self.assertEqual(after_release["lease"]["ownerId"], "supervisor-two")
+        self.assertTrue(after_expiry["acquired"])
+        self.assertEqual(after_expiry["lease"]["ownerId"], "supervisor-three")
+        self.assertTrue(after_expiry["lease"]["active"])
+
+    def test_task_process_registry_tracks_adoption_and_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            task = memory.create_task(session_id="session-1", title="Durable process")
+
+            registered = memory.register_task_process(
+                task_id=str(task["id"]),
+                run_id="run-process-1",
+                supervisor_id="supervisor-one",
+                pid=4321,
+                process_group_id=4321,
+                workspace_path="/tmp/worker",
+                log_path="/tmp/worker.log",
+                metadata={"workspaceIsolation": "copy"},
+            )
+            adopted = memory.update_task_process(
+                "run-process-1",
+                supervisor_id="supervisor-two",
+                status="adopted",
+                metadata={"adoptedBy": "supervisor-two"},
+            )
+            active = memory.list_task_processes(
+                task_id=str(task["id"]),
+                active_only=True,
+            )
+            exited = memory.update_task_process(
+                "run-process-1",
+                status="exited",
+                return_code=7,
+            )
+            remaining = memory.list_task_processes(active_only=True)
+
+        self.assertEqual(registered["status"], "running")
+        self.assertEqual(registered["processGroupId"], 4321)
+        self.assertEqual(registered["workspacePath"], "/tmp/worker")
+        self.assertEqual(registered["logPath"], "/tmp/worker.log")
+        self.assertEqual(registered["metadata"], {"workspaceIsolation": "copy"})
+        self.assertIsNotNone(adopted)
+        self.assertEqual(adopted["supervisorId"], "supervisor-two")
+        self.assertEqual(adopted["status"], "adopted")
+        self.assertEqual(adopted["metadata"], {"adoptedBy": "supervisor-two"})
+        self.assertEqual([record["runId"] for record in active], ["run-process-1"])
+        self.assertIsNotNone(exited)
+        self.assertEqual(exited["returnCode"], 7)
+        self.assertIsNotNone(exited["exitedAt"])
+        self.assertEqual(remaining, [])
+
     def test_runnable_tasks_wait_for_dependency_edges(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")

@@ -566,13 +566,14 @@ Current behavior:
 
 - Python persists lightweight `tasks` and `task_events` rows in SQLite.
 - Task statuses are `queued`, `running`, `blocked`, `succeeded`, `failed`, and `cancelled`. Legacy `done` rows are normalized to `succeeded`.
-- `POST /tasks` creates a queued task, records a `created` task event, and submits it to the in-process worker.
+- `POST /tasks` creates a queued task, records a `created` task event, and submits it through the configured `TaskRunner`; production uses the independent external supervisor.
 - The agent can also manage session tasks through `create_task`, `list_tasks`, and `cancel_task` tools. `create_task` is for explicit queued/asynchronous/tracked work, not ordinary immediate answers or internal planning.
 - Successful `create_task` and `cancel_task` tool calls emit `task.updated` runtime events for desktop sync.
 - The worker claims runnable queued tasks as `running`, stores heartbeat/claim metadata, records `succeeded` or `failed` terminal events from the backing agent turn, and publishes `task.updated` runtime events for worker status changes.
 - Task rows include `attemptCount`, `maxAttempts`, and `nextRunAt`. Retryable worker failures record `retry_scheduled`, move the task back to `queued`, and publish `task.updated` with action `retry_scheduled`; once `attemptCount` reaches `maxAttempts`, the worker records terminal `failed`.
 - Task attempt statuses are `running`, `succeeded`, `failed`, `cancelled`, and `abandoned`. `abandoned` is reserved for process-loss cases such as a subprocess worker exiting non-zero before it can finish its attempt; the owning task still moves through the normal retry or terminal failure state machine.
-- On runtime startup, the worker reclaims stale `running` tasks with expired heartbeat metadata, records `recovered`, moves them back to `queued`, publishes `task.updated` with action `recovered`, and submits currently runnable queued tasks.
+- The independent task supervisor holds a SQLite single-primary lease, reconciles the durable process registry, reclaims stale `running` tasks with expired leases, records `recovered`, moves recoverable tasks back to `queued`, and submits currently runnable queued tasks. The Python HTTP runtime reports supervisor liveness through `/runtime/health` but does not own production worker processes.
+- Subprocess control events include `subprocess_started`, `subprocess_adopted`, `subprocess_termination_requested`, `subprocess_kill_requested`, `subprocess_wall_timeout`, and `subprocess_exited`. Worker startup also records `worker_resource_limits_applied`; these are durable task timeline events rather than WebSocket protocol event types.
 - `POST /tasks/{id}/cancel` marks active tasks as `cancelled`, records one `cancelled` task event, and asks the backing agent turn to cancel when one is running.
 - `POST /tasks/{id}/resume` moves a blocked task back to `queued` and submits it again.
 - `POST /tasks/{id}/approve` marks a blocked `reviewRequired` task as `succeeded` and syncs any linked plan item to completed.

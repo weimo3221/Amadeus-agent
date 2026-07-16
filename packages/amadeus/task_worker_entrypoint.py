@@ -8,7 +8,12 @@ from typing import Any
 
 from amadeus.agent import AgentRuntime
 from amadeus.memory import MessageMemoryStore
-from amadeus.workers import SynchronousTaskRunner, TaskWorker
+from amadeus.workers import (
+    SynchronousTaskRunner,
+    TaskResourceLimits,
+    TaskWorker,
+    apply_current_process_resource_limits,
+)
 
 
 def _worker_workspace_from_env() -> Path | None:
@@ -67,6 +72,17 @@ def main(argv: list[str] | None = None) -> int:
     database = Path(database_text).expanduser()
     workspace_root = _worker_workspace_from_env()
     memory_store = MessageMemoryStore(database, default_workspace_path=workspace_root)
+    resource_limits = TaskResourceLimits.from_environment()
+    resource_limit_result = apply_current_process_resource_limits(resource_limits)
+    try:
+        memory_store.record_task_event(
+            task_id,
+            event_type="worker_resource_limits_applied",
+            message="Worker process resource limits applied",
+            metadata=resource_limit_result,
+        )
+    except Exception:
+        pass
     runtime = AgentRuntime(
         memory_store,
         audio_runtime=None,

@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 import os
+import signal
 import contextlib
 import io
 import hashlib
@@ -28,7 +29,19 @@ from amadeus.worker_policy import (
     worker_action_permission_decision,
     worker_permission_decision,
 )
-from amadeus.workers import InProcessTaskRunner, ProcessTaskRunner, SubprocessTaskRunner, SynchronousTaskRunner, TaskCallable, TaskWorker, build_task_runner, build_worker_context, worker_session_id_for_task
+from amadeus.workers import (
+    ExternalSupervisorTaskRunner,
+    InProcessTaskRunner,
+    ProcessTaskRunner,
+    SubprocessTaskRunner,
+    SynchronousTaskRunner,
+    TaskCallable,
+    TaskResourceLimits,
+    TaskWorker,
+    build_task_runner,
+    build_worker_context,
+    worker_session_id_for_task,
+)
 
 
 class SuccessfulRuntime:
@@ -535,6 +548,16 @@ class TaskWorkerTests(unittest.TestCase):
                 database_path=database,
                 workspace_path=workspace,
                 workspace_isolation="none",
+                logs_root=Path(tmpdir) / "task-logs",
+                supervisor_id="supervisor-test",
+                resource_limits=TaskResourceLimits(
+                    wall_timeout_seconds=120,
+                    cpu_seconds=60,
+                    memory_mb=512,
+                    file_size_mb=256,
+                    open_files=128,
+                    termination_grace_seconds=2,
+                ),
                 python_executable="/usr/bin/python-test",
                 process_factory=fake_process_factory,
             )
@@ -542,6 +565,8 @@ class TaskWorkerTests(unittest.TestCase):
             runner.submit(str(task["id"]), lambda task_id: None)
             runner.shutdown()
             events = memory.list_task_events(str(task["id"]))
+            process_records = memory.list_task_processes(task_id=str(task["id"]))
+            log_file_exists = Path(str(process_records[0]["logPath"])).is_file()
 
         self.assertEqual(len(launches), 1)
         command = launches[0]["command"]
@@ -555,13 +580,201 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(env["AMADEUS_TASK_RUN_ID"], command[command.index("--run-id") + 1])
         self.assertEqual(env["AMADEUS_MEMORY_DB"], str(database))
         self.assertEqual(env["AMADEUS_TASK_RUNNER"], "sync")
+        self.assertEqual(env["AMADEUS_TASK_SUPERVISOR_ID"], "supervisor-test")
+        self.assertEqual(env["AMADEUS_TASK_WALL_TIMEOUT_SECONDS"], "120")
+        self.assertEqual(env["AMADEUS_TASK_CPU_LIMIT_SECONDS"], "60")
+        self.assertEqual(env["AMADEUS_TASK_MEMORY_LIMIT_MB"], "512")
+        self.assertEqual(env["AMADEUS_TASK_FILE_SIZE_LIMIT_MB"], "256")
+        self.assertEqual(env["AMADEUS_TASK_OPEN_FILES_LIMIT"], "128")
+        self.assertEqual(env["AMADEUS_TASK_TERMINATION_GRACE_SECONDS"], "2")
         self.assertEqual(env["AMADEUS_WORKER_PROFILE"], "researcher")
         self.assertEqual(Path(str(env["AMADEUS_WORKSPACE"])).resolve(), workspace.resolve())
         self.assertIn(str(Path(__file__).resolve().parents[1] / "packages"), env["PYTHONPATH"].split(os.pathsep))
         self.assertEqual(Path(str(launches[0]["cwd"])).resolve(), workspace.resolve())
         self.assertEqual(launches[0]["start_new_session"], os.name != "nt")
+        self.assertEqual(launches[0]["stderr"], -2)
+        self.assertTrue(hasattr(launches[0]["stdout"], "write"))
+        self.assertEqual(len(process_records), 1)
+        self.assertEqual(process_records[0]["supervisorId"], "supervisor-test")
+        self.assertEqual(process_records[0]["status"], "exited")
+        self.assertEqual(process_records[0]["returnCode"], 0)
+        self.assertTrue(log_file_exists)
+        self.assertEqual(process_records[0]["metadata"]["resourceLimits"]["memoryMb"], 512)
         self.assertIn("subprocess_started", [event["type"] for event in events])
         self.assertIn("subprocess_exited", [event["type"] for event in events])
+
+    def test_subprocess_task_runner_enforces_wall_timeout(self) -> None:
+        process = BlockingFakeProcess()
+
+        def fake_process_factory(command: list[str], **kwargs: object) -> BlockingFakeProcess:
+            del command, kwargs
+            return process
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Time limited subprocess")
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                resource_limits=TaskResourceLimits(
+                    wall_timeout_seconds=0.05,
+                    termination_grace_seconds=0.05,
+                ),
+                process_factory=fake_process_factory,
+            )
+
+            runner.submit(str(task["id"]), lambda task_id: None)
+            deadline = time.monotonic() + 2
+            while not process.terminated and time.monotonic() < deadline:
+                time.sleep(0.01)
+            runner.shutdown()
+            events = memory.list_task_events(str(task["id"]))
+            process_records = memory.list_task_processes(task_id=str(task["id"]))
+
+        self.assertTrue(process.terminated)
+        self.assertIn("subprocess_wall_timeout", [event["type"] for event in events])
+        self.assertIn("subprocess_termination_requested", [event["type"] for event in events])
+        self.assertEqual(process_records[0]["status"], "exited")
+        self.assertEqual(process_records[0]["returnCode"], -15)
+
+    def test_subprocess_task_runner_adopts_live_process_and_terminates_cancelled_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Adopt subprocess")
+            memory.start_task(
+                str(task["id"]),
+                claim_lock="worker-claim",
+                lease_owner="worker-one",
+                runner_kind="process_entrypoint",
+            )
+            memory.register_task_process(
+                task_id=str(task["id"]),
+                run_id="run-adopt-1",
+                supervisor_id="supervisor-one",
+                pid=54321,
+                process_group_id=54321,
+            )
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                supervisor_id="supervisor-two",
+            )
+
+            with mock.patch("amadeus.workers._process_is_alive", return_value=True):
+                adopted = runner.reconcile_durable_processes()
+                memory.cancel_task(str(task["id"]), reason="operator cancelled")
+                with mock.patch("amadeus.workers.os.killpg") as killpg:
+                    cancelled = runner.reconcile_durable_processes()
+                    terminating_record = memory.list_task_processes(
+                        task_id=str(task["id"]),
+                    )[0]
+                    memory.update_task_process(
+                        "run-adopt-1",
+                        metadata={
+                            **terminating_record["metadata"],
+                            "terminationRequestedAt": (
+                                datetime.now(timezone.utc) - timedelta(seconds=10)
+                            ).isoformat(),
+                        },
+                    )
+                    force_killed = runner.reconcile_durable_processes()
+            process_record = memory.list_task_processes(task_id=str(task["id"]))[0]
+            events = memory.list_task_events(str(task["id"]))
+            runner.detach()
+
+        self.assertEqual(adopted, {"observed": 1, "adopted": 1, "lost": 0, "terminated": 0})
+        self.assertEqual(cancelled, {"observed": 1, "adopted": 1, "lost": 0, "terminated": 1})
+        self.assertEqual(force_killed, {"observed": 1, "adopted": 1, "lost": 0, "terminated": 1})
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                mock.call(54321, signal.SIGTERM),
+                mock.call(54321, signal.SIGKILL),
+            ],
+        )
+        self.assertEqual(process_record["supervisorId"], "supervisor-two")
+        self.assertEqual(process_record["status"], "termination_requested")
+        self.assertEqual(process_record["metadata"]["reason"], "task_cancelled")
+        self.assertIn("forceKillRequestedAt", process_record["metadata"])
+        self.assertIn("subprocess_adopted", [event["type"] for event in events])
+        self.assertIn("subprocess_termination_requested", [event["type"] for event in events])
+        self.assertIn("subprocess_kill_requested", [event["type"] for event in events])
+
+    def test_subprocess_task_runner_recovers_missing_adopted_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(
+                session_id="session-1",
+                title="Recover missing subprocess",
+                max_attempts=2,
+            )
+            memory.start_task(
+                str(task["id"]),
+                claim_lock="worker-claim",
+                lease_owner="worker-one",
+                runner_kind="process_entrypoint",
+            )
+            memory.create_task_attempt(
+                str(task["id"]),
+                run_id="run-missing-1",
+                worker_id="worker-one",
+            )
+            memory.register_task_process(
+                task_id=str(task["id"]),
+                run_id="run-missing-1",
+                supervisor_id="supervisor-one",
+                pid=65432,
+            )
+            runner = SubprocessTaskRunner(
+                database_path=database,
+                supervisor_id="supervisor-two",
+            )
+
+            with mock.patch("amadeus.workers._process_is_alive", return_value=False):
+                reconciliation = runner.reconcile_durable_processes()
+            recovered = memory.get_task(str(task["id"]))
+            attempt = memory.list_task_attempts(str(task["id"]))[0]
+            process_record = memory.list_task_processes(task_id=str(task["id"]))[0]
+            runner.detach()
+
+        self.assertEqual(reconciliation, {"observed": 1, "adopted": 0, "lost": 1, "terminated": 0})
+        self.assertEqual(process_record["status"], "lost")
+        self.assertEqual(process_record["metadata"]["reason"], "adopted_process_missing")
+        self.assertEqual(recovered["status"], "queued")
+        self.assertEqual(recovered["checkpoint"]["reason"], "orphan_process_exited")
+        self.assertEqual(attempt["status"], "abandoned")
+
+    def test_external_supervisor_runner_reports_durable_lease_and_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="External supervisor")
+            memory.acquire_supervisor_lease(
+                "task-supervisor",
+                owner_id="supervisor-one",
+                pid=101,
+                lease_seconds=30,
+            )
+            memory.register_task_process(
+                task_id=str(task["id"]),
+                run_id="run-external-1",
+                supervisor_id="supervisor-one",
+                pid=4321,
+            )
+            runner = build_task_runner(
+                "external_supervisor",
+                database_path=database,
+            )
+
+            status = runner.status()
+            runner.shutdown()
+
+        self.assertIsInstance(runner, ExternalSupervisorTaskRunner)
+        self.assertEqual(status["kind"], "external_supervisor")
+        self.assertTrue(status["externalSupervisorActive"])
+        self.assertEqual(status["lease"]["ownerId"], "supervisor-one")
+        self.assertEqual(status["activeProcessCount"], 1)
 
     def test_subprocess_task_runner_deduplicates_and_terminates_active_task(self) -> None:
         launches: list[dict[str, object]] = []
@@ -725,6 +938,48 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(finished["runnerKind"], "process_entrypoint")
         self.assertEqual(attempts[0]["runId"], "entry-run-1")
         self.assertEqual(attempts[0]["workerId"].split("-")[0], "process_entrypoint")
+
+    def test_task_worker_entrypoint_applies_and_audits_resource_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database = Path(tmpdir) / "amadeus.sqlite"
+            memory = MessageMemoryStore(database)
+            task = memory.create_task(session_id="session-1", title="Resource-limited entrypoint")
+            applied = {
+                "supported": True,
+                "limits": {"cpuSeconds": 30},
+                "applied": [{"name": "cpuSeconds", "value": 30}],
+            }
+
+            with (
+                mock.patch(
+                    "amadeus.task_worker_entrypoint.apply_current_process_resource_limits",
+                    return_value=applied,
+                ) as apply_limits,
+                mock.patch(
+                    "amadeus.task_worker_entrypoint.AgentRuntime",
+                    return_value=SuccessfulRuntime(),
+                ),
+            ):
+                return_code = task_worker_entrypoint_main(
+                    [
+                        "--task-id",
+                        str(task["id"]),
+                        "--run-id",
+                        "resource-run-1",
+                        "--database",
+                        str(database),
+                    ]
+                )
+            events = memory.list_task_events(str(task["id"]))
+
+        self.assertEqual(return_code, 0)
+        apply_limits.assert_called_once()
+        resource_event = next(
+            event
+            for event in events
+            if event["type"] == "worker_resource_limits_applied"
+        )
+        self.assertEqual(resource_event["metadata"], applied)
 
     def test_task_worker_entrypoint_requires_task_id(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):

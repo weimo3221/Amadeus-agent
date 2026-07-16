@@ -49,6 +49,9 @@ WORKER_WORKSPACE_ISOLATION_MODES = {"none", "copy"}
 DEFAULT_TASK_RUNNER_KIND = "subprocess"
 DEFAULT_TASK_WORKSPACE_ISOLATION = "copy"
 DEFAULT_TASK_RECOVERY_INTERVAL_SECONDS = 15.0
+DEFAULT_TASK_WALL_TIMEOUT_SECONDS = 3600.0
+DEFAULT_TASK_TERMINATION_GRACE_SECONDS = 5.0
+DEFAULT_TASK_OPEN_FILES_LIMIT = 512
 WORKER_WORKSPACE_COPY_IGNORE = {
     ".git",
     ".hg",
@@ -67,6 +70,111 @@ WORKER_WORKSPACE_COPY_IGNORE = {
     "data",
     ".amadeus-sandbox",
 }
+
+
+@dataclass(frozen=True)
+class TaskResourceLimits:
+    wall_timeout_seconds: float = DEFAULT_TASK_WALL_TIMEOUT_SECONDS
+    cpu_seconds: int = 0
+    memory_mb: int = 0
+    file_size_mb: int = 1024
+    open_files: int = DEFAULT_TASK_OPEN_FILES_LIMIT
+    termination_grace_seconds: float = DEFAULT_TASK_TERMINATION_GRACE_SECONDS
+
+    @classmethod
+    def from_environment(cls) -> "TaskResourceLimits":
+        return cls(
+            wall_timeout_seconds=_positive_float_env(
+                "AMADEUS_TASK_WALL_TIMEOUT_SECONDS",
+                DEFAULT_TASK_WALL_TIMEOUT_SECONDS,
+            ),
+            cpu_seconds=_non_negative_int_env("AMADEUS_TASK_CPU_LIMIT_SECONDS", 0),
+            memory_mb=_non_negative_int_env("AMADEUS_TASK_MEMORY_LIMIT_MB", 0),
+            file_size_mb=_non_negative_int_env("AMADEUS_TASK_FILE_SIZE_LIMIT_MB", 1024),
+            open_files=_non_negative_int_env(
+                "AMADEUS_TASK_OPEN_FILES_LIMIT",
+                DEFAULT_TASK_OPEN_FILES_LIMIT,
+            ),
+            termination_grace_seconds=_positive_float_env(
+                "AMADEUS_TASK_TERMINATION_GRACE_SECONDS",
+                DEFAULT_TASK_TERMINATION_GRACE_SECONDS,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "wallTimeoutSeconds": self.wall_timeout_seconds,
+            "cpuSeconds": self.cpu_seconds,
+            "memoryMb": self.memory_mb,
+            "fileSizeMb": self.file_size_mb,
+            "openFiles": self.open_files,
+            "terminationGraceSeconds": self.termination_grace_seconds,
+        }
+
+    def to_environment(self) -> dict[str, str]:
+        return {
+            "AMADEUS_TASK_WALL_TIMEOUT_SECONDS": str(self.wall_timeout_seconds),
+            "AMADEUS_TASK_CPU_LIMIT_SECONDS": str(self.cpu_seconds),
+            "AMADEUS_TASK_MEMORY_LIMIT_MB": str(self.memory_mb),
+            "AMADEUS_TASK_FILE_SIZE_LIMIT_MB": str(self.file_size_mb),
+            "AMADEUS_TASK_OPEN_FILES_LIMIT": str(self.open_files),
+            "AMADEUS_TASK_TERMINATION_GRACE_SECONDS": str(self.termination_grace_seconds),
+        }
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _non_negative_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def apply_current_process_resource_limits(limits: TaskResourceLimits | None = None) -> dict[str, object]:
+    effective = limits or TaskResourceLimits.from_environment()
+    applied: dict[str, object] = {
+        "supported": False,
+        "limits": effective.to_dict(),
+        "applied": [],
+        "errors": [],
+    }
+    if os.name != "posix":
+        return applied
+    try:
+        import resource
+    except ImportError:
+        return applied
+
+    applied["supported"] = True
+    limit_specs = [
+        ("cpuSeconds", resource.RLIMIT_CPU, effective.cpu_seconds),
+        ("memoryMb", resource.RLIMIT_AS, effective.memory_mb * 1024 * 1024),
+        ("fileSizeMb", resource.RLIMIT_FSIZE, effective.file_size_mb * 1024 * 1024),
+        ("openFiles", resource.RLIMIT_NOFILE, effective.open_files),
+    ]
+    for label, resource_kind, requested in limit_specs:
+        if requested <= 0:
+            continue
+        try:
+            _soft, hard = resource.getrlimit(resource_kind)
+            next_soft = min(requested, hard) if hard != resource.RLIM_INFINITY else requested
+            resource.setrlimit(resource_kind, (next_soft, hard))
+            cast_applied = applied["applied"]
+            if isinstance(cast_applied, list):
+                cast_applied.append({"name": label, "value": next_soft})
+        except (OSError, ValueError) as error:
+            cast_errors = applied["errors"]
+            if isinstance(cast_errors, list):
+                cast_errors.append({"name": label, "error": str(error)})
+    return applied
 
 
 def worker_session_id_for_task(task_id: str) -> str:
@@ -276,6 +384,28 @@ def _path_inside(path: Path, root: Path) -> bool:
         return False
 
 
+def _parse_datetime(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _safe_path_component(value: str) -> str:
     normalized = "".join(
         character if character.isalnum() or character in {"-", "_", "."} else "-"
@@ -340,6 +470,9 @@ class SubprocessTaskRunner:
         workspace_path: str | Path | None = None,
         workspace_isolation: str | None = None,
         sandbox_root: str | Path | None = None,
+        logs_root: str | Path | None = None,
+        supervisor_id: str | None = None,
+        resource_limits: TaskResourceLimits | None = None,
         process_factory: ProcessFactory | None = None,
     ) -> None:
         database = Path(database_path).expanduser()
@@ -354,11 +487,19 @@ class SubprocessTaskRunner:
             default=isolation_default,
         )
         self._sandbox_root = Path(sandbox_root).expanduser() if sandbox_root else database.parent / "worker_workspaces"
+        self._logs_root = Path(logs_root).expanduser() if logs_root else database.parent / "task_logs"
+        self._supervisor_id = str(supervisor_id or f"subprocess-{uuid4().hex[:12]}")
+        self._resource_limits = resource_limits or TaskResourceLimits.from_environment()
         self._process_factory = process_factory or subprocess.Popen
-        self._semaphore = threading.BoundedSemaphore(max(1, int(max_workers)))
+        self._max_workers = max(1, int(max_workers))
+        self._semaphore = threading.BoundedSemaphore(self._max_workers)
         self._lock = threading.Lock()
         self._supervisors: list[threading.Thread] = []
         self._processes: dict[str, tuple[subprocess.Popen[Any], str]] = {}
+        self._adopted_processes: dict[str, dict[str, object]] = {}
+        self._log_handles: dict[str, Any] = {}
+        self._wall_timers: dict[str, threading.Timer] = {}
+        self._kill_timers: dict[str, threading.Timer] = {}
         self._pending_task_ids: set[str] = set()
         self._closed = False
 
@@ -368,6 +509,9 @@ class SubprocessTaskRunner:
             if self._closed:
                 raise RuntimeError("task runner is shut down")
             if task_id in self._pending_task_ids or task_id in self._processes:
+                return
+            durable_active = len(MessageMemoryStore(self._database_path).list_task_processes(active_only=True))
+            if durable_active >= self._max_workers:
                 return
             self._pending_task_ids.add(task_id)
         if not self._semaphore.acquire(blocking=False):
@@ -384,6 +528,13 @@ class SubprocessTaskRunner:
         with self._lock:
             self._pending_task_ids.discard(task_id)
             self._processes[task_id] = (process, run_id)
+            wall_timer = threading.Timer(
+                self._resource_limits.wall_timeout_seconds,
+                self._wall_timeout,
+                args=(task_id, process, run_id),
+            )
+            wall_timer.daemon = True
+            self._wall_timers[run_id] = wall_timer
         supervisor = threading.Thread(
             target=self._join_process,
             args=(task_id, process, run_id),
@@ -393,11 +544,16 @@ class SubprocessTaskRunner:
         with self._lock:
             self._supervisors.append(supervisor)
         supervisor.start()
+        wall_timer.start()
 
     def shutdown(self, *, wait: bool = True) -> None:
         with self._lock:
             self._closed = True
             processes = list(self._processes.items())
+            wall_timers = list(self._wall_timers.values())
+            kill_timers = list(self._kill_timers.values())
+        for timer in wall_timers + kill_timers:
+            timer.cancel()
         if wait:
             for _task_id, (process, _run_id) in processes:
                 process.wait()
@@ -413,6 +569,23 @@ class SubprocessTaskRunner:
         else:
             for task_id, (process, run_id) in processes:
                 self._request_termination(task_id, process, run_id, reason="runner_shutdown")
+
+    def detach(self) -> None:
+        with self._lock:
+            self._closed = True
+            wall_timers = list(self._wall_timers.values())
+            kill_timers = list(self._kill_timers.values())
+            self._wall_timers.clear()
+            self._kill_timers.clear()
+            log_handles = list(self._log_handles.values())
+            self._log_handles.clear()
+        for timer in wall_timers + kill_timers:
+            timer.cancel()
+        for handle in log_handles:
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     def cancel(self, task_id: str) -> None:
         with self._lock:
@@ -432,6 +605,10 @@ class SubprocessTaskRunner:
                 for task_id, (process, run_id) in self._processes.items()
             }
             pending = sorted(self._pending_task_ids)
+            adopted = {
+                run_id: dict(process)
+                for run_id, process in self._adopted_processes.items()
+            }
             closed = self._closed
             supervisor_count = sum(1 for supervisor in self._supervisors if supervisor.is_alive())
         return {
@@ -439,11 +616,223 @@ class SubprocessTaskRunner:
             "closed": closed,
             "workspaceIsolation": self._workspace_isolation,
             "sandboxRoot": str(self._sandbox_root),
-            "activeProcessCount": len(active),
+            "logsRoot": str(self._logs_root),
+            "supervisorId": self._supervisor_id,
+            "resourceLimits": self._resource_limits.to_dict(),
+            "activeProcessCount": len(active) + len(adopted),
             "activeProcesses": active,
+            "adoptedProcesses": adopted,
             "pendingTaskIds": pending,
             "supervisorThreadCount": supervisor_count,
         }
+
+    def reconcile_durable_processes(self) -> dict[str, int]:
+        memory_store = MessageMemoryStore(self._database_path)
+        records = memory_store.list_task_processes(active_only=True)
+        with self._lock:
+            local_run_ids = {run_id for _, run_id in self._processes.values()}
+        adopted = 0
+        lost = 0
+        terminated = 0
+        now = datetime.now(timezone.utc)
+
+        for record in records:
+            run_id = str(record.get("runId") or "")
+            task_id = str(record.get("taskId") or "")
+            pid = int(record.get("pid") or 0)
+            if not run_id or not task_id or pid <= 0:
+                continue
+            task = memory_store.get_task(task_id)
+            if run_id in local_run_ids:
+                memory_store.update_task_process(run_id, supervisor_id=self._supervisor_id)
+                if task and task.get("status") == "cancelled":
+                    with self._lock:
+                        local = self._processes.get(task_id)
+                    if local and local[1] == run_id:
+                        self._request_termination(task_id, local[0], run_id, reason="task_cancelled")
+                        terminated += 1
+                continue
+            alive = _process_is_alive(pid)
+            if not alive:
+                task_status = str((task or {}).get("status") or "")
+                process_status = (
+                    "exited"
+                    if task_status in {"blocked", "succeeded", "failed", "cancelled"}
+                    else "lost"
+                )
+                previous_metadata = (
+                    dict(record["metadata"])
+                    if isinstance(record.get("metadata"), dict)
+                    else {}
+                )
+                memory_store.update_task_process(
+                    run_id,
+                    supervisor_id=self._supervisor_id,
+                    status=process_status,
+                    metadata={
+                        **previous_metadata,
+                        "reason": (
+                            "adopted_process_exited"
+                            if process_status == "exited"
+                            else "adopted_process_missing"
+                        ),
+                    },
+                )
+                with self._lock:
+                    self._adopted_processes.pop(run_id, None)
+                if task and task.get("status") == "running":
+                    self._recover_process_loss(
+                        task_id,
+                        run_id=run_id,
+                        reason="orphan_process_exited",
+                    )
+                if process_status == "lost":
+                    lost += 1
+                continue
+
+            first_adoption = run_id not in self._adopted_processes
+            previous_status = str(record.get("status") or "")
+            previous_metadata = (
+                dict(record["metadata"])
+                if isinstance(record.get("metadata"), dict)
+                else {}
+            )
+            adopted_record = memory_store.update_task_process(
+                run_id,
+                supervisor_id=self._supervisor_id,
+                status=(
+                    "termination_requested"
+                    if previous_status == "termination_requested"
+                    else "adopted"
+                ),
+                metadata={
+                    **previous_metadata,
+                    "adoptedBy": self._supervisor_id,
+                },
+            ) or record
+            with self._lock:
+                self._adopted_processes[run_id] = adopted_record
+            if first_adoption:
+                self._record_supervisor_event(
+                    task_id,
+                    event_type="subprocess_adopted",
+                    message="Task subprocess adopted by a restarted supervisor",
+                    metadata={
+                        "pid": pid,
+                        "runId": run_id,
+                        "supervisorId": self._supervisor_id,
+                    },
+                )
+            adopted += 1
+
+            if task and task.get("status") == "cancelled":
+                self._terminate_registered_process(adopted_record, reason="task_cancelled")
+                terminated += 1
+                continue
+            started_at = _parse_datetime(record.get("startedAt"))
+            if (
+                started_at is not None
+                and (now - started_at).total_seconds() >= self._resource_limits.wall_timeout_seconds
+            ):
+                if previous_status != "termination_requested":
+                    self._record_supervisor_event(
+                        task_id,
+                        event_type="subprocess_wall_timeout",
+                        message="Adopted task subprocess exceeded wall-clock limit",
+                        metadata={
+                            "pid": pid,
+                            "runId": run_id,
+                            "wallTimeoutSeconds": self._resource_limits.wall_timeout_seconds,
+                        },
+                    )
+                self._terminate_registered_process(adopted_record, reason="wall_timeout")
+                terminated += 1
+
+        return {
+            "observed": len(records),
+            "adopted": adopted,
+            "lost": lost,
+            "terminated": terminated,
+        }
+
+    def _terminate_registered_process(
+        self,
+        record: dict[str, object],
+        *,
+        reason: str,
+    ) -> None:
+        task_id = str(record.get("taskId") or "")
+        run_id = str(record.get("runId") or "")
+        pid = int(record.get("pid") or 0)
+        process_group_id = int(record.get("processGroupId") or 0)
+        if not task_id or not run_id or pid <= 0:
+            return
+        now = datetime.now(timezone.utc)
+        status = str(record.get("status") or "")
+        metadata = (
+            dict(record["metadata"])
+            if isinstance(record.get("metadata"), dict)
+            else {}
+        )
+        termination_requested_at = _parse_datetime(metadata.get("terminationRequestedAt"))
+        if status == "termination_requested":
+            if (
+                termination_requested_at is not None
+                and (now - termination_requested_at).total_seconds()
+                < self._resource_limits.termination_grace_seconds
+            ):
+                return
+            self._record_supervisor_event(
+                task_id,
+                event_type="subprocess_kill_requested",
+                message="Adopted task subprocess force kill requested",
+                metadata={"pid": pid, "runId": run_id, "reason": reason, "adopted": True},
+            )
+            MessageMemoryStore(self._database_path).update_task_process(
+                run_id,
+                supervisor_id=self._supervisor_id,
+                status="termination_requested",
+                metadata={
+                    **metadata,
+                    "reason": reason,
+                    "adopted": True,
+                    "forceKillRequestedAt": now.isoformat(),
+                },
+            )
+            target = process_group_id or pid
+            try:
+                if os.name != "nt" and process_group_id:
+                    os.killpg(target, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            return
+        self._record_supervisor_event(
+            task_id,
+            event_type="subprocess_termination_requested",
+            message="Adopted task subprocess termination requested",
+            metadata={"pid": pid, "runId": run_id, "reason": reason, "adopted": True},
+        )
+        MessageMemoryStore(self._database_path).update_task_process(
+            run_id,
+            supervisor_id=self._supervisor_id,
+            status="termination_requested",
+            metadata={
+                **metadata,
+                "reason": reason,
+                "adopted": True,
+                "terminationRequestedAt": now.isoformat(),
+            },
+        )
+        target = process_group_id or pid
+        try:
+            if os.name != "nt" and process_group_id:
+                os.killpg(target, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            return
 
     def _start_process(self, task_id: str) -> tuple[subprocess.Popen[Any], str]:
         run_id = uuid4().hex
@@ -470,6 +859,8 @@ class SubprocessTaskRunner:
         env["AMADEUS_TASK_RUN_ID"] = run_id
         env["AMADEUS_MEMORY_DB"] = str(self._database_path)
         env["AMADEUS_TASK_RUNNER"] = "sync"
+        env["AMADEUS_TASK_SUPERVISOR_ID"] = self._supervisor_id
+        env.update(self._resource_limits.to_environment())
         if worker_profile:
             env["AMADEUS_WORKER_PROFILE"] = worker_profile
         if effective_workspace is not None:
@@ -492,11 +883,36 @@ class SubprocessTaskRunner:
             "--database",
             str(self._database_path),
         ]
-        process = self._process_factory(
-            command,
-            env=env,
-            cwd=str(effective_workspace) if effective_workspace else None,
-            start_new_session=os.name != "nt",
+        log_path = self._logs_root / _safe_path_component(task_id) / f"{run_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("ab", buffering=0)
+        try:
+            process = self._process_factory(
+                command,
+                env=env,
+                cwd=str(effective_workspace) if effective_workspace else None,
+                start_new_session=os.name != "nt",
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+        except BaseException:
+            log_handle.close()
+            raise
+        self._log_handles[run_id] = log_handle
+        process_group_id = process.pid if os.name != "nt" else None
+        MessageMemoryStore(self._database_path).register_task_process(
+            task_id=task_id,
+            run_id=run_id,
+            supervisor_id=self._supervisor_id,
+            pid=int(process.pid),
+            process_group_id=process_group_id,
+            workspace_path=str(effective_workspace) if effective_workspace else None,
+            log_path=str(log_path),
+            metadata={
+                "workspaceIsolation": workspace_isolation,
+                "workspaceSourcePath": str(workspace_source) if workspace_source else None,
+                "resourceLimits": self._resource_limits.to_dict(),
+            },
         )
         self._record_supervisor_event(
             task_id,
@@ -508,6 +924,9 @@ class SubprocessTaskRunner:
                 "workspaceIsolation": workspace_isolation,
                 "workspacePath": str(effective_workspace) if effective_workspace else None,
                 "workspaceSourcePath": str(workspace_source) if workspace_source else None,
+                "logPath": str(log_path),
+                "supervisorId": self._supervisor_id,
+                "resourceLimits": self._resource_limits.to_dict(),
             },
         )
         return process, run_id
@@ -515,6 +934,11 @@ class SubprocessTaskRunner:
     def _join_process(self, task_id: str, process: subprocess.Popen[Any], run_id: str) -> None:
         try:
             return_code = process.wait()
+            MessageMemoryStore(self._database_path).update_task_process(
+                run_id,
+                status="exited",
+                return_code=return_code,
+            )
             self._record_supervisor_event(
                 task_id,
                 event_type="subprocess_exited",
@@ -529,6 +953,18 @@ class SubprocessTaskRunner:
                 current = self._processes.get(task_id)
                 if current and current[0] is process:
                     self._processes.pop(task_id, None)
+                wall_timer = self._wall_timers.pop(run_id, None)
+                kill_timer = self._kill_timers.pop(run_id, None)
+                log_handle = self._log_handles.pop(run_id, None)
+            if wall_timer:
+                wall_timer.cancel()
+            if kill_timer:
+                kill_timer.cancel()
+            if log_handle:
+                try:
+                    log_handle.close()
+                except OSError:
+                    pass
             self._semaphore.release()
 
     def _request_termination(
@@ -547,16 +983,91 @@ class SubprocessTaskRunner:
             message="Task subprocess termination requested",
             metadata={"pid": process.pid, "runId": run_id, "reason": reason},
         )
+        try:
+            MessageMemoryStore(self._database_path).update_task_process(
+                run_id,
+                status="termination_requested",
+                metadata={"reason": reason},
+            )
+        except Exception:
+            logger.debug("Failed to update task process termination state runId=%s", run_id, exc_info=True)
         if os.name != "nt" and process.pid:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+            else:
+                self._schedule_force_kill(task_id, process, run_id)
+                return
+        try:
+            process.terminate()
+            self._schedule_force_kill(task_id, process, run_id)
+        except ProcessLookupError:
+            pass
+
+    def _schedule_force_kill(
+        self,
+        task_id: str,
+        process: subprocess.Popen[Any],
+        run_id: str,
+    ) -> None:
+        with self._lock:
+            existing = self._kill_timers.pop(run_id, None)
+            if existing:
+                existing.cancel()
+            timer = threading.Timer(
+                self._resource_limits.termination_grace_seconds,
+                self._force_kill,
+                args=(task_id, process, run_id),
+            )
+            timer.daemon = True
+            self._kill_timers[run_id] = timer
+        timer.start()
+
+    def _force_kill(
+        self,
+        task_id: str,
+        process: subprocess.Popen[Any],
+        run_id: str,
+    ) -> None:
+        if process.poll() is not None:
+            return
+        self._record_supervisor_event(
+            task_id,
+            event_type="subprocess_kill_requested",
+            message="Task subprocess force kill requested",
+            metadata={"pid": process.pid, "runId": run_id},
+        )
+        if os.name != "nt" and process.pid:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
                 return
             except (OSError, ProcessLookupError):
                 pass
         try:
-            process.terminate()
+            process.kill()
         except ProcessLookupError:
             pass
+
+    def _wall_timeout(
+        self,
+        task_id: str,
+        process: subprocess.Popen[Any],
+        run_id: str,
+    ) -> None:
+        if process.poll() is not None:
+            return
+        self._record_supervisor_event(
+            task_id,
+            event_type="subprocess_wall_timeout",
+            message="Task subprocess exceeded wall-clock limit",
+            metadata={
+                "pid": process.pid,
+                "runId": run_id,
+                "wallTimeoutSeconds": self._resource_limits.wall_timeout_seconds,
+            },
+        )
+        self._request_termination(task_id, process, run_id, reason="wall_timeout")
 
     def _record_supervisor_event(
         self,
@@ -582,6 +1093,21 @@ class SubprocessTaskRunner:
             )
 
     def _recover_nonzero_exit(self, task_id: str, *, run_id: str, return_code: int) -> None:
+        self._recover_process_loss(
+            task_id,
+            run_id=run_id,
+            reason="subprocess_exited",
+            return_code=return_code,
+        )
+
+    def _recover_process_loss(
+        self,
+        task_id: str,
+        *,
+        run_id: str,
+        reason: str,
+        return_code: int | None = None,
+    ) -> None:
         memory_store = MessageMemoryStore(self._database_path)
         task = memory_store.get_task(task_id)
         if not task or task.get("status") != "running":
@@ -589,17 +1115,22 @@ class SubprocessTaskRunner:
         claim_lock = str(task.get("claimLock") or "").strip()
         if not claim_lock:
             return
-        error = f"Task subprocess exited with code {return_code}"
+        error = (
+            f"Task subprocess exited with code {return_code}"
+            if return_code is not None
+            else "Task subprocess disappeared while still running"
+        )
         abandoned_checkpoint: dict[str, object] | None = None
         for attempt in memory_store.list_task_attempts(task_id, limit=20):
             if str(attempt.get("status") or "") == "running" and str(attempt.get("runId") or "") == run_id:
                 previous_checkpoint = attempt.get("checkpoint") if isinstance(attempt.get("checkpoint"), dict) else None
                 abandoned_checkpoint = {
                     "status": "abandoned",
-                    "phase": "subprocess_exited",
-                    "reason": "subprocess_exited",
-                    "returnCode": return_code,
+                    "phase": reason,
+                    "reason": reason,
                 }
+                if return_code is not None:
+                    abandoned_checkpoint["returnCode"] = return_code
                 if previous_checkpoint:
                     abandoned_checkpoint["previousCheckpoint"] = previous_checkpoint
                 try:
@@ -619,7 +1150,7 @@ class SubprocessTaskRunner:
                     error=error,
                     next_run_at=datetime.now(timezone.utc).isoformat(),
                     checkpoint=_recovery_checkpoint_from_attempt(
-                        reason="subprocess_exited",
+                        reason=reason,
                         previous_checkpoint=abandoned_checkpoint,
                     ),
                     handoff_summary=_recovery_handoff_summary(
@@ -633,6 +1164,39 @@ class SubprocessTaskRunner:
             logger.info("Task subprocess failed to reclaim taskId=%s runId=%s", task_id, run_id, exc_info=True)
 
 
+class ExternalSupervisorTaskRunner:
+    def __init__(self, *, database_path: str | Path, lease_name: str = "task-supervisor") -> None:
+        self._database_path = Path(database_path).expanduser()
+        self._lease_name = lease_name
+        self._closed = False
+
+    def submit(self, task_id: str, run_task: TaskCallable) -> None:
+        del task_id, run_task
+        if self._closed:
+            raise RuntimeError("task runner is shut down")
+
+    def cancel(self, task_id: str) -> None:
+        del task_id
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        del wait
+        self._closed = True
+
+    def status(self) -> dict[str, object]:
+        memory_store = MessageMemoryStore(self._database_path)
+        lease = memory_store.get_supervisor_lease(self._lease_name)
+        processes = memory_store.list_task_processes(active_only=True)
+        return {
+            "kind": "external_supervisor",
+            "closed": self._closed,
+            "leaseName": self._lease_name,
+            "lease": lease,
+            "externalSupervisorActive": bool(lease and lease.get("active")),
+            "activeProcessCount": len(processes),
+            "activeProcesses": processes,
+        }
+
+
 def build_task_runner(
     kind: str | None,
     *,
@@ -641,6 +1205,9 @@ def build_task_runner(
     workspace_path: str | Path | None = None,
     workspace_isolation: str | None = None,
     sandbox_root: str | Path | None = None,
+    logs_root: str | Path | None = None,
+    supervisor_id: str | None = None,
+    resource_limits: TaskResourceLimits | None = None,
 ) -> TaskRunner:
     normalized = str(kind or "in_process").strip().lower().replace("-", "_")
     if normalized in {"sync", "synchronous", "inline"}:
@@ -649,6 +1216,10 @@ def build_task_runner(
         return InProcessTaskRunner(max_workers=max_workers)
     if normalized in {"process", "processes", "fork", "process_backed"}:
         return ProcessTaskRunner(max_workers=max_workers)
+    if normalized in {"external_supervisor", "supervisor_client", "durable_supervisor"}:
+        if database_path is None:
+            raise ValueError("external supervisor task runner requires database_path")
+        return ExternalSupervisorTaskRunner(database_path=database_path)
     if normalized in {"subprocess", "external_process", "external", "process_entrypoint"}:
         if database_path is None:
             raise ValueError("subprocess task runner requires database_path")
@@ -658,8 +1229,13 @@ def build_task_runner(
             workspace_path=workspace_path,
             workspace_isolation=workspace_isolation,
             sandbox_root=sandbox_root,
+            logs_root=logs_root,
+            supervisor_id=supervisor_id,
+            resource_limits=resource_limits,
         )
-    raise ValueError("task runner kind must be one of sync, in_process, process, or subprocess")
+    raise ValueError(
+        "task runner kind must be one of sync, in_process, process, subprocess, or external_supervisor"
+    )
 
 
 @dataclass(frozen=True)

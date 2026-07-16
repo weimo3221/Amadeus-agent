@@ -22,6 +22,7 @@ from amadeus.live2d import LocalLive2DModelLibrary
 from amadeus.memory import MessageMemoryStore
 from amadeus.orchestrator import OrchestratorService
 from amadeus.runtime_events import RuntimeEventBus
+from amadeus.workers import ExternalSupervisorTaskRunner, TaskWorker
 from scripts.dev_mcp_server import DevMcpHandler
 
 
@@ -1090,6 +1091,42 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["checks"]["config"]["runtimeConfig"], str(self.runtime_config_path))
         self.assertFalse(payload["checks"]["config"]["runtimeConfigExists"])
         self.assertEqual(payload["checks"]["config"]["harnessesConfig"], str(self.harnesses_config_path))
+
+    def test_runtime_health_reports_external_task_supervisor_liveness(self) -> None:
+        runner = ExternalSupervisorTaskRunner(
+            database_path=runtime_server.memory_store.database_path,
+        )
+        worker = TaskWorker(
+            lambda: runtime_server.memory_store,
+            lambda: runtime_server.agent_runtime,
+            runner_kind="external_supervisor",
+            runner=runner,
+        )
+        runtime_server.task_worker = worker
+
+        without_lease = self.get_json("/runtime/health")
+        runtime_server.memory_store.acquire_supervisor_lease(
+            "task-supervisor",
+            owner_id="health-supervisor",
+            pid=os.getpid(),
+            lease_seconds=30,
+        )
+        with_lease = self.get_json("/runtime/health")
+        worker.shutdown()
+
+        self.assertEqual(without_lease["checks"]["taskWorker"]["status"], "degraded")
+        self.assertTrue(without_lease["checks"]["taskWorker"]["diagnosticsAvailable"])
+        self.assertFalse(
+            without_lease["checks"]["taskWorker"]["runner"]["externalSupervisorActive"]
+        )
+        self.assertEqual(with_lease["checks"]["taskWorker"]["status"], "ok")
+        self.assertTrue(
+            with_lease["checks"]["taskWorker"]["runner"]["externalSupervisorActive"]
+        )
+        self.assertEqual(
+            with_lease["checks"]["taskWorker"]["runner"]["lease"]["ownerId"],
+            "health-supervisor",
+        )
 
     def test_memory_embedding_config_reports_local_bge_defaults(self) -> None:
         payload = self.get_json("/memory/embedding/config")

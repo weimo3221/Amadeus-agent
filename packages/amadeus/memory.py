@@ -392,6 +392,35 @@ class MessageMemoryStore:
                   );
                   CREATE INDEX IF NOT EXISTS idx_task_events_task_created
                   ON task_events(task_id, created_at);
+                  CREATE TABLE IF NOT EXISTS supervisor_leases (
+                    name TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    pid INTEGER,
+                    acquired_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                  );
+                  CREATE TABLE IF NOT EXISTS task_processes (
+                    run_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    supervisor_id TEXT NOT NULL,
+                    pid INTEGER NOT NULL,
+                    process_group_id INTEGER,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    exited_at TEXT,
+                    return_code INTEGER,
+                    workspace_path TEXT,
+                    log_path TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_task_processes_task_started
+                  ON task_processes(task_id, started_at);
+                  CREATE INDEX IF NOT EXISTS idx_task_processes_status_heartbeat
+                  ON task_processes(status, heartbeat_at);
                   CREATE TABLE IF NOT EXISTS scheduled_jobs (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -4209,6 +4238,312 @@ class MessageMemoryStore:
             raise RuntimeError("task event could not be loaded")
         return task_event_response(event_row)
 
+    def acquire_supervisor_lease(
+        self,
+        name: str,
+        *,
+        owner_id: str,
+        pid: int | None,
+        lease_seconds: float,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        normalized_name = normalize_optional_text(name, max_chars=120, field_name="name")
+        normalized_owner = normalize_optional_text(owner_id, max_chars=160, field_name="owner_id")
+        if not normalized_name or not normalized_owner:
+            raise ValueError("supervisor lease name and owner_id are required")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires_at = (now_dt + timedelta(seconds=max(1.0, float(lease_seconds)))).isoformat()
+        metadata_json = normalize_task_json_object(metadata, field_name="metadata")
+        acquired = False
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT name, owner_id, pid, acquired_at, heartbeat_at, expires_at, metadata_json
+                FROM supervisor_leases
+                WHERE name = ?
+                """,
+                (normalized_name,),
+            ).fetchone()
+            current_expires_at = parse_iso_datetime(str(row[5])) if row and row[5] else None
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO supervisor_leases (
+                      name, owner_id, pid, acquired_at, heartbeat_at, expires_at, metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (normalized_name, normalized_owner, pid, now, now, expires_at, metadata_json),
+                )
+                acquired = True
+            elif str(row[1]) == normalized_owner or current_expires_at is None or current_expires_at <= now_dt:
+                acquired_at = str(row[3]) if str(row[1]) == normalized_owner else now
+                connection.execute(
+                    """
+                    UPDATE supervisor_leases
+                    SET owner_id = ?, pid = ?, acquired_at = ?, heartbeat_at = ?,
+                        expires_at = ?, metadata_json = ?
+                    WHERE name = ?
+                    """,
+                    (normalized_owner, pid, acquired_at, now, expires_at, metadata_json, normalized_name),
+                )
+                acquired = True
+            lease_row = connection.execute(
+                """
+                SELECT name, owner_id, pid, acquired_at, heartbeat_at, expires_at, metadata_json
+                FROM supervisor_leases
+                WHERE name = ?
+                """,
+                (normalized_name,),
+            ).fetchone()
+        if lease_row is None:
+            raise RuntimeError("supervisor lease could not be loaded")
+        return {
+            "acquired": acquired,
+            "lease": supervisor_lease_response(lease_row),
+        }
+
+    def heartbeat_supervisor_lease(
+        self,
+        name: str,
+        *,
+        owner_id: str,
+        lease_seconds: float,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object] | None:
+        normalized_name = normalize_optional_text(name, max_chars=120, field_name="name")
+        normalized_owner = normalize_optional_text(owner_id, max_chars=160, field_name="owner_id")
+        if not normalized_name or not normalized_owner:
+            raise ValueError("supervisor lease name and owner_id are required")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires_at = (now_dt + timedelta(seconds=max(1.0, float(lease_seconds)))).isoformat()
+        with self.connect() as connection:
+            if metadata is None:
+                connection.execute(
+                    """
+                    UPDATE supervisor_leases
+                    SET heartbeat_at = ?, expires_at = ?
+                    WHERE name = ? AND owner_id = ?
+                    """,
+                    (now, expires_at, normalized_name, normalized_owner),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE supervisor_leases
+                    SET heartbeat_at = ?, expires_at = ?, metadata_json = ?
+                    WHERE name = ? AND owner_id = ?
+                    """,
+                    (
+                        now,
+                        expires_at,
+                        normalize_task_json_object(metadata, field_name="metadata"),
+                        normalized_name,
+                        normalized_owner,
+                    ),
+                )
+            row = connection.execute(
+                """
+                SELECT name, owner_id, pid, acquired_at, heartbeat_at, expires_at, metadata_json
+                FROM supervisor_leases
+                WHERE name = ? AND owner_id = ?
+                """,
+                (normalized_name, normalized_owner),
+            ).fetchone()
+        return supervisor_lease_response(row) if row else None
+
+    def get_supervisor_lease(self, name: str) -> dict[str, object] | None:
+        normalized_name = normalize_optional_text(name, max_chars=120, field_name="name")
+        if not normalized_name:
+            raise ValueError("supervisor lease name is required")
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT name, owner_id, pid, acquired_at, heartbeat_at, expires_at, metadata_json
+                FROM supervisor_leases
+                WHERE name = ?
+                """,
+                (normalized_name,),
+            ).fetchone()
+        return supervisor_lease_response(row) if row else None
+
+    def release_supervisor_lease(self, name: str, *, owner_id: str) -> bool:
+        normalized_name = normalize_optional_text(name, max_chars=120, field_name="name")
+        normalized_owner = normalize_optional_text(owner_id, max_chars=160, field_name="owner_id")
+        if not normalized_name or not normalized_owner:
+            raise ValueError("supervisor lease name and owner_id are required")
+        with self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM supervisor_leases WHERE name = ? AND owner_id = ?",
+                (normalized_name, normalized_owner),
+            )
+        return bool(result.rowcount)
+
+    def register_task_process(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        supervisor_id: str,
+        pid: int,
+        process_group_id: int | None = None,
+        workspace_path: str | None = None,
+        log_path: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_run_id = normalize_task_id(run_id)
+        normalized_supervisor_id = normalize_optional_text(
+            supervisor_id,
+            max_chars=160,
+            field_name="supervisor_id",
+        )
+        if not normalized_supervisor_id:
+            raise ValueError("supervisor_id is required")
+        normalized_pid = int(pid)
+        if normalized_pid <= 0:
+            raise ValueError("pid must be positive")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            if not connection.execute("SELECT id FROM tasks WHERE id = ?", (normalized_task_id,)).fetchone():
+                raise ValueError("task not found")
+            connection.execute(
+                """
+                INSERT INTO task_processes (
+                  run_id, task_id, supervisor_id, pid, process_group_id, status,
+                  started_at, heartbeat_at, workspace_path, log_path, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                  supervisor_id = excluded.supervisor_id,
+                  pid = excluded.pid,
+                  process_group_id = excluded.process_group_id,
+                  status = 'running',
+                  heartbeat_at = excluded.heartbeat_at,
+                  exited_at = NULL,
+                  return_code = NULL,
+                  workspace_path = excluded.workspace_path,
+                  log_path = excluded.log_path,
+                  metadata_json = excluded.metadata_json
+                """,
+                (
+                    normalized_run_id,
+                    normalized_task_id,
+                    normalized_supervisor_id,
+                    normalized_pid,
+                    process_group_id,
+                    now,
+                    now,
+                    normalize_optional_text(workspace_path, max_chars=2000, field_name="workspace_path"),
+                    normalize_optional_text(log_path, max_chars=2000, field_name="log_path"),
+                    normalize_task_json_object(metadata, field_name="metadata"),
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT run_id, task_id, supervisor_id, pid, process_group_id, status,
+                       started_at, heartbeat_at, exited_at, return_code,
+                       workspace_path, log_path, metadata_json
+                FROM task_processes
+                WHERE run_id = ?
+                """,
+                (normalized_run_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("task process could not be loaded")
+        return task_process_response(row)
+
+    def update_task_process(
+        self,
+        run_id: str,
+        *,
+        supervisor_id: str | None = None,
+        status: str | None = None,
+        return_code: int | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object] | None:
+        normalized_run_id = normalize_task_id(run_id)
+        now = datetime.now(timezone.utc).isoformat()
+        fields = ["heartbeat_at = ?"]
+        values: list[object] = [now]
+        if supervisor_id is not None:
+            normalized_supervisor_id = normalize_optional_text(
+                supervisor_id,
+                max_chars=160,
+                field_name="supervisor_id",
+            )
+            if not normalized_supervisor_id:
+                raise ValueError("supervisor_id must not be empty")
+            fields.append("supervisor_id = ?")
+            values.append(normalized_supervisor_id)
+        if status is not None:
+            normalized_status = normalize_optional_text(status, max_chars=80, field_name="status")
+            if not normalized_status:
+                raise ValueError("status must not be empty")
+            fields.append("status = ?")
+            values.append(normalized_status)
+            if normalized_status in {"exited", "lost", "terminated"}:
+                fields.append("exited_at = ?")
+                values.append(now)
+        if return_code is not None:
+            fields.append("return_code = ?")
+            values.append(int(return_code))
+        if metadata is not None:
+            fields.append("metadata_json = ?")
+            values.append(normalize_task_json_object(metadata, field_name="metadata"))
+        values.append(normalized_run_id)
+        with self.connect() as connection:
+            connection.execute(
+                f"UPDATE task_processes SET {', '.join(fields)} WHERE run_id = ?",
+                values,
+            )
+            row = connection.execute(
+                """
+                SELECT run_id, task_id, supervisor_id, pid, process_group_id, status,
+                       started_at, heartbeat_at, exited_at, return_code,
+                       workspace_path, log_path, metadata_json
+                FROM task_processes
+                WHERE run_id = ?
+                """,
+                (normalized_run_id,),
+            ).fetchone()
+        return task_process_response(row) if row else None
+
+    def list_task_processes(
+        self,
+        *,
+        task_id: str | None = None,
+        active_only: bool = False,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        normalized_limit = max(1, min(1000, int(limit)))
+        clauses: list[str] = []
+        values: list[object] = []
+        if task_id:
+            clauses.append("task_id = ?")
+            values.append(normalize_task_id(task_id))
+        if active_only:
+            clauses.append("status IN ('running', 'adopted', 'termination_requested')")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(normalized_limit)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT run_id, task_id, supervisor_id, pid, process_group_id, status,
+                       started_at, heartbeat_at, exited_at, return_code,
+                       workspace_path, log_path, metadata_json
+                FROM task_processes
+                {where}
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                values,
+            ).fetchall()
+        return [task_process_response(row) for row in rows]
+
     def _insert_task_event(
         self,
         connection: sqlite3.Connection,
@@ -6473,6 +6808,39 @@ def task_event_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, obje
         "message": str(row[5]) if row[5] else None,
         "metadata": metadata,
         "createdAt": str(row[7]),
+    }
+
+
+def supervisor_lease_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    expires_at = str(row[5])
+    expires = parse_iso_datetime(expires_at)
+    return {
+        "name": str(row[0]),
+        "ownerId": str(row[1]),
+        "pid": int(row[2]) if row[2] is not None else None,
+        "acquiredAt": str(row[3]),
+        "heartbeatAt": str(row[4]),
+        "expiresAt": expires_at,
+        "active": bool(expires and expires > datetime.now(timezone.utc)),
+        "metadata": json_payload(row[6], default={}),
+    }
+
+
+def task_process_response(row: sqlite3.Row | tuple[object, ...]) -> dict[str, object]:
+    return {
+        "runId": str(row[0]),
+        "taskId": str(row[1]),
+        "supervisorId": str(row[2]),
+        "pid": int(row[3]),
+        "processGroupId": int(row[4]) if row[4] is not None else None,
+        "status": str(row[5]),
+        "startedAt": str(row[6]),
+        "heartbeatAt": str(row[7]),
+        "exitedAt": str(row[8]) if row[8] else None,
+        "returnCode": int(row[9]) if row[9] is not None else None,
+        "workspacePath": str(row[10]) if row[10] else None,
+        "logPath": str(row[11]) if row[11] else None,
+        "metadata": json_payload(row[12], default={}),
     }
 
 

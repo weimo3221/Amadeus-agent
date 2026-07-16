@@ -124,10 +124,37 @@ memory_embedding_backfill_runner = MemoryEmbeddingBackfillRunner()
 permission_broker = PermissionBroker()
 agent_runtime = AgentRuntime(memory_store, audio_runtime)
 runtime_event_bus = RuntimeEventBus()
-TASK_RUNNER_KIND = os.environ.get("AMADEUS_TASK_RUNNER", DEFAULT_TASK_RUNNER_KIND)
+TASK_RUNNER_KIND = str(
+    os.environ.get("AMADEUS_TASK_RUNNER", DEFAULT_TASK_RUNNER_KIND)
+).strip().lower().replace("-", "_")
+SUBPROCESS_TASK_RUNNER_KINDS = {
+    "subprocess",
+    "external_process",
+    "external",
+    "process_entrypoint",
+}
+TASK_SUPERVISOR_MODE = str(
+    os.environ.get(
+        "AMADEUS_TASK_SUPERVISOR_MODE",
+        "external" if TASK_RUNNER_KIND in SUBPROCESS_TASK_RUNNER_KINDS else "embedded",
+    )
+).strip().lower()
+if TASK_SUPERVISOR_MODE not in {"embedded", "external"}:
+    TASK_SUPERVISOR_MODE = (
+        "external" if TASK_RUNNER_KIND in SUBPROCESS_TASK_RUNNER_KINDS else "embedded"
+    )
+if TASK_RUNNER_KIND not in SUBPROCESS_TASK_RUNNER_KINDS:
+    TASK_SUPERVISOR_MODE = "embedded"
+TASK_EXECUTION_RUNNER_KIND = (
+    "external_supervisor"
+    if TASK_SUPERVISOR_MODE == "external"
+    and TASK_RUNNER_KIND in SUBPROCESS_TASK_RUNNER_KINDS
+    else TASK_RUNNER_KIND
+)
 TASK_MAX_WORKERS = int(os.environ.get("AMADEUS_TASK_MAX_WORKERS", "2"))
 TASK_WORKSPACE_ISOLATION = os.environ.get("AMADEUS_TASK_WORKSPACE_ISOLATION", DEFAULT_TASK_WORKSPACE_ISOLATION)
 TASK_WORKSPACE_SANDBOX_ROOT = os.environ.get("AMADEUS_TASK_WORKSPACE_SANDBOX_ROOT")
+TASK_LOGS_ROOT = os.environ.get("AMADEUS_TASK_LOGS_ROOT")
 TASK_RECOVERY_INTERVAL_SECONDS = float(
     os.environ.get("AMADEUS_TASK_RECOVERY_INTERVAL_SECONDS", str(DEFAULT_TASK_RECOVERY_INTERVAL_SECONDS))
 )
@@ -174,14 +201,15 @@ task_worker = TaskWorker(
     publish_task_event=publish_task_update,
     max_workers=TASK_MAX_WORKERS,
     recovery_interval_seconds=TASK_RECOVERY_INTERVAL_SECONDS,
-    runner_kind=TASK_RUNNER_KIND,
+    runner_kind=TASK_EXECUTION_RUNNER_KIND,
     runner=build_task_runner(
-        TASK_RUNNER_KIND,
+        TASK_EXECUTION_RUNNER_KIND,
         max_workers=TASK_MAX_WORKERS,
         database_path=DATABASE_PATH,
         workspace_path=REPO_ROOT,
         workspace_isolation=TASK_WORKSPACE_ISOLATION,
         sandbox_root=TASK_WORKSPACE_SANDBOX_ROOT,
+        logs_root=TASK_LOGS_ROOT,
     ),
 )
 agent_runtime.set_task_worker(task_worker)
@@ -2623,10 +2651,19 @@ def task_worker_health_check() -> dict[str, Any]:
                 "workspaceIsolation": TASK_WORKSPACE_ISOLATION,
                 "diagnosticsAvailable": False,
             }
+        worker_status = status_factory()
+        runner_status = worker_status.get("runner") if isinstance(worker_status, dict) else {}
+        external_active = (
+            bool(runner_status.get("externalSupervisorActive"))
+            if isinstance(runner_status, dict) and runner_status.get("kind") == "external_supervisor"
+            else True
+        )
         return {
-            "status": "ok",
+            "status": "ok" if external_active else "degraded",
             "diagnosticsAvailable": True,
-            **status_factory(),
+            "supervisorMode": TASK_SUPERVISOR_MODE,
+            "configuredRunnerKind": TASK_RUNNER_KIND,
+            **worker_status,
         }
     except Exception as error:
         logger.info("Task worker health check failed error=%s", error)
@@ -3693,7 +3730,8 @@ def main() -> None:
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, request_shutdown)
-    task_worker.start_supervisor()
+    if TASK_EXECUTION_RUNNER_KIND != "external_supervisor":
+        task_worker.start_supervisor()
     scheduled_job_worker.start()
     logger.info("Amadeus runtime starting host=%s port=%s database=%s audioRoot=%s", HOST, PORT, DATABASE_PATH, AUDIO_ROOT)
     print(f"Amadeus runtime listening on http://{HOST}:{PORT}", flush=True)

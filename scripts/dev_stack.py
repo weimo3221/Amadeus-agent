@@ -40,8 +40,23 @@ def main() -> int:
     bridge_url = os.environ.get("AMADEUS_SERVER_URL", DEFAULT_BRIDGE_URL).rstrip("/")
     main_ui_url = os.environ.get("AMADEUS_MAIN_UI_DEV_URL", DEFAULT_MAIN_UI_URL).rstrip("/")
     npm = "npm.cmd" if os.name == "nt" else "npm"
+    task_runner = str(os.environ.get("AMADEUS_TASK_RUNNER", "subprocess")).strip().lower().replace("-", "_")
+    subprocess_runners = {"subprocess", "external_process", "external", "process_entrypoint"}
+    supervisor_mode = str(
+        os.environ.get(
+            "AMADEUS_TASK_SUPERVISOR_MODE",
+            "external" if task_runner in subprocess_runners else "embedded",
+        )
+    ).strip().lower()
 
-    processes = [
+    processes: list[ManagedProcess] = []
+    if task_runner in subprocess_runners and supervisor_mode == "external":
+        processes.append(ManagedProcess(
+            name="task-supervisor",
+            command=[sys.executable, "packages/amadeus/task_supervisor.py"],
+            health_url=None,
+        ))
+    processes.extend([
         ManagedProcess(
             name="python-runtime",
             command=[sys.executable, "packages/amadeus/server.py"],
@@ -52,7 +67,7 @@ def main() -> int:
             command=[npm, "--workspace", "apps/server", "run", "dev"],
             health_url=f"{bridge_url}/health",
         ),
-    ]
+    ])
     if not args.no_desktop:
         processes.append(ManagedProcess(
             name="main-ui",
