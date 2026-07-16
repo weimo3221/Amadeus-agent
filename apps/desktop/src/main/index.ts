@@ -16,7 +16,10 @@ const isE2ePermissionAllow = process.env.AMADEUS_E2E_EXPECT_PERMISSION_ALLOW ===
 const isE2eMultiSkillSelect = process.env.AMADEUS_E2E_MULTI_SKILL_SELECT === '1'
 const isE2eOpenMainUi = process.env.AMADEUS_E2E_OPEN_MAIN_UI === '1'
 const isE2eCompanionHover = process.env.AMADEUS_E2E_COMPANION_HOVER === '1'
+const isE2eRealRuntime = process.env.AMADEUS_E2E_REAL_RUNTIME === '1'
 const defaultCompanionSessionId = process.env.AMADEUS_SESSION_ID || 'companion:default'
+const e2eSecondarySessionId = process.env.AMADEUS_E2E_SECONDARY_SESSION_ID || 'e2e-secondary'
+const e2eReviewTaskTitle = process.env.AMADEUS_E2E_REVIEW_TASK_TITLE || 'Real runtime review task'
 
 const mainUiDevServerUrl = process.env.AMADEUS_MAIN_UI_DEV_URL || 'http://127.0.0.1:5178/'
 
@@ -24,9 +27,14 @@ let mainUiWindow: BrowserWindow | undefined
 let companionWindow: BrowserWindow | undefined
 let companionCursorTimer: NodeJS.Timeout | undefined
 let companionLastCursor: { x: number, y: number } | undefined
+let realRuntimeE2eStarted = false
 
 if (is.dev) {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
+}
+
+if (process.env.AMADEUS_E2E_USER_DATA_DIR) {
+  app.setPath('userData', resolve(process.env.AMADEUS_E2E_USER_DATA_DIR))
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
@@ -359,6 +367,11 @@ function createMainUiWindow(sessionId = defaultCompanionSessionId): BrowserWindo
   window.on('minimize', publishCompanionInteractionMode)
   window.on('restore', publishCompanionInteractionMode)
   window.webContents.on('did-finish-load', () => {
+    if (isE2eRealRuntime && !realRuntimeE2eStarted) {
+      realRuntimeE2eStarted = true
+      void runRealRuntimeE2E(window)
+      return
+    }
     if (isE2eRuntimeUi) {
       void runRuntimeUiE2E(window)
       return
@@ -447,6 +460,215 @@ async function runPermissionPromptE2E(mainWindow: BrowserWindow): Promise<void> 
   }
   catch (error) {
     console.error(`AMADEUS_E2E_PERMISSION_PROMPT failed: ${error instanceof Error ? error.message : String(error)}`)
+    app.exit(1)
+  }
+}
+
+function waitForMainUiLoad(mainWindow: BrowserWindow, timeoutMs = 10000): Promise<void> {
+  return new Promise((resolveWait, rejectWait) => {
+    const timeout = setTimeout(() => {
+      cleanup()
+      rejectWait(new Error('Timed out waiting for Main UI navigation'))
+    }, timeoutMs)
+    const onFinished = () => {
+      cleanup()
+      resolveWait()
+    }
+    const onFailed = (_event: Electron.Event, code: number, description: string, url: string) => {
+      cleanup()
+      rejectWait(new Error(`Main UI navigation failed ${code} ${description}: ${url}`))
+    }
+    const cleanup = () => {
+      clearTimeout(timeout)
+      mainWindow.webContents.removeListener('did-finish-load', onFinished)
+      mainWindow.webContents.removeListener('did-fail-load', onFailed)
+    }
+    mainWindow.webContents.once('did-finish-load', onFinished)
+    mainWindow.webContents.once('did-fail-load', onFailed)
+  })
+}
+
+async function runRealRuntimeE2E(mainWindow: BrowserWindow): Promise<void> {
+  try {
+    const initial = await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const deadline = Date.now() + 15000;
+        const byTestId = (id) => document.querySelector('[data-testid="' + id + '"]');
+        const waitFor = (predicate, label) => new Promise((waitResolve, waitReject) => {
+          const tick = () => {
+            try {
+              if (predicate()) {
+                waitResolve(undefined);
+                return;
+              }
+            }
+            catch (error) {
+              waitReject(error);
+              return;
+            }
+            if (Date.now() > deadline) {
+              waitReject(new Error('Timed out waiting for ' + label));
+              return;
+            }
+            setTimeout(tick, 50);
+          };
+          tick();
+        });
+
+        (async () => {
+          await waitFor(() => byTestId('runtime-connection')?.dataset?.state === 'online', 'real runtime connection');
+          const input = byTestId('chat-input');
+          const sendButton = byTestId('chat-send');
+          if (!(input instanceof HTMLTextAreaElement) || !(sendButton instanceof HTMLButtonElement)) {
+            throw new Error('Vue chat controls are missing');
+          }
+          const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+          setter?.call(input, 'real runtime e2e ping');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          await waitFor(() => !sendButton.disabled, 'real runtime send enabled');
+          sendButton.click();
+          await waitFor(() => byTestId('chat-log')?.textContent?.includes('Real runtime E2E reply'), 'real runtime reply');
+          resolve({
+            sessionId: byTestId('session-switcher-trigger')?.dataset?.sessionId ?? '',
+            chat: byTestId('chat-log')?.textContent ?? '',
+          });
+        })().catch(reject);
+      }))()
+    `)
+
+    const secondaryLoad = waitForMainUiLoad(mainWindow)
+    await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const trigger = document.querySelector('[data-testid="session-switcher-trigger"]');
+        if (!(trigger instanceof HTMLButtonElement)) throw new Error('Session switcher trigger is missing');
+        trigger.click();
+        const deadline = Date.now() + 5000;
+        const tick = () => {
+          const target = document.querySelector('[data-testid="session-select"][data-session-id="${e2eSecondarySessionId}"]');
+          if (target instanceof HTMLButtonElement) {
+            target.click();
+            resolve(undefined);
+            return;
+          }
+          if (Date.now() > deadline) {
+            reject(new Error('Secondary session is missing'));
+            return;
+          }
+          setTimeout(tick, 50);
+        };
+        tick();
+      }))()
+    `)
+    await secondaryLoad
+    const secondary = await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const deadline = Date.now() + 10000;
+        const tick = () => {
+          const connection = document.querySelector('[data-testid="runtime-connection"]');
+          const trigger = document.querySelector('[data-testid="session-switcher-trigger"]');
+          if (connection?.dataset?.state === 'online' && trigger?.dataset?.sessionId === '${e2eSecondarySessionId}') {
+            resolve({
+              sessionId: trigger.dataset.sessionId,
+              chat: document.querySelector('[data-testid="chat-log"]')?.textContent ?? '',
+            });
+            return;
+          }
+          if (Date.now() > deadline) {
+            reject(new Error('Timed out waiting for secondary session'));
+            return;
+          }
+          setTimeout(tick, 50);
+        };
+        tick();
+      }))()
+    `)
+
+    const companionLoad = waitForMainUiLoad(mainWindow)
+    await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const trigger = document.querySelector('[data-testid="session-switcher-trigger"]');
+        if (!(trigger instanceof HTMLButtonElement)) throw new Error('Session switcher trigger is missing');
+        trigger.click();
+        const deadline = Date.now() + 5000;
+        const tick = () => {
+          const target = document.querySelector('[data-testid="session-companion"]');
+          if (target instanceof HTMLButtonElement) {
+            target.click();
+            resolve(undefined);
+            return;
+          }
+          if (Date.now() > deadline) {
+            reject(new Error('Companion session entry is missing'));
+            return;
+          }
+          setTimeout(tick, 50);
+        };
+        tick();
+      }))()
+    `)
+    await companionLoad
+    const approval = await mainWindow.webContents.executeJavaScript(`
+      (() => new Promise((resolve, reject) => {
+        const deadline = Date.now() + 15000;
+        const byTestId = (id) => document.querySelector('[data-testid="' + id + '"]');
+        const waitFor = (predicate, label) => new Promise((waitResolve, waitReject) => {
+          const tick = () => {
+            try {
+              if (predicate()) {
+                waitResolve(undefined);
+                return;
+              }
+            }
+            catch (error) {
+              waitReject(error);
+              return;
+            }
+            if (Date.now() > deadline) {
+              waitReject(new Error('Timed out waiting for ' + label));
+              return;
+            }
+            setTimeout(tick, 50);
+          };
+          tick();
+        });
+
+        (async () => {
+          await waitFor(() => {
+            return byTestId('runtime-connection')?.dataset?.state === 'online'
+              && byTestId('session-switcher-trigger')?.dataset?.sessionId === 'companion:default';
+          }, 'companion session restore');
+          await waitFor(() => byTestId('chat-log')?.textContent?.includes('Real runtime E2E reply'), 'persisted chat restore');
+          const tasksNav = document.querySelector('[data-testid="main-nav-item"][data-nav-key="tasks"]');
+          if (!(tasksNav instanceof HTMLButtonElement)) throw new Error('Tasks navigation is missing');
+          tasksNav.click();
+          await waitFor(() => Boolean(byTestId('tasks-view')), 'tasks view');
+          await waitFor(() => {
+            return Array.from(document.querySelectorAll('[data-testid="task-detail"]'))
+              .some((element) => element.getAttribute('data-task-title') === '${e2eReviewTaskTitle}');
+          }, 'review task');
+          const detail = Array.from(document.querySelectorAll('[data-testid="task-detail"]'))
+            .find((element) => element.getAttribute('data-task-title') === '${e2eReviewTaskTitle}');
+          if (!(detail instanceof HTMLButtonElement)) throw new Error('Review task detail button is missing');
+          detail.click();
+          await waitFor(() => Boolean(byTestId('task-approve')), 'review approval button');
+          const approve = byTestId('task-approve');
+          if (!(approve instanceof HTMLButtonElement)) throw new Error('Review approval button is missing');
+          approve.click();
+          await waitFor(() => byTestId('task-detail-status')?.textContent?.includes('已完成'), 'review approval completion');
+          resolve({
+            sessionId: byTestId('session-switcher-trigger')?.dataset?.sessionId ?? '',
+            persistedChat: true,
+            taskStatus: byTestId('task-detail-status')?.textContent?.trim() ?? '',
+          });
+        })().catch(reject);
+      }))()
+    `)
+
+    console.log(`AMADEUS_E2E_REAL_RUNTIME ${JSON.stringify({ initial, secondary, approval, renderer: 'vue-main-ui' })}`)
+    setTimeout(() => app.quit(), 100)
+  }
+  catch (error) {
+    console.error(`AMADEUS_E2E_REAL_RUNTIME failed: ${error instanceof Error ? error.message : String(error)}`)
     app.exit(1)
   }
 }
@@ -865,7 +1087,7 @@ else {
     })
 
     createCompanionWindow()
-    if (isE2eRuntimeUi || isE2ePermissionPrompt) {
+    if (isE2eRuntimeUi || isE2ePermissionPrompt || isE2eRealRuntime) {
       createMainUiWindow(defaultCompanionSessionId)
     }
 

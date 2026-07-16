@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -163,6 +163,7 @@ Fallback path today:
 - Production Live2D HTTP ownership is now narrower in `apps/server`: the bridge proxies `/live2d/config`, `/live2d/models`, `/live2d/select`, and `/live2d/models/...` to the Python runtime, rewrites returned model URLs back to the bridge origin, and no longer owns the real model-library scan or harness-config mutation path.
 - Desktop Electron E2E coverage now includes deterministic runtime audio playback feedback: the packaged desktop receives `audio.tts-ready`, plays mock runtime audio, and reports both success feedback (`audio.playback-started` / `audio.playback-ended`) and failure feedback (`audio.playback-started` / `audio.playback-error`) to the bridge.
 - Desktop Electron E2E coverage now includes deterministic permission prompt flows: the packaged desktop receives `tool.permission.request`, shows the real Allow / Deny UI, and reports `tool.permission.response` back to the bridge for both approval and denial.
+- Packaged Electron E2E now also has a real-process runtime path instead of relying only on an in-process bridge stub: the test starts an isolated OpenAI-compatible model fixture, the real Python HTTP runtime with a temporary SQLite database, the real Node bridge, and the packaged Vue/Electron UI. It verifies a persisted chat turn, reload through a second session and back to Companion, and a review-gated task approval reaching durable `succeeded` state. Each Electron E2E run uses its own `userData` directory so single-instance locking cannot cause empty exits or cross-test state leakage.
 - The legacy TypeScript fallback loop has been removed.
   - Python runtime failures now produce an explicit desktop error
   - `apps/server` no longer owns provider calls, tool execution, memory writes, or audio trigger logic for user turns
@@ -529,7 +530,7 @@ Started: restricted `delegate_task` now runs a real tracked isolated child model
 - The Live2D Cubism runtime still depends on renderer-side package/runtime availability, so full Live2D startup needs deeper Electron coverage.
 - GPT-SoVITS high-quality voice integration still requires a running GPT-SoVITS API and model assets; until then macOS `say` provides the local practical TTS loop.
 - Lipsync is no longer only a timed mouth loop: runtime now prefers provider-native or locally planned phoneme/viseme cues, with desktop amplitude analysis and the timed loop retained as fallbacks.
-- Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, and Electron startup smoke behavior. Full Live2D/interaction end-to-end coverage is still missing.
+- Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, deterministic packaged Electron interactions, and one real Python-runtime/Node-bridge/SQLite packaged workflow. Real Cubism startup with production model assets and longer desktop restart/recovery interaction coverage are still missing.
 - Partial boundaries still need more depth or cleanup: richer skill management/orchestration, the future audio harness, richer Live2D adapter packaging, and `packages/live2d-stage`.
 
 ## Useful Commands

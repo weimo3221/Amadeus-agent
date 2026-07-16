@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { createAmadeusBridgeServer } from '../../server/src/websocket-server'
+import { startRealRuntimeStack } from './real-runtime-stack'
 
 const require = createRequire(import.meta.url)
 const electronBinary = require('electron') as string
@@ -37,6 +40,50 @@ describe('Electron desktop smoke', () => {
       assert.match(output.stdout, /E2E runtime reply/)
       assert.equal(runtime.receivedUserText(), 'e2e runtime ping')
       assert.deepEqual(runtime.receivedSkills(), [])
+    }
+    finally {
+      await runtime.close()
+    }
+  })
+
+  it('runs packaged Main UI against real Python runtime and Node bridge processes', async () => {
+    const runtime = await startRealRuntimeStack()
+
+    try {
+      const output = await runElectronSmoke({
+        AMADEUS_E2E_REAL_RUNTIME: '1',
+        AMADEUS_E2E_SKIP_LIVE2D: '1',
+        AMADEUS_E2E_AGENT_HTTP_URL: runtime.runtimeUrl,
+        AMADEUS_E2E_AGENT_WS_URL: runtime.wsUrl,
+        AMADEUS_E2E_SECONDARY_SESSION_ID: runtime.secondarySessionId,
+        AMADEUS_E2E_REVIEW_TASK_TITLE: runtime.reviewTaskTitle,
+      })
+
+      assert.equal(output.code, 0, output.stderr || output.stdout)
+      assert.match(output.stdout, /AMADEUS_E2E_REAL_RUNTIME/)
+      assert.match(output.stdout, /Real runtime E2E reply/)
+      assert.match(output.stdout, /"persistedChat":true/)
+      assert.match(output.stdout, /"taskStatus":"已完成"/)
+      assert.ok(runtime.providerRequestCount() >= 2)
+
+      const messagesResponse = await fetch(
+        `${runtime.runtimeUrl}/memory/messages?sessionId=companion%3Adefault&limit=20`,
+      )
+      assert.equal(messagesResponse.status, 200)
+      const messages = await messagesResponse.json() as {
+        messages: Array<{ role: string; content: string }>
+      }
+      assert.ok(messages.messages.some((message) => message.role === 'user' && message.content === 'real runtime e2e ping'))
+      assert.ok(messages.messages.some((message) => message.role === 'assistant' && message.content === 'Real runtime E2E reply'))
+
+      const tasksResponse = await fetch(
+        `${runtime.runtimeUrl}/tasks?sessionId=companion%3Adefault&activeOnly=false&limit=20`,
+      )
+      assert.equal(tasksResponse.status, 200)
+      const tasks = await tasksResponse.json() as {
+        tasks: Array<{ id: string; status: string }>
+      }
+      assert.equal(tasks.tasks.find((task) => task.id === runtime.reviewTaskId)?.status, 'succeeded')
     }
     finally {
       await runtime.close()
@@ -227,12 +274,15 @@ describe('Electron desktop smoke', () => {
   })
 })
 
-function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: number | null, stdout: string, stderr: string }> {
-  return new Promise((resolvePromise, reject) => {
+async function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: number | null, stdout: string, stderr: string }> {
+  const userDataDir = await mkdtemp(resolve(tmpdir(), 'amadeus-electron-e2e-'))
+  try {
+    return await new Promise((resolvePromise, reject) => {
     const child = spawn(electronBinary, ['--no-sandbox', '.'], {
       cwd: desktopRoot,
       env: {
         ...process.env,
+        AMADEUS_E2E_USER_DATA_DIR: userDataDir,
         AMADEUS_E2E_SMOKE: env.AMADEUS_E2E_RUNTIME_UI === '1'
           || env.AMADEUS_E2E_LIVE2D_SWITCH === '1'
           || env.AMADEUS_E2E_AUDIO_FEEDBACK === '1'
@@ -240,6 +290,7 @@ function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: num
           || env.AMADEUS_E2E_MULTI_SKILL_SELECT === '1'
           || env.AMADEUS_E2E_OPEN_MAIN_UI === '1'
           || env.AMADEUS_E2E_COMPANION_HOVER === '1'
+          || env.AMADEUS_E2E_REAL_RUNTIME === '1'
           ? '0'
           : '1',
         ELECTRON_ENABLE_LOGGING: '1',
@@ -253,7 +304,7 @@ function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: num
     const timeout = setTimeout(() => {
       child.kill('SIGTERM')
       reject(new Error(`Electron smoke timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`))
-    }, 20000)
+    }, env.AMADEUS_E2E_REAL_RUNTIME === '1' ? 60000 : 20000)
 
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
@@ -272,6 +323,10 @@ function runElectronSmoke(env: Record<string, string> = {}): Promise<{ code: num
       resolvePromise({ code, stdout, stderr })
     })
   })
+  }
+  finally {
+    await rm(userDataDir, { recursive: true, force: true })
+  }
 }
 
 async function waitFor(predicate: () => boolean, label: string, timeoutMs = 3000): Promise<void> {

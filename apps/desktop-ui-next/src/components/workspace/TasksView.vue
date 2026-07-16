@@ -498,6 +498,7 @@ async function runRerun(task: TaskItem) {
 
 <template>
   <section
+    data-testid="tasks-view"
     class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--radius-xl4)] border border-white/70
            bg-surface/80 shadow-[var(--shadow-card)] backdrop-blur-xl"
   >
@@ -525,6 +526,9 @@ async function runRerun(task: TaskItem) {
               <span class="font-medium text-ink">{{ row.title }}</span>
               <button
                 type="button"
+                data-testid="task-detail"
+                :data-task-id="row.id"
+                :data-task-title="row.title"
                 class="rounded-full border border-line px-2 py-0.5 text-[11px] font-medium text-brand-600 transition-colors
                        hover:border-brand-200 hover:bg-brand-50"
                 @click="openTaskDetail(row)"
@@ -567,7 +571,7 @@ async function runRerun(task: TaskItem) {
         <div class="grid grid-cols-2 gap-2 text-xs">
           <div class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/50 p-3">
             <p class="text-ink-faint">状态</p>
-            <AmTag class="mt-1" :tone="statusMeta[selectedTask.status].tone" size="sm" dot>
+            <AmTag data-testid="task-detail-status" class="mt-1" :tone="statusMeta[selectedTask.status].tone" size="sm" dot>
               {{ statusMeta[selectedTask.status].label }}
             </AmTag>
           </div>
@@ -854,6 +858,7 @@ async function runRerun(task: TaskItem) {
         </AmButton>
         <AmButton
           v-if="selectedTask && selectedTask.status === 'blocked' && selectedTask.reviewRequired"
+          data-testid="task-approve"
           variant="primary"
           size="sm"
           icon="ph:check-circle-duotone"
@@ -864,6 +869,7 @@ async function runRerun(task: TaskItem) {
         </AmButton>
         <AmButton
           v-if="selectedTask && selectedTask.status === 'blocked'"
+          data-testid="task-resume"
           variant="secondary"
           size="sm"
           icon="ph:play-circle-duotone"

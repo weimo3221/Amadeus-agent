@@ -59,9 +59,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <template>
-  <div ref="root" class="relative">
+  <div ref="root" data-testid="session-switcher" class="relative">
     <button
       type="button"
+      data-testid="session-switcher-trigger"
+      :data-session-id="activeId"
       class="group flex items-center gap-2.5 rounded-[var(--radius-pill)] border border-line bg-surface/80 py-1.5 pl-2.5 pr-3
              transition-all duration-200 ease-[var(--ease-soft)]
              hover:border-brand-200 hover:shadow-[var(--shadow-soft)]"
@@ -99,6 +101,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           <span class="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-faint">会话列表</span>
           <button
             type="button"
+            data-testid="session-create"
             class="flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-[12px] font-medium text-brand-700
                    transition-all duration-200 hover:bg-brand-100 hover:-translate-y-px"
             @click="emit('create'); open = false"
@@ -110,6 +113,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
         <button
           type="button"
+          data-testid="session-companion"
+          :data-session-id="sessionContext.companionId"
           class="mb-1 flex w-full items-center gap-3 rounded-[var(--radius-xl2)] border px-2.5 py-2 text-left
                  transition-all duration-150"
           :class="sessionContext.viewingCompanion
@@ -149,6 +154,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
             >
               <button
                 type="button"
+                data-testid="session-select"
+                :data-session-id="s.id"
                 class="flex min-w-0 flex-1 items-center gap-3 text-left"
                 @click="pick(s.id)"
               >

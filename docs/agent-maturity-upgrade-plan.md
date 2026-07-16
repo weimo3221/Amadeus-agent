@@ -1119,6 +1119,13 @@ UI 不需要知道 runner 细节，但需要能展示：
 - PlanPanel 继续展示可读计划，不承担完整 graph 调试职责。
 - 新增 task graph event handling：`task.graph.updated`、`task.attempt.*`、`task.artifact.created`。
 
+### Slice 8：Packaged real-runtime E2E
+
+- `npm run test:e2e` 新增真实进程链路：测试侧 OpenAI-compatible fixture、Python runtime、Node bridge 和 packaged Electron/Vue Main UI 分别运行，使用临时 SQLite/state root 和随机端口，不依赖外部模型凭据。
+- 真实链路覆盖 chat turn 持久化、切换到第二 session、回到 Companion 后恢复历史，以及 review-required task 从 blocked 经 Main UI 审批到 durable succeeded。
+- 每条 Electron E2E 使用独立 `userData`，避免 single-instance lock 和浏览器持久状态造成空退出或跨用例污染。
+- 仍需补真实 Cubism 资源启动、桌面/Bridge/Python 重启中的 UI 恢复，以及更长时间的交互 soak。
+
 ### Slice 8：Eval and regression
 
 - 增加 long-task eval：decomposition JSON validity、dependency dispatch、worker isolation、artifact handoff、cancel/retry/recover、review gate。
