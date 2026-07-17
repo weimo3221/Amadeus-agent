@@ -26,6 +26,8 @@ WebSocket clients connect with URL parameters:
 
 The bridge validates `surface`, assigns a `clientId`, stores clients in `sessionId -> clients[]`, and broadcasts runtime events to all connected clients in the same session. `surface` describes the client that produced an event; it is not a routing target.
 
+The first command-line client does not require the TypeScript WebSocket bridge. `scripts/amadeus_cli.py` talks directly to the Python runtime over HTTP, defaults to `sessionId=cli:default`, streams the same NDJSON events from `POST /agent/turn`, and resolves streamed `tool.permission.request` events through `POST /tools/permission`. Its `doctor`, `skills`, `memory`, and `speak` commands use the existing runtime diagnostics, Skills, MCP/tool, Memory, and Audio endpoints below.
+
 ## Current Desktop to Server Events
 
 ### user.message
@@ -664,8 +666,12 @@ Current active endpoints used by the bridge/runtime:
 GET /health
 GET /runtime/health
 GET /runtime/feedback
+GET /runtime/config
 GET /tools/list
+GET /tools/config
 GET /tools/audit
+GET /skills/list
+GET /skills/view
 POST /runtime/config/reload
 POST /runtime/feedback
 POST /agent/turn
@@ -698,6 +704,8 @@ POST /memory/summary
 POST /memory/compact
 POST /memory/reset
 POST /audio/speak
+GET /audio/config
+GET /audio/voices
 GET /audio/files/{relativePath}
 GET /live2d/config
 GET /live2d/models

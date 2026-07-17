@@ -13,6 +13,7 @@
     "dev:ui-next": "npm --workspace apps/desktop-ui-next run dev",
     "dev:python-runtime": "python packages/amadeus/server.py",
     "dev:server": "npm --workspace apps/server run dev",
+    "cli": "python scripts/amadeus_cli.py",
     "build:ui-next": "npm --workspace apps/desktop-ui-next run build",
     "test:contracts": "python scripts/eval_runtime_contracts.py",
     "test:e2e": "npm --workspace apps/desktop run test:e2e",

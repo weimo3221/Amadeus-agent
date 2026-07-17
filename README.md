@@ -127,6 +127,8 @@ npm run dev
 npm run dev:stack -- --no-desktop      # run runtime + bridge without Electron
 npm run dev:stack -- --reuse-existing   # attach to already-running local services
 npm run dev:legacy                      # raw concurrent startup (no supervisor)
+npm run cli -- doctor                   # inspect runtime, Skills, MCP, Memory, and Audio
+npm run cli -- ask "hello from CLI"      # send a turn to the independent cli:default session
 ```
 
 ### Development commands
@@ -136,6 +138,7 @@ npm test          # Python unittest + server + desktop tests
 npm run test:contracts # deterministic runtime quality contracts with metrics
 npm run test:e2e  # Electron end-to-end smoke and flows
 npm run typecheck # typecheck all TS/Vue workspaces + Python
+npm run cli -- --help # command-line runtime client
 ```
 
 Real browser-backed web access checks are opt-in because they require Chrome/Edge CDP and live network access:

@@ -227,6 +227,10 @@ TypeScript bridge responsibilities today:
 
 This layer should shrink over time.
 
+### scripts/amadeus_cli.py
+
+The command-line client is a direct Python-runtime client, not a second agent loop. It defaults to the independent `cli:default` session unless `--session-id` is provided, streams `/agent/turn`, answers `tool.permission.request` through `/tools/permission`, and exposes product diagnostics over the existing Skills, MCP, Memory, and Audio HTTP surfaces. `npm run cli -- doctor` is the quick local operator check when Electron is not running.
+
 ### packages/amadeus
 
 Python runtime responsibilities today:
@@ -244,6 +248,7 @@ Python runtime responsibilities today:
 - Own scheduled-job terminal state (`completed`, `cancelled`, `failed`) and emit `scheduled.updated`; Main UI fetches all statuses so completed timed messages remain visible and shows whether a schedule delivered a message or triggered a task.
 - Own ASR/TTS provider selection and expose `/audio/transcribe`, `/audio/speak`, `/audio/config`, `/audio/voices`, and local generated audio files.
 - Emit structured runtime events such as `assistant.state`, `assistant.delta`, `assistant.message`, `task.plan.updated`, `tool.started`, `tool.finished`, `tool.permission.request`, `scheduled.updated`, `character.behavior`, and `audio.tts-ready`.
+- Serve both desktop and CLI clients through the same runtime HTTP contracts. CLI-specific behavior should stay in the client script; runtime behavior remains in Python core modules.
 
 Python runtime responsibilities later:
 

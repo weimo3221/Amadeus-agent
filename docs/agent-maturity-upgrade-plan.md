@@ -1151,7 +1151,7 @@ UI 不需要知道 runner 细节，但需要能展示：
 
 达到下面状态时，Amadeus 才算从 MVP 进入成熟 agent：
 
-- 关掉 desktop 后，Python agent 仍能通过 HTTP/CLI 正常对话和用工具。
+- 关掉 desktop 后，Python agent 仍能通过 HTTP/CLI 正常对话和用工具；当前 `scripts/amadeus_cli.py` 已完成 HTTP CLI first slice，后续是安装打包、TTY 体验和 shared-session 观察能力。
 - 关掉 Live2D harness 后，agent core 不受影响。
 - 换一个 Live2D 模型，只改配置和 adapter，不改 agent loop。
 - 换 TTS provider，只改 audio harness/provider，不改 desktop chat。
