@@ -1,4 +1,7 @@
 harnesses:
+  audio:
+    enabled: true
+    format: wav
   live2d:
     enabled: true
     adapter: desktop-live2d

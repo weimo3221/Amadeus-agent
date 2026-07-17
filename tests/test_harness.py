@@ -8,7 +8,18 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
-from amadeus.harness import HarnessContext, HarnessFeedbackPolicy, HarnessRegistry, Live2DHarness, parse_harnesses_config
+from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioOutputResult
+from amadeus.harness import AudioHarness, HarnessContext, HarnessFeedbackPolicy, HarnessRegistry, Live2DHarness, parse_harnesses_config
+
+
+class StubAudioRuntime:
+    def __init__(self, result: AudioOutputResult | AudioFallbackResult) -> None:
+        self.result = result
+        self.commands: list[AudioOutputCommand] = []
+
+    def speak(self, command: AudioOutputCommand) -> AudioOutputResult | AudioFallbackResult:
+        self.commands.append(command)
+        return self.result
 
 
 class HarnessTests(unittest.TestCase):
@@ -130,6 +141,48 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["type"], "character.behavior")
 
+    def test_audio_harness_emits_tts_ready_and_lipsync_cues_for_assistant_message(self) -> None:
+        runtime = StubAudioRuntime(AudioOutputResult(
+            audio_url="http://runtime/audio.wav",
+            duration_ms=320,
+            provider="stub",
+            lipsync_cues=[{"offsetMs": 0, "mouthOpen": 0.6}],
+        ))
+        harness = AudioHarness(audio_runtime=runtime)
+
+        events = harness.observe_event(
+            HarnessContext(session_id="default", turn_id="turn-1"),
+            {"type": "assistant.message", "payload": {"text": "hello", "turnId": "turn-1"}},
+        )
+
+        self.assertEqual(runtime.commands, [AudioOutputCommand(text="hello", format="wav")])
+        self.assertEqual([event["type"] for event in events], ["audio.lipsync-cues", "audio.tts-ready"])
+        self.assertEqual(events[0]["payload"]["source"], "runtime_audio")
+        self.assertEqual(events[0]["payload"]["audioUrl"], "http://runtime/audio.wav")
+        self.assertEqual(events[0]["payload"]["cues"], [{"offsetMs": 0, "mouthOpen": 0.6}])
+        self.assertEqual(events[1]["payload"]["durationMs"], 320)
+
+    def test_audio_harness_skips_worker_turns_and_fallback_results(self) -> None:
+        worker_runtime = StubAudioRuntime(AudioOutputResult(audio_url="http://runtime/audio.wav"))
+        worker_harness = AudioHarness(audio_runtime=worker_runtime)
+
+        worker_events = worker_harness.observe_event(
+            HarnessContext(session_id="default", runtime_state={"workerTurn": True}),
+            {"type": "assistant.message", "payload": {"text": "worker result"}},
+        )
+
+        fallback_runtime = StubAudioRuntime(AudioFallbackResult(reason="tts_provider_unavailable:none"))
+        fallback_harness = AudioHarness(audio_runtime=fallback_runtime)
+        fallback_events = fallback_harness.observe_event(
+            HarnessContext(session_id="default"),
+            {"type": "assistant.message", "payload": {"text": "hello"}},
+        )
+
+        self.assertEqual(worker_events, [])
+        self.assertEqual(worker_runtime.commands, [])
+        self.assertEqual(fallback_events, [])
+        self.assertEqual(fallback_runtime.commands, [AudioOutputCommand(text="hello", format="wav")])
+
     def test_live2d_harness_skips_fallback_cues_when_runtime_cues_are_already_active(self) -> None:
         harness = Live2DHarness()
         context = HarnessContext(
@@ -197,6 +250,31 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(ended[0]["payload"]["motion"], "custom_idle")
         self.assertEqual(started_with_duration[1]["type"], "audio.lipsync-cues")
         self.assertLessEqual(len(started_with_duration[1]["payload"]["cues"]), 7)
+
+    def test_harness_registry_can_enable_audio_harness_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "harnesses.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "harnesses:",
+                    "  audio:",
+                    "    enabled: true",
+                    "    format: wav",
+                    "  live2d:",
+                    "    enabled: false",
+                ]),
+                encoding="utf-8",
+            )
+            runtime = StubAudioRuntime(AudioOutputResult(audio_url="http://runtime/audio.wav"))
+
+            registry = HarnessRegistry.from_config(config_path, audio_runtime=runtime)
+
+        self.assertEqual([capability.name for capability in registry.capabilities()], ["audio"])
+        events = registry.observe_event(
+            HarnessContext(session_id="default"),
+            {"type": "assistant.message", "payload": {"text": "hi"}},
+        )
+        self.assertEqual([event["type"] for event in events], ["audio.tts-ready"])
 
     def test_harness_registry_can_disable_live2d(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

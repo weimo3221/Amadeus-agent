@@ -14,7 +14,7 @@ from time import perf_counter
 from typing import Any, Callable, Iterable
 from uuid import uuid4
 
-from amadeus.audio import AudioFallbackResult, AudioOutputCommand, AudioRuntime
+from amadeus.audio import AudioRuntime
 from amadeus.context import ContextAssembler, ContextAssemblerConfig, sanitize_context_markup
 from amadeus.harness import DEFAULT_HARNESSES_CONFIG_PATH, HarnessContext, HarnessFeedbackPolicy, HarnessRegistry
 from amadeus.memory import MessageMemoryStore
@@ -271,6 +271,7 @@ class AgentRuntime:
         self.harness_registry = HarnessRegistry.from_config(
             harnesses_config_path,
             audio_library=audio_runtime.library if audio_runtime is not None else None,
+            audio_runtime=audio_runtime,
         )
         self.skill_catalog = SkillCatalog(skills_root)
         self.harness_feedback_policy = HarnessFeedbackPolicy()
@@ -609,6 +610,7 @@ class AgentRuntime:
         self.harness_registry = HarnessRegistry.from_config(
             self.harnesses_config_path,
             audio_library=self.audio_runtime.library if self.audio_runtime is not None else None,
+            audio_runtime=self.audio_runtime,
         )
 
     def _configure_runtime_memory_provider(
@@ -1070,23 +1072,22 @@ class AgentRuntime:
         if review_event:
             yield review_event
 
-        if self.audio_runtime and not worker_turn:
-            audio_result = self.audio_runtime.speak(AudioOutputCommand(text=assistant_text, format="wav"))
-            if not isinstance(audio_result, AudioFallbackResult):
-                logger.info("Runtime audio ready sessionId=%s turnId=%s durationMs=%s", session_id, turn_id, audio_result.duration_ms)
-                if audio_result.lipsync_cues:
-                    yield AgentEvent("audio.lipsync-cues", {
-                        "source": "runtime_audio",
-                        "audioUrl": audio_result.audio_url,
-                        "durationMs": audio_result.duration_ms,
-                        "cues": audio_result.lipsync_cues,
-                    })
-                yield AgentEvent("audio.tts-ready", {
-                    "audioUrl": audio_result.audio_url,
-                    "durationMs": audio_result.duration_ms,
-                })
-            else:
-                logger.info("Runtime audio fallback sessionId=%s turnId=%s fallback=%s reason=%s", session_id, turn_id, audio_result.fallback, audio_result.reason)
+        if not worker_turn:
+            context = HarnessContext(
+                session_id=session_id,
+                turn_id=turn_id,
+                runtime_state={
+                    "workerTurn": worker_turn,
+                    **self.harness_feedback_policy.runtime_state(session_id),
+                },
+                client_capabilities=self.harness_feedback_policy.client_capabilities(session_id),
+            )
+            harness_event = {"type": "assistant.message", "payload": {"text": assistant_text, "turnId": turn_id}}
+            for emitted in self.harness_registry.observe_event(context, harness_event):
+                event_type = emitted.get("type")
+                payload = emitted.get("payload")
+                if isinstance(event_type, str) and isinstance(payload, dict):
+                    yield AgentEvent(event_type, payload)
 
         yield from self._emit_assistant_state(session_id, turn_id, "idle")
 

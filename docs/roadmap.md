@@ -228,12 +228,12 @@ Target deliverables:
 Current status:
 
 - First slice is implemented: `packages/amadeus/harness` exists with a base contract, registry, Live2D harness, and `configs/harnesses.yaml`.
-- Runtime audio provider selection, fallback, cache, `/audio/speak`, `audio.tts-ready`, and provider/native-or-planned lipsync cue emission are implemented in `packages/amadeus/audio.py`.
+- Runtime audio provider selection, fallback, cache, `/audio/speak`, provider/native-or-planned lipsync cue construction, and `audio.tts-ready` compatibility are implemented in `packages/amadeus/audio.py`. The first `AudioHarness` now observes final `assistant.message` events, calls that existing `AudioRuntime` boundary, and emits `audio.lipsync-cues` / `audio.tts-ready` through the harness registry instead of keeping TTS event generation as an agent-loop branch.
 - The Python agent now emits `assistant.state` and lets the Live2D harness add `character.behavior` events for state-to-expression/motion mapping.
 - Desktop now reports `desktop.capabilities` after connection/model load and reports runtime audio playback start/end/error as `audio.playback-*` events to the bridge.
 - Python now receives those feedback events through `POST /runtime/feedback`; `HarnessFeedbackPolicy` stores per-session desktop capabilities, audio playback state, and recent feedback events.
 - Live2D now maps playback start/end/error into `character.behavior` events and the bridge sends those returned events back to desktop. The mapping is configurable in `configs/harnesses.yaml` through `live2d.audioPlaybackBehaviors`.
-- Remaining work is to grow this into the full harness layer: richer audio harness decisions, richer Live2D commands, speaking-state reconciliation, better non-Latin phoneme mapping, and broader provider cue compatibility.
+- Remaining work is to grow this into the full harness layer: richer audio harness policy decisions, richer Live2D commands, speaking-state reconciliation, better non-Latin phoneme mapping, and broader provider cue compatibility.
 
 ## Phase 10: Skills
 

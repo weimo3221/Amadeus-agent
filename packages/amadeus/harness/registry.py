@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from amadeus.audio import LocalAudioLibrary
+from amadeus.audio import AudioRuntime, LocalAudioLibrary
+from amadeus.harness.audio import AudioHarness
 from amadeus.harness.base import Harness, HarnessCapability, HarnessContext
 from amadeus.harness.live2d import DEFAULT_AUDIO_PLAYBACK_BEHAVIORS, DEFAULT_STATE_BEHAVIORS, Live2DHarness
 
@@ -27,9 +28,17 @@ class HarnessRegistry:
         config_path: Path = DEFAULT_HARNESSES_CONFIG_PATH,
         *,
         audio_library: LocalAudioLibrary | None = None,
+        audio_runtime: AudioRuntime | None = None,
     ) -> "HarnessRegistry":
         config = parse_harnesses_config(config_path)
         harnesses: list[Harness] = []
+        audio_config = config.get("audio", {})
+        if audio_runtime is not None and audio_config.get("enabled", True):
+            harnesses.append(AudioHarness(
+                enabled=True,
+                audio_runtime=audio_runtime,
+                output_format=str(audio_config.get("format") or "wav"),
+            ))
         live2d_config = config.get("live2d", {})
         if live2d_config.get("enabled", True):
             model_config = live2d_config.get("model") if isinstance(live2d_config.get("model"), dict) else {}

@@ -176,6 +176,7 @@ Fallback path today:
   - `packages/amadeus/harness` now provides a base contract, registry, and Live2D harness.
   - `configs/harnesses.yaml` controls the initial Live2D harness.
   - The Live2D harness maps `assistant.state` events into `character.behavior` events instead of keeping that mapping hardcoded in the agent loop.
+  - The first AudioHarness now lives under `packages/amadeus/harness/audio.py`; it observes final `assistant.message` events, calls the existing Python `AudioRuntime.speak()` provider boundary, and emits the same `audio.lipsync-cues` / `audio.tts-ready` runtime events through the harness registry. `configs/harnesses.yaml` now exposes `harnesses.audio.enabled` and `format`, so audio output is no longer an ad hoc branch in the agent loop.
 - Local Live2D model storage is active.
   - Local models live under `models/live2d`, with `hiyori-free` as the current default and `hiyori-pro` available for switching.
   - `configs/harnesses.yaml` selects the active model by id/path.
@@ -218,6 +219,7 @@ Fallback path today:
 - Latest durable-supervisor validation passes: `python -m py_compile` for the memory/worker/supervisor/server/dev-stack modules, 152 focused memory/worker/supervisor/runtime HTTP/dev-stack tests, full `npm test` with 441 Python tests (2 skipped), 35 Server tests, 21 Desktop tests, and 10/10 runtime contracts, plus full `npm run typecheck`. A real two-supervisor process check confirmed single-primary lease exclusion and lease release on SIGTERM. A temporary no-desktop dev stack reported healthy Python and bridge services, `runner.kind=external_supervisor`, `externalSupervisorActive=true`, and released the supervisor lease during clean shutdown.
 - Latest OS-sandbox validation passes: 111 focused sandbox/worker/supervisor/runtime tests (1 native-host skip), full `npm test` with 448 Python tests (2 skipped), 35 Server tests, 21 Desktop tests, and 10/10 runtime contracts, plus full typecheck and Python compilation. A real no-desktop stack exposed `osSandbox={requested:auto, backend:none, enforced:false}` with the exact macOS `sandbox_apply: Operation not permitted` probe reason instead of claiming kernel enforcement.
 - Latest P0 Runtime Doctor validation passes: `npm run typecheck`, `npm run build:ui-next`, and full `npm test` with 462 Python tests (2 skipped), 35 Server tests, 21 Desktop tests, and 14/14 runtime contracts.
+- Latest P1 AudioHarness validation passes: focused `python -m unittest tests.test_harness tests.test_python_agent_runtime tests.test_audio`, Python compile checks for the harness/agent modules, and full `npm test` with 465 Python tests (2 skipped), 35 Server tests, 21 Desktop tests, and 14/14 runtime contracts.
 - `apps/desktop-ui-next` is the sole production Main UI workbench. The Vue workbench connects to the live WebSocket bridge and Python HTTP runtime for chat, session switching, inline session title rename with immediate local title sync, Companion attach/view, turn-scoped plans, task details, timed messages, skills, memory diagnostics, MCP diagnostics, role-scoped runtime selection, and model/Live2D/TTS configuration.
 - The legacy vanilla Main UI renderer and its Electron Vite entry have been removed. Packaged Electron E2E now builds the Vue app explicitly and exercises Vue chat streaming, multi-skill selection, permission prompts, and Companion session attach alongside the existing Companion Live2D/audio/hover checks.
 - `apps/desktop-ui-next` is the Main UI renderer, not the entire `apps/desktop` package. `apps/desktop` is still the Electron shell and owns Companion, native window lifecycle, IPC/preload wiring, global cursor tracking, desktop playback, and packaged Electron E2E entrypoints.
@@ -237,7 +239,7 @@ Fallback path today:
 - Finish Memory v2 consolidation around context assembly quality, summary/profile policy, review quality, and overflow compaction behavior.
 - After the UI pass, the next product step for skills should be a real import/install/editing flow that runs `scripts/validate_skills.py` during add/import, then refreshes runtime discovery without forcing a full manual restart. The current `skill_manage` path only covers approved local experience-skill saves, while `web-access` was imported manually as a project skill.
 - Turn placeholder runtime boundaries into real modules where needed:
-  - future audio harness module
+  - richer audio harness policy beyond the first `AudioHarness` event bridge
   - `packages/live2d-stage`
 
 ## Completed
@@ -544,7 +546,7 @@ Started: restricted `delegate_task` now runs a real tracked isolated child model
 - Current tests cover Python runtime-unit behavior, local HTTP handlers, TypeScript bridge relay behavior, server-level WebSocket integration behavior, desktop renderer runtime UI behavior, deterministic packaged Electron interactions, and one real Python-runtime/Node-bridge/SQLite packaged workflow. Real Cubism startup with production model assets and longer desktop restart/recovery interaction coverage are still missing.
 - The durable supervisor is a single-host SQLite/PID control plane. Single-primary exclusion, process adoption, cancellation, resource limits, clean shutdown, and deterministic restart/adoption/lost-process soak are covered, but hour-scale supervisor+worker double-crash soak and resource-usage telemetry remain future eval work.
 - Native sandbox enforcement depends on host capability. This macOS development host exposes `sandbox-exec` but rejects even an allow-all probe with `Operation not permitted`, so `auto` reports a non-enforced fallback here; production environments that require kernel enforcement must use `AMADEUS_TASK_OS_SANDBOX=required` on a working bubblewrap/Seatbelt host.
-- Partial boundaries still need more depth or cleanup: richer skill management/orchestration, the future audio harness, richer Live2D adapter packaging, and `packages/live2d-stage`.
+- Partial boundaries still need more depth or cleanup: richer skill management/orchestration, richer audio harness policy, richer Live2D adapter packaging, and `packages/live2d-stage`.
 
 ## Useful Commands
 
