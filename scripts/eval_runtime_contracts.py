@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import contextlib
+import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -17,10 +18,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "packages"))
 
 from amadeus.agent import AgentEvent, AgentRuntime, PermissionRequest
+from amadeus.audio import (
+    AudioFallbackResult,
+    AudioOutputCommand,
+    AudioOutputResult,
+    AudioRuntime,
+    LocalAudioLibrary,
+    NoopTtsProvider,
+)
 from amadeus.context import ContextAssembler
 from amadeus.memory import MessageMemoryStore
+from amadeus.memory_safety import evaluate_memory_candidate
 from amadeus.mcp import McpServerConfig, build_mcp_tool_specs
 from amadeus.orchestrator import OrchestratorService
+from amadeus.task_supervisor import DurableTaskSupervisor
 from amadeus.tool_runtime import ToolContext, ToolRegistry
 from amadeus.worker_policy import WorkerRuntimeScope, worker_action_permission_decision
 from amadeus.workers import (
@@ -33,6 +44,20 @@ from amadeus.workers import (
     build_worker_context,
     worker_session_id_for_task,
 )
+
+CheckMetrics = dict[str, object]
+
+
+def write_eval_wav(path: Path, amplitudes: list[int], frame_rate: int = 1000) -> None:
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(frame_rate)
+        frames = bytearray()
+        for amplitude in amplitudes:
+            sample = max(-32768, min(32767, int(amplitude)))
+            frames.extend(sample.to_bytes(2, byteorder="little", signed=True))
+        wav_file.writeframes(bytes(frames))
 
 
 def require(condition: bool, message: str) -> None:
@@ -282,6 +307,112 @@ def eval_orchestrator_contract() -> None:
         require("graph.synthesized" in event_types, "graph synthesized event missing")
 
 
+def eval_orchestrator_quality_and_replan_contract() -> CheckMetrics:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+        submitted: list[str] = []
+        service = OrchestratorService(memory, submit_task=submitted.append)
+        root = service.create_root_goal(session_id="eval-session", title="Quality graph")
+        applied = service.apply_task_graph(
+            str(root["id"]),
+            {
+                "tasks": [
+                    {"tempId": "research", "title": "Research"},
+                    {
+                        "tempId": "implement",
+                        "title": "Implement",
+                        "workerProfile": "coder",
+                        "dependsOn": ["research"],
+                    },
+                    {
+                        "tempId": "review",
+                        "title": "Review",
+                        "workerProfile": "reviewer",
+                        "dependsOn": ["implement"],
+                    },
+                ],
+            },
+            max_concurrency=1,
+            max_replans=1,
+        )
+        root_id = str(root["id"])
+        research_id = str(applied["tempTaskIds"]["research"])
+        implement_id = str(applied["tempTaskIds"]["implement"])
+        review_id = str(applied["tempTaskIds"]["review"])
+        waiting_root = memory.get_task(root_id)
+        initial_runnable = memory.list_runnable_tasks(limit=10)
+        duplicate_rejected = False
+        try:
+            service.apply_task_graph(
+                root_id,
+                {"tasks": [{"tempId": "extra", "title": "Extra"}]},
+            )
+        except ValueError:
+            duplicate_rejected = True
+
+        memory.start_task(research_id, claim_lock="quality-research")
+        premature_claim = memory.start_task(implement_id, claim_lock="quality-premature")
+        memory.complete_task(
+            research_id,
+            claim_lock="quality-research",
+            result="research done",
+        )
+        second_wave = memory.list_runnable_tasks(limit=10)
+        memory.start_task(implement_id, claim_lock="quality-implement")
+        memory.fail_task(
+            implement_id,
+            claim_lock="quality-implement",
+            error="implementation failed",
+        )
+        blocked = service.synthesize_root(root_id)
+        replanned = service.replan_failed_child(root_id, implement_id)
+        replacement_id = str(replanned["replacementTaskId"])
+        replacement_dispatch = service.dispatch_ready(root_id, limit=1)
+        memory.start_task(replacement_id, claim_lock="quality-replacement")
+        memory.complete_task(
+            replacement_id,
+            claim_lock="quality-replacement",
+            result="replacement done",
+        )
+        review_dispatch = service.dispatch_ready(root_id, limit=1)
+        memory.start_task(review_id, claim_lock="quality-review")
+        memory.complete_task(
+            review_id,
+            claim_lock="quality-review",
+            result="review done",
+        )
+        synthesized = service.synthesize_root(root_id)
+        graph = memory.get_task_graph(root_id)
+        events = memory.list_task_events(root_id)
+
+        require(waiting_root is not None and waiting_root["status"] == "blocked", "orchestrator root was not blocked")
+        require(waiting_root["checkpoint"]["phase"] == "orchestrator_waiting", "root waiting checkpoint missing")
+        require([task["id"] for task in initial_runnable] == [research_id], "initial runnable wave was not width-limited")
+        require(duplicate_rejected, "second graph apply was not rejected")
+        require(premature_claim is not None and premature_claim["status"] == "queued", "dependency/concurrency claim gate was bypassed")
+        require([task["id"] for task in second_wave] == [implement_id], "dependent wave did not wake after dependency completion")
+        require(
+            blocked["completed"] is False
+            and blocked["pendingTaskIds"] == [review_id],
+            "synthesis did not wait for downstream child before replan",
+        )
+        require(replanned["replacementTask"]["readyAt"] is None, "replacement child was not activated after dependency rewiring")
+        require(replacement_dispatch == [replacement_id], "replacement child was not dispatched")
+        require(review_dispatch == [review_id], "downstream child was not dispatched after replacement success")
+        require(synthesized["completed"] is True, "replacement-aware synthesis did not complete")
+        require(synthesized["supersededTaskIds"] == [implement_id], "superseded failed task was not tracked")
+        require(submitted == [replacement_id, review_id], "dispatch submitter order regressed")
+        require(any(event["type"] == "graph.replanned" for event in events), "graph.replanned event missing")
+
+        return {
+            "childTaskCount": len(graph["tasks"]) - 1,
+            "edgeCount": len(graph["edges"]),
+            "dispatchWaveCount": 3,
+            "replanCount": 1,
+            "supersededTaskCount": len(synthesized["supersededTaskIds"]),
+        }
+
+
 def eval_mcp_tool_contract() -> None:
     server = McpServerConfig(name="eval", url="http://127.0.0.1:1/mcp", permission="allow")
 
@@ -452,6 +583,217 @@ def eval_subprocess_supervisor_fault_contract() -> None:
 
         require(periodic_result is not None and periodic_result["status"] == "succeeded", "periodic supervisor did not dispatch queued task")
         require(supervisor_status["supervisorRunning"] is True, "periodic recovery supervisor was not running")
+
+
+def eval_durable_supervisor_restart_soak_contract() -> CheckMetrics:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = Path(tmpdir) / "amadeus.sqlite"
+        memory = MessageMemoryStore(database)
+        live_task = memory.create_task(session_id="eval-session", title="Restart-adopt live worker")
+        memory.start_task(
+            str(live_task["id"]),
+            claim_lock="live-worker-claim",
+            lease_owner="live-worker",
+            lease_seconds=30,
+            runner_kind="process_entrypoint",
+        )
+        memory.register_task_process(
+            task_id=str(live_task["id"]),
+            run_id="live-run",
+            supervisor_id="soak-before",
+            pid=os.getpid(),
+        )
+        adoption_counts: list[int] = []
+        for cycle in range(3):
+            supervisor = DurableTaskSupervisor(
+                database_path=database,
+                owner_id=f"soak-supervisor-{cycle}",
+                poll_interval_seconds=0.1,
+                lease_seconds=2,
+            )
+            standby = DurableTaskSupervisor(
+                database_path=database,
+                owner_id=f"soak-standby-{cycle}",
+                poll_interval_seconds=0.1,
+                lease_seconds=2,
+            )
+            try:
+                require(supervisor.acquire(), "soak supervisor did not acquire lease")
+                require(not standby.acquire(), "standby supervisor acquired an active lease")
+                status = supervisor.tick()
+                adoption_counts.append(int(status["reconciliation"]["adopted"]))
+                lease = memory.get_supervisor_lease("task-supervisor")
+                require(
+                    lease is not None and lease["ownerId"] == f"soak-supervisor-{cycle}",
+                    "supervisor lease owner did not match active cycle",
+                )
+            finally:
+                standby.close(detach_children=True)
+                supervisor.close(detach_children=True)
+            require(memory.get_supervisor_lease("task-supervisor") is None, "supervisor lease was not released")
+
+        live_record = memory.list_task_processes(task_id=str(live_task["id"]))[0]
+
+        missing_task = memory.create_task(
+            session_id="eval-session",
+            title="Recover missing worker",
+            max_attempts=2,
+        )
+        memory.start_task(
+            str(missing_task["id"]),
+            claim_lock="missing-worker-claim",
+            lease_owner="missing-worker",
+            runner_kind="process_entrypoint",
+        )
+        memory.create_task_attempt(
+            str(missing_task["id"]),
+            run_id="missing-run",
+            worker_id="missing-worker",
+            checkpoint={"status": "running", "phase": "model_turn_started"},
+        )
+        memory.register_task_process(
+            task_id=str(missing_task["id"]),
+            run_id="missing-run",
+            supervisor_id="soak-missing-before",
+            pid=999999999,
+        )
+        recovery_supervisor = DurableTaskSupervisor(
+            database_path=database,
+            owner_id="soak-recovery",
+            poll_interval_seconds=0.1,
+            lease_seconds=2,
+            max_workers=1,
+        )
+        try:
+            require(recovery_supervisor.acquire(), "recovery supervisor did not acquire lease")
+            recovery_status = recovery_supervisor.tick()
+        finally:
+            recovery_supervisor.close(detach_children=True)
+        recovered_missing = memory.get_task(str(missing_task["id"]))
+        attempts = memory.list_task_attempts(str(missing_task["id"]))
+        missing_record = memory.list_task_processes(task_id=str(missing_task["id"]))[0]
+
+        require(sum(adoption_counts) >= 3, "supervisor restarts did not repeatedly adopt the live process")
+        require(live_record["supervisorId"] == "soak-supervisor-2", "latest supervisor did not own adopted process")
+        require(missing_record["status"] == "lost", "missing process was not marked lost")
+        require(
+            recovered_missing is not None and recovered_missing["status"] in {"queued", "running"},
+            "missing process was not reclaimed into an active/retryable state",
+        )
+        require(attempts[0]["status"] == "abandoned", "missing process attempt was not abandoned")
+        return {
+            "restartCycles": 3,
+            "adoptionEvents": sum(adoption_counts),
+            "lostProcesses": int(recovery_status["reconciliation"]["lost"]),
+            "recoveredTaskStatus": recovered_missing["status"] if recovered_missing else "missing",
+        }
+
+
+def eval_memory_quality_contract() -> CheckMetrics:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+        memory.save("memory-eval-a", "user", "The project notebook color is blue.")
+        memory.save("memory-eval-b", "user", "Unrelated release note about orange widgets.")
+        memory.save_memory_item(
+            "project",
+            "项目记忆检索应该支持中文分词召回。",
+            confidence=0.9,
+            memory_type="semantic",
+            metadata={"topic": "memory", "language": "zh"},
+        )
+        memory.save_memory_item(
+            "user",
+            "The user prefers concise Chinese status updates.",
+            confidence=0.8,
+            memory_type="preference",
+            metadata={"topic": "style"},
+        )
+
+        chinese_results = memory.list_memory_items(
+            scope="project",
+            query="记忆检索召回",
+            limit=3,
+        )
+        typed_context = ContextAssembler(memory, "Base prompt").assemble(
+            "memory-eval-a",
+            "What do you know about concise Chinese updates?",
+        )
+        transcript_context = ContextAssembler(memory, "Base prompt").assemble(
+            "memory-eval-a",
+            "What color is the project notebook?",
+        )
+        secret_decision = evaluate_memory_candidate(
+            "user",
+            "api_key = 'sk-abcdefghijklmnopqrstuvwxyz'",
+        )
+        debug_decision = evaluate_memory_candidate(
+            "project",
+            "Temporary pytest failure from the current run should be remembered.",
+        )
+
+        require(chinese_results, "Chinese memory item query returned no results")
+        require("中文分词召回" in str(chinese_results[0]["content"]), "Chinese memory recall ranked the wrong item first")
+        require(
+            "The user prefers concise Chinese status updates." not in typed_context.user_content,
+            "typed memory item was auto-injected instead of tool-searched",
+        )
+        require("blue" in transcript_context.user_content, "transcript retrieval context missed relevant session memory")
+        require(not secret_decision.allowed and secret_decision.reason.startswith("secret:"), "secret memory candidate was allowed")
+        require(not debug_decision.allowed and debug_decision.reason.startswith("temporary_debug:"), "temporary debug memory was allowed")
+        return {
+            "memoryItemHits": len(chinese_results),
+            "topRetrievalProvider": chinese_results[0].get("retrievalProvider"),
+            "secretDecision": secret_decision.reason,
+            "debugDecision": debug_decision.reason,
+        }
+
+
+class EvalTtsProvider:
+    name = "eval_tts"
+
+    def __init__(self, library: LocalAudioLibrary, audio_path: Path) -> None:
+        self.library = library
+        self.audio_path = audio_path
+
+    def synthesize(self, command: AudioOutputCommand) -> AudioOutputResult | None:
+        if not command.text.strip():
+            return None
+        return AudioOutputResult(
+            audio_url=self.library.public_url(self.audio_path),
+            duration_ms=self.library.duration_ms(self.audio_path),
+            provider=self.name,
+        )
+
+
+def eval_audio_quality_contract() -> CheckMetrics:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        library = LocalAudioLibrary(root / "audio", "http://localhost:8790")
+        fallback = AudioRuntime(library, NoopTtsProvider()).speak(
+            AudioOutputCommand(text="hello")
+        )
+        wav_path = library.cache_dir / "eval.wav"
+        write_eval_wav(wav_path, [0, 8000, 16000, 4000, 0], frame_rate=1000)
+        runtime = AudioRuntime(library, EvalTtsProvider(library, wav_path))
+        runtime.lipsync_max_cues = 12
+        spoken = runtime.speak(AudioOutputCommand(text="hello 世界"))
+
+        require(isinstance(fallback, AudioFallbackResult), "noop TTS did not return a browser fallback")
+        require(fallback.reason.startswith("tts_provider_unavailable"), "fallback reason was not explicit")
+        require(isinstance(spoken, AudioOutputResult), "eval TTS did not return audio output")
+        require(spoken.duration_ms == 5, "WAV duration was not measured")
+        require(spoken.lipsync_cues is not None and len(spoken.lipsync_cues) >= 2, "lipsync cues missing")
+        assert spoken.lipsync_cues is not None
+        require(spoken.lipsync_cues[-1]["mouthOpen"] == 0.0, "lipsync cues did not close the mouth")
+        require(
+            all(0.0 <= float(cue["mouthOpen"]) <= 1.0 for cue in spoken.lipsync_cues),
+            "lipsync mouthOpen values were out of range",
+        )
+        return {
+            "fallbackReason": fallback.reason,
+            "lipsyncCueCount": len(spoken.lipsync_cues),
+            "durationMs": spoken.duration_ms,
+        }
 
 
 def eval_action_approval_scope_contract() -> None:
@@ -678,15 +1020,19 @@ def eval_worker_isolation_policy_contract() -> None:
 
 
 def main() -> int:
-    checks: list[tuple[str, Callable[[], None]]] = [
+    checks: list[tuple[str, Callable[[], CheckMetrics | None]]] = [
         ("role_identity_and_task_context", eval_role_identity_and_task_context),
         ("task_lifecycle", eval_task_lifecycle_contract),
         ("runner_contract_matrix", eval_runner_contract_matrix),
         ("isolated_child_agent", eval_isolated_child_agent_contract),
         ("orchestrator_and_artifact_handoff", eval_orchestrator_contract),
+        ("orchestrator_quality_and_replan", eval_orchestrator_quality_and_replan_contract),
         ("mcp_tool_contract", eval_mcp_tool_contract),
         ("subprocess_supervisor_faults", eval_subprocess_supervisor_fault_contract),
+        ("durable_supervisor_restart_soak", eval_durable_supervisor_restart_soak_contract),
         ("worker_isolation_and_sandbox", eval_worker_isolation_policy_contract),
+        ("memory_quality", eval_memory_quality_contract),
+        ("audio_quality", eval_audio_quality_contract),
         ("action_approval_scope", eval_action_approval_scope_contract),
         ("approval_override_audit", eval_approval_override_audit_contract),
     ]
@@ -694,12 +1040,15 @@ def main() -> int:
     started_at = time.perf_counter()
     for name, check in checks:
         check_started_at = time.perf_counter()
-        check()
-        results.append({
+        metrics = check()
+        result: dict[str, object] = {
             "name": name,
             "status": "passed",
             "durationMs": round((time.perf_counter() - check_started_at) * 1000, 2),
-        })
+        }
+        if metrics:
+            result["metrics"] = metrics
+        results.append(result)
     report = {
         "ok": True,
         "suite": "runtime_contracts",

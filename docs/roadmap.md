@@ -291,7 +291,7 @@ Target deliverables:
 - Long task plans.
 - Broader human approval policy coverage for destructive, sensitive, or low-confidence worker actions beyond the current first-pass classifier and action-specific audit contract.
 - Provider and harness profiles.
-- Runtime contract eval now runs ten structured scenarios through `npm test`, covering role/task context, cross-runner lifecycle consistency, tracked isolated child-agent/session/summary handoff, orchestrator repair/dependency/artifact handoff, MCP, subprocess fault recovery/cancellation/deduplication, workspace/symlink/path/write sandbox boundaries, action-specific approval target/expiry scope, and durable approval/override audit metadata. Broaden next into model-backed planning quality, longer crash/restart soak tests, Memory, Live2D/audio, and richer tool-choice/guardrail behavior.
+- Runtime contract eval now runs fourteen structured scenarios with per-check metrics through `npm test`, covering role/task context, cross-runner lifecycle consistency, tracked isolated child-agent/session/summary handoff, orchestrator repair/dependency/artifact handoff, bounded graph quality/replan behavior, MCP, subprocess fault recovery/cancellation/deduplication, durable supervisor restart/adoption/lost-process soak, workspace/symlink/path/write sandbox boundaries, Memory recall/safety policy, Audio fallback/lipsync timing, action-specific approval target/expiry scope, and durable approval/override audit metadata. Broaden next into model-backed planning/tool-choice quality, hour-scale crash/restart soak tests, Live2D renderer behavior, and richer guardrail behavior.
 
 Reference:
 

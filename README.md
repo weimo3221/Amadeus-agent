@@ -133,7 +133,7 @@ npm run dev:legacy                      # raw concurrent startup (no supervisor)
 
 ```bash
 npm test          # Python unittest + server + desktop tests
-npm run test:contracts # deterministic long-task/runtime contract eval
+npm run test:contracts # deterministic runtime quality contracts with metrics
 npm run test:e2e  # Electron end-to-end smoke and flows
 npm run typecheck # typecheck all TS/Vue workspaces + Python
 ```
