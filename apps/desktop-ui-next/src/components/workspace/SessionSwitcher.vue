@@ -14,11 +14,14 @@ const emit = defineEmits<{
   selectCompanion: []
   create: []
   delete: [id: string]
+  rename: [id: string, title: string]
 }>()
 
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 const confirmId = ref<string | null>(null)
+const editingId = ref<string | null>(null)
+const editingTitle = ref('')
 const regularSessions = computed(() =>
   props.sessions.filter((s) => s.id !== props.sessionContext.companionId),
 )
@@ -34,6 +37,7 @@ function pick(id: string) {
 
 function askDelete(id: string) {
   if (id === props.sessionContext.companionId) return
+  editingId.value = null
   confirmId.value = id
 }
 
@@ -47,10 +51,33 @@ function cancelDelete() {
   confirmId.value = null
 }
 
+function beginRename(session: SessionItem) {
+  if (session.id === props.sessionContext.companionId) return
+  confirmId.value = null
+  editingId.value = session.id
+  editingTitle.value = session.title
+}
+
+function submitRename(session: SessionItem) {
+  const title = editingTitle.value.trim()
+  if (!title) return
+  if (title !== session.title.trim()) {
+    emit('rename', session.id, title)
+  }
+  editingId.value = null
+  editingTitle.value = ''
+}
+
+function cancelRename() {
+  editingId.value = null
+  editingTitle.value = ''
+}
+
 function onDocClick(event: MouseEvent) {
   if (root.value && !root.value.contains(event.target as Node)) {
     open.value = false
     confirmId.value = null
+    cancelRename()
   }
 }
 
@@ -152,64 +179,125 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                      transition-colors duration-150 hover:bg-brand-50/70"
               :class="s.id === activeId ? 'bg-brand-50' : ''"
             >
-              <button
-                type="button"
-                data-testid="session-select"
-                :data-session-id="s.id"
-                class="flex min-w-0 flex-1 items-center gap-3 text-left"
-                @click="pick(s.id)"
+              <form
+                v-if="editingId === s.id"
+                class="flex min-w-0 flex-1 items-center gap-2"
+                @submit.prevent.stop="submitRename(s)"
               >
                 <span
                   class="grid size-8 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
-                  :class="s.id === activeId ? 'bg-brand-500 text-white' : 'bg-surface-muted text-ink-faint'"
+                  :class="s.id === activeId ? 'bg-brand-500 text-white' : 'bg-brand-50 text-brand-500'"
                 >
-                  <Icon icon="ph:chat-teardrop-dots-duotone" :width="16" />
+                  <Icon icon="ph:pencil-simple-duotone" :width="16" />
                 </span>
-                <span class="min-w-0 flex-1">
-                  <span class="block truncate text-[13px] font-medium text-ink">{{ s.title }}</span>
-                  <span class="block truncate text-[11px] text-ink-faint">
-                    {{ s.roleName }} · {{ s.messageCount }} 条 · {{ s.updatedAt }}
-                  </span>
-                </span>
-              </button>
-
-              <template v-if="confirmId === s.id">
+                <input
+                  v-model="editingTitle"
+                  data-testid="session-rename-input"
+                  :data-session-id="s.id"
+                  autofocus
+                  maxlength="160"
+                  class="min-w-0 flex-1 rounded-[var(--radius-lg)] border border-brand-200 bg-white/80 px-2 py-1.5
+                         text-[13px] font-medium text-ink outline-none transition-all duration-150
+                         focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                  @click.stop
+                  @keydown.esc.prevent.stop="cancelRename"
+                >
                 <button
-                  type="button"
-                  title="确认删除"
-                  class="grid size-7 shrink-0 place-items-center rounded-full bg-danger-soft text-danger
-                         transition-colors duration-150 hover:bg-danger hover:text-white"
-                  @click.stop="confirmDelete(s.id)"
+                  type="submit"
+                  data-testid="session-rename-save"
+                  :data-session-id="s.id"
+                  title="保存名称"
+                  class="grid size-7 shrink-0 place-items-center rounded-full bg-brand-500 text-white
+                         transition-colors duration-150 hover:bg-brand-600"
+                  :disabled="!editingTitle.trim()"
                 >
                   <Icon icon="ph:check-bold" :width="14" />
                 </button>
                 <button
                   type="button"
-                  title="取消"
+                  data-testid="session-rename-cancel"
+                  :data-session-id="s.id"
+                  title="取消重命名"
                   class="grid size-7 shrink-0 place-items-center rounded-full bg-surface-muted text-ink-faint
                          transition-colors duration-150 hover:bg-line hover:text-ink"
-                  @click.stop="cancelDelete"
+                  @click.stop="cancelRename"
                 >
                   <Icon icon="ph:x-bold" :width="14" />
                 </button>
-              </template>
+              </form>
+
               <template v-else>
-                <Icon
-                  v-if="s.id === activeId"
-                  icon="ph:check-circle-fill"
-                  :width="16"
-                  class="shrink-0 text-brand-500 group-hover:hidden"
-                />
                 <button
-                  v-if="s.id !== sessionContext.companionId"
                   type="button"
-                  title="删除会话"
-                  class="hidden size-7 shrink-0 place-items-center rounded-full text-ink-faint
-                         transition-colors duration-150 hover:bg-danger-soft hover:text-danger group-hover:grid"
-                  @click.stop="askDelete(s.id)"
+                  data-testid="session-select"
+                  :data-session-id="s.id"
+                  class="flex min-w-0 flex-1 items-center gap-3 text-left"
+                  @click="pick(s.id)"
                 >
-                  <Icon icon="ph:trash-duotone" :width="15" />
+                  <span
+                    class="grid size-8 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
+                    :class="s.id === activeId ? 'bg-brand-500 text-white' : 'bg-surface-muted text-ink-faint'"
+                  >
+                    <Icon icon="ph:chat-teardrop-dots-duotone" :width="16" />
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-[13px] font-medium text-ink">{{ s.title }}</span>
+                    <span class="block truncate text-[11px] text-ink-faint">
+                      {{ s.roleName }} · {{ s.messageCount }} 条 · {{ s.updatedAt }}
+                    </span>
+                  </span>
                 </button>
+
+                <template v-if="confirmId === s.id">
+                  <button
+                    type="button"
+                    title="确认删除"
+                    class="grid size-7 shrink-0 place-items-center rounded-full bg-danger-soft text-danger
+                           transition-colors duration-150 hover:bg-danger hover:text-white"
+                    @click.stop="confirmDelete(s.id)"
+                  >
+                    <Icon icon="ph:check-bold" :width="14" />
+                  </button>
+                  <button
+                    type="button"
+                    title="取消"
+                    class="grid size-7 shrink-0 place-items-center rounded-full bg-surface-muted text-ink-faint
+                           transition-colors duration-150 hover:bg-line hover:text-ink"
+                    @click.stop="cancelDelete"
+                  >
+                    <Icon icon="ph:x-bold" :width="14" />
+                  </button>
+                </template>
+                <template v-else>
+                  <Icon
+                    v-if="s.id === activeId"
+                    icon="ph:check-circle-fill"
+                    :width="16"
+                    class="shrink-0 text-brand-500 group-hover:hidden"
+                  />
+                  <button
+                    v-if="s.id !== sessionContext.companionId"
+                    type="button"
+                    data-testid="session-rename"
+                    :data-session-id="s.id"
+                    title="重命名会话"
+                    class="hidden size-7 shrink-0 place-items-center rounded-full text-ink-faint
+                           transition-colors duration-150 hover:bg-brand-50 hover:text-brand-600 group-hover:grid"
+                    @click.stop="beginRename(s)"
+                  >
+                    <Icon icon="ph:pencil-simple-duotone" :width="15" />
+                  </button>
+                  <button
+                    v-if="s.id !== sessionContext.companionId"
+                    type="button"
+                    title="删除会话"
+                    class="hidden size-7 shrink-0 place-items-center rounded-full text-ink-faint
+                           transition-colors duration-150 hover:bg-danger-soft hover:text-danger group-hover:grid"
+                    @click.stop="askDelete(s.id)"
+                  >
+                    <Icon icon="ph:trash-duotone" :width="15" />
+                  </button>
+                </template>
               </template>
             </div>
           </li>

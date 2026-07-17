@@ -16,6 +16,7 @@ const emit = defineEmits<{
   selectCompanion: []
   create: []
   delete: [id: string]
+  rename: [id: string, title: string]
   openSettings: []
 }>()
 
@@ -49,6 +50,7 @@ const connectionMeta: Record<ConnectionState, { label: string; tone: string; dot
       @select-companion="emit('selectCompanion')"
       @create="emit('create')"
       @delete="emit('delete', $event)"
+      @rename="(id, title) => emit('rename', id, title)"
     />
 
     <div class="ml-auto flex shrink-0 items-center gap-2">

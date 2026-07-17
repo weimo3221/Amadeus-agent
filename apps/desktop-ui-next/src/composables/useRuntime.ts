@@ -70,6 +70,7 @@ import {
   updateLive2dBehaviors,
   updateRoleRequest,
   updateRuntimeApiConfig,
+  updateSessionRequest,
   type AudioConfigResult,
   type AudioConfigUpdate,
   type EmbeddingConfigResult,
@@ -953,6 +954,28 @@ export function useRuntime() {
     state.sessions = state.sessions.filter((s) => s.id !== id)
   }
 
+  async function renameSession(id: string, title: string): Promise<boolean> {
+    const trimmed = title.trim()
+    if (!trimmed) return false
+    const session = await updateSessionRequest(id, trimmed)
+    if (!session) return false
+    const nextItem = sessionsToItems([session], state.activeSessionId)[0]
+    if (!nextItem) return false
+    const index = state.sessions.findIndex((s) => s.id === id)
+    if (index >= 0) {
+      state.sessions.splice(index, 1, nextItem)
+    } else {
+      state.sessions = [...state.sessions, nextItem]
+    }
+    state.sessionContext = buildSessionContext(state.sessions, state.activeSessionId)
+    if (id === state.activeSessionId) {
+      state.roleName = session.roleName || state.roleName
+      activeRoleId = session.roleId || activeRoleId
+      syncActiveRole()
+    }
+    return true
+  }
+
   async function updateRole(id: string, update: RoleUpdate): Promise<boolean> {
     const role = await updateRoleRequest(id, update)
     if (!role) return false
@@ -1165,6 +1188,7 @@ export function useRuntime() {
     selectCompanionSession,
     createSession,
     deleteSession,
+    renameSession,
     updateRole,
     respondPermission,
     saveApiConfig,

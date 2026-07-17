@@ -42,7 +42,7 @@ The WebSocket is opened per surface as
 `ws://127.0.0.1:8788/ws?surface=main-ui&sessionId=<id>`. Runtime state is fetched
 directly from the Python runtime over HTTP; endpoints in use include:
 
-- `GET /sessions`, `POST /sessions`, `DELETE /sessions/:id` (archive)
+- `GET /sessions`, `POST /sessions`, `PUT /sessions/:id` (title), `DELETE /sessions/:id` (archive)
 - `GET /roles`, `PUT /roles/:id` (name / persona / style / provider / model)
 - `GET /memory/messages`, `GET /memory/items`, `GET /memory/items/history`, memory diagnostics/review APIs, and BGE-M3 embedding deployment/index controls
 - `GET /tasks`, task event/action APIs, and `GET /sessions/:id/plan-runs`

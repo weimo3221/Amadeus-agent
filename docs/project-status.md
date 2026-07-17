@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 This document is the live progress tracker for Amadeus Agent. Use it as the source of truth for what is implemented now. `docs/roadmap.md` is the forward-looking plan.
 
@@ -217,7 +217,7 @@ Fallback path today:
 - Current validation passes: `python -m unittest tests.test_model`, `python -m py_compile scripts/dev_stack.py`, `npm run typecheck`, `npm test`, `npm run test:e2e`, and `python scripts/eval_runtime_contracts.py`. The supervised no-desktop stack was also verified on temporary ports `8890` / `8888`, with both health checks passing and ports released after shutdown.
 - Latest durable-supervisor validation passes: `python -m py_compile` for the memory/worker/supervisor/server/dev-stack modules, 152 focused memory/worker/supervisor/runtime HTTP/dev-stack tests, full `npm test` with 441 Python tests (2 skipped), 35 Server tests, 21 Desktop tests, and 10/10 runtime contracts, plus full `npm run typecheck`. A real two-supervisor process check confirmed single-primary lease exclusion and lease release on SIGTERM. A temporary no-desktop dev stack reported healthy Python and bridge services, `runner.kind=external_supervisor`, `externalSupervisorActive=true`, and released the supervisor lease during clean shutdown.
 - Latest OS-sandbox validation passes: 111 focused sandbox/worker/supervisor/runtime tests (1 native-host skip), full `npm test` with 448 Python tests (2 skipped), 35 Server tests, 21 Desktop tests, and 10/10 runtime contracts, plus full typecheck and Python compilation. A real no-desktop stack exposed `osSandbox={requested:auto, backend:none, enforced:false}` with the exact macOS `sandbox_apply: Operation not permitted` probe reason instead of claiming kernel enforcement.
-- `apps/desktop-ui-next` is the sole production Main UI workbench. The Vue workbench connects to the live WebSocket bridge and Python HTTP runtime for chat, session switching and Companion attach/view, turn-scoped plans, task details, timed messages, skills, memory diagnostics, MCP diagnostics, role-scoped runtime selection, and model/Live2D/TTS configuration.
+- `apps/desktop-ui-next` is the sole production Main UI workbench. The Vue workbench connects to the live WebSocket bridge and Python HTTP runtime for chat, session switching, inline session title rename with immediate local title sync, Companion attach/view, turn-scoped plans, task details, timed messages, skills, memory diagnostics, MCP diagnostics, role-scoped runtime selection, and model/Live2D/TTS configuration.
 - The legacy vanilla Main UI renderer and its Electron Vite entry have been removed. Packaged Electron E2E now builds the Vue app explicitly and exercises Vue chat streaming, multi-skill selection, permission prompts, and Companion session attach alongside the existing Companion Live2D/audio/hover checks.
 - `apps/desktop-ui-next` is the Main UI renderer, not the entire `apps/desktop` package. `apps/desktop` is still the Electron shell and owns Companion, native window lifecycle, IPC/preload wiring, global cursor tracking, desktop playback, and packaged Electron E2E entrypoints.
 

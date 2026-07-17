@@ -271,6 +271,15 @@ export async function createSessionRequest(roleId: string): Promise<SessionPaylo
   return data?.session ?? null
 }
 
+export async function updateSessionRequest(sessionId: string, title: string): Promise<SessionPayload | null> {
+  const data = await sendJson<{ session: SessionPayload }>(
+    'PUT',
+    `/sessions/${encodeURIComponent(sessionId)}`,
+    { title },
+  )
+  return data?.session ?? null
+}
+
 export async function deleteSessionRequest(sessionId: string): Promise<boolean> {
   const data = await sendJson<{ session: SessionPayload }>(
     'DELETE',
