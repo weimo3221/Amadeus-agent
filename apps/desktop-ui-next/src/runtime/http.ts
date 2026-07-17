@@ -456,6 +456,25 @@ export async function fetchLive2dModels(): Promise<Live2dModelPayload[]> {
   return data?.models ?? []
 }
 
+export type RuntimeHealthStatus = 'ok' | 'degraded' | 'error' | 'disabled' | string
+
+export interface RuntimeHealthCheck {
+  status?: RuntimeHealthStatus
+  error?: string
+  [key: string]: unknown
+}
+
+export interface RuntimeHealthResult {
+  ok: boolean
+  status: RuntimeHealthStatus
+  timestamp: string
+  checks: Record<string, RuntimeHealthCheck>
+}
+
+export async function fetchRuntimeHealth(): Promise<RuntimeHealthResult | null> {
+  return getJson<RuntimeHealthResult>('/runtime/health')
+}
+
 export interface RuntimeApiConfig {
   provider: string
   providerLabel: string

@@ -8,7 +8,7 @@ import AmButton from '@/components/ui/AmButton.vue'
 import AmTabs from '@/components/ui/AmTabs.vue'
 import AmTag from '@/components/ui/AmTag.vue'
 import type { ToolTone } from '@/types'
-import type { Live2dBehavior } from '@/runtime/http'
+import type { Live2dBehavior, RuntimeHealthCheck } from '@/runtime/http'
 
 interface BehaviorFormEntry {
   emotion: string
@@ -24,6 +24,7 @@ const {
   saveLive2dBehaviors,
   importLive2d,
   selectLive2d,
+  refreshRuntimeHealth,
   refreshMcpDiagnostics,
   refreshEmbeddingConfig,
   deployEmbedding,
@@ -32,9 +33,10 @@ const {
 } =
   useRuntime()
 
-const activeTab = ref('model')
+const activeTab = ref('doctor')
 
 const tabs = [
+  { value: 'doctor', label: '诊断', icon: 'ph:stethoscope-duotone' },
   { value: 'model', label: '模型', icon: 'ph:cpu-duotone' },
   { value: 'memory', label: '记忆', icon: 'ph:brain-duotone' },
   { value: 'live2d', label: '形象', icon: 'ph:sparkle-duotone' },
@@ -57,6 +59,244 @@ function shortDateTime(iso?: string): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+/* ---------------- Runtime Doctor ---------------- */
+const doctorRefreshing = ref(false)
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function healthCheck(name: string): RuntimeHealthCheck {
+  return state.runtimeHealth?.checks?.[name] ?? {}
+}
+
+function stringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function numberField(record: Record<string, unknown>, key: string): number {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function boolField(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === true
+}
+
+function healthStatusLabel(status?: string): string {
+  const labels: Record<string, string> = {
+    ok: '正常',
+    degraded: '需配置',
+    disabled: '未启用',
+    error: '异常',
+    unknown: '未知',
+  }
+  return labels[status || 'unknown'] ?? status ?? '未知'
+}
+
+function healthTone(status?: string): ToolTone {
+  if (status === 'ok') return 'success'
+  if (status === 'degraded') return 'warning'
+  if (status === 'error') return 'danger'
+  if (status === 'disabled') return 'neutral'
+  return 'info'
+}
+
+function checkStatus(name: string): string {
+  return stringField(healthCheck(name), 'status') || 'unknown'
+}
+
+function pathLabel(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value : '—'
+}
+
+const doctorUpdatedAt = computed(() => shortDateTime(state.runtimeHealth?.timestamp))
+const doctorStatusTone = computed(() => healthTone(state.runtimeHealth?.status))
+const doctorStatusLabel = computed(() => healthStatusLabel(state.runtimeHealth?.status))
+
+const doctorCards = computed(() => {
+  const runtime = healthCheck('runtime')
+  const model = healthCheck('model')
+  const memory = healthCheck('memory')
+  const taskWorker = healthCheck('taskWorker')
+  const runner = asRecord(taskWorker.runner)
+  const embedding = healthCheck('embedding')
+  const tools = healthCheck('tools')
+  const live2d = healthCheck('live2d')
+  const live2dModel = asRecord(live2d.model)
+  const audio = healthCheck('audio')
+  const config = healthCheck('config')
+
+  return [
+    {
+      key: 'runtime',
+      label: 'Python Runtime',
+      value: `${stringField(runtime, 'host') || '127.0.0.1'}:${numberField(runtime, 'port') || '—'}`,
+      detail: pathLabel(runtime.repositoryRoot),
+      icon: 'ph:terminal-window-duotone',
+      tone: healthTone(checkStatus('runtime')),
+    },
+    {
+      key: 'model',
+      label: '模型连接',
+      value: `${stringField(model, 'provider') || '—'} / ${stringField(model, 'model') || '—'}`,
+      detail: boolField(model, 'apiKeyConfigured') ? 'API Key 已配置' : 'API Key 未配置',
+      icon: 'ph:cpu-duotone',
+      tone: healthTone(checkStatus('model')),
+    },
+    {
+      key: 'memory',
+      label: '记忆库',
+      value: `${numberField(memory, 'memoryItemCount')} facts / ${numberField(memory, 'messageCount')} messages`,
+      detail: `${numberField(memory, 'pendingReviewCandidateCount')} 条待审候选`,
+      icon: 'ph:brain-duotone',
+      tone: healthTone(checkStatus('memory')),
+    },
+    {
+      key: 'taskWorker',
+      label: '长任务 Supervisor',
+      value: stringField(runner, 'kind') || stringField(taskWorker, 'configuredRunnerKind') || '—',
+      detail: `mode ${stringField(taskWorker, 'supervisorMode') || '—'}`,
+      icon: 'ph:git-branch-duotone',
+      tone: healthTone(checkStatus('taskWorker')),
+    },
+    {
+      key: 'embedding',
+      label: 'Embedding',
+      value: boolField(embedding, 'deployed') ? '已部署' : boolField(embedding, 'configured') ? '待部署' : '未配置',
+      detail: stringField(embedding, 'modelId') || 'BGE-M3 optional',
+      icon: 'ph:database-duotone',
+      tone: healthTone(checkStatus('embedding')),
+    },
+    {
+      key: 'tools',
+      label: 'ToolRuntime',
+      value: `${numberField(tools, 'enabledSchemaCount')} schemas`,
+      detail: `${numberField(tools, 'enabledToolCount')} enabled / ${numberField(tools, 'toolCount')} total`,
+      icon: 'ph:wrench-duotone',
+      tone: healthTone(checkStatus('tools')),
+    },
+    {
+      key: 'live2d',
+      label: 'Live2D',
+      value: stringField(live2dModel, 'id') || (boolField(live2d, 'configured') ? '已配置' : '未配置'),
+      detail: boolField(live2dModel, 'fileExists') ? '模型文件可用' : pathLabel(live2dModel.path),
+      icon: 'ph:sparkle-duotone',
+      tone: healthTone(checkStatus('live2d')),
+    },
+    {
+      key: 'audio',
+      label: '语音',
+      value: stringField(audio, 'ttsProvider') || 'none',
+      detail: boolField(audio, 'ttsEnabled') ? 'TTS 已启用' : 'TTS 未启用',
+      icon: 'ph:waveform-duotone',
+      tone: healthTone(checkStatus('audio')),
+    },
+    {
+      key: 'config',
+      label: '配置文件',
+      value: boolField(config, 'runtimeConfigExists') ? 'runtime.yaml 可用' : 'runtime.yaml 缺失',
+      detail: boolField(config, 'harnessesConfigExists') ? 'harnesses.yaml 可用' : 'harnesses.yaml 缺失',
+      icon: 'ph:file-code-duotone',
+      tone: healthTone(checkStatus('config')),
+    },
+  ]
+})
+
+const doctorIssues = computed(() => {
+  const issues: Array<{
+    key: string
+    title: string
+    detail: string
+    tone: ToolTone
+    icon: string
+    targetTab?: string
+    actionLabel?: string
+  }> = []
+  const model = healthCheck('model')
+  const taskWorker = healthCheck('taskWorker')
+  const live2d = healthCheck('live2d')
+  const audio = healthCheck('audio')
+  const embedding = healthCheck('embedding')
+
+  if (!boolField(model, 'apiKeyConfigured')) {
+    issues.push({
+      key: 'model-key',
+      title: '模型 API Key 未配置',
+      detail: '首次启动需要先写入当前服务商的 API Key，否则 /agent/turn 只能返回 missing_api_key。',
+      tone: 'warning',
+      icon: 'ph:key-duotone',
+      targetTab: 'model',
+      actionLabel: '去配置模型',
+    })
+  }
+  if (checkStatus('taskWorker') !== 'ok') {
+    issues.push({
+      key: 'task-worker',
+      title: '长任务 Supervisor 未完全就绪',
+      detail: stringField(taskWorker, 'error') || '外部 supervisor 可能未运行；开发模式建议通过 npm run dev 启动完整栈。',
+      tone: checkStatus('taskWorker') === 'error' ? 'danger' : 'warning',
+      icon: 'ph:git-branch-duotone',
+    })
+  }
+  if (checkStatus('live2d') !== 'ok') {
+    issues.push({
+      key: 'live2d',
+      title: 'Live2D 模型需要确认',
+      detail: stringField(live2d, 'error') || '当前模型未配置或模型文件不可访问，可在形象页选择或导入本地模型。',
+      tone: checkStatus('live2d') === 'error' ? 'danger' : 'warning',
+      icon: 'ph:sparkle-duotone',
+      targetTab: 'live2d',
+      actionLabel: '检查形象',
+    })
+  }
+  if (checkStatus('audio') === 'disabled') {
+    issues.push({
+      key: 'audio',
+      title: 'TTS 当前未启用',
+      detail: '如果需要 Companion 语音输出，请在语音页启用 auto、macOS say 或 GPT-SoVITS。',
+      tone: 'neutral',
+      icon: 'ph:waveform-duotone',
+      targetTab: 'voice',
+      actionLabel: '配置语音',
+    })
+  }
+  if (checkStatus('embedding') === 'degraded' && !boolField(embedding, 'deployed')) {
+    issues.push({
+      key: 'embedding',
+      title: '长期记忆向量检索未部署',
+      detail: '这是可选能力；未部署时 search_memory_items 会回退到 SQL/FTS，部署后可获得 hybrid vector/text ranking。',
+      tone: 'info',
+      icon: 'ph:database-duotone',
+      targetTab: 'memory',
+      actionLabel: '查看记忆',
+    })
+  }
+
+  for (const [name, check] of Object.entries(state.runtimeHealth?.checks ?? {})) {
+    if (check.status !== 'error' || issues.some((issue) => issue.key === name)) continue
+    issues.push({
+      key: name,
+      title: `${name} 检查异常`,
+      detail: check.error || '请查看 Python runtime 日志获取详细错误。',
+      tone: 'danger',
+      icon: 'ph:warning-duotone',
+    })
+  }
+  return issues
+})
+
+async function refreshDoctor() {
+  doctorRefreshing.value = true
+  await Promise.all([
+    refreshRuntimeHealth(),
+    refreshMcpDiagnostics(),
+    refreshEmbeddingConfig(),
+  ])
+  doctorRefreshing.value = false
 }
 
 /* ---------------- 模型 ---------------- */
@@ -575,15 +815,156 @@ async function refreshMcp() {
       </span>
       <div class="flex-1">
         <p class="text-[15px] font-semibold text-ink">配置中心</p>
-        <p class="text-xs text-ink-faint">模型密钥与参数、Live2D 形象与动作、语音合成引擎</p>
+        <p class="text-xs text-ink-faint">Runtime Doctor、模型密钥与参数、Live2D 形象与动作、语音合成引擎</p>
       </div>
       <AmTabs v-model="activeTab" :tabs="tabs" />
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-6 py-6">
       <div class="mx-auto w-full max-w-5xl space-y-7">
+        <!-- ============ Runtime Doctor ============ -->
+        <template v-if="activeTab === 'doctor'">
+          <div class="space-y-5 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="flex items-start gap-3">
+                <span
+                  class="grid size-10 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
+                  :class="
+                    doctorStatusTone === 'success'
+                      ? 'bg-success-soft text-success'
+                      : doctorStatusTone === 'danger'
+                        ? 'bg-danger-soft text-danger'
+                        : doctorStatusTone === 'warning'
+                          ? 'bg-warning-soft text-[#b9791a]'
+                          : 'bg-info-soft text-info'
+                  "
+                >
+                  <Icon icon="ph:stethoscope-duotone" :width="20" />
+                </span>
+                <div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-semibold text-ink">Runtime Doctor</span>
+                    <AmTag :tone="doctorStatusTone" size="sm" dot>
+                      {{ doctorStatusLabel }}
+                    </AmTag>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-relaxed text-ink-faint">
+                    汇总 Python runtime 的模型、记忆、任务、Embedding、工具、Live2D、语音与配置状态。
+                    最近更新：{{ doctorUpdatedAt }}
+                  </p>
+                </div>
+              </div>
+              <AmButton
+                variant="secondary"
+                size="sm"
+                icon="ph:arrow-clockwise-bold"
+                :loading="doctorRefreshing"
+                @click="refreshDoctor"
+              >
+                重新诊断
+              </AmButton>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div
+                v-for="card in doctorCards"
+                :key="card.key"
+                class="rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3.5"
+              >
+                <div class="flex items-start gap-3">
+                  <span
+                    class="grid size-9 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
+                    :class="
+                      card.tone === 'success'
+                        ? 'bg-success-soft text-success'
+                        : card.tone === 'danger'
+                          ? 'bg-danger-soft text-danger'
+                          : card.tone === 'warning'
+                            ? 'bg-warning-soft text-[#b9791a]'
+                            : card.tone === 'info'
+                              ? 'bg-info-soft text-info'
+                              : 'bg-surface text-ink-faint'
+                    "
+                  >
+                    <Icon :icon="card.icon" :width="18" />
+                  </span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center justify-between gap-2">
+                      <p class="truncate text-[12px] font-semibold text-ink-soft">{{ card.label }}</p>
+                      <AmTag :tone="card.tone" size="sm">
+                        {{ card.tone === 'success' ? 'OK' : card.tone === 'danger' ? 'ERROR' : card.tone === 'warning' ? 'CHECK' : 'INFO' }}
+                      </AmTag>
+                    </div>
+                    <p class="mt-1 truncate text-[13px] font-semibold text-ink">{{ card.value }}</p>
+                    <p class="mt-1 line-clamp-2 text-[11px] text-ink-faint">{{ card.detail }}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2">
+                <Icon icon="ph:traffic-cone-duotone" :width="18" class="text-brand-500" />
+                <span class="text-sm font-semibold text-ink">首次启动检查项</span>
+              </div>
+              <AmTag :tone="doctorIssues.length ? 'warning' : 'success'" size="sm" dot>
+                {{ doctorIssues.length ? `${doctorIssues.length} 项需要确认` : '全部可用' }}
+              </AmTag>
+            </div>
+
+            <div v-if="doctorIssues.length" class="space-y-2">
+              <div
+                v-for="issue in doctorIssues"
+                :key="issue.key"
+                class="flex items-start gap-3 rounded-[var(--radius-xl2)] border border-line bg-surface-muted/40 p-3"
+              >
+                <span
+                  class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-[var(--radius-xl2)]"
+                  :class="
+                    issue.tone === 'danger'
+                      ? 'bg-danger-soft text-danger'
+                      : issue.tone === 'warning'
+                        ? 'bg-warning-soft text-[#b9791a]'
+                        : issue.tone === 'info'
+                          ? 'bg-info-soft text-info'
+                          : 'bg-surface text-ink-faint'
+                  "
+                >
+                  <Icon :icon="issue.icon" :width="16" />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <p class="text-[13px] font-semibold text-ink">{{ issue.title }}</p>
+                    <AmTag :tone="issue.tone" size="sm">{{ healthStatusLabel(issue.tone === 'danger' ? 'error' : 'degraded') }}</AmTag>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-relaxed text-ink-faint">{{ issue.detail }}</p>
+                </div>
+                <AmButton
+                  v-if="issue.targetTab"
+                  variant="ghost"
+                  size="sm"
+                  icon="ph:arrow-right-bold"
+                  @click="activeTab = issue.targetTab"
+                >
+                  {{ issue.actionLabel || '处理' }}
+                </AmButton>
+              </div>
+            </div>
+            <p v-else class="rounded-[var(--radius-xl2)] bg-success-soft/45 p-3 text-xs text-success">
+              当前 runtime health 没有发现阻塞首次使用的问题。可以直接从 Main UI 或 Companion 发起对话。
+            </p>
+          </div>
+
+          <p class="px-1 text-[11px] leading-relaxed text-ink-faint">
+            诊断数据来自 <code class="font-mono">GET /runtime/health</code>。这里不替代日志；
+            它用于把首次配置和本地运行依赖收敛到一个可操作入口。
+          </p>
+        </template>
+
         <!-- ============ 模型 ============ -->
-        <template v-if="activeTab === 'model'">
+        <template v-else-if="activeTab === 'model'">
           <div class="space-y-4 rounded-[var(--radius-xl3)] border border-line bg-surface p-5">
             <div class="flex items-center gap-2">
               <Icon icon="ph:cpu-duotone" :width="18" class="text-brand-500" />

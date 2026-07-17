@@ -47,6 +47,7 @@ import {
   fetchMemoryContextDiagnostics,
   fetchMemoryItems,
   fetchProviderPresets,
+  fetchRuntimeHealth,
   fetchRoles,
   fetchRuntimeConfig,
   fetchScheduledJobs,
@@ -85,6 +86,7 @@ import {
   type RoleUpdate,
   type RuntimeApiUpdate,
   type RuntimeConfigResult,
+  type RuntimeHealthResult,
   type SessionPayload,
   type SkillPayload,
   type StoredMessage,
@@ -119,6 +121,7 @@ interface RuntimeState {
   ttsProvider: string
   ttsSupportsEnumeration: boolean
   runtimeConfig: RuntimeConfigResult | null
+  runtimeHealth: RuntimeHealthResult | null
   embeddingConfig: EmbeddingConfigResult | null
   audioConfig: AudioConfigResult | null
   live2dBehaviors: Live2dBehaviorsResult | null
@@ -163,6 +166,7 @@ const state = reactive<RuntimeState>({
   ttsProvider: 'none',
   ttsSupportsEnumeration: false,
   runtimeConfig: null,
+  runtimeHealth: null,
   embeddingConfig: null,
   audioConfig: null,
   live2dBehaviors: null,
@@ -699,12 +703,13 @@ async function loadMemoryDiagnostics(): Promise<void> {
 }
 
 async function loadConfigOptions(): Promise<void> {
-  const [presets, live2dModels, ttsVoices, runtimeConfig, embeddingConfig, audioConfig, live2dBehaviors] =
+  const [presets, live2dModels, ttsVoices, runtimeConfig, runtimeHealth, embeddingConfig, audioConfig, live2dBehaviors] =
     await Promise.all([
       fetchProviderPresets(),
       fetchLive2dModels(),
       fetchTtsVoices(),
       fetchRuntimeConfig(),
+      fetchRuntimeHealth(),
       fetchEmbeddingConfig(),
       fetchAudioConfig(),
       fetchLive2dBehaviors(),
@@ -715,6 +720,7 @@ async function loadConfigOptions(): Promise<void> {
   state.ttsProvider = ttsVoices.provider
   state.ttsSupportsEnumeration = ttsVoices.supportsEnumeration
   state.runtimeConfig = runtimeConfig
+  state.runtimeHealth = runtimeHealth
   state.embeddingConfig = embeddingConfig
   state.audioConfig = audioConfig
   state.live2dBehaviors = live2dBehaviors
@@ -998,6 +1004,7 @@ export function useRuntime() {
     if (!result) return false
     state.runtimeConfig = result
     state.providerPresets = result.presets
+    state.runtimeHealth = await fetchRuntimeHealth()
     return true
   }
 
@@ -1007,6 +1014,7 @@ export function useRuntime() {
     state.audioConfig = result
     state.ttsProvider = result.runtimeProvider
     state.ttsVoices = result.voices
+    state.runtimeHealth = await fetchRuntimeHealth()
     return true
   }
 
@@ -1034,11 +1042,16 @@ export function useRuntime() {
     if (!ok) return false
     state.live2dModels = await fetchLive2dModels()
     state.live2dBehaviors = await fetchLive2dBehaviors()
+    state.runtimeHealth = await fetchRuntimeHealth()
     return true
   }
 
   async function refreshMcpDiagnostics(): Promise<void> {
     await loadToolDiagnostics()
+  }
+
+  async function refreshRuntimeHealth(): Promise<void> {
+    state.runtimeHealth = await fetchRuntimeHealth()
   }
 
   async function refreshMemoryDiagnostics(): Promise<void> {
@@ -1196,6 +1209,7 @@ export function useRuntime() {
     saveLive2dBehaviors,
     importLive2d,
     selectLive2d,
+    refreshRuntimeHealth,
     refreshMcpDiagnostics,
     refreshMemoryDiagnostics,
     refreshEmbeddingConfig,
