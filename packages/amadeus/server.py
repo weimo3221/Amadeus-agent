@@ -250,6 +250,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             self.write_json(200, build_runtime_health())
             return
 
+        if parsed.path == "/runtime/observability":
+            query = parse_qs(parsed.query)
+            session_id = query.get("sessionId", ["default"])[0]
+            limit = parse_int(query.get("limit", ["50"])[0], 50, 1, 200)
+            logger.info("Handling runtime observability request sessionId=%s limit=%s", session_id, limit)
+            self.write_json(200, build_runtime_observability(session_id, limit=limit))
+            return
+
         if parsed.path == "/runtime/config":
             logger.info("Handling runtime config request")
             self.write_json(200, build_runtime_config_payload())
@@ -2687,6 +2695,156 @@ def build_runtime_health() -> dict[str, Any]:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "checks": checks,
     }
+
+
+def build_runtime_observability(session_id: str, *, limit: int = 50) -> dict[str, Any]:
+    bounded_limit = max(1, min(200, int(limit)))
+    timestamp = datetime.now(timezone.utc).isoformat()
+    health = build_runtime_health()
+
+    tasks_result = memory_store.list_tasks(session_id=session_id, active_only=False, limit=bounded_limit)
+    tasks = [task for task in tasks_result.get("tasks", []) if isinstance(task, dict)]
+    task_summary_payload = tasks_result.get("summary") if isinstance(tasks_result.get("summary"), dict) else {}
+    latest_task = tasks[0] if tasks else None
+    latest_graph: dict[str, Any] | None = None
+    if latest_task is not None:
+        root_task_id = str(latest_task.get("rootTaskId") or latest_task.get("id") or "").strip()
+        if root_task_id:
+            try:
+                graph = memory_store.get_task_graph(root_task_id)
+                graph_tasks = graph.get("tasks") if isinstance(graph.get("tasks"), list) else []
+                graph_edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+                latest_graph = {
+                    "rootTaskId": root_task_id,
+                    "taskCount": len(graph_tasks),
+                    "edgeCount": len(graph_edges),
+                    "statusCounts": count_records_by_key(graph_tasks, "status"),
+                }
+            except Exception as error:
+                latest_graph = {
+                    "rootTaskId": root_task_id,
+                    "error": str(error),
+                }
+
+    memory_diagnostics = agent_runtime.memory_context_diagnostics(session_id, limit=min(12, bounded_limit))
+    memory_source_counts: dict[str, int] = {}
+    for diagnostic in memory_diagnostics:
+        source_counts = diagnostic.get("sourceCounts") if isinstance(diagnostic, dict) else None
+        if not isinstance(source_counts, dict):
+            continue
+        for source_name, count in source_counts.items():
+            try:
+                memory_source_counts[str(source_name)] = memory_source_counts.get(str(source_name), 0) + int(count)
+            except (TypeError, ValueError):
+                continue
+
+    role_scope = memory_store.role_runtime_scope_for_session(session_id)
+    skills = agent_runtime.skill_summaries(session_id)
+    effective_tools = agent_runtime.tool_permission_state(session_id)
+    tool_records = [record.to_payload() for record in agent_runtime.query_tool_audit_records(session_id=session_id, limit=bounded_limit)]
+    failed_tool_records = [
+        record for record in tool_records
+        if record.get("ok") is False or bool(record.get("failureCode"))
+    ]
+    mcp_records = [
+        record for record in tool_records
+        if str(record.get("toolName") or "").startswith("mcp__")
+    ]
+    failed_mcp_records = [
+        record for record in mcp_records
+        if record.get("ok") is False or bool(record.get("failureCode"))
+    ]
+    mcp_config = read_mcp_config_snapshot()
+    mcp_servers = mcp_config.get("servers") if isinstance(mcp_config.get("servers"), list) else []
+    enabled_mcp_server_count = sum(1 for server in mcp_servers if isinstance(server, dict) and server.get("enabled"))
+    mcp_tools = [tool for tool in effective_tools if str(tool.get("name") or "").startswith("mcp__")]
+
+    running_tasks = int(task_summary_payload.get("running") or 0)
+    queued_tasks = int(task_summary_payload.get("queued") or 0)
+    blocked_tasks = int(task_summary_payload.get("blocked") or 0)
+
+    return {
+        "ok": True,
+        "sessionId": session_id,
+        "timestamp": timestamp,
+        "summary": {
+            "healthStatus": health.get("status"),
+            "activeTaskCount": running_tasks + queued_tasks + blocked_tasks,
+            "blockedTaskCount": blocked_tasks,
+            "availableSkillCount": len(skills),
+            "scopedSkillCount": len(role_scope.get("skills") or []),
+            "effectiveToolCount": len(effective_tools),
+            "mcpToolCount": len(mcp_tools),
+            "mcpServerCount": len(mcp_servers),
+            "enabledMcpServerCount": enabled_mcp_server_count,
+            "toolFailureCount": len(failed_tool_records),
+            "mcpFailureCount": len(failed_mcp_records),
+            "memoryDiagnosticCount": len(memory_diagnostics),
+            "memorySourceCounts": memory_source_counts,
+        },
+        "health": {
+            "status": health.get("status"),
+            "checks": health.get("checks", {}),
+        },
+        "tasks": {
+            "summary": task_summary_payload,
+            "recent": tasks,
+            "latest": latest_task,
+            "latestGraph": latest_graph,
+        },
+        "skills": {
+            "available": skills,
+            "roleScope": role_scope,
+        },
+        "tools": {
+            "effective": effective_tools,
+            "audit": {
+                "records": tool_records,
+                "decisionCounts": count_records_by_key(tool_records, "decision"),
+                "failureCount": len(failed_tool_records),
+                "recentFailures": failed_tool_records[-8:],
+            },
+        },
+        "mcp": {
+            "config": mcp_config,
+            "toolCount": len(mcp_tools),
+            "auditRecords": mcp_records[-20:],
+            "recentFailures": failed_mcp_records[-8:],
+        },
+        "memory": {
+            "diagnostics": memory_diagnostics,
+            "latestDiagnostic": memory_diagnostics[-1] if memory_diagnostics else None,
+            "sourceCounts": memory_source_counts,
+        },
+        "filters": {
+            "sessionId": session_id,
+            "limit": bounded_limit,
+        },
+    }
+
+
+def count_records_by_key(records: list[Any], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        value = str(record.get(key) or "unknown")
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def read_mcp_config_snapshot() -> dict[str, Any]:
+    try:
+        config = read_tools_config_file()
+        tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+        return normalize_mcp_config_for_payload(tools.get("mcp") if isinstance(tools, dict) else None)
+    except Exception as error:
+        return {
+            "enabled": False,
+            "permission": "ask",
+            "servers": [],
+            "error": str(error),
+        }
 
 
 def aggregate_health_status(checks: dict[str, dict[str, Any]]) -> str:

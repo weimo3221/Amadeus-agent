@@ -29,6 +29,7 @@ const primary = computed<NavItem[]>(() => [
   { key: 'skills', label: '技能', icon: 'ph:sparkle-duotone', badge: props.skillCount || undefined },
   { key: 'schedule', label: '定时任务', icon: 'ph:alarm-duotone', badge: props.scheduledCount || undefined },
   { key: 'memory', label: '记忆库', icon: 'ph:brain-duotone' },
+  { key: 'observability', label: '运行观测', icon: 'ph:radar-duotone' },
   { key: 'config', label: '配置中心', icon: 'ph:faders-duotone' },
 ])
 

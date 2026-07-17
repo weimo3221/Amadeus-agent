@@ -1696,6 +1696,48 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(payload["records"][0]["toolName"], "search_files")
         self.assertTrue(payload["records"][0]["ok"])
 
+    def test_runtime_observability_aggregates_session_diagnostics(self) -> None:
+        runtime_server.memory_store.create_task(
+            session_id="http-test",
+            title="Investigate observability",
+            body="Check runtime signals",
+        )
+        memory_event = runtime_server.agent_runtime._memory_context_used_event(
+            "http-test",
+            "turn-http",
+            {
+                "sourceCounts": {"memory_items_bm25": 2, "recent_messages": 1},
+                "sources": [{
+                    "kind": "memory_items_bm25",
+                    "sourceId": "m1",
+                    "contentChars": 42,
+                    "reason": "matched preference",
+                }],
+            },
+        )
+        self.assertEqual(memory_event.type, "memory.context.used")
+        record = runtime_server.agent_runtime.tool_audit_log.append(
+            session_id="http-test",
+            tool_name="mcp__dev__echo",
+            decision="finished",
+            ok=False,
+            failure_code="mcp_error",
+        )
+        runtime_server.agent_runtime.tool_audit_store.save(record)
+
+        payload = self.get_json("/runtime/observability?sessionId=http-test&limit=10")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sessionId"], "http-test")
+        self.assertEqual(payload["summary"]["activeTaskCount"], 1)
+        self.assertEqual(payload["summary"]["memoryDiagnosticCount"], 1)
+        self.assertEqual(payload["summary"]["memorySourceCounts"]["memory_items_bm25"], 2)
+        self.assertEqual(payload["summary"]["mcpFailureCount"], 1)
+        self.assertEqual(payload["tasks"]["latest"]["title"], "Investigate observability")
+        self.assertEqual(payload["memory"]["latestDiagnostic"]["turnId"], "turn-http")
+        self.assertEqual(payload["mcp"]["recentFailures"][0]["toolName"], "mcp__dev__echo")
+        self.assertEqual(payload["tools"]["audit"]["failureCount"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

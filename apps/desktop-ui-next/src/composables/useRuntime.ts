@@ -48,6 +48,7 @@ import {
   fetchMemoryItems,
   fetchProviderPresets,
   fetchRuntimeHealth,
+  fetchRuntimeObservability,
   fetchRoles,
   fetchRuntimeConfig,
   fetchScheduledJobs,
@@ -87,6 +88,7 @@ import {
   type RuntimeApiUpdate,
   type RuntimeConfigResult,
   type RuntimeHealthResult,
+  type RuntimeObservabilityResult,
   type SessionPayload,
   type SkillPayload,
   type StoredMessage,
@@ -122,6 +124,7 @@ interface RuntimeState {
   ttsSupportsEnumeration: boolean
   runtimeConfig: RuntimeConfigResult | null
   runtimeHealth: RuntimeHealthResult | null
+  runtimeObservability: RuntimeObservabilityResult | null
   embeddingConfig: EmbeddingConfigResult | null
   audioConfig: AudioConfigResult | null
   live2dBehaviors: Live2dBehaviorsResult | null
@@ -167,6 +170,7 @@ const state = reactive<RuntimeState>({
   ttsSupportsEnumeration: false,
   runtimeConfig: null,
   runtimeHealth: null,
+  runtimeObservability: null,
   embeddingConfig: null,
   audioConfig: null,
   live2dBehaviors: null,
@@ -702,6 +706,10 @@ async function loadMemoryDiagnostics(): Promise<void> {
   state.memoryContextDiagnostics = await fetchMemoryContextDiagnostics(state.activeSessionId)
 }
 
+async function loadRuntimeObservability(): Promise<void> {
+  state.runtimeObservability = await fetchRuntimeObservability(state.activeSessionId)
+}
+
 async function loadConfigOptions(): Promise<void> {
   const [presets, live2dModels, ttsVoices, runtimeConfig, runtimeHealth, embeddingConfig, audioConfig, live2dBehaviors] =
     await Promise.all([
@@ -745,6 +753,7 @@ async function bootstrap(): Promise<void> {
     loadRoles(),
     loadMemoryItems(),
     loadMemoryDiagnostics(),
+    loadRuntimeObservability(),
     loadConfigOptions(),
     loadToolDiagnostics(),
   ])
@@ -807,6 +816,7 @@ function createClient(): AgentRuntimeClient {
         if (toolName.startsWith('mcp__')) {
           void loadToolDiagnostics()
         }
+        void loadRuntimeObservability()
       },
       onToolPermissionRequest: (prompt) => {
         state.toolPermission = prompt
@@ -860,6 +870,7 @@ function createClient(): AgentRuntimeClient {
         if (payload.task.sessionId && payload.task.sessionId !== state.activeSessionId) return
         maybeNotifyTask(payload.task, payload.action)
         void refreshPlanAndTasks()
+        void loadRuntimeObservability()
       },
       onScheduledJobUpdated: (payload: ScheduledJobUpdatedPayload) => {
         if (payload.job.sessionId && payload.job.sessionId !== state.activeSessionId) return
@@ -871,6 +882,7 @@ function createClient(): AgentRuntimeClient {
       onMemoryContextUsed: (payload) => {
         if (payload.sessionId && payload.sessionId !== state.activeSessionId) return
         state.memoryContextDiagnostics = [...state.memoryContextDiagnostics, payload].slice(-8)
+        void loadRuntimeObservability()
       },
       onError: (message) => {
         const pending = pendingAssistantId.value
@@ -1047,15 +1059,20 @@ export function useRuntime() {
   }
 
   async function refreshMcpDiagnostics(): Promise<void> {
-    await loadToolDiagnostics()
+    await Promise.all([loadToolDiagnostics(), loadRuntimeObservability()])
   }
 
   async function refreshRuntimeHealth(): Promise<void> {
     state.runtimeHealth = await fetchRuntimeHealth()
+    await loadRuntimeObservability()
   }
 
   async function refreshMemoryDiagnostics(): Promise<void> {
-    await loadMemoryDiagnostics()
+    await Promise.all([loadMemoryDiagnostics(), loadRuntimeObservability()])
+  }
+
+  async function refreshRuntimeObservability(): Promise<void> {
+    await loadRuntimeObservability()
   }
 
   async function refreshEmbeddingConfig(): Promise<void> {
@@ -1085,6 +1102,7 @@ export function useRuntime() {
 
   async function refreshTasks(): Promise<void> {
     await refreshPlanAndTasks()
+    await loadRuntimeObservability()
   }
 
   async function createTaskFromPlan(item: PlanItem): Promise<boolean> {
@@ -1210,6 +1228,7 @@ export function useRuntime() {
     importLive2d,
     selectLive2d,
     refreshRuntimeHealth,
+    refreshRuntimeObservability,
     refreshMcpDiagnostics,
     refreshMemoryDiagnostics,
     refreshEmbeddingConfig,

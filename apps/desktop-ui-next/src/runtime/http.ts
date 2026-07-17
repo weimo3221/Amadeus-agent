@@ -475,6 +475,15 @@ export async function fetchRuntimeHealth(): Promise<RuntimeHealthResult | null> 
   return getJson<RuntimeHealthResult>('/runtime/health')
 }
 
+export async function fetchRuntimeObservability(
+  sessionId: string,
+  limit = 50,
+): Promise<RuntimeObservabilityResult | null> {
+  return getJson<RuntimeObservabilityResult>(
+    `/runtime/observability?sessionId=${encodeURIComponent(sessionId)}&limit=${limit}`,
+  )
+}
+
 export interface RuntimeApiConfig {
   provider: string
   providerLabel: string
@@ -548,6 +557,75 @@ export interface ToolAuditRecordPayload {
   failureCode?: string
   detail?: string
   metadata?: Record<string, unknown> | null
+}
+
+export interface RuntimeObservabilitySummary {
+  healthStatus?: RuntimeHealthStatus
+  activeTaskCount: number
+  blockedTaskCount: number
+  availableSkillCount: number
+  scopedSkillCount: number
+  effectiveToolCount: number
+  mcpToolCount: number
+  mcpServerCount: number
+  enabledMcpServerCount: number
+  toolFailureCount: number
+  mcpFailureCount: number
+  memoryDiagnosticCount: number
+  memorySourceCounts: Record<string, number>
+}
+
+export interface RuntimeTaskGraphSnapshot {
+  rootTaskId: string
+  taskCount?: number
+  edgeCount?: number
+  statusCounts?: Record<string, number>
+  error?: string
+}
+
+export interface RuntimeObservabilityResult {
+  ok: boolean
+  sessionId: string
+  timestamp: string
+  summary: RuntimeObservabilitySummary
+  health: {
+    status?: RuntimeHealthStatus
+    checks: Record<string, RuntimeHealthCheck>
+  }
+  tasks: {
+    summary: TaskSummary
+    recent: TaskRecord[]
+    latest?: TaskRecord | null
+    latestGraph?: RuntimeTaskGraphSnapshot | null
+  }
+  skills: {
+    available: SkillPayload[]
+    roleScope: RoleRuntimeScopePayload
+  }
+  tools: {
+    effective: ToolsListResult['tools']
+    audit: {
+      records: ToolAuditRecordPayload[]
+      decisionCounts: Record<string, number>
+      failureCount: number
+      recentFailures: ToolAuditRecordPayload[]
+    }
+  }
+  mcp: {
+    config: McpConfigPayload
+    toolCount: number
+    auditRecords: ToolAuditRecordPayload[]
+    recentFailures: ToolAuditRecordPayload[]
+  }
+  memory: {
+    diagnostics: MemoryContextUsedPayload[]
+    latestDiagnostic?: MemoryContextUsedPayload | null
+    sourceCounts: Record<string, number>
+  }
+  filters: {
+    sessionId: string
+    limit: number
+  }
 }
 
 export interface RuntimeApiUpdate {
