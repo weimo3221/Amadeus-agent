@@ -876,6 +876,68 @@ class PythonRuntimeHttpTests(unittest.TestCase):
         self.assertEqual(runtime_event["payload"]["action"], "graph_synthesized")
         self.assertEqual(runtime_event["payload"]["task"]["id"], root["id"])
 
+    def test_tasks_http_replans_failed_child_and_cascades_graph_cancel(self) -> None:
+        root = runtime_server.memory_store.create_task(
+            session_id="http-test",
+            title="Recover graph",
+        )
+        decomposed = self.post_json(
+            f"/tasks/{root['id']}/decompose",
+            {
+                "maxConcurrency": 1,
+                "maxReplans": 1,
+                "graph": {
+                    "tasks": [
+                        {"tempId": "first", "title": "First child"},
+                        {
+                            "tempId": "second",
+                            "title": "Second child",
+                            "dependsOn": ["first"],
+                        },
+                    ],
+                },
+            },
+        )
+        first_id = str(decomposed["tempTaskIds"]["first"])
+        second_id = str(decomposed["tempTaskIds"]["second"])
+        runtime_server.memory_store.start_task(
+            first_id,
+            claim_lock="worker",
+        )
+        runtime_server.memory_store.fail_task(
+            first_id,
+            claim_lock="worker",
+            error="boom",
+        )
+
+        replanned = self.post_json(
+            f"/tasks/{root['id']}/replan",
+            {"failedTaskId": first_id},
+        )
+        replacement_id = str(replanned["replacementTaskId"])
+        cancelled = self.post_json(
+            f"/tasks/{root['id']}/cancel",
+            {"reason": "stop graph"},
+        )
+        graph = self.get_json(f"/tasks/{root['id']}/graph")
+
+        self.assertTrue(replanned["ok"])
+        self.assertEqual(replanned["dispatchedTaskIds"], [replacement_id])
+        self.assertEqual(replanned["maxReplans"], 1)
+        self.assertEqual(cancelled["rootTaskId"], root["id"])
+        self.assertEqual(
+            set(cancelled["cancelledTaskIds"]),
+            {str(root["id"]), second_id, replacement_id},
+        )
+        status_by_id = {
+            task["id"]: task["status"]
+            for task in graph["tasks"]
+        }
+        self.assertEqual(status_by_id[first_id], "failed")
+        self.assertEqual(status_by_id[second_id], "cancelled")
+        self.assertEqual(status_by_id[replacement_id], "cancelled")
+        self.assertEqual(status_by_id[str(root["id"])], "cancelled")
+
     def test_tasks_http_decompose_rejects_invalid_graph(self) -> None:
         root = runtime_server.memory_store.create_task(session_id="http-test", title="Invalid graph")
 

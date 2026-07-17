@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from pathlib import Path
 
@@ -123,6 +124,10 @@ class OrchestratorServiceTests(unittest.TestCase):
                 ],
             })
             graph = memory.get_task_graph(str(root["id"]))
+            runnable_task_ids = {
+                task["id"]
+                for task in memory.list_runnable_tasks(limit=10)
+            }
 
         self.assertEqual(applied["rootTaskId"], root["id"])
         self.assertEqual(len(applied["tasks"]), 2)
@@ -137,6 +142,63 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(design["disallowedTools"], ["terminal"])
         self.assertEqual(graph["edges"][0]["fromTaskId"], temp_ids["research"])
         self.assertEqual(graph["edges"][0]["toTaskId"], temp_ids["design"])
+        self.assertEqual(
+            next(task for task in graph["tasks"] if task["id"] == root["id"])["status"],
+            "blocked",
+        )
+        self.assertNotIn(
+            root["id"],
+            runnable_task_ids,
+        )
+
+    def test_apply_task_graph_rejects_second_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            service.apply_task_graph(
+                str(root["id"]),
+                {"tasks": [{"tempId": "first", "title": "First"}]},
+            )
+
+            with self.assertRaisesRegex(ValueError, "already been applied"):
+                service.apply_task_graph(
+                    str(root["id"]),
+                    {"tasks": [{"tempId": "second", "title": "Second"}]},
+                )
+
+    def test_apply_task_graph_claims_root_once_under_concurrency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            root = OrchestratorService(memory).create_root_goal(
+                session_id="session-1",
+                title="Root",
+            )
+
+            def apply(index: int) -> str:
+                try:
+                    OrchestratorService(memory).apply_task_graph(
+                        str(root["id"]),
+                        {
+                            "tasks": [
+                                {
+                                    "tempId": f"child-{index}",
+                                    "title": f"Child {index}",
+                                },
+                            ],
+                        },
+                    )
+                    return "applied"
+                except ValueError:
+                    return "rejected"
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(apply, range(2)))
+            graph = memory.get_task_graph(str(root["id"]))
+
+        self.assertEqual(results.count("applied"), 1)
+        self.assertEqual(results.count("rejected"), 1)
+        self.assertEqual(len(graph["tasks"]), 2)
 
     def test_plan_root_uses_model_json_then_applies_graph(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -251,6 +313,201 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertEqual(len(dispatch_events), 2)
         self.assertEqual(dispatch_events[-1]["metadata"]["dispatchedTaskIds"], [second_id])
 
+    def test_graph_concurrency_limits_runnable_children(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(
+                str(root["id"]),
+                {
+                    "tasks": [
+                        {"tempId": "first", "title": "First"},
+                        {"tempId": "second", "title": "Second"},
+                        {"tempId": "third", "title": "Third"},
+                    ],
+                },
+                max_concurrency=2,
+            )
+
+            first_batch = memory.list_runnable_tasks(limit=10)
+            child_ids = set(applied["tempTaskIds"].values())
+            for index, task in enumerate(first_batch):
+                memory.start_task(
+                    str(task["id"]),
+                    claim_lock=f"worker-{index}",
+                )
+            third_id = next(
+                task_id
+                for task_id in child_ids
+                if task_id not in {task["id"] for task in first_batch}
+            )
+            refused_claim = memory.start_task(
+                third_id,
+                claim_lock="overflow-worker",
+            )
+            while_full = memory.list_runnable_tasks(limit=10)
+            memory.complete_task(
+                str(first_batch[0]["id"]),
+                claim_lock="worker-0",
+                result="done",
+            )
+            after_completion = memory.list_runnable_tasks(limit=10)
+
+        self.assertEqual(len(first_batch), 2)
+        self.assertTrue({task["id"] for task in first_batch}.issubset(child_ids))
+        self.assertEqual(refused_claim["status"], "queued")
+        self.assertEqual(while_full, [])
+        self.assertEqual(len(after_completion), 1)
+        self.assertIn(after_completion[0]["id"], child_ids)
+        self.assertNotIn(
+            after_completion[0]["id"],
+            {task["id"] for task in first_batch},
+        )
+
+    def test_graph_concurrency_claim_gate_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(
+                str(root["id"]),
+                {
+                    "tasks": [
+                        {"tempId": "first", "title": "First"},
+                        {"tempId": "second", "title": "Second"},
+                    ],
+                },
+                max_concurrency=1,
+            )
+            child_ids = sorted(applied["tempTaskIds"].values())
+
+            def claim(payload: tuple[int, str]) -> dict[str, object] | None:
+                index, task_id = payload
+                return memory.start_task(
+                    task_id,
+                    claim_lock=f"worker-{index}",
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                claimed = list(executor.map(claim, enumerate(child_ids)))
+            graph = memory.get_task_graph(str(root["id"]))
+
+        self.assertEqual(
+            [task["status"] for task in claimed].count("running"),
+            1,
+        )
+        child_statuses = [
+            task["status"]
+            for task in graph["tasks"]
+            if task["id"] in child_ids
+        ]
+        self.assertEqual(child_statuses.count("running"), 1)
+        self.assertEqual(child_statuses.count("queued"), 1)
+
+    def test_replan_failed_child_rewires_dependencies_and_allows_synthesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(str(root["id"]), {
+                "tasks": [
+                    {"tempId": "research", "title": "Research"},
+                    {
+                        "tempId": "implement",
+                        "title": "Implement",
+                        "workerProfile": "coder",
+                        "dependsOn": ["research"],
+                    },
+                    {
+                        "tempId": "review",
+                        "title": "Review",
+                        "workerProfile": "reviewer",
+                        "dependsOn": ["implement"],
+                    },
+                ],
+            })
+            research_id = str(applied["tempTaskIds"]["research"])
+            implement_id = str(applied["tempTaskIds"]["implement"])
+            review_id = str(applied["tempTaskIds"]["review"])
+            memory.start_task(research_id, claim_lock="research-worker")
+            memory.complete_task(
+                research_id,
+                claim_lock="research-worker",
+                result="research done",
+            )
+            memory.start_task(implement_id, claim_lock="implement-worker")
+            memory.fail_task(
+                implement_id,
+                claim_lock="implement-worker",
+                error="implementation failed",
+            )
+
+            replanned = service.replan_failed_child(
+                str(root["id"]),
+                implement_id,
+            )
+            replacement_id = str(replanned["replacementTaskId"])
+            graph_after_replan = memory.get_task_graph(str(root["id"]))
+            runnable = memory.list_runnable_tasks(limit=10)
+            memory.start_task(replacement_id, claim_lock="replacement-worker")
+            memory.complete_task(
+                replacement_id,
+                claim_lock="replacement-worker",
+                result="replacement done",
+            )
+            memory.start_task(review_id, claim_lock="review-worker")
+            memory.complete_task(
+                review_id,
+                claim_lock="review-worker",
+                result="review done",
+            )
+            synthesized = service.synthesize_root(str(root["id"]))
+            events = memory.list_task_events(str(root["id"]))
+
+        edges = {
+            (edge["fromTaskId"], edge["toTaskId"])
+            for edge in graph_after_replan["edges"]
+        }
+        self.assertIn((research_id, replacement_id), edges)
+        self.assertIn((replacement_id, review_id), edges)
+        self.assertNotIn((implement_id, review_id), edges)
+        self.assertEqual([task["id"] for task in runnable], [replacement_id])
+        self.assertEqual(
+            replanned["rewired"],
+            {
+                "failedTaskId": implement_id,
+                "replacementTaskId": replacement_id,
+                "copiedIncomingEdgeCount": 1,
+                "rewiredOutgoingEdgeCount": 1,
+            },
+        )
+        self.assertIsNone(replanned["replacementTask"]["readyAt"])
+        self.assertTrue(synthesized["completed"])
+        self.assertEqual(synthesized["supersededTaskIds"], [implement_id])
+        self.assertIn("graph.replanned", [event["type"] for event in events])
+
+    def test_replan_failed_child_is_bounded_per_failed_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(
+                str(root["id"]),
+                {"tasks": [{"tempId": "child", "title": "Child"}]},
+                max_replans=1,
+            )
+            child_id = str(applied["tempTaskIds"]["child"])
+            memory.start_task(child_id, claim_lock="worker")
+            memory.fail_task(child_id, claim_lock="worker", error="boom")
+
+            service.replan_failed_child(str(root["id"]), child_id)
+            with self.assertRaisesRegex(
+                ValueError,
+                "already has a replacement",
+            ):
+                service.replan_failed_child(str(root["id"]), child_id)
+
     def test_synthesize_root_completes_after_children_succeed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
@@ -305,7 +562,8 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertFalse(synthesized["ready"])
         self.assertFalse(synthesized["completed"])
         self.assertEqual(synthesized["pendingTaskIds"], [child_id])
-        self.assertEqual(updated_root["status"], "queued")
+        self.assertEqual(updated_root["status"], "blocked")
+        self.assertEqual(updated_root["checkpoint"]["phase"], "orchestrator_waiting")
 
     def test_synthesize_root_blocks_when_child_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -327,6 +585,67 @@ class OrchestratorServiceTests(unittest.TestCase):
         self.assertTrue(synthesized["blocked"])
         self.assertEqual(synthesized["failedTaskIds"], [child_id])
         self.assertEqual(updated_root["status"], "blocked")
+
+    def test_cancel_graph_cascades_to_active_children_before_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            cancelled: list[str] = []
+
+            def cancel_task(task_id: str, *, reason: str | None = None) -> dict[str, object]:
+                cancelled.append(task_id)
+                return memory.cancel_task(task_id, reason=reason)
+
+            service = OrchestratorService(memory, cancel_task=cancel_task)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(str(root["id"]), {
+                "tasks": [
+                    {"tempId": "first", "title": "First"},
+                    {"tempId": "second", "title": "Second"},
+                ],
+            })
+            child_ids = {
+                str(applied["tempTaskIds"]["first"]),
+                str(applied["tempTaskIds"]["second"]),
+            }
+
+            result = service.cancel_graph(
+                str(root["id"]),
+                reason="operator stopped graph",
+            )
+            graph = memory.get_task_graph(str(root["id"]))
+            events = memory.list_task_events(str(root["id"]))
+
+        self.assertEqual(set(cancelled[:-1]), child_ids)
+        self.assertEqual(cancelled[-1], root["id"])
+        self.assertEqual(set(result["cancelledTaskIds"]), child_ids | {str(root["id"])})
+        self.assertTrue(all(task["status"] == "cancelled" for task in graph["tasks"]))
+        self.assertIn("graph.cancelled", [event["type"] for event in events])
+
+    def test_cancel_child_does_not_cancel_root_or_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MessageMemoryStore(Path(tmpdir) / "amadeus.sqlite")
+            service = OrchestratorService(memory)
+            root = service.create_root_goal(session_id="session-1", title="Root")
+            applied = service.apply_task_graph(str(root["id"]), {
+                "tasks": [
+                    {"tempId": "first", "title": "First"},
+                    {"tempId": "second", "title": "Second"},
+                ],
+            })
+            first_id = str(applied["tempTaskIds"]["first"])
+            second_id = str(applied["tempTaskIds"]["second"])
+
+            result = service.cancel_graph(first_id, reason="cancel one child")
+            graph = memory.get_task_graph(str(root["id"]))
+
+        status_by_id = {
+            task["id"]: task["status"]
+            for task in graph["tasks"]
+        }
+        self.assertEqual(result["cancelledTaskIds"], [first_id])
+        self.assertEqual(status_by_id[first_id], "cancelled")
+        self.assertEqual(status_by_id[second_id], "queued")
+        self.assertEqual(status_by_id[str(root["id"])], "blocked")
 
     def test_review_completed_child_returns_terminal_decision(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

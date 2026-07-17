@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 from amadeus.memory import MessageMemoryStore
@@ -17,6 +18,7 @@ from amadeus.worker_policy import (
 
 
 TaskSubmitter = Callable[[str], None]
+TaskCanceller = Callable[..., dict[str, object]]
 logger = logging.getLogger(__name__)
 
 TASK_GRAPH_JSON_SHAPE = (
@@ -25,6 +27,8 @@ TASK_GRAPH_JSON_SHAPE = (
     '"acceptanceCriteria":["criterion"],"contextHints":{},"allowedToolsets":["read"],'
     '"disallowedTools":[],"dependsOn":["other-temp-id"]}],"edges":[]}'
 )
+DEFAULT_GRAPH_MAX_CONCURRENCY = 2
+DEFAULT_GRAPH_MAX_REPLANS = 3
 
 
 class PlanningModel(Protocol):
@@ -71,10 +75,12 @@ class OrchestratorService:
         memory_store: MessageMemoryStore,
         *,
         submit_task: TaskSubmitter | None = None,
+        cancel_task: TaskCanceller | None = None,
         model_client: PlanningModel | None = None,
     ) -> None:
         self.memory_store = memory_store
         self.submit_task = submit_task
+        self.cancel_task = cancel_task
         self.model_client = model_client
 
     def create_root_goal(
@@ -319,9 +325,21 @@ class OrchestratorService:
         self.validate_graph(graph, max_children=max_children)
         return {"graph": graph}
 
-    def plan_root(self, root_task_id: str, *, max_children: int = 6) -> dict[str, object]:
+    def plan_root(
+        self,
+        root_task_id: str,
+        *,
+        max_children: int = 6,
+        max_concurrency: int = DEFAULT_GRAPH_MAX_CONCURRENCY,
+        max_replans: int = DEFAULT_GRAPH_MAX_REPLANS,
+    ) -> dict[str, object]:
         decomposition = self.decompose_task(root_task_id, max_children=max_children)
-        applied = self.apply_task_graph(root_task_id, decomposition["graph"])  # type: ignore[arg-type]
+        applied = self.apply_task_graph(
+            root_task_id,
+            decomposition["graph"],  # type: ignore[arg-type]
+            max_concurrency=max_concurrency,
+            max_replans=max_replans,
+        )
         return {
             **applied,
             "spec": decomposition.get("spec"),
@@ -340,6 +358,17 @@ class OrchestratorService:
         if root is None:
             raise ValueError("root task not found")
         children = [task for task in tasks if str(task.get("id")) != root_id]
+        replacement_by_failed_id = {
+            str(task["contextHints"].get("replanOfTaskId"))
+            for task in children
+            if isinstance(task.get("contextHints"), dict)
+            and str(task["contextHints"].get("replanOfTaskId") or "")
+        }
+        effective_children = [
+            task
+            for task in children
+            if str(task.get("id")) not in replacement_by_failed_id
+        ]
         if not children:
             return {
                 "rootTaskId": root_id,
@@ -348,7 +377,12 @@ class OrchestratorService:
                 "reason": "root task has no child tasks to synthesize",
                 "children": [],
             }
-        unfinished = [task for task in children if str(task.get("status") or "") not in {"succeeded", "failed", "cancelled"}]
+        unfinished = [
+            task
+            for task in effective_children
+            if str(task.get("status") or "")
+            not in {"succeeded", "failed", "cancelled"}
+        ]
         if unfinished:
             return {
                 "rootTaskId": root_id,
@@ -357,12 +391,21 @@ class OrchestratorService:
                 "reason": "child tasks are still active",
                 "pendingTaskIds": [str(task.get("id")) for task in unfinished],
                 "children": children,
+                "supersededTaskIds": sorted(replacement_by_failed_id),
             }
-        failed = [task for task in children if str(task.get("status") or "") in {"failed", "cancelled"}]
+        failed = [
+            task
+            for task in effective_children
+            if str(task.get("status") or "") in {"failed", "cancelled"}
+        ]
         if failed:
             reason = "Cannot synthesize root task because one or more child tasks failed or were cancelled."
             if str(root.get("status") or "") not in {"succeeded", "failed", "cancelled"}:
-                self.memory_store.block_task(root_id, reason=reason, result=_fallback_child_summary(children))
+                self.memory_store.block_task(
+                    root_id,
+                    reason=reason,
+                    result=_fallback_child_summary(effective_children),
+                )
                 root = self.memory_store.get_task(root_id) or root
             self._record_graph_event(
                 root_id,
@@ -383,6 +426,7 @@ class OrchestratorService:
                 "failedTaskIds": [str(task.get("id")) for task in failed],
                 "rootTask": root,
                 "children": children,
+                "supersededTaskIds": sorted(replacement_by_failed_id),
             }
 
         current_status = str(root.get("status") or "")
@@ -395,8 +439,27 @@ class OrchestratorService:
                 "rootTask": root,
                 "children": children,
             }
+        root_checkpoint = (
+            root.get("checkpoint")
+            if isinstance(root.get("checkpoint"), dict)
+            else {}
+        )
+        if (
+            current_status != "blocked"
+            or str(root_checkpoint.get("phase") or "")
+            != "orchestrator_waiting"
+        ):
+            return {
+                "rootTaskId": root_id,
+                "ready": True,
+                "completed": False,
+                "reason": "root task is not waiting for orchestrator synthesis",
+                "rootTask": root,
+                "children": children,
+                "supersededTaskIds": sorted(replacement_by_failed_id),
+            }
 
-        result = self._synthesize_child_results(root, children)
+        result = self._synthesize_child_results(root, effective_children)
         artifact = self.memory_store.add_task_artifact(
             root_id,
             {
@@ -404,45 +467,25 @@ class OrchestratorService:
                 "title": "Task graph synthesis",
                 "content": result,
             },
-            metadata={"source": "orchestrator", "childTaskCount": len(children)},
+            metadata={
+                "source": "orchestrator",
+                "childTaskCount": len(effective_children),
+                "supersededTaskIds": sorted(replacement_by_failed_id),
+            },
         )
-        claim_lock = f"orchestrator:synthesize:{root_id}"
-        if current_status == "queued":
-            root = self.memory_store.start_task(
-                root_id,
-                claim_lock=claim_lock,
-                lease_owner="orchestrator",
-                runner_kind="orchestrator",
-            ) or root
-            current_status = str(root.get("status") or "")
-        if current_status != "running" or str(root.get("claimLock") or "") != claim_lock:
-            self._record_graph_event(
-                root_id,
-                "graph.synthesized",
-                "Task graph synthesis could not claim root task",
-                {
-                    "completed": False,
-                    "reason": "root task is not claimable by the orchestrator",
-                },
-            )
-            return {
-                "rootTaskId": root_id,
-                "ready": True,
-                "completed": False,
-                "reason": "root task is not claimable by the orchestrator",
-                "rootTask": root,
-                "artifact": artifact,
-                "children": children,
-            }
-        completed = self.memory_store.complete_task(root_id, claim_lock=claim_lock, result=result)
+        completed = self.memory_store.complete_orchestrated_task(
+            root_id,
+            result=result,
+        )
         self._record_graph_event(
             root_id,
             "graph.synthesized",
             "Task graph synthesized into root task",
             {
                 "completed": True,
-                "childTaskCount": len(children),
+                "childTaskCount": len(effective_children),
                 "artifactId": artifact.get("id"),
+                "supersededTaskIds": sorted(replacement_by_failed_id),
             },
         )
         return {
@@ -453,12 +496,27 @@ class OrchestratorService:
             "artifact": artifact,
             "rootTask": completed,
             "children": children,
+            "supersededTaskIds": sorted(replacement_by_failed_id),
         }
 
-    def apply_task_graph(self, root_task_id: str, graph: dict[str, object]) -> dict[str, object]:
+    def apply_task_graph(
+        self,
+        root_task_id: str,
+        graph: dict[str, object],
+        *,
+        max_concurrency: int = DEFAULT_GRAPH_MAX_CONCURRENCY,
+        max_replans: int = DEFAULT_GRAPH_MAX_REPLANS,
+    ) -> dict[str, object]:
         root = self.memory_store.get_task(root_task_id)
         if root is None:
             raise ValueError("root task not found")
+        existing_graph = self.memory_store.get_task_graph(root_task_id)
+        if len(existing_graph.get("tasks") or []) > 1:
+            raise ValueError("task graph has already been applied")
+        if str(root.get("status") or "") != "queued":
+            raise ValueError("root task must be queued before applying a graph")
+        normalized_max_concurrency = max(1, min(16, int(max_concurrency)))
+        normalized_max_replans = max(0, min(8, int(max_replans)))
         validated = self.validate_graph(graph)
         task_specs = [
             GraphTaskSpec(
@@ -487,6 +545,19 @@ class OrchestratorService:
 
         session_id = str(root["sessionId"])
         root_id = str(root["rootTaskId"] or root["id"])
+        root_task = self.memory_store.block_task(
+            root_id,
+            reason="Waiting for child task graph completion",
+            checkpoint={
+                "status": "blocked",
+                "phase": "orchestrator_waiting",
+                "reason": "child_graph_active",
+                "maxConcurrency": normalized_max_concurrency,
+                "maxReplans": normalized_max_replans,
+            },
+            handoff_summary="The orchestrator is waiting for child task results before synthesis.",
+            expected_status="queued",
+        )
         temp_to_task_id: dict[str, str] = {}
         created_tasks: list[dict[str, object]] = []
         for spec in task_specs:
@@ -529,10 +600,15 @@ class OrchestratorService:
                 "taskCount": len(created_tasks),
                 "edgeCount": len(created_edges),
                 "childTaskIds": [str(task["id"]) for task in created_tasks],
+                "maxConcurrency": normalized_max_concurrency,
+                "maxReplans": normalized_max_replans,
             },
         )
         return {
             "rootTaskId": root_id,
+            "rootTask": root_task,
+            "maxConcurrency": normalized_max_concurrency,
+            "maxReplans": normalized_max_replans,
             "tasks": created_tasks,
             "edges": created_edges,
             "tempTaskIds": temp_to_task_id,
@@ -567,6 +643,232 @@ class OrchestratorService:
                 },
             )
         return dispatched
+
+    def cancel_graph(
+        self,
+        task_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, object]:
+        graph = self.memory_store.get_task_graph(task_id)
+        root_task_id = str(graph["rootTaskId"])
+        tasks = list(graph.get("tasks") or [])
+        if task_id != root_task_id:
+            if self.cancel_task is not None:
+                cancelled_task = self.cancel_task(task_id, reason=reason)
+            else:
+                cancelled_task = self.memory_store.cancel_task(
+                    task_id,
+                    reason=reason,
+                )
+            root = self.memory_store.get_task(root_task_id)
+            if root is None:
+                raise ValueError("root task not found")
+            return {
+                "rootTaskId": root_task_id,
+                "rootTask": root,
+                "cancelledTasks": [cancelled_task],
+                "cancelledTaskIds": [str(cancelled_task.get("id"))],
+            }
+        active = [
+            task
+            for task in tasks
+            if str(task.get("status") or "")
+            not in {"succeeded", "failed", "cancelled"}
+        ]
+        active.sort(key=lambda task: str(task.get("id")) == root_task_id)
+        cancelled: list[dict[str, object]] = []
+        for task in active:
+            child_id = str(task.get("id") or "")
+            if not child_id:
+                continue
+            if self.cancel_task is not None:
+                cancelled_task = self.cancel_task(child_id, reason=reason)
+            else:
+                cancelled_task = self.memory_store.cancel_task(
+                    child_id,
+                    reason=reason,
+                )
+            cancelled.append(cancelled_task)
+        if len(tasks) > 1:
+            self._record_graph_event(
+                root_task_id,
+                "graph.cancelled",
+                "Task graph cancelled",
+                {
+                    "cancelledTaskIds": [
+                        str(task.get("id"))
+                        for task in cancelled
+                    ],
+                    "reason": reason,
+                },
+            )
+        root = self.memory_store.get_task(root_task_id)
+        if root is None:
+            raise ValueError("root task not found")
+        return {
+            "rootTaskId": root_task_id,
+            "rootTask": root,
+            "cancelledTasks": cancelled,
+            "cancelledTaskIds": [
+                str(task.get("id"))
+                for task in cancelled
+            ],
+        }
+
+    def replan_failed_child(
+        self,
+        root_task_id: str,
+        failed_task_id: str,
+    ) -> dict[str, object]:
+        graph = self.memory_store.get_task_graph(root_task_id)
+        normalized_root_id = str(graph["rootTaskId"])
+        tasks = list(graph.get("tasks") or [])
+        root = next(
+            (
+                task
+                for task in tasks
+                if str(task.get("id")) == normalized_root_id
+            ),
+            None,
+        )
+        failed = next(
+            (
+                task
+                for task in tasks
+                if str(task.get("id")) == failed_task_id
+            ),
+            None,
+        )
+        if root is None or failed is None:
+            raise ValueError("task not found in graph")
+        if failed_task_id == normalized_root_id:
+            raise ValueError("root task cannot be replaced as a child")
+        if str(failed.get("status") or "") not in {"failed", "cancelled"}:
+            raise ValueError("child task must be failed or cancelled before replanning")
+        checkpoint = (
+            root.get("checkpoint")
+            if isinstance(root.get("checkpoint"), dict)
+            else {}
+        )
+        if (
+            str(root.get("status") or "") != "blocked"
+            or str(checkpoint.get("phase") or "") != "orchestrator_waiting"
+        ):
+            raise ValueError("root task is not waiting for orchestrator synthesis")
+        replacements = [
+            task
+            for task in tasks
+            if isinstance(task.get("contextHints"), dict)
+            and str(task["contextHints"].get("replanOfTaskId") or "")
+        ]
+        if any(
+            str(task["contextHints"].get("replanOfTaskId") or "") == failed_task_id
+            for task in replacements
+        ):
+            raise ValueError("failed child already has a replacement")
+        try:
+            max_replans = max(
+                0,
+                min(
+                    8,
+                    int(
+                        checkpoint.get("maxReplans")
+                        if checkpoint.get("maxReplans") is not None
+                        else DEFAULT_GRAPH_MAX_REPLANS
+                    ),
+                ),
+            )
+        except (TypeError, ValueError):
+            max_replans = DEFAULT_GRAPH_MAX_REPLANS
+        if len(replacements) >= max_replans:
+            raise ValueError("task graph replan limit reached")
+
+        failed_context = (
+            dict(failed["contextHints"])
+            if isinstance(failed.get("contextHints"), dict)
+            else {}
+        )
+        failure_text = str(
+            failed.get("error")
+            or failed.get("result")
+            or "child task did not complete"
+        ).strip()
+        replacement = self.memory_store.create_task(
+            session_id=str(root["sessionId"]),
+            title=f"Recovery: {str(failed.get('title') or 'Child task')}",
+            body=(
+                f"{str(failed.get('body') or '').strip()}\n\n"
+                "This is a bounded replacement for a failed child task. "
+                f"Previous failure: {failure_text}"
+            ).strip(),
+            kind=str(failed.get("kind") or "agent_turn"),
+            source="plan",
+            root_task_id=normalized_root_id,
+            parent_task_id=normalized_root_id,
+            worker_type=str(failed.get("workerType") or "agent"),
+            worker_profile=str(failed.get("workerProfile") or "") or None,
+            acceptance_criteria=(
+                list(failed["acceptanceCriteria"])
+                if isinstance(failed.get("acceptanceCriteria"), list)
+                else []
+            ),
+            context_hints={
+                **failed_context,
+                "replanOfTaskId": failed_task_id,
+                "replanReason": failure_text,
+                "replanIndex": len(replacements) + 1,
+            },
+            allowed_toolsets=(
+                list(failed["allowedToolsets"])
+                if isinstance(failed.get("allowedToolsets"), list)
+                else []
+            ),
+            disallowed_tools=(
+                list(failed["disallowedTools"])
+                if isinstance(failed.get("disallowedTools"), list)
+                else []
+            ),
+            ready_at=(
+                datetime.now(timezone.utc) + timedelta(days=3650)
+            ).isoformat(),
+            max_attempts=int(failed.get("maxAttempts") or 1),
+        )
+        try:
+            rewired = self.memory_store.rewire_task_dependencies(
+                failed_task_id,
+                str(replacement["id"]),
+            )
+        except Exception:
+            self.memory_store.cancel_task(
+                str(replacement["id"]),
+                reason="orchestrator replan wiring failed",
+            )
+            raise
+        replacement = (
+            self.memory_store.get_task(str(replacement["id"]))
+            or replacement
+        )
+        self._record_graph_event(
+            normalized_root_id,
+            "graph.replanned",
+            "Failed child task replaced",
+            {
+                "failedTaskId": failed_task_id,
+                "replacementTaskId": str(replacement["id"]),
+                "replanIndex": len(replacements) + 1,
+                **rewired,
+            },
+        )
+        return {
+            "rootTaskId": normalized_root_id,
+            "failedTaskId": failed_task_id,
+            "replacementTask": replacement,
+            "replacementTaskId": str(replacement["id"]),
+            "replanIndex": len(replacements) + 1,
+            "maxReplans": max_replans,
+            "rewired": rewired,
+        }
 
     def review_completed_child(self, task_id: str) -> dict[str, object]:
         task = self.memory_store.get_task(task_id)

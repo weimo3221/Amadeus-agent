@@ -2432,6 +2432,157 @@ class MessageMemoryStore:
             ).fetchall()
         return [task_edge_response(row) for row in rows]
 
+    def rewire_task_dependencies(
+        self,
+        failed_task_id: str,
+        replacement_task_id: str,
+    ) -> dict[str, object]:
+        normalized_failed_id = normalize_task_id(failed_task_id)
+        normalized_replacement_id = normalize_task_id(replacement_task_id)
+        if normalized_failed_id == normalized_replacement_id:
+            raise ValueError("replacement task must be different from failed task")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task_rows = connection.execute(
+                """
+                SELECT id, root_task_id, status
+                FROM tasks
+                WHERE id IN (?, ?)
+                """,
+                (normalized_failed_id, normalized_replacement_id),
+            ).fetchall()
+            tasks = {
+                str(row[0]): {
+                    "rootTaskId": str(row[1] or row[0]),
+                    "status": str(row[2]),
+                }
+                for row in task_rows
+            }
+            failed = tasks.get(normalized_failed_id)
+            replacement = tasks.get(normalized_replacement_id)
+            if failed is None or replacement is None:
+                raise ValueError("task not found")
+            if failed["rootTaskId"] != replacement["rootTaskId"]:
+                raise ValueError("replacement task must belong to the same task graph")
+            if failed["status"] not in {"failed", "cancelled"}:
+                raise ValueError("task must be failed or cancelled before replanning")
+            if replacement["status"] != "queued":
+                raise ValueError("replacement task must be queued")
+
+            incoming = connection.execute(
+                """
+                SELECT from_task_id, edge_type, required_status, metadata_json
+                FROM task_edges
+                WHERE to_task_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized_failed_id,),
+            ).fetchall()
+            outgoing = connection.execute(
+                """
+                SELECT id, to_task_id, edge_type, required_status, metadata_json
+                FROM task_edges
+                WHERE from_task_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized_failed_id,),
+            ).fetchall()
+
+            copied_incoming = 0
+            for edge in incoming:
+                metadata = json_payload(edge[3], default={})
+                connection.execute(
+                    """
+                    INSERT INTO task_edges (
+                      id, from_task_id, to_task_id, edge_type, required_status,
+                      metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(from_task_id, to_task_id, edge_type) DO UPDATE SET
+                      required_status = excluded.required_status,
+                      metadata_json = excluded.metadata_json
+                    """,
+                    (
+                        uuid4().hex,
+                        str(edge[0]),
+                        normalized_replacement_id,
+                        str(edge[1]),
+                        str(edge[2]),
+                        normalize_task_json_object(
+                            {
+                                **(metadata if isinstance(metadata, dict) else {}),
+                                "source": "orchestrator_replan",
+                                "replanOfTaskId": normalized_failed_id,
+                            },
+                            field_name="metadata",
+                        ),
+                        now,
+                    ),
+                )
+                copied_incoming += 1
+
+            rewired_outgoing = 0
+            for edge in outgoing:
+                dependent = connection.execute(
+                    "SELECT status FROM tasks WHERE id = ?",
+                    (str(edge[1]),),
+                ).fetchone()
+                if not dependent or str(dependent[0]) not in {"queued", "blocked"}:
+                    continue
+                metadata = json_payload(edge[4], default={})
+                connection.execute(
+                    """
+                    INSERT INTO task_edges (
+                      id, from_task_id, to_task_id, edge_type, required_status,
+                      metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(from_task_id, to_task_id, edge_type) DO UPDATE SET
+                      required_status = excluded.required_status,
+                      metadata_json = excluded.metadata_json
+                    """,
+                    (
+                        uuid4().hex,
+                        normalized_replacement_id,
+                        str(edge[1]),
+                        str(edge[2]),
+                        str(edge[3]),
+                        normalize_task_json_object(
+                            {
+                                **(metadata if isinstance(metadata, dict) else {}),
+                                "source": "orchestrator_replan",
+                                "replanOfTaskId": normalized_failed_id,
+                            },
+                            field_name="metadata",
+                        ),
+                        now,
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM task_edges WHERE id = ?",
+                    (str(edge[0]),),
+                )
+                rewired_outgoing += 1
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET ready_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND status = 'queued'
+                """,
+                (now, normalized_replacement_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("replacement task could not be activated")
+
+        return {
+            "failedTaskId": normalized_failed_id,
+            "replacementTaskId": normalized_replacement_id,
+            "copiedIncomingEdgeCount": copied_incoming,
+            "rewiredOutgoingEdgeCount": rewired_outgoing,
+        }
+
     def create_task_attempt(
         self,
         task_id: str,
@@ -3370,9 +3521,11 @@ class MessageMemoryStore:
         now = now_dt.isoformat()
         lease_expires_at = (now_dt + timedelta(seconds=lease_ttl)).isoformat()
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT id, session_id, status, due_at, next_run_at, ready_at
+                SELECT id, session_id, status, due_at, next_run_at, ready_at,
+                       root_task_id
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -3389,6 +3542,49 @@ class MessageMemoryStore:
                 or self._task_has_unsatisfied_dependencies(connection, normalized_task_id)
             ):
                 return self.get_task(normalized_task_id)
+            root_task_id = str(row[6] or normalized_task_id)
+            if root_task_id != normalized_task_id:
+                root_row = connection.execute(
+                    "SELECT checkpoint_json FROM tasks WHERE id = ?",
+                    (root_task_id,),
+                ).fetchone()
+                root_checkpoint = (
+                    json_payload(root_row[0], default={})
+                    if root_row
+                    else {}
+                )
+                if (
+                    isinstance(root_checkpoint, dict)
+                    and str(root_checkpoint.get("phase") or "")
+                    == "orchestrator_waiting"
+                ):
+                    try:
+                        max_concurrency = max(
+                            1,
+                            min(
+                                16,
+                                int(
+                                    root_checkpoint.get("maxConcurrency")
+                                    or 2
+                                ),
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        max_concurrency = 2
+                    running_count = int(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM tasks
+                            WHERE root_task_id = ?
+                              AND id != root_task_id
+                              AND status = 'running'
+                            """,
+                            (root_task_id,),
+                        ).fetchone()[0]
+                    )
+                    if running_count >= max_concurrency:
+                        return self.get_task(normalized_task_id)
             cursor = connection.execute(
                 """
                 UPDATE tasks
@@ -3476,6 +3672,95 @@ class MessageMemoryStore:
             default_message="Task failed",
         )
 
+    def complete_orchestrated_task(
+        self,
+        task_id: str,
+        *,
+        result: str,
+    ) -> dict[str, object]:
+        normalized_task_id = normalize_task_id(task_id)
+        normalized_result = normalize_optional_text(
+            result,
+            max_chars=MAX_TASK_RESULT_CHARS,
+            field_name="result",
+        )
+        if not normalized_result:
+            raise ValueError("result is required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT session_id, status, checkpoint_json
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("task not found")
+            if str(row[1]) == "succeeded":
+                task = self.get_task(normalized_task_id)
+                if task is None:
+                    raise ValueError("task not found")
+                return task
+            checkpoint = json_payload(row[2], default={})
+            if (
+                str(row[1]) != "blocked"
+                or not isinstance(checkpoint, dict)
+                or str(checkpoint.get("phase") or "") != "orchestrator_waiting"
+            ):
+                raise ValueError("task is not waiting for orchestrator synthesis")
+            completed_checkpoint = {
+                "status": "succeeded",
+                "phase": "orchestrator_synthesized",
+                "reason": "child_graph_completed",
+            }
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'succeeded',
+                    result = ?,
+                    error = NULL,
+                    blocked_reason = NULL,
+                    checkpoint_json = ?,
+                    claim_lock = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_heartbeat = NULL,
+                    next_run_at = NULL,
+                    updated_at = ?,
+                    finished_at = ?
+                WHERE id = ? AND status = 'blocked'
+                """,
+                (
+                    normalized_result,
+                    normalize_task_json_object(
+                        completed_checkpoint,
+                        field_name="checkpoint",
+                    ),
+                    now,
+                    now,
+                    normalized_task_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("task is not waiting for orchestrator synthesis")
+            self._insert_task_event(
+                connection,
+                task_id=normalized_task_id,
+                session_id=str(row[0]),
+                event_type="succeeded",
+                status="succeeded",
+                message=normalized_result,
+                metadata={"source": "orchestrator"},
+                created_at=now,
+            )
+        task = self.get_task(normalized_task_id)
+        if task is None:
+            raise ValueError("task not found")
+        return task
+
     def block_task(
         self,
         task_id: str,
@@ -3485,6 +3770,7 @@ class MessageMemoryStore:
         result: str | None = None,
         checkpoint: dict[str, object] | None = None,
         handoff_summary: str | None = None,
+        expected_status: str | None = None,
     ) -> dict[str, object]:
         normalized_task_id = normalize_task_id(task_id)
         normalized_claim_lock = normalize_optional_text(claim_lock, max_chars=120, field_name="claim_lock")
@@ -3496,8 +3782,14 @@ class MessageMemoryStore:
             max_chars=MAX_TASK_RESULT_CHARS,
             field_name="handoff_summary",
         ) if handoff_summary is not None else None
+        normalized_expected_status = (
+            normalize_task_status(expected_status)
+            if expected_status is not None
+            else None
+        )
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
                 SELECT id, session_id, status, claim_lock
@@ -3509,6 +3801,14 @@ class MessageMemoryStore:
             if not row:
                 raise ValueError("task not found")
             current_status = str(row[2])
+            if (
+                normalized_expected_status is not None
+                and current_status != normalized_expected_status
+            ):
+                raise ValueError(
+                    f"task status changed before block: expected "
+                    f"{normalized_expected_status}, got {current_status}"
+                )
             if current_status in {"succeeded", "failed", "cancelled"}:
                 task = self.get_task(normalized_task_id)
                 if task is None:
@@ -3516,8 +3816,23 @@ class MessageMemoryStore:
                 return task
             if normalized_claim_lock and (current_status != "running" or str(row[3] or "") != normalized_claim_lock):
                 raise ValueError("task is not claimed by this worker")
-            connection.execute(
-                """
+            status_guard = (
+                " AND status = ?"
+                if normalized_expected_status is not None
+                else ""
+            )
+            params: list[object] = [
+                normalized_reason,
+                normalized_result,
+                checkpoint_json,
+                normalized_handoff_summary,
+                now,
+                normalized_task_id,
+            ]
+            if normalized_expected_status is not None:
+                params.append(normalized_expected_status)
+            cursor = connection.execute(
+                f"""
                 UPDATE tasks
                 SET status = 'blocked',
                     blocked_reason = ?,
@@ -3530,10 +3845,12 @@ class MessageMemoryStore:
                     last_heartbeat = NULL,
                     next_run_at = NULL,
                     updated_at = ?
-                WHERE id = ?
+                WHERE id = ?{status_guard}
                 """,
-                (normalized_reason, normalized_result, checkpoint_json, normalized_handoff_summary, now, normalized_task_id),
+                params,
             )
+            if cursor.rowcount != 1:
+                raise ValueError("task status changed before block")
             self._insert_task_event(
                 connection,
                 task_id=normalized_task_id,
@@ -3864,16 +4181,63 @@ class MessageMemoryStore:
                 LIMIT 200
                 """,
             ).fetchall()
-        runnable = [
-            task_response(row)
-            for row in rows
-            if (
+            root_ids = sorted({str(row[28] or row[0]) for row in rows})
+            root_checkpoints: dict[str, dict[str, object]] = {}
+            active_counts: dict[str, int] = {}
+            if root_ids:
+                placeholders = ", ".join("?" for _ in root_ids)
+                root_rows = connection.execute(
+                    f"SELECT id, checkpoint_json FROM tasks WHERE id IN ({placeholders})",
+                    root_ids,
+                ).fetchall()
+                root_checkpoints = {
+                    str(row[0]): json_payload(row[1], default={})
+                    for row in root_rows
+                }
+                active_rows = connection.execute(
+                    f"""
+                    SELECT root_task_id, COUNT(*)
+                    FROM tasks
+                    WHERE status = 'running'
+                      AND root_task_id IN ({placeholders})
+                      AND id != root_task_id
+                    GROUP BY root_task_id
+                    """,
+                    root_ids,
+                ).fetchall()
+                active_counts = {
+                    str(row[0]): int(row[1])
+                    for row in active_rows
+                    if row[0]
+                }
+        runnable: list[dict[str, object]] = []
+        selected_counts: dict[str, int] = {}
+        for row in rows:
+            task_id = str(row[0])
+            if not (
                 task_time_is_due(str(row[6] or ""), now_dt)
                 and task_time_is_due(str(row[16] or ""), now_dt)
                 and task_time_is_due(str(row[38] or ""), now_dt)
-                and not self._task_has_unsatisfied_dependencies(None, str(row[0]))
-            )
-        ]
+                and not self._task_has_unsatisfied_dependencies(None, task_id)
+            ):
+                continue
+            root_id = str(row[28] or task_id)
+            checkpoint = root_checkpoints.get(root_id) or {}
+            if task_id != root_id and str(checkpoint.get("phase") or "") == "orchestrator_waiting":
+                try:
+                    max_concurrency = max(
+                        1,
+                        min(16, int(checkpoint.get("maxConcurrency") or 2)),
+                    )
+                except (TypeError, ValueError):
+                    max_concurrency = 2
+                occupied = active_counts.get(root_id, 0) + selected_counts.get(root_id, 0)
+                if occupied >= max_concurrency:
+                    continue
+                selected_counts[root_id] = selected_counts.get(root_id, 0) + 1
+            runnable.append(task_response(row))
+            if len(runnable) >= normalized_limit:
+                break
         return runnable[:normalized_limit]
 
     def _task_has_unsatisfied_dependencies(self, connection: sqlite3.Connection | None, task_id: str) -> bool:

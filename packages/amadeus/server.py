@@ -215,7 +215,12 @@ task_worker = TaskWorker(
     ),
 )
 agent_runtime.set_task_worker(task_worker)
-orchestrator_service = OrchestratorService(memory_store, submit_task=task_worker.submit, model_client=agent_runtime.model_client)
+orchestrator_service = OrchestratorService(
+    memory_store,
+    submit_task=task_worker.submit,
+    cancel_task=task_worker.cancel,
+    model_client=agent_runtime.model_client,
+)
 scheduled_job_worker = ScheduledJobWorker(
     lambda: memory_store,
     publish_job_event=publish_scheduled_job_update,
@@ -723,6 +728,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/tasks/") and parsed.path.endswith("/synthesize"):
             task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/synthesize")).strip()
             self.handle_task_synthesize(task_id)
+            return
+
+        if parsed.path.startswith("/tasks/") and parsed.path.endswith("/replan"):
+            task_id = unquote(parsed.path.removeprefix("/tasks/").removesuffix("/replan")).strip()
+            self.handle_task_replan(task_id)
             return
 
         if self.path == "/runtime/feedback":
@@ -1279,15 +1289,37 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 return
             body = self.read_json_body()
             auto = bool(body.get("auto"))
+            max_concurrency = parse_int(
+                str(body.get("maxConcurrency") or "2"),
+                2,
+                1,
+                16,
+            )
+            max_replans = parse_int(
+                str(body.get("maxReplans") or "3"),
+                3,
+                0,
+                8,
+            )
             if auto:
                 max_children = parse_int(str(body.get("maxChildren") or "6"), 6, 1, 12)
-                applied = orchestrator_service.plan_root(task_id, max_children=max_children)
+                applied = orchestrator_service.plan_root(
+                    task_id,
+                    max_children=max_children,
+                    max_concurrency=max_concurrency,
+                    max_replans=max_replans,
+                )
             else:
                 graph = body.get("graph")
                 if not isinstance(graph, dict):
                     self.write_json(400, {"ok": False, "error": "graph is required"})
                     return
-                applied = orchestrator_service.apply_task_graph(task_id, graph)
+                applied = orchestrator_service.apply_task_graph(
+                    task_id,
+                    graph,
+                    max_concurrency=max_concurrency,
+                    max_replans=max_replans,
+                )
             if not isinstance(applied, dict):
                 self.write_json(400, {"ok": False, "error": "graph is required"})
                 return
@@ -1355,6 +1387,49 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             logger.info("Task synthesize failed taskId=%s error=%s", task_id, error)
             self.write_json(500, {"ok": False, "error": str(error)})
 
+    def handle_task_replan(self, task_id: str) -> None:
+        try:
+            if not task_id:
+                self.write_json(400, {"ok": False, "error": "task id is required"})
+                return
+            body = self.read_json_body()
+            failed_task_id = str(body.get("failedTaskId") or "").strip()
+            if not failed_task_id:
+                self.write_json(400, {"ok": False, "error": "failedTaskId is required"})
+                return
+            result = orchestrator_service.replan_failed_child(
+                task_id,
+                failed_task_id,
+            )
+            dispatched: list[str] = []
+            if body.get("dispatch", True) is not False:
+                dispatched = orchestrator_service.dispatch_ready(
+                    str(result["rootTaskId"]),
+                    limit=1,
+                )
+            publish_task_graph_update(
+                str(result["rootTaskId"]),
+                "graph_replanned",
+            )
+            if dispatched:
+                publish_task_graph_update(
+                    str(result["rootTaskId"]),
+                    "graph_dispatched",
+                )
+            self.write_json(
+                200,
+                {
+                    "ok": True,
+                    **result,
+                    "dispatchedTaskIds": dispatched,
+                },
+            )
+        except ValueError as error:
+            self.write_json(400, {"ok": False, "error": str(error)})
+        except Exception as error:
+            logger.info("Task replan failed taskId=%s error=%s", task_id, error)
+            self.write_json(500, {"ok": False, "error": str(error)})
+
     def handle_task_create(self) -> None:
         try:
             body = self.read_json_body()
@@ -1408,11 +1483,17 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 return
             body = self.read_json_body()
             reason = body.get("reason") if isinstance(body.get("reason"), str) else None
-            task = task_worker.cancel(task_id, reason=reason)
+            cancellation = orchestrator_service.cancel_graph(
+                task_id,
+                reason=reason,
+            )
+            task = cancellation["rootTask"]
             logger.info("Cancelled task taskId=%s sessionId=%s", task["id"], task["sessionId"])
             self.write_json(200, {
                 "ok": True,
                 "task": task,
+                "rootTaskId": cancellation["rootTaskId"],
+                "cancelledTaskIds": cancellation["cancelledTaskIds"],
                 "event": {
                     "type": "task.updated",
                     "sessionId": task["sessionId"],

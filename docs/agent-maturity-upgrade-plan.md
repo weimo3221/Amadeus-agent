@@ -1059,10 +1059,11 @@ UI 不需要知道 runner 细节，但需要能展示：
 
 ### Slice 2：Dependency-aware scheduler
 
-- Status: first in-store dependency-aware runnable selection is implemented.
-- `list_runnable_tasks()` and `start_task()` now skip queued tasks whose incoming `task_edges` have not reached their required status.
-- `TaskWorker.recover()` already uses `list_runnable_tasks()`, so recovered submissions inherit the dependency filter.
-- Remaining work: explicit `TaskGraphService`, dependent wake events, root cancel cascading, and richer graph event publication.
+- Status: dependency-aware and per-graph concurrency-bounded scheduling is implemented.
+- `list_runnable_tasks()` and `start_task()` skip queued tasks whose incoming `task_edges` have not reached their required status.
+- `maxConcurrency` is read from the orchestrator-owned root checkpoint and enforced once during runnable discovery and again inside the SQLite `BEGIN IMMEDIATE` claim transaction, preventing independent workers from over-claiming the graph.
+- `TaskWorker.recover()` and the durable supervisor already use `list_runnable_tasks()`, so normal dispatch and recovered submissions share the same dependency/width policy.
+- Root cancellation cascades active children before cancelling the root; direct child cancellation remains scoped to that child. Remaining work is richer graph UI/event presentation.
 
 ### Slice 3：WorkerContext builder
 
@@ -1075,7 +1076,7 @@ UI 不需要知道 runner 细节，但需要能展示：
 
 ### Slice 4：Internal orchestrator
 
-- Status: first model-backed graph generation, graph repair, graph lifecycle events, and root synthesis are implemented behind the internal orchestrator service.
+- Status: bounded multi-child graph orchestration is implemented behind the internal orchestrator service.
 - Added internal `OrchestratorService` with root goal creation, structured graph validation, graph repair, child task/edge persistence, ready child dispatch, terminal child review, graph lifecycle event recording, and root synthesis.
 - Added controlled Python HTTP entrypoints: `POST /tasks/{id}/decompose` applies a validated structured graph, `POST /tasks/{id}/dispatch` submits dependency-ready children through the existing task worker, and `POST /tasks/{id}/synthesize` summarizes terminal child results into the root task.
 - `POST /tasks/{id}/decompose` can also run with `auto: true`, which asks the configured planning model for a fixed-shape JSON spec and task graph, validates it, asks the model for one fixed-shape repair if validation fails, applies the repaired graph when valid, and falls back to a single child task if generation/repair still fails.
@@ -1084,8 +1085,10 @@ UI 不需要知道 runner 细节，但需要能展示：
 - Known worker profiles get orchestrator-owned default `allowedToolsets`, so missing model tool bounds do not become an unbounded child-worker prompt.
 - Root tasks now record durable `task_events` for `graph.decomposed`, `graph.applied`, `graph.dispatched`, and `graph.synthesized`, including source/fallback/repair and child task metadata where relevant.
 - Controlled HTTP graph operations now also publish `task.updated` runtime events with `graph_decomposed`, `graph_dispatched`, and `graph_synthesized` actions for desktop/WebSocket subscribers.
+- Graph application first moves the root to `blocked/orchestrator_waiting`, preventing the independent supervisor from racing synthesis by executing the root as a normal task. Re-applying a second graph to the same root is rejected.
+- `POST /tasks/{id}/replan` adds a bounded policy-preserving replacement for one failed/cancelled child. It copies upstream dependencies, atomically rewires pending downstream edges, preserves the failed task/attempt history, and emits `graph.replanned`; replacement-aware synthesis ignores only explicitly superseded failures.
 - `decompose_task` is still not exposed as a model tool; model generation is an internal service call and all writes still go through graph validation.
-- Remaining work: richer repair strategies, broader planning quality evals, richer graph UI semantics, and multi-child scheduling/handoff quality.
+- Remaining work: richer model-driven repair strategies, broader planning quality evals, richer graph UI semantics, and asynchronous handoff UX.
 
 ### Slice 5：Isolated child runner
 
