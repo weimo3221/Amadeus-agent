@@ -2,6 +2,7 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { configureAutoUpdates } from './auto-update'
 
 const projectRoot = resolve(__dirname, '../../../..')
 const logDir = join(projectRoot, 'logs')
@@ -1090,6 +1091,7 @@ else {
     if (isE2eRuntimeUi || isE2ePermissionPrompt || isE2eRealRuntime) {
       createMainUiWindow(defaultCompanionSessionId)
     }
+    configureAutoUpdates({ logger: writeRuntimeLog })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

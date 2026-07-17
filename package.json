@@ -17,6 +17,10 @@
     "build:ui-next": "npm --workspace apps/desktop-ui-next run build",
     "test:contracts": "python scripts/eval_runtime_contracts.py",
     "test:e2e": "npm --workspace apps/desktop run test:e2e",
+    "soak:runtime": "python scripts/runtime_soak.py",
+    "release:desktop": "npm --workspace apps/desktop run release:build",
+    "release:check": "python scripts/release_check.py",
+    "release:preflight": "npm run typecheck && npm run release:desktop && npm test && npm run test:e2e && npm run release:check",
     "typecheck": "npm --workspace packages/amadeus run typecheck && npm --workspace apps/server run typecheck && npm --workspace apps/desktop-ui-next run typecheck && npm --workspace apps/desktop run typecheck",
     "test": "python -m unittest discover -s tests -p \"test_*.py\" && npm --workspace apps/server test && npm --workspace apps/desktop test && npm run test:contracts"
   },
